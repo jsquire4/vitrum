@@ -31,6 +31,16 @@ import {
   vecNormalize as normalize,
   tangentBasis,
 } from '@vitrum/shared-samplers';
+import {
+  classifyAreaVectorF32,
+  normalizeDirectionF32,
+} from './areaEmitterGeometry.js';
+import {
+  WEBGL2_F32_MIN_NORMAL,
+  multiplyNonNegativeFloat32,
+  requireFiniteFloat32,
+  requireNonNegativeFloat32,
+} from './float32Policy.js';
 import type { LightsTextureData } from './sceneTextures.js';
 
 // ── D10.10: dev-only slot-cursor guard ────────────────────────────────────────
@@ -71,6 +81,209 @@ const SPOT_LIGHT = 2;
 const DIR_LIGHT = 3;
 const POINT_LIGHT = 4;
 
+function selectionPowerF32(value: number, context: string): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`${context} selection power must be finite and non-negative.`);
+  }
+  if (value === 0) return 0;
+  const stored = Math.fround(value);
+  if (!(stored > 0) || !Number.isFinite(stored)) {
+    throw new RangeError(
+      `${context} selection power must survive finite positive RGBA32F storage.`,
+    );
+  }
+  return stored;
+}
+
+function addSelectionPowerF32(sum: number, value: number): number {
+  const next = Math.fround(sum + value);
+  if (!Number.isFinite(next)) {
+    throw new RangeError(
+      '@vitrum/pt-webgl2: analytic-light selection-power sum overflows float32.',
+    );
+  }
+  if (value > 0 && next === sum) {
+    throw new RangeError(
+      '@vitrum/pt-webgl2: a positive analytic-light selection power loses ' +
+        'proposal support in the cumulative float32 distribution.',
+    );
+  }
+  return next;
+}
+
+function finiteVec3F32(value: Vec3, context: string): Vec3 {
+  return [
+    requireFiniteFloat32(value[0], `${context}[0]`),
+    requireFiniteFloat32(value[1], `${context}[1]`),
+    requireFiniteFloat32(value[2], `${context}[2]`),
+  ];
+}
+
+function nonNegativeVec3F32(value: Vec3, context: string): Vec3 {
+  return [
+    requireNonNegativeFloat32(value[0], `${context}[0]`),
+    requireNonNegativeFloat32(value[1], `${context}[1]`),
+    requireNonNegativeFloat32(value[2], `${context}[2]`),
+  ];
+}
+
+interface PackedLightRadiometry {
+  readonly color: Vec3;
+  readonly intensity: number;
+  readonly radiance: Vec3;
+}
+
+interface PackedSpotCone {
+  readonly coneCos: number;
+  readonly penumbraCos: number;
+}
+
+/**
+ * Mirror the GLSL source-radiance operand order:
+ * `light.color * light.intensity`. Both operands first cross separate RGBA32F
+ * lanes, then each component multiplication is evaluated in shader f32.
+ */
+function packLightRadiometry(
+  colorSource: Vec3,
+  intensitySource: number,
+  context: string,
+): PackedLightRadiometry {
+  const color = nonNegativeVec3F32(colorSource, `${context} color`);
+  const intensity = requireNonNegativeFloat32(
+    intensitySource,
+    `${context} intensity`,
+  );
+  const radiance: Vec3 = [
+    multiplyNonNegativeFloat32(
+      color[0],
+      intensity,
+      `${context} color[0] * intensity`,
+    ),
+    multiplyNonNegativeFloat32(
+      color[1],
+      intensity,
+      `${context} color[1] * intensity`,
+    ),
+    multiplyNonNegativeFloat32(
+      color[2],
+      intensity,
+      `${context} color[2] * intensity`,
+    ),
+  ];
+  return { color, intensity, radiance };
+}
+
+/**
+ * Pack the exact cosine lanes consumed by GLSL spot attenuation. A zero
+ * penumbra intentionally produces equal edges and selects the shader's defined
+ * hard-cone branch. Positive authored cone/penumbra support must not collapse
+ * to that branch merely because the derived cosines share one f32 value.
+ */
+function packSpotCone(
+  angle: number,
+  penumbra: number,
+  context: string,
+): PackedSpotCone {
+  if (!Number.isFinite(angle) || !(angle > 0) || angle > Math.PI) {
+    throw new RangeError(
+      `${context} angle must be finite, positive, and <= PI.`,
+    );
+  }
+  if (!Number.isFinite(penumbra) || penumbra < 0 || penumbra > 1) {
+    throw new RangeError(
+      `${context} penumbra must be finite and in [0, 1].`,
+    );
+  }
+  const coneCos = requireFiniteFloat32(
+    Math.cos(angle),
+    `${context} cone cosine`,
+  );
+  const penumbraCos = requireFiniteFloat32(
+    Math.cos(angle * (1 - penumbra)),
+    `${context} penumbra cosine`,
+  );
+  if (coneCos === 1) {
+    throw new RangeError(
+      `${context} positive angle collapses to a zero-width cone after ` +
+      'WebGL float32 cosine storage.',
+    );
+  }
+  if (penumbra > 0 && penumbraCos === coneCos) {
+    throw new RangeError(
+      `${context} positive penumbra collapses to the hard-cone edge after ` +
+      'WebGL float32 cosine storage.',
+    );
+  }
+  return { coneCos, penumbraCos };
+}
+
+const WEBGL2_F32_EPSILON_AT_ONE = 2 ** -23;
+const DIRECTIONAL_BASIS_ADD_GUARD_ULPS = 8;
+const DIRECTIONAL_MIN_RIM_COMPONENT =
+  DIRECTIONAL_BASIS_ADD_GUARD_ULPS * WEBGL2_F32_EPSILON_AT_ONE;
+const DIRECTIONAL_MIN_ANGULAR_DIAMETER = 2 * Math.asin(
+  Math.sqrt(3) * DIRECTIONAL_MIN_RIM_COMPONENT,
+);
+
+/**
+ * A positive directional diameter is a finite-cone contract, not a hint that
+ * may silently collapse to the hard/delta branch. Validate the exact f32
+ * intermediates used by `sampleDirectionalCone`: its stable
+ * `1-cos(d/2) = 2*sin²(d/4)` term must remain at least normal, and the
+ * reciprocal solid-angle PDF must remain finite.
+ */
+function packDirectionalAngularDiameter(
+  value: number | undefined,
+  context: string,
+): number {
+  if (value == null || value === 0) return 0;
+  if (!Number.isFinite(value) || value < 0 || value > Math.PI) {
+    throw new RangeError(
+      `${context} angularDiameter must be finite and in [0, PI].`,
+    );
+  }
+  const stored = requireNonNegativeFloat32(
+    value,
+    `${context} angularDiameter`,
+  );
+  const quarterAngle = Math.fround(stored * 0.25);
+  const sinQuarter = Math.fround(
+    quarterAngle < 1e-3 ? quarterAngle : Math.sin(quarterAngle),
+  );
+  const sinQuarterSquared = Math.fround(sinQuarter * sinQuarter);
+  const oneMinusCosHalf = Math.fround(2 * sinQuarterSquared);
+  const solidAngle = Math.fround(
+    Math.fround(2 * Math.PI) * oneMinusCosHalf,
+  );
+  const pdf = Math.fround(1 / solidAngle);
+  if (
+    !(oneMinusCosHalf >= WEBGL2_F32_MIN_NORMAL) ||
+    !(solidAngle > 0) ||
+    !Number.isFinite(solidAngle) ||
+    !(pdf > 0) ||
+    !Number.isFinite(pdf)
+  ) {
+    throw new RangeError(
+      `${context} angularDiameter is too small to retain a finite-cone ` +
+      'solid angle and PDF in WebGL float32; use 0 for a delta directional light.',
+    );
+  }
+  // For every unit transverse rim vector, at least one world component has
+  // magnitude >= sin(d/2)/sqrt(3). Require that guaranteed component to clear
+  // eight binary32 ULPs at unit magnitude, covering basis construction,
+  // matrix addition, and final normalization. Otherwise a valid local cone can
+  // quantize back to its axis after the world-basis transform.
+  const rimSin = Math.fround(Math.sin(Math.fround(stored * 0.5)));
+  const guaranteedWorldComponent = Math.fround(rimSin / Math.sqrt(3));
+  if (!(guaranteedWorldComponent >= DIRECTIONAL_MIN_RIM_COMPONENT)) {
+    throw new RangeError(
+      `${context} angularDiameter is too small to survive world-basis ` +
+      `float32 addition; use 0 or at least ${DIRECTIONAL_MIN_ANGULAR_DIAMETER} radians.`,
+    );
+  }
+  return stored;
+}
+
 // Rec.709 luminance + normalize/tangentBasis are single-sourced in
 // `@vitrum/shared-samplers`. The shared `vecNormalize` preserves this packer's
 // historical `<1e-12 → [0,0,0]` degeneracy contract, and the shared `luminance`
@@ -82,19 +295,38 @@ interface PackedAreaGeometry {
   readonly area: number;
 }
 
-function f32Cross(a: Vec3, b: Vec3): Vec3 {
-  return [
-    Math.fround(Math.fround(a[1] * b[2]) - Math.fround(a[2] * b[1])),
-    Math.fround(Math.fround(a[2] * b[0]) - Math.fround(a[0] * b[2])),
-    Math.fround(Math.fround(a[0] * b[1]) - Math.fround(a[1] * b[0])),
-  ];
-}
-
-function f32DotSelf(v: Vec3): number {
-  const xx = Math.fround(v[0] * v[0]);
-  const yy = Math.fround(v[1] * v[1]);
-  const zz = Math.fround(v[2] * v[2]);
-  return Math.fround(Math.fround(xx + yy) + zz);
+function discAreaTangentBasis(normal: Vec3, id: string): {
+  readonly t: Vec3;
+  readonly b: Vec3;
+} {
+  const n = normalizeDirectionF32(normal);
+  if (n == null) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: disc-area emitter "${id}" has a degenerate normal.`,
+    );
+  }
+  const ref: Vec3 = Math.abs(n[0]) > 0.9 ? [0, 1, 0] : [1, 0, 0];
+  const t = normalizeDirectionF32([
+    ref[1] * n[2] - ref[2] * n[1],
+    ref[2] * n[0] - ref[0] * n[2],
+    ref[0] * n[1] - ref[1] * n[0],
+  ]);
+  if (t == null) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: disc-area emitter "${id}" has a degenerate tangent basis.`,
+    );
+  }
+  const b = normalizeDirectionF32([
+    n[1] * t[2] - n[2] * t[1],
+    n[2] * t[0] - n[0] * t[2],
+    n[0] * t[1] - n[1] * t[0],
+  ]);
+  if (b == null) {
+    throw new RangeError(
+      `@vitrum/pt-webgl2: disc-area emitter "${id}" has a degenerate bitangent basis.`,
+    );
+  }
+  return { t, b };
 }
 
 /**
@@ -120,74 +352,14 @@ function packAreaGeometry(
     Math.fround(sourceV[1]),
     Math.fround(sourceV[2]),
   ];
-  if (![...u, ...v].every(Number.isFinite)) {
+  const areaMeasure = classifyAreaVectorF32(u, v, areaScale);
+  if (!areaMeasure.valid) {
     throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axes are not ` +
-      'representable as finite float32 values.',
+      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axes do not retain ` +
+      `strictly positive finite area in float32 shader arithmetic (${areaMeasure.reason}).`,
     );
   }
-
-  const uLengthSquared = f32DotSelf(u);
-  const vLengthSquared = f32DotSelf(v);
-  if (
-    !Number.isFinite(uLengthSquared) ||
-    !(uLengthSquared > 0) ||
-    !Number.isFinite(vLengthSquared) ||
-    !(vLengthSquared > 0)
-  ) {
-    throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axis squared lengths ` +
-      'must remain finite and strictly positive in float32 shader arithmetic.',
-    );
-  }
-
-  const axisDot = Math.fround(
-    Math.fround(Math.fround(u[0] * v[0]) + Math.fround(u[1] * v[1])) +
-    Math.fround(u[2] * v[2]),
-  );
-  if (!Number.isFinite(axisDot)) {
-    throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span mutual-axis dot ` +
-      'product must remain finite in float32 shader arithmetic.',
-    );
-  }
-
-  const axisCross = f32Cross(u, v);
-  if (!axisCross.every(Number.isFinite)) {
-    throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span cross product is not ` +
-      'representable as finite float32 geometry.',
-    );
-  }
-
-  const crossLengthSquared = f32DotSelf(axisCross);
-  if (!Number.isFinite(crossLengthSquared)) {
-    throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span cross-product squared ` +
-      'length is not representable as finite float32 geometry.',
-    );
-  }
-  if (!(crossLengthSquared > 0)) {
-    throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axes collapse to ` +
-      'zero area in float32 shader arithmetic.',
-    );
-  }
-
-  const area = Math.fround(Math.sqrt(crossLengthSquared) * areaScale);
-  if (!Number.isFinite(area)) {
-    throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span area is not ` +
-      'representable as finite float32 geometry.',
-    );
-  }
-  if (!(area > 0)) {
-    throw new RangeError(
-      `@vitrum/pt-webgl2: ${kind} emitter "${id}" full-span axes collapse to ` +
-      'zero area in float32 shader arithmetic.',
-    );
-  }
-  return { u, v, area };
+  return { u, v, area: areaMeasure.area };
 }
 
 // ── D11-12: shared s0/s1 header helpers ───────────────────────────────────────
@@ -257,21 +429,34 @@ export function packLightsTexture(
   const pixelCount = Math.max(lights.length * LIGHT_PIXELS, 1);
   const dim = Math.ceil(Math.sqrt(pixelCount));
   const data = new Float32Array(dim * dim * 4);
+  let selectionPowerSum = 0;
+  const selectionPowers: number[] = [];
 
   for (let i = 0; i < lights.length; i += 1) {
     const l = lights[i]!;
     const base = i * LIGHT_PIXELS * 4;
     const cursor: SlotCursor = { k: 0 };
 
-    const [cr, cg, cb] = l.color;
-    const color: Vec3 = [cr, cg, cb];
-    const lum = luminance(cr, cg, cb);
+    const lightContext = `${l.kind} emitter "${l.id}"`;
+    const { color, intensity, radiance } = packLightRadiometry(
+      l.color,
+      l.intensity,
+      lightContext,
+    );
+    const lum = luminance(radiance[0], radiance[1], radiance[2]);
+    let packedSelectionPower = 0;
 
     switch (l.kind) {
       case 'rect-area': {
         // s0: position / type   s1: color / intensity
-        writePositionType(data, base, cursor, l.position, RECT_AREA_LIGHT);
-        writeColorIntensity(data, base, cursor, color, l.intensity);
+        writePositionType(
+          data,
+          base,
+          cursor,
+          finiteVec3F32(l.position, `${lightContext} position`),
+          RECT_AREA_LIGHT,
+        );
+        writeColorIntensity(data, base, cursor, color, intensity);
         // Core uAxis/vAxis are HALF-extents, while the retained WebGL2 light
         // sampler/intersector uses the fork's FULL-span convention with
         // coordinates in [-0.5, 0.5]. Double both axes at this backend boundary
@@ -288,7 +473,11 @@ export function packLightsTexture(
         data[base + cursor.k++] = u[0];
         data[base + cursor.k++] = u[1];
         data[base + cursor.k++] = u[2];
-        data[base + cursor.k++] = lum * l.intensity * area;
+        packedSelectionPower = selectionPowerF32(
+          lum * area,
+          `rect-area emitter "${l.id}"`,
+        );
+        data[base + cursor.k++] = packedSelectionPower;
         // s3: v / area  (full-span area = |u × v|)
         data[base + cursor.k++] = v[0];
         data[base + cursor.k++] = v[1];
@@ -300,12 +489,18 @@ export function packLightsTexture(
       }
       case 'disc-area': {
         // s0: position / type (CIRC_AREA)   s1: color / intensity
-        writePositionType(data, base, cursor, l.position, CIRC_AREA_LIGHT);
-        writeColorIntensity(data, base, cursor, color, l.intensity);
+        writePositionType(
+          data,
+          base,
+          cursor,
+          finiteVec3F32(l.position, `${lightContext} position`),
+          CIRC_AREA_LIGHT,
+        );
+        writeColorIntensity(data, base, cursor, color, intensity);
         // Synthesize an in-plane (u, v) basis from the disc normal; each axis
         // spans the full diameter (2*radius) to match the fork's full-extent
         // width/height convention, then π/4 corrects rectangle→disc.
-        const { t, b } = tangentBasis(l.normal);
+        const { t, b } = discAreaTangentBasis(l.normal, l.id);
         const d = 2 * l.radius;
         const areaScale = Math.PI / 4.0;
         const { u, v, area } = packAreaGeometry(
@@ -319,7 +514,11 @@ export function packLightsTexture(
         data[base + cursor.k++] = u[0];
         data[base + cursor.k++] = u[1];
         data[base + cursor.k++] = u[2];
-        data[base + cursor.k++] = lum * l.intensity * area;
+        packedSelectionPower = selectionPowerF32(
+          lum * area,
+          `disc-area emitter "${l.id}"`,
+        );
+        data[base + cursor.k++] = packedSelectionPower;
         // s3: v / area
         data[base + cursor.k++] = v[0];
         data[base + cursor.k++] = v[1];
@@ -331,22 +530,43 @@ export function packLightsTexture(
       }
       case 'spot': {
         // s0: position / type   s1: color / intensity
-        writePositionType(data, base, cursor, l.position, SPOT_LIGHT);
-        writeColorIntensity(data, base, cursor, color, l.intensity);
+        writePositionType(
+          data,
+          base,
+          cursor,
+          finiteVec3F32(l.position, `${lightContext} position`),
+          SPOT_LIGHT,
+        );
+        writeColorIntensity(data, base, cursor, color, intensity);
+        const penumbra = l.penumbra ?? 0;
+        const { coneCos, penumbraCos } = packSpotCone(
+          l.angle,
+          penumbra,
+          lightContext,
+        );
         // The fork builds a lookAt basis: u = (1,0,0), v = (0,1,0) rotated into
         // the light's orientation. Core gives the forward `direction`; we build
         // a basis whose -w is the spot direction and read its u/v axes.
-        const forward = normalize(l.direction);
+        const forward = finiteVec3F32(
+          normalize(l.direction),
+          `${lightContext} normalized direction`,
+        );
         // The GLSL/fork convention recovers the spot's BACK axis as cross(u,v)
         // and negates it to obtain the forward emission direction. Build the
         // plane around -forward so both NEE cone attenuation and BDPT emission
         // point along the authored core direction.
-        const { t, b } = tangentBasis([-forward[0], -forward[1], -forward[2]]);
+        const basis = tangentBasis([-forward[0], -forward[1], -forward[2]]);
+        const t = finiteVec3F32(basis.t, `${lightContext} tangent`);
+        const b = finiteVec3F32(basis.b, `${lightContext} bitangent`);
         // s2: u / power
         data[base + cursor.k++] = t[0];
         data[base + cursor.k++] = t[1];
         data[base + cursor.k++] = t[2];
-        data[base + cursor.k++] = lum * l.intensity;
+        packedSelectionPower = selectionPowerF32(
+          lum,
+          `spot emitter "${l.id}"`,
+        );
+        data[base + cursor.k++] = packedSelectionPower;
         // s3: v / reserved area (zero for the delta-position spot contract).
         data[base + cursor.k++] = b[0];
         data[base + cursor.k++] = b[1];
@@ -354,12 +574,18 @@ export function packLightsTexture(
         cursor.k += 1;
         // s4: reserved radius / decay / distance / coneCos
         cursor.k += 1;
-        data[base + cursor.k++] = l.decay ?? 2;
-        data[base + cursor.k++] = l.distance ?? 0;
-        data[base + cursor.k++] = Math.cos(l.angle);
+        data[base + cursor.k++] = requireNonNegativeFloat32(
+          l.decay ?? 2,
+          `${lightContext} decay`,
+        );
+        data[base + cursor.k++] = requireNonNegativeFloat32(
+          l.distance ?? 0,
+          `${lightContext} distance`,
+        );
+        data[base + cursor.k++] = coneCos;
         // s5: penumbraCos / castShadowDisabled / 0 / 0. The shared shadow
         // flag is written after the kind-specific switch below.
-        data[base + cursor.k++] = Math.cos(l.angle * (1 - (l.penumbra ?? 0)));
+        data[base + cursor.k++] = penumbraCos;
         cursor.k += 1;
         // spot packs through s5.g, including reserved zero area/radius lanes.
         assertSlotCursor(cursor.k, 22, 'spot');
@@ -367,19 +593,33 @@ export function packLightsTexture(
       }
       case 'point': {
         // s0: position / type   s1: color / intensity
-        writePositionType(data, base, cursor, l.position, POINT_LIGHT);
-        writeColorIntensity(data, base, cursor, color, l.intensity);
+        const position = finiteVec3F32(
+          l.position,
+          `${lightContext} position`,
+        );
+        writePositionType(data, base, cursor, position, POINT_LIGHT);
+        writeColorIntensity(data, base, cursor, color, intensity);
         // s2: u = world position again / power (fork stores worldPosition here)
-        data[base + cursor.k++] = l.position[0];
-        data[base + cursor.k++] = l.position[1];
-        data[base + cursor.k++] = l.position[2];
-        data[base + cursor.k++] = lum * l.intensity;
+        data[base + cursor.k++] = position[0];
+        data[base + cursor.k++] = position[1];
+        data[base + cursor.k++] = position[2];
+        packedSelectionPower = selectionPowerF32(
+          lum,
+          `point emitter "${l.id}"`,
+        );
+        data[base + cursor.k++] = packedSelectionPower;
         // s3 unused (zero); cursor advances over it
         cursor.k += 4;
         // s4: radius=0 / decay / distance / coneCos=0
         cursor.k += 1; // radius slot (0)
-        data[base + cursor.k++] = l.decay ?? 2;
-        data[base + cursor.k++] = l.distance ?? 0;
+        data[base + cursor.k++] = requireNonNegativeFloat32(
+          l.decay ?? 2,
+          `${lightContext} decay`,
+        );
+        data[base + cursor.k++] = requireNonNegativeFloat32(
+          l.distance ?? 0,
+          `${lightContext} distance`,
+        );
         // s4.a coneCos + s5 stay 0 — point lights are isotropic.
         // point packs: s0(4) + s1(4) + s2(4) + s3(skip4) + s4.r(skip1) + s4.g/s4.b(2) = 19 channels.
         assertSlotCursor(cursor.k, 19, 'point');
@@ -391,19 +631,26 @@ export function packLightsTexture(
         // a direction only → store origin (0,0,0).
         writePositionType(data, base, cursor, [0, 0, 0], DIR_LIGHT);
         // s1: color / intensity
-        writeColorIntensity(data, base, cursor, color, l.intensity);
+        writeColorIntensity(data, base, cursor, color, intensity);
         // s2: u = direction TOWARD the light / power. Core `direction` is the
         // unit vector pointing AT the light (matches the fork's
         // normalize(worldPos - target)).
-        const dir = normalize(l.direction);
+        const dir = finiteVec3F32(
+          normalize(l.direction),
+          `${lightContext} normalized direction`,
+        );
         data[base + cursor.k++] = dir[0];
         data[base + cursor.k++] = dir[1];
         data[base + cursor.k++] = dir[2];
-        data[base + cursor.k++] = lum * l.intensity;
-        const angularDiameter =
-          l.angularDiameter != null && Number.isFinite(l.angularDiameter) && l.angularDiameter > 0
-            ? l.angularDiameter
-            : 0;
+        packedSelectionPower = selectionPowerF32(
+          lum,
+          `directional emitter "${l.id}"`,
+        );
+        data[base + cursor.k++] = packedSelectionPower;
+        const angularDiameter = packDirectionalAngularDiameter(
+          l.angularDiameter,
+          lightContext,
+        );
         data[base + 22] = angularDiameter;
         // directional packs s0(4) + s1(4) + s2(4) + s5.b(angularDiameter).
         assertSlotCursor(cursor.k, 12, 'directional');
@@ -416,10 +663,28 @@ export function packLightsTexture(
       }
     }
 
+    selectionPowerSum = addSelectionPowerF32(
+      selectionPowerSum,
+      packedSelectionPower,
+    );
+    selectionPowers.push(packedSelectionPower);
+
     // SHADOW-01 — s5.g (channel 21, the former IES padding slot) carries the
     // emitter castShadowDisabled flag for EVERY light kind. Default (castShadow
     // true/undefined) writes 0.0 — byte-identical to the pre-SHADOW-01 grid.
     data[base + 21] = l.castShadow === false ? 1 : 0;
+  }
+
+  for (const power of selectionPowers) {
+    if (
+      power > 0 &&
+      !(Math.fround(power / selectionPowerSum) > 0)
+    ) {
+      throw new RangeError(
+        '@vitrum/pt-webgl2: a positive analytic-light selection probability ' +
+          'collapses to zero in float32.',
+      );
+    }
   }
 
   return { data, dim, kind: 'rgba32f', lightCount: lights.length };

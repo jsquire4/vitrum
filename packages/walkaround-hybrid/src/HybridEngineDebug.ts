@@ -21,6 +21,7 @@ export interface HybridEngineDebugDeps {
    * the pipeline initialises.
    */
   getMemoryBreakdown: () => GpuMemoryBreakdown | null;
+  frameResourceResolution: NonNullable<EngineDebugSurface['frameResourceResolution']>;
   denoiserPassEnabled: () => boolean;
   setDenoiserPassEnabled: (enabled: boolean) => void;
   setPipelineDenoiserPassEnabled: (enabled: boolean) => void;
@@ -58,6 +59,7 @@ export function createHybridEngineDebugSurface(deps: HybridEngineDebugDeps): Eng
       deps.setPipelineDenoiserPassEnabled(enabled);
     },
     estimatedGpuMemoryBytes: deps.getMemoryBreakdown,
+    frameResourceResolution: deps.frameResourceResolution,
     // T3.G click-to-pick: CPU ray-cast of pixel (x,y) against the retained core
     // scene using the last-frame camera. Returns null before the first frame
     // (no camera), before a scene is set, or on a miss.

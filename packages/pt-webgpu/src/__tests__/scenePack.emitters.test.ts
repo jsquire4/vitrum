@@ -3,7 +3,12 @@ import { asMat4, type Scene } from '@vitrum/core';
 import { luminance } from '@vitrum/shared-samplers';
 import {
   buildLightTreeInputForScene,
+  DIRECTIONAL_LIGHT_FLOAT_STRIDE,
   MESH_AREA_LIGHT_FLOAT_STRIDE,
+  packEmitterArrays,
+  POINT_LIGHT_FLOAT_STRIDE,
+  RECT_AREA_LIGHT_FLOAT_STRIDE,
+  SPOT_LIGHT_FLOAT_STRIDE,
 } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
 
@@ -87,6 +92,107 @@ function expectVec3Close(actual: readonly [number, number, number], expected: re
 }
 
 describe('buildPackedScene emitter + environment packing', () => {
+  it('stages every explicit emitter RGB×intensity product in exact Float32 order', () => {
+    const authored = 1.0000002;
+    const intensity = 1.0000002;
+    const directBinary64Product = Math.fround(authored * intensity);
+    const expected = Math.fround(
+      Math.fround(authored) * Math.fround(intensity),
+    );
+    expect(expected).not.toBe(directBinary64Product);
+    const scene: Scene = {
+      ...baseScene(),
+      emitters: [
+        {
+          kind: 'directional', id: 'directional-f32', direction: [0, -1, 0],
+          color: [authored, authored, authored], intensity,
+        },
+        {
+          kind: 'point', id: 'point-f32', position: [0, 1, 0],
+          color: [authored, authored, authored], intensity,
+        },
+        {
+          kind: 'spot', id: 'spot-f32', position: [0, 1, 0],
+          direction: [0, -1, 0], angle: 0.5,
+          color: [authored, authored, authored], intensity,
+        },
+        {
+          kind: 'rect-area', id: 'rect-f32', position: [0, 1, 0],
+          uAxis: [1, 0, 0], vAxis: [0, 0, 1],
+          color: [authored, authored, authored], intensity,
+        },
+        {
+          kind: 'disc-area', id: 'disc-f32', position: [0, 1, 0],
+          normal: [0, -1, 0], radius: 1,
+          color: [authored, authored, authored], intensity,
+        },
+        {
+          kind: 'mesh-area', id: 'mesh-f32', meshId: 'tri',
+          color: [authored, authored, authored], intensity,
+        },
+      ],
+    };
+    const packed = packEmitterArrays(scene);
+    const triples = [
+      packed.directionalLightsData.slice(4, 7),
+      packed.pointLightsData.slice(4, 7),
+      packed.spotLightsData.slice(8, 11),
+      packed.rectAreaLightsData.slice(12, 15),
+      packed.rectAreaLightsData.slice(
+        RECT_AREA_LIGHT_FLOAT_STRIDE + 12,
+        RECT_AREA_LIGHT_FLOAT_STRIDE + 15,
+      ),
+      packed.meshAreaLightsData.slice(12, 15),
+    ];
+    expect(packed.directionalLightsData.length).toBe(DIRECTIONAL_LIGHT_FLOAT_STRIDE);
+    expect(packed.pointLightsData.length).toBe(POINT_LIGHT_FLOAT_STRIDE);
+    expect(packed.spotLightsData.length).toBe(SPOT_LIGHT_FLOAT_STRIDE);
+    expect(packed.rectAreaLightsData.length).toBe(2 * RECT_AREA_LIGHT_FLOAT_STRIDE);
+    for (const triple of triples) {
+      expect([...triple]).toEqual([expected, expected, expected]);
+    }
+  });
+
+  it('defensively rejects emitter overflow and total positive collapse before typed-array publication', () => {
+    const maxFloat32 = Math.fround(3.4028234663852886e38);
+    const minFloat32 = Math.fround(1.401298464324817e-45);
+    const sceneFor = (
+      color: [number, number, number],
+      intensity: number,
+    ): Scene => ({
+      ...baseScene(),
+      emitters: [{
+        kind: 'point',
+        id: 'point-boundary',
+        position: [0, 1, 0],
+        color,
+        intensity,
+      }],
+    });
+
+    expect(() => packEmitterArrays(
+      sceneFor([maxFloat32, 0, 0], 2),
+    )).toThrow(/color.*intensity.*finite.*Float32/);
+    expect(() => packEmitterArrays(
+      sceneFor([minFloat32, 0, 0], 0.5),
+    )).toThrow(/color.*intensity.*underflow.*Float32/);
+    expect([
+      ...packEmitterArrays(sceneFor([minFloat32, 1, 0], 0.5))
+        .pointLightsData.slice(4, 7),
+    ]).toEqual([0, 0.5, 0]);
+
+    expect(() => packEmitterArrays({
+      ...baseScene(),
+      emitters: [{
+        kind: 'directional',
+        id: 'directional-mean-boundary',
+        direction: [0, -1, 0],
+        color: [minFloat32, 0, 0],
+        intensity: 1,
+      }],
+    })).toThrow(/mean irradiance.*remain positive.*Float32/);
+  });
+
   it('packs point, spot, rect-area, and mesh-area lights', () => {
     const scene: Scene = {
       ...baseScene(),
@@ -128,6 +234,26 @@ describe('buildPackedScene emitter + environment packing', () => {
     expectVec3Close(tree.centroids[1]!, [1 / 3, 2 / 3, 0]);
     expect(tree.powers[0]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
     expect(tree.powers[1]).toBeCloseTo(luminance(1, 2, 4) * 0.5, 6);
+  });
+
+  it('packs material-owned mesh-emitter sidedness and gives two-sided lights a full-sphere tree cone', () => {
+    const oneSided = quadScene('mesh');
+    const twoSided: Scene = {
+      ...oneSided,
+      primitives: oneSided.primitives.map((primitive) => ({
+        ...primitive,
+        material: { ...primitive.material, doubleSided: true },
+      })),
+    };
+
+    const onePacked = buildPackedScene(oneSided);
+    const twoPacked = buildPackedScene(twoSided);
+    expect(onePacked.meshAreaLightsData[27]).toBe(0);
+    expect(twoPacked.meshAreaLightsData[27]).toBe(1);
+    expect(buildLightTreeInputForScene(oneSided).cones?.[0]).toMatchObject({
+      thetaE: Math.PI / 2,
+    });
+    expect(buildLightTreeInputForScene(twoSided).cones?.[0]).toBeUndefined();
   });
 
   it('packs exact-sampled implicit emissive-map mesh lights through the packed-scene path', () => {

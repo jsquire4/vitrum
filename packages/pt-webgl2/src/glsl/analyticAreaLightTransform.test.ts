@@ -39,17 +39,18 @@ describe('analytic area-light affine containment', () => {
     'light_sampling_functions',
   );
 
-  it('pins rectangle and circle intersection to the full Gram solve', () => {
-    expect(shapeIntersectionFunctions).toContain('float axisDot = dot( u, v );');
+  it('pins rectangle and circle intersection to the scale-safe affine solve', () => {
     expect(shapeIntersectionFunctions).toContain(
-      'float gramDeterminant = dot( axisCross, axisCross );',
+      'VitrumAreaVectorMeasure areaMeasure =',
     );
-    expect(shapeIntersectionFunctions).toMatch(
-      /\( relativeU \* vLengthSquared - relativeV \* axisDot \) \/ gramDeterminant/,
+    expect(shapeIntersectionFunctions).toContain(
+      'vitrumMeasureAreaVector( u, v, 1.0 )',
     );
-    expect(shapeIntersectionFunctions).toMatch(
-      /\( relativeV \* uLengthSquared - relativeU \* axisDot \) \/ gramDeterminant/,
+    expect(shapeIntersectionFunctions).toContain(
+      'vec3 areaCoordinates = vitrumAreaVectorCoordinates(',
     );
+    expect(shapeIntersectionFunctions).toContain('u, v, relative, areaMeasure');
+    expect(shapeIntersectionFunctions).not.toContain('float axisDot = dot( u, v );');
     expect(shapeIntersectionFunctions).toContain(
       'all( lessThanEqual( abs( coordinates ), vec2( 0.5 ) ) )',
     );

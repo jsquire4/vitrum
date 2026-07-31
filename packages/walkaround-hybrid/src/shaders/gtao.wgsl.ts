@@ -100,16 +100,18 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
   // AO compute downscale: 2 ⇒ half-res, 4 ⇒ quarter-res. Clamp ≥ 1 so a
   // bad UBO upload can never collapse the AO grid to zero / divide-by-zero.
   let ds = max(1u, u32(gtao_ubo.gtaoDownscale));
-  let lowDims = fullDims / ds;
+  let lowDims = max(vec2u(1u), fullDims / ds);
   if (any(gid.xy >= lowDims)) { return; }
 
-  // Low-res sample point: centre of the ds×ds cell in full-res coords.
-  let fullPx = gid.xy * ds + ds / 2u;
+  // Low-res sample point: centre of the ds×ds cell in full-res coords. Clamp
+  // the partial/single-pixel cell so textureLoad never addresses past the
+  // source texture when an axis is smaller than the downscale.
+  let fullPx = min(gid.xy * ds + ds / 2u, fullDims - vec2u(1u));
   let center = textureLoad(gtao_normalDepth, vec2i(fullPx), 0);
   let centerDepth = abs(center.w);
 
   // Sky-miss pixels (depth = 0) are not occluded.
-  if (centerDepth < 1e-4) {
+  if (!(centerDepth > 0.0)) {
     textureStore(gtao_aoOut, gid.xy, vec4f(1.0));
     return;
   }
@@ -208,7 +210,7 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
 
       if (all(posPx >= vec2i(0)) && all(posPx < vec2i(fullDims))) {
         let dP = abs(textureLoad(gtao_normalDepth, posPx, 0).w);
-        if (dP > 1e-4) {
+        if (dP > 0.0) {
           let dz = centerDepth - dP;
           if (abs(dz) < gtao_ubo.depthThresh) {
             // cos(horizon) = dz / sample_distance; sample_distance is the
@@ -216,21 +218,25 @@ fn gtaoMain(@builtin(global_invocation_id) gid: vec3u) {
             // step_pixels × tan(fov/2) / fullDims.y × centerDepth.
             let viewDist = stepRadius * gtao_ubo.tanFovHalf
                          * (2.0 / f32(fullDims.y)) * centerDepth;
-            let cosH = dz / max(viewDist, 1e-4);
-            horizonPos = max(horizonPos, cosH);
+            if (viewDist > 0.0) {
+              let cosH = dz / viewDist;
+              horizonPos = max(horizonPos, cosH);
+            }
           }
         }
       }
 
       if (all(negPx >= vec2i(0)) && all(negPx < vec2i(fullDims))) {
         let dN = abs(textureLoad(gtao_normalDepth, negPx, 0).w);
-        if (dN > 1e-4) {
+        if (dN > 0.0) {
           let dz = centerDepth - dN;
           if (abs(dz) < gtao_ubo.depthThresh) {
             let viewDist = stepRadius * gtao_ubo.tanFovHalf
                          * (2.0 / f32(fullDims.y)) * centerDepth;
-            let cosH = dz / max(viewDist, 1e-4);
-            horizonNeg = max(horizonNeg, cosH);
+            if (viewDist > 0.0) {
+              let cosH = dz / viewDist;
+              horizonNeg = max(horizonNeg, cosH);
+            }
           }
         }
       }

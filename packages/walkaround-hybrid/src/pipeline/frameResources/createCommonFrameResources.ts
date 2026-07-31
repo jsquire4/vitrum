@@ -56,18 +56,6 @@ export function createCommonFrameResources(
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.COPY_SRC,
   });
-  const indirectDenoisedPingTexture = device.createTexture({
-    label: 'indirectDenoisedPing',
-    size: [width, height],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
-  const indirectDenoisedPongTexture = device.createTexture({
-    label: 'indirectDenoisedPong',
-    size: [width, height],
-    format: 'rgba16float',
-    usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-  });
   const indirectAccumPingTexture = device.createTexture({
     label: 'indirectAccumPing',
     size: [width, height],
@@ -141,21 +129,15 @@ export function createCommonFrameResources(
   const motionVectorTexture = device.createTexture({
     label: 'motion-vectors-zero',
     size: [width, height],
-    format: 'rgba32float',
+    format: 'rg32float',
     usage:
       GPUTextureUsage.COPY_DST |
       GPUTextureUsage.TEXTURE_BINDING |
       GPUTextureUsage.STORAGE_BINDING,
   });
-  const rowBytes = 16 * width;
-  const bytesPerRow = Math.max(256, Math.ceil(rowBytes / 256) * 256);
-  const motionZero = new Uint8Array(bytesPerRow * height);
-  device.queue.writeTexture(
-    { texture: motionVectorTexture },
-    motionZero,
-    { offset: 0, bytesPerRow },
-    { width, height, depthOrArrayLayers: 1 },
-  );
+  // WebGPU resources are zero-initialized before first use. Avoid mirroring a
+  // full-resolution rg32float texture in host memory merely to write zeros;
+  // MotionVectorsPass overwrites the complete target on every rendered frame.
   const checkerboardSnapshotW = options?.checkerboardSnapshot === true ? width : 1;
   const checkerboardSnapshotH = options?.checkerboardSnapshot === true ? height : 1;
   const checkerboardRadianceSnapshotTexture = device.createTexture({
@@ -171,15 +153,17 @@ export function createCommonFrameResources(
     format: 'r32uint',
     usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
   });
-  const resolvedTexture = device.createTexture({
-    label: 'resolved-radiance',
-    size: [width, height],
-    format: 'rgba16float',
-    usage:
-      GPUTextureUsage.STORAGE_BINDING |
-      GPUTextureUsage.TEXTURE_BINDING |
-      GPUTextureUsage.COPY_SRC,
-  });
+  // Lifetime aliases:
+  // - Direct à-trous uses an odd iteration count (3 or 5), so pong is dead
+  //   before the four-pass indirect chain starts.
+  // - Raw hdrIndirect is dead after indirect temporal accumulation and can be
+  //   the indirect chain's even-pass target.
+  // - combinedDenoised is dead after transparent composition and can receive
+  //   the later resolve output. It already carries COPY_SRC for capture.
+  // These are the same physical textures, not duplicate allocations.
+  const indirectDenoisedPingTexture = denoisedPongTexture;
+  const indirectDenoisedPongTexture = hdrIndirectTexture;
+  const resolvedTexture = combinedDenoisedTexture;
 
   const albedoTexture = device.createTexture({
     label: 'albedo-demodulation',

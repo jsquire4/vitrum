@@ -38,15 +38,17 @@ function makePipeline() {
 }
 
 /**
- * A scene whose two primitives share the SAME material signature
- * (identical baseColor / roughness / metallic). The merged BVH path
- * deduplicates these to a single coreMaterials slot (slot 0), so both
- * primitives' triangles have triMaterialId=0. Patching one primitive's
- * material must therefore upload the full bvhIndex, not just that
- * primitive's slice.
+ * A scene whose two primitives share the same authored material signature.
+ * Merged BVH construction intentionally keeps one stable slot per primitive:
+ * updateEmitter(meshId) may move mesh-area ownership at runtime without
+ * rebuilding triangle material ids.
  */
 function sharedMaterialScene(): Scene {
-  const sharedMat = { baseColor: [0.5, 0.5, 0.5] as [number, number, number], roughness: 0.5, metallic: 0 };
+  const sharedMat = {
+    baseColor: [0.5, 0.5, 0.5] as [number, number, number],
+    roughness: 0.5,
+    metallic: 0,
+  };
   const tri = (id: string, ox: number): Scene['primitives'][number] => ({
     kind: 'mesh',
     id,
@@ -82,14 +84,20 @@ function exclusiveMaterialScene(): Scene {
 /** A single-primitive mesh scene for normal transform tests. */
 function singleMeshScene(transform: Float32Array): Scene {
   return {
-    primitives: [{
-      kind: 'mesh',
-      id: 'mesh',
-      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-      material: { baseColor: [0.5, 0.5, 0.5] as [number, number, number], roughness: 0.5, metallic: 0 },
-      transform: asMat4(transform),
-    }],
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'mesh',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        material: {
+          baseColor: [0.5, 0.5, 0.5] as [number, number, number],
+          roughness: 0.5,
+          metallic: 0,
+        },
+        transform: asMat4(transform),
+      },
+    ],
     emitters: [],
     environment: { kind: 'none' },
   };
@@ -98,14 +106,13 @@ function singleMeshScene(transform: Float32Array): Scene {
 // ── Bug 1: shared-material bvhIndex upload ─────────────────────────────────
 
 describe('materialPatch — shared-material bvhIndex upload', () => {
-  it('uploads full bvhIndex when the edited material slot is shared by triangles outside the patched primitive', () => {
+  it('uses a slice when authored-equal primitives retain distinct stable slots', () => {
     const scene = sharedMaterialScene();
     // Use merged mode to trigger material deduplication.
     const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'merged' });
     expect(buffers.bvhMode).toBe('merged');
 
-    // The two primitives share a material; coreMaterials should have exactly 1 slot.
-    expect(buffers.coreMaterials.length).toBe(1);
+    expect(buffers.coreMaterials.length).toBe(2);
 
     // Verify both primitives' triangle ranges exist in meshVertexRanges.
     const rangeA = buffers.meshVertexRanges.find((r) => r.name === 'prim-a');
@@ -128,18 +135,20 @@ describe('materialPatch — shared-material bvhIndex upload', () => {
       coreSceneSuppliesMeshes: true,
     };
 
-    const newMaterial = { baseColor: [1, 0, 0] as [number, number, number], roughness: 0.5, metallic: 0 };
+    const newMaterial = {
+      baseColor: [1, 0, 0] as [number, number, number],
+      roughness: 0.5,
+      metallic: 0,
+    };
     materialPatch('prim-a', { material: newMaterial }, ctx);
 
     expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledOnce();
 
-    // The first argument is the indexSlice. When the slot is shared, the upload
-    // must start at byteOffset=0 and cover the full bvhIndex buffer.
-    const [indexSlice] = pipeline.refreshBvhMaterialSlice.mock.calls[0] as [{ byteOffset: number; data: ArrayBuffer }];
+    const [indexSlice] = pipeline.refreshBvhMaterialSlice.mock.calls[0] as [
+      { byteOffset: number; data: ArrayBuffer },
+    ];
     expect(indexSlice.byteOffset).toBe(0);
-    // Full buffer: triCount * 16 bytes (vec4u per triangle).
-    const totalTris = new Uint32Array(buffers.triangleMaterialIds.cpuData).length;
-    expect(indexSlice.data.byteLength).toBe(totalTris * 16);
+    expect(indexSlice.data.byteLength).toBe(rangeA!.triCount * 16);
   });
 
   it('uses a slice upload when the edited material slot is exclusive to the patched primitive', () => {
@@ -165,14 +174,20 @@ describe('materialPatch — shared-material bvhIndex upload', () => {
       coreSceneSuppliesMeshes: true,
     };
 
-    const newMaterial = { baseColor: [0, 1, 0] as [number, number, number], roughness: 0.5, metallic: 0 };
+    const newMaterial = {
+      baseColor: [0, 1, 0] as [number, number, number],
+      roughness: 0.5,
+      metallic: 0,
+    };
     materialPatch('prim-a', { material: newMaterial }, ctx);
 
     expect(pipeline.refreshBvhMaterialSlice).toHaveBeenCalledOnce();
 
     // Exclusive slot: upload is a sub-slice, byteOffset > 0 OR data.byteLength < full
     // (specifically it equals rangeA.triCount * 16).
-    const [indexSlice] = pipeline.refreshBvhMaterialSlice.mock.calls[0] as [{ byteOffset: number; data: ArrayBuffer }];
+    const [indexSlice] = pipeline.refreshBvhMaterialSlice.mock.calls[0] as [
+      { byteOffset: number; data: ArrayBuffer },
+    ];
     const totalTris = new Uint32Array(buffers.triangleMaterialIds.cpuData).length;
     const fullByteLength = totalTris * 16;
     // Slice is smaller than the full buffer — the fast path was taken.
@@ -190,12 +205,20 @@ describe('materialPatch — shared-material bvhIndex upload', () => {
  */
 function inverseTransposeTransformNormal(
   m: ArrayLike<number>,
-  nx: number, ny: number, nz: number,
+  nx: number,
+  ny: number,
+  nz: number,
 ): [number, number, number] {
   // Column-major upper-3×3.
-  const m00 = m[0]!; const m10 = m[1]!; const m20 = m[2]!;
-  const m01 = m[4]!; const m11 = m[5]!; const m21 = m[6]!;
-  const m02 = m[8]!; const m12 = m[9]!; const m22 = m[10]!;
+  const m00 = m[0]!;
+  const m10 = m[1]!;
+  const m20 = m[2]!;
+  const m01 = m[4]!;
+  const m11 = m[5]!;
+  const m21 = m[6]!;
+  const m02 = m[8]!;
+  const m12 = m[9]!;
+  const m22 = m[10]!;
 
   // Cofactors (form the inverse-transpose numerator).
   const c00 = m11 * m22 - m21 * m12;
@@ -212,15 +235,25 @@ function inverseTransposeTransformNormal(
   const invDet = Math.abs(det) < 1e-12 ? 1 : 1 / det;
 
   // inverse-transpose columns (cofactor rows / det).
-  const r00 = c00 * invDet; const r10 = c01 * invDet; const r20 = c02 * invDet;
-  const r01 = c10 * invDet; const r11 = c11 * invDet; const r21 = c12 * invDet;
-  const r02 = c20 * invDet; const r12 = c21 * invDet; const r22 = c22 * invDet;
+  const r00 = c00 * invDet;
+  const r10 = c01 * invDet;
+  const r20 = c02 * invDet;
+  const r01 = c10 * invDet;
+  const r11 = c11 * invDet;
+  const r21 = c12 * invDet;
+  const r02 = c20 * invDet;
+  const r12 = c21 * invDet;
+  const r22 = c22 * invDet;
 
   let wx = r00 * nx + r01 * ny + r02 * nz;
   let wy = r10 * nx + r11 * ny + r12 * nz;
   let wz = r20 * nx + r21 * ny + r22 * nz;
   const len = Math.sqrt(wx * wx + wy * wy + wz * wz);
-  if (len > 1e-12) { wx /= len; wy /= len; wz /= len; }
+  if (len > 1e-12) {
+    wx /= len;
+    wy /= len;
+    wz /= len;
+  }
   return [wx, wy, wz];
 }
 
@@ -258,17 +291,16 @@ describe('rotateNormalsAndUploadSlice — inverse-transpose correctness', () => 
 
     // New transform: non-uniform scale sx=2 (stretch along x), plus translation.
     // Column-major: [2,0,0,0, 0,1,0,0, 0,0,1,0, 1,0,0,1]
-    const nonUniformScale = asMat4(new Float32Array([
-      2, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      1, 0, 0, 1,
-    ]));
+    const nonUniformScale = asMat4(
+      new Float32Array([2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1]),
+    );
     transformRefit('mesh', { transform: nonUniformScale }, ctx);
 
     expect(pipeline.refreshBvhNormalsSlice).toHaveBeenCalled();
 
-    const [normalsSlice] = pipeline.refreshBvhNormalsSlice.mock.calls[0] as [{ byteOffset: number; data: ArrayBuffer }];
+    const [normalsSlice] = pipeline.refreshBvhNormalsSlice.mock.calls[0] as [
+      { byteOffset: number; data: ArrayBuffer },
+    ];
     const f32 = new Float32Array(normalsSlice.data);
 
     // Each vertex normal is vec4f (stride 4). Check every uploaded vertex.
@@ -319,17 +351,33 @@ describe('rotateNormalsAndUploadSlice — inverse-transpose correctness', () => 
     // Shear: [[1,0,0],[1,1,0],[0,0,1]] (column-major: col0=(1,1,0,0) col1=(0,1,0,0) col2=(0,0,1,0)).
     // For the delta we go from identity (old) to shear (new).
     // delta = newMat * inverse(identity) = newMat.
-    const shearMat = asMat4(new Float32Array([
-      1, 1, 0, 0,   // col0: (1,1,0,0)
-      0, 1, 0, 0,   // col1: (0,1,0,0)
-      0, 0, 1, 0,   // col2: (0,0,1,0)
-      0, 0, 0, 1,   // col3: translation = identity
-    ]));
+    const shearMat = asMat4(
+      new Float32Array([
+        1,
+        1,
+        0,
+        0, // col0: (1,1,0,0)
+        0,
+        1,
+        0,
+        0, // col1: (0,1,0,0)
+        0,
+        0,
+        1,
+        0, // col2: (0,0,1,0)
+        0,
+        0,
+        0,
+        1, // col3: translation = identity
+      ]),
+    );
 
     transformRefit('mesh', { transform: shearMat }, ctx);
 
     expect(pipeline.refreshBvhNormalsSlice).toHaveBeenCalled();
-    const [normalsSlice] = pipeline.refreshBvhNormalsSlice.mock.calls[0] as [{ byteOffset: number; data: ArrayBuffer }];
+    const [normalsSlice] = pipeline.refreshBvhNormalsSlice.mock.calls[0] as [
+      { byteOffset: number; data: ArrayBuffer },
+    ];
     const f32 = new Float32Array(normalsSlice.data);
 
     const vertCount = f32.length / 4;
@@ -347,13 +395,70 @@ describe('rotateNormalsAndUploadSlice — inverse-transpose correctness', () => 
       const inNz = initialNormals[v * 4 + 2]!;
 
       // Compute the expected inverse-transpose result.
-      const [expNx, expNy, expNz] = inverseTransposeTransformNormal(
-        shearMat, inNx, inNy, inNz,
-      );
+      const [expNx, expNy, expNz] = inverseTransposeTransformNormal(shearMat, inNx, inNy, inNz);
 
       expect(outNx).toBeCloseTo(expNx, 5);
       expect(outNy).toBeCloseTo(expNy, 5);
       expect(outNz).toBeCloseTo(expNz, 5);
     }
+  });
+
+  it('classifies tiny non-uniform scales by rank instead of determinant magnitude', () => {
+    const identityTransform = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+    const base = singleMeshScene(identityTransform);
+    const primitive = base.primitives[0]!;
+    if (primitive.kind !== 'mesh') throw new Error('expected mesh fixture');
+    const component = Math.SQRT1_2;
+    const sceneInit: Scene = {
+      ...base,
+      primitives: [
+        {
+          ...primitive,
+          normals: new Float32Array([
+            component,
+            component,
+            0,
+            component,
+            component,
+            0,
+            component,
+            component,
+            0,
+          ]),
+        },
+      ],
+    };
+    const buffers = buildReSTIRSceneBVHForCoreScene(sceneInit, {
+      bvhMode: 'merged',
+    });
+    const pipeline = {
+      refreshBvhRefit: vi.fn(),
+      refreshBvhNormalsSlice: vi.fn(),
+      requestAccumReset: vi.fn(),
+    };
+    const ctx: PrimitiveUpdateContext = {
+      bvhBuffers: buffers,
+      pipeline: pipeline as never,
+      ddgi: makeDdgi() as never,
+      primaryLightDir: [0, -1, 0],
+      primaryLightIntensity: 1,
+      lastScene: sceneInit,
+      renderScene: sceneInit,
+    };
+    const tinyNonUniformScale = asMat4(
+      new Float32Array([1e-5, 0, 0, 0, 0, 2e-5, 0, 0, 0, 0, 3e-5, 0, 0, 0, 0, 1]),
+    );
+
+    transformRefit('mesh', { transform: tinyNonUniformScale }, ctx);
+
+    const [normalsSlice] = pipeline.refreshBvhNormalsSlice.mock.calls[0] as [
+      {
+        data: ArrayBuffer;
+      },
+    ];
+    const uploaded = new Float32Array(normalsSlice.data);
+    expect(uploaded[0]).toBeCloseTo(2 / Math.sqrt(5), 5);
+    expect(uploaded[1]).toBeCloseTo(1 / Math.sqrt(5), 5);
+    expect(uploaded[2]).toBeCloseTo(0, 5);
   });
 });

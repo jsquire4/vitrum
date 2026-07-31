@@ -221,6 +221,47 @@ function sameVec3(
   return a != null && a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
 }
 
+const RC_DEGENERATE_AXIS_FRACTION = 2 ** -20;
+const F32_MIN_NORMAL = 2 ** -126;
+
+/**
+ * Preserve every authored non-zero scene extent exactly. A genuinely planar
+ * or linear scene still needs a positive cascade volume, so only zero-width
+ * axes receive a scale-relative thickness. The old unconditional 1e-6 world
+ * floor expanded valid sub-micrometre scenes to the wrong size.
+ */
+export function resolveRCRoomSize(
+  min: readonly [number, number, number],
+  max: readonly [number, number, number],
+): readonly [number, number, number] {
+  const extents = [
+    max[0] - min[0],
+    max[1] - min[1],
+    max[2] - min[2],
+  ] as const;
+  if (extents.some((extent) => !(extent >= 0) || !Number.isFinite(extent))) {
+    throw new RangeError('[RCSubsystem] cascade bounds must be finite and ordered.');
+  }
+  const coordinateScale = Math.max(
+    ...extents,
+    Math.abs(min[0]),
+    Math.abs(min[1]),
+    Math.abs(min[2]),
+    Math.abs(max[0]),
+    Math.abs(max[1]),
+    Math.abs(max[2]),
+  );
+  const degenerateThickness = Math.max(
+    coordinateScale * RC_DEGENERATE_AXIS_FRACTION,
+    F32_MIN_NORMAL,
+  );
+  return [
+    extents[0] > 0 ? extents[0] : degenerateThickness,
+    extents[1] > 0 ? extents[1] : degenerateThickness,
+    extents[2] > 0 ? extents[2] : degenerateThickness,
+  ];
+}
+
 function sameBufferBinding(
   a: GPUBufferBinding,
   b: GPUBufferBinding,
@@ -385,11 +426,7 @@ export class RCSubsystem implements PipelineSubsystem {
   ): void {
     if (!this._cascadeBufs) return;
     const nextOrigin: [number, number, number] = [boundsMin[0], boundsMin[1], boundsMin[2]];
-    const nextSize: [number, number, number] = [
-      Math.max(boundsMax[0] - boundsMin[0], 1e-6),
-      Math.max(boundsMax[1] - boundsMin[1], 1e-6),
-      Math.max(boundsMax[2] - boundsMin[2], 1e-6),
-    ];
+    const nextSize = resolveRCRoomSize(boundsMin, boundsMax);
     const changed =
       !sameVec3(this._probeOriginWorld, nextOrigin) ||
       !sameVec3(this._roomSize, nextSize);
@@ -525,11 +562,10 @@ export class RCSubsystem implements PipelineSubsystem {
         }
         const { min, max } = snap.boundingBox;
         nextOrigin = [min.x, min.y, min.z];
-        nextRoomSize = [
-          Math.max(max.x - min.x, 1e-6),
-          Math.max(max.y - min.y, 1e-6),
-          Math.max(max.z - min.z, 1e-6),
-        ];
+        nextRoomSize = resolveRCRoomSize(
+          [min.x, min.y, min.z],
+          [max.x, max.y, max.z],
+        );
         nextBvhVersion = snap.contentVersion;
         nextBlasVersion = snap.blasContentVersion;
         nextTlasVersion = snap.tlasContentVersion;
@@ -561,11 +597,10 @@ export class RCSubsystem implements PipelineSubsystem {
         nextPositionsCpu = null;
         const { min, max } = snap.boundingBox;
         nextOrigin = [min.x, min.y, min.z];
-        nextRoomSize = [
-          Math.max(max.x - min.x, 1e-6),
-          Math.max(max.y - min.y, 1e-6),
-          Math.max(max.z - min.z, 1e-6),
-        ];
+        nextRoomSize = resolveRCRoomSize(
+          [min.x, min.y, min.z],
+          [max.x, max.y, max.z],
+        );
         nextBvhVersion = snap.contentVersion;
         nextBlasVersion = snap.blasContentVersion;
         nextTlasVersion = snap.tlasContentVersion;
@@ -642,11 +677,7 @@ export class RCSubsystem implements PipelineSubsystem {
     if (options.rcRefitBounds) {
       const { min, max } = options.rcRefitBounds;
       nextOrigin = [min[0], min[1], min[2]];
-      nextRoomSize = [
-        Math.max(max[0] - min[0], 1e-6),
-        Math.max(max[1] - min[1], 1e-6),
-        Math.max(max[2] - min[2], 1e-6),
-      ];
+      nextRoomSize = resolveRCRoomSize(min, max);
     }
 
     const releaseCandidate = (): void => {
@@ -824,11 +855,10 @@ export class RCSubsystem implements PipelineSubsystem {
 
     const { min, max } = snap.boundingBox;
     this._probeOriginWorld = [min.x, min.y, min.z];
-    this._roomSize = [
-      Math.max(max.x - min.x, 1e-6),
-      Math.max(max.y - min.y, 1e-6),
-      Math.max(max.z - min.z, 1e-6),
-    ];
+    this._roomSize = resolveRCRoomSize(
+      [min.x, min.y, min.z],
+      [max.x, max.y, max.z],
+    );
     this._lastBvhVersion = snap.contentVersion;
     this._lastBlasVersion = snap.blasContentVersion;
     this._lastTlasVersion = snap.tlasContentVersion;
@@ -904,11 +934,10 @@ export class RCSubsystem implements PipelineSubsystem {
 
     const { min, max } = bvh.bounds;
     this._probeOriginWorld = [min.x, min.y, min.z];
-    this._roomSize = [
-      Math.max(max.x - min.x, 1e-6),
-      Math.max(max.y - min.y, 1e-6),
-      Math.max(max.z - min.z, 1e-6),
-    ];
+    this._roomSize = resolveRCRoomSize(
+      [min.x, min.y, min.z],
+      [max.x, max.y, max.z],
+    );
 
     previousDispatcher?.dispose();
     destroyRCBVHBuffers(previousBvh);
@@ -986,11 +1015,7 @@ export class RCSubsystem implements PipelineSubsystem {
     this._mergedPositionsStride4 = posMirror;
     this._mergedNodesCpu = nodesMirror;
     this._probeOriginWorld = [boundsMin[0], boundsMin[1], boundsMin[2]];
-    this._roomSize = [
-      Math.max(boundsMax[0] - boundsMin[0], 1e-6),
-      Math.max(boundsMax[1] - boundsMin[1], 1e-6),
-      Math.max(boundsMax[2] - boundsMin[2], 1e-6),
-    ];
+    this._roomSize = resolveRCRoomSize(boundsMin, boundsMax);
     if (this._sharedGeometryBindings == null) {
       this.invalidateBindings();
       bvh.bvhPositionsBuf?.destroy();

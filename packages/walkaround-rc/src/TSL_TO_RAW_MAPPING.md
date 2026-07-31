@@ -66,7 +66,7 @@ uses explicit indices. The convention adopted here (matching parameter order in 
 | 8       | `rc_u`                     | uniform    | `CascadeUniforms`                          |
 | 14      | `rc_emitters`              | read-only  | packed emitter words (`array<u32>`)        |
 | 15      | `rc_lights`                | read-only  | packed light/alias words (`array<u32>`)    |
-| 16      | `rc_materialTextureAtlas`  | texture    | `texture_2d_array<f32>`                    |
+| 16      | `rc_materialTextureAtlas`  | texture    | `texture_2d_array<u32>`                    |
 | 17      | `rc_materialMapMeta`       | texture    | `texture_2d<f32>`                          |
 | 18      | `rc_geom_normal`           | read-only  | `array<vec4f>`                             |
 | 19      | `rc_geom_tangent`          | texture    | `texture_2d<f32>`                          |

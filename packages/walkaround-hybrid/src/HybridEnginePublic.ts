@@ -4,7 +4,7 @@ import type {
   EngineDebugSurface,
   FrameStats,
   SceneEmitter,
-  ScenePrimitive,
+  ScenePrimitivePatch,
 } from '@vitrum/core';
 import type { FrameBudgetControllerConfig, FrameBudgetDecision } from './FrameBudgetController.js';
 import type { GIStateSnapshot } from './giStateSnapshot.js';
@@ -35,6 +35,29 @@ export interface HybridEngineGISurface {
   exportGIState(): Promise<GIStateSnapshot | null>;
   /** Restore a previously exported GI-state snapshot. */
   importGIState(snapshot: GIStateSnapshot): boolean;
+}
+
+/**
+ * One renderer-produced neural-denoiser training sample.
+ *
+ * All three arrays are interleaved RGB with exactly `width * height * 3`
+ * float32 values in row-major, top-left-origin order:
+ *
+ * - `radiance` is the live pre-denoise linear-HDR texture consumed by the
+ *   neural runtime (`hdrColorTexture`).
+ * - `albedo` is the live demodulated diffuse-albedo auxiliary.
+ * - `worldNormal` is decoded from the live normal/depth G-buffer into signed
+ *   world-space components in `[-1, 1]`.
+ *
+ * The arrays are CPU-owned snapshots. They remain valid after the next frame,
+ * resize, scene replacement, or engine disposal.
+ */
+export interface HybridDenoiserTrainingCapture {
+  readonly width: number;
+  readonly height: number;
+  readonly radiance: Float32Array;
+  readonly albedo: Float32Array;
+  readonly worldNormal: Float32Array;
 }
 
 /**
@@ -87,7 +110,7 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
    */
   getBounceSemantics(): HybridBounceSemanticsStatus;
 
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void;
+  updatePrimitive(id: string, patch: ScenePrimitivePatch): void;
   updateEmitter(id: string, patch: Partial<SceneEmitter>): void;
   applyGpuSkinnedRefit(
     id: string,
@@ -108,6 +131,18 @@ export interface HybridEngine extends Engine, HybridEngineGISurface {
     readonly width: number;
     readonly height: number;
   } | null;
+
+  /**
+   * Read the exact renderer textures consumed by the neural denoiser.
+   *
+   * This is an explicit offline-capture/debug stall: the implementation copies
+   * all three rgba16float textures into independent 256-byte-row-aligned staging
+   * buffers in one queue submission, waits for every map operation, copies the
+   * decoded RGB values into CPU-owned arrays, and destroys every staging buffer
+   * before resolving. Returns `null` before the first renderable pipeline
+   * generation is published.
+   */
+  captureDenoiserTrainingInputs(): Promise<HybridDenoiserTrainingCapture | null>;
 
   setLayerEnabled(layer: HybridRenderLayer, enabled: boolean): void;
   onFrame(cb: (stats: FrameStats) => void): () => void;

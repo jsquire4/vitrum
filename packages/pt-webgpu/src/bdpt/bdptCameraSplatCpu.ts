@@ -65,9 +65,12 @@ function length(v: Vec3): number {
 }
 
 function normalize(v: Vec3): Vec3 | null {
-  const l = length(v);
-  if (!Number.isFinite(l) || l <= 1e-12) return null;
-  return [v[0] / l, v[1] / l, v[2] / l];
+  const scale = Math.max(Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2]));
+  if (!(scale > 0) || !Number.isFinite(scale)) return null;
+  const scaled: Vec3 = [v[0] / scale, v[1] / scale, v[2] / scale];
+  const l = length(scaled);
+  if (!(l > 0) || !Number.isFinite(l)) return null;
+  return [scaled[0] / l, scaled[1] / l, scaled[2] / l];
 }
 
 function requireMat4(matrix: Mat4Like, label: string): void {
@@ -99,10 +102,38 @@ function cameraDirectionForNdc(
   ndcX: number,
   ndcY: number,
 ): Vec3 | null {
-  const near = cameraPointForNdc(inverseViewProjection, ndcX, ndcY, -1);
-  const far = cameraPointForNdc(inverseViewProjection, ndcX, ndcY, 1);
-  if (near == null || far == null) return null;
-  return normalize(sub(far, near));
+  const nearRaw = transformPoint4(
+    inverseViewProjection,
+    [ndcX, ndcY, -1, 1],
+  );
+  const farRaw = transformPoint4(
+    inverseViewProjection,
+    [ndcX, ndcY, 1, 1],
+  );
+  const nearScale = Math.max(...nearRaw.map(Math.abs));
+  const farScale = Math.max(...farRaw.map(Math.abs));
+  if (
+    !(nearScale > 0) || !Number.isFinite(nearScale) ||
+    !(farScale > 0) || !Number.isFinite(farScale)
+  ) {
+    return null;
+  }
+  const near = nearRaw.map((value) => value / nearScale) as [
+    number, number, number, number,
+  ];
+  const far = farRaw.map((value) => value / farScale) as [
+    number, number, number, number,
+  ];
+  if (near[3] === 0) return null;
+  const orientation =
+    far[3] === 0
+      ? 1
+      : Math.sign(far[3] * near[3]);
+  return normalize([
+    (far[0] * near[3] - near[0] * far[3]) * orientation,
+    (far[1] * near[3] - near[1] * far[3]) * orientation,
+    (far[2] * near[3] - near[2] * far[3]) * orientation,
+  ]);
 }
 
 function cameraPointForNdc(
@@ -115,13 +146,16 @@ function cameraPointForNdc(
     inverseViewProjection,
     [ndcX, ndcY, ndcZ, 1],
   );
-  if (!Number.isFinite(point4[3]) || Math.abs(point4[3]) <= 1e-12) {
+  const scale = Math.max(...point4.map(Math.abs));
+  if (!(scale > 0) || !Number.isFinite(scale)) {
     return null;
   }
+  const normalized = point4.map((value) => value / scale);
+  if (normalized[3] === 0) return null;
   const point: Vec3 = [
-    point4[0] / point4[3],
-    point4[1] / point4[3],
-    point4[2] / point4[3],
+    normalized[0]! / normalized[3]!,
+    normalized[1]! / normalized[3]!,
+    normalized[2]! / normalized[3]!,
   ];
   return finiteVec3(point) ? point : null;
 }
@@ -168,9 +202,12 @@ export function projectBdptCameraSplat(args: {
     viewProjection,
     [vertexPosition[0], vertexPosition[1], vertexPosition[2], 1],
   );
-  if (!Number.isFinite(clip[3]) || clip[3] <= 1e-8) return null;
-  const ndcX = clip[0] / clip[3];
-  const ndcY = clip[1] / clip[3];
+  const clipScale = Math.max(...clip.map(Math.abs));
+  if (!(clipScale > 0) || !Number.isFinite(clipScale)) return null;
+  const scaledClip = clip.map((value) => value / clipScale);
+  if (!(scaledClip[3]! > 0)) return null;
+  const ndcX = scaledClip[0]! / scaledClip[3]!;
+  const ndcY = scaledClip[1]! / scaledClip[3]!;
   if (
     !Number.isFinite(ndcX) ||
     !Number.isFinite(ndcY) ||
@@ -233,7 +270,7 @@ export function projectBdptCameraSplat(args: {
   const c00 = dot(corner00, cameraForward);
   const c10 = dot(corner10, cameraForward);
   const c01 = dot(corner01, cameraForward);
-  if (c00 <= 1e-8 || c10 <= 1e-8 || c01 <= 1e-8) return null;
+  if (!(c00 > 0) || !(c10 > 0) || !(c01 > 0)) return null;
   const plane00: Vec3 = [
     corner00[0] / c00,
     corner00[1] / c00,
@@ -252,20 +289,21 @@ export function projectBdptCameraSplat(args: {
   const imagePlaneArea = length(
     cross(sub(plane10, plane00), sub(plane01, plane00)),
   );
-  if (!Number.isFinite(imagePlaneArea) || imagePlaneArea <= 1e-12) return null;
+  if (!Number.isFinite(imagePlaneArea) || !(imagePlaneArea > 0)) return null;
 
   const cameraToVertexVector = sub(vertexPosition, cameraPosition);
-  const distanceSquared = dot(cameraToVertexVector, cameraToVertexVector);
+  const cameraDistance = length(cameraToVertexVector);
+  const distanceSquared = cameraDistance * cameraDistance;
   const cameraToVertex = normalize(cameraToVertexVector);
   if (
     cameraToVertex == null ||
     !Number.isFinite(distanceSquared) ||
-    distanceSquared <= 1e-12
+    !(distanceSquared > 0)
   ) {
     return null;
   }
   const cosTheta = dot(cameraToVertex, cameraForward);
-  if (!Number.isFinite(cosTheta) || cosTheta <= 1e-8) return null;
+  if (!Number.isFinite(cosTheta) || !(cosTheta > 0)) return null;
   const cameraDirectionalPdf =
     1 / (imagePlaneArea * cosTheta * cosTheta * cosTheta);
   const sampleWiOverPdf = cameraDirectionalPdf / distanceSquared;

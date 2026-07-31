@@ -139,160 +139,130 @@ fn surfaceTextureMod(uv: vec2f, texId: u32) -> f32 {
 //       black-out the floor caustic entirely.
 //
 // Algorithm:
-//   visibility = vec3f(1.0)
-//   for each tri the ray hits along [0, tMax):
-//     if opaque  → return vec3f(0.0)   (fully shadowed)
-//     if glass   → visibility *= attenuationColor * trans
-//   return visibility
+//   - repeatedly request the nearest remaining world-space hit;
+//   - apply alpha/cast-shadow/interface transmission at that boundary;
+//   - pair bulk entry/exit ownership by material record + TLAS instance;
+//   - apply Beer-Lambert only to the geometric segment spent in that medium.
 //
 // tMax lets the caller cap the ray at e.g. the distance to a sampled
 // emitter point. For directional-light queries pass a large value (INFINITY).
 //
-// §4.10 (road-to-100, 2026-06-10) — TLAS-aware: in bvhMode==1 the function
-// traverses the TLAS, transforms the ray to each BLAS's local space, and
-// performs the leaf tinted-visibility accumulation using LOCAL positions so
-// world-vs-local coordinates are never conflated. The BLAS local t is
-// converted back to a world-space distance (dot(worldHitPos−origin, dir))
-// for the tMax guard — mirrors the approach in traceTlasAny/traceTlasFirstHit.
+// traceSceneFirstHit owns merged-BVH versus TLAS dispatch and always returns a
+// world-space distance, so the same continuation walk serves both layouts.
 // ============================================================
 // WS1 (2026-05-29) — bvh_beer is an r32uint TEXTURE (not a storage buffer):
 // width matches host pipeline/bvhBeerTexture.ts. Declared here (the earliest
 // scene-consuming module in the shade compose chain) so both shade and
-// stainedGlassShade see it. Textures are passed to WGSL functions by handle
-// (no ptr), so bvhTraceTintedVisibility takes the texture directly.
+// stainedGlassShade see it. Textures are passed to WGSL functions by handle.
 const BVH_BEER_TEX_WIDTH: u32 = 4096u;
 
-// Per-triangle Beer-Lambert tint accumulation, shared by both the BLAS-leaf
-// traversal helper and the merged-BVH leaf body in bvhTraceTintedVisibility.
-//
-// Parameters
-//   triIdx       — absolute triangle index (for beer-texture coord lookup)
-//   idxEntry     — raw bvh_index entry: .xyz = vertex indices, .w = packed material
-//   t            — ray hit distance (from intersectTriangle, pre-computed at call site)
-//   tCompare     — t in the caller's segment space (world t for TLAS, local t otherwise)
-//   tMaxCmp      — upper-bound for tCompare
-//   origin / dir — ray (needed for barycentric hit-point interpolation)
-//   bvh_position — vertex position buffer (.w = packed UV)
-//   bvh_beer     — packed Beer-Lambert texture (r32uint, width BVH_BEER_TEX_WIDTH)
-//   visibility   — in/out tinted visibility accumulator (ptr)
-//
-// Returns true if traversal should continue; false on opaque hit (zeroes *visibility).
-// D8-5 (T4-2, 2026-07-20): the barycentric + Beer-Lambert glass-tint decode was
-// verbatim-duplicated in _bvhTintedTriAccumulate and
-// materialGlassTintForShadowHit. Single-sourced here. The two call sites
-// pass the hit point p, the packed material word (for the surface-texture id),
-// and the material alpha; everything else is identical. References the
-// bvh_normal consumer binding + the atlas/surface helpers, so it lives as a
-// raw WGSL fn in this composed string (not a WgslModule).
-fn _bvhBeerTintFactor(
-  triIdx:        u32,
-  idx:           vec3u,
-  matColorWord:  u32,
-  matColA:       f32,
-  p:             vec3f,
-  bvh_beer:      texture_2d<u32>,
-) -> vec3f {
-  // WS1 — beer texel: triangle index -> vec2u(tri % W, tri / W).
-  let beerCoord = vec2u(triIdx % BVH_BEER_TEX_WIDTH, triIdx / BVH_BEER_TEX_WIDTH);
-  let beerPacked = textureLoad(bvh_beer, vec2i(beerCoord), 0).r;
-  let beerColor = vec3f(
-    f32((beerPacked >> 24u) & 0xFFu) / 255.0,
-    f32((beerPacked >> 16u) & 0xFFu) / 255.0,
-    f32((beerPacked >>  8u) & 0xFFu) / 255.0,
-  );
-  let pa4 = bvhLoadPosition(idx.x);
-  let pb4 = bvhLoadPosition(idx.y);
-  let pc4 = bvhLoadPosition(idx.z);
-  let a = pa4.xyz; let b = pb4.xyz; let c = pc4.xyz;
-  let ab = b - a; let ac = c - a; let ap = p - a;
-  let d00 = dot(ab, ab); let d01 = dot(ab, ac); let d11 = dot(ac, ac);
-  let d20 = dot(ap, ab); let d21 = dot(ap, ac);
-  let denom = max(d00 * d11 - d01 * d01, 1e-8);
-  var u = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-  var v = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-  let bw = 1.0 - u - v;
-  let uvA = unpack2x16float(bitcast<u32>(pa4.w));
-  let uvB = unpack2x16float(bitcast<u32>(pb4.w));
-  let uvC = unpack2x16float(bitcast<u32>(pc4.w));
-  let uvAt = bw * uvA + u * uvB + v * uvC;
-  let uv1A = materialAtlasPackedUvFromVec4(sceneLoadBvhNormal(idx.x));
-  let uv1B = materialAtlasPackedUvFromVec4(sceneLoadBvhNormal(idx.y));
-  let uv1C = materialAtlasPackedUvFromVec4(sceneLoadBvhNormal(idx.z));
-  let uv1At = bw * uv1A + u * uv1B + v * uv1C;
-  let texId = decodeSurfaceTextureId(matColorWord);
-  let texMod = surfaceTextureMod(uvAt, texId);
-  let beerTint = applyThicknessMapToBeerTint(triIdx, uvAt, uv1At, beerColor);
-  let opticalTint = materialSpectralAttenuation(
-    triIdx, materialOpticalThickness(triIdx), beerTint,
-  );
-  let opticalTransmission = max(vec3f(0.0), opticalTint * matColA * texMod);
-  return sqrt(opticalTransmission);
-}
+// Transparent visibility must be evaluated in hit order. The previous direct
+// BVH-leaf accumulator multiplied a full authored Beer tint at every interface;
+// leaf visitation order is not ray order and it cannot identify the distance
+// spent inside a medium. The continuation walker below is the only tinted
+// visibility implementation in this module.
 
-fn _bvhTintedTriAccumulate(
-  triIdx:       u32,
-  idxEntry:     vec4u,
-  t:            f32,
-  side:         f32,
-  tCompare:     f32,
-  tMaxCmp:      f32,
-  origin:       vec3f,
-  dir:          vec3f,
-  bvh_beer:     texture_2d<u32>,
-  visibility:   ptr<function, vec3f>,
-) -> bool {
-  if (t <= 1e-4 || tCompare <= 1e-4 || tCompare >= tMaxCmp) { return true; }
-  let trans4 = (idxEntry.w >> 4u) & 0xFu;
-  if (side < 0.0 && trans4 == 0u) {
-    let sideCoord = vec2u(
-      triIdx % BVH_BEER_TEX_WIDTH,
-      triIdx / BVH_BEER_TEX_WIDTH,
-    );
-    let sideFlags = textureLoad(bvh_beer, vec2i(sideCoord), 0).r & 0xFFu;
-    if ((sideFlags & MATERIAL_SIDE_FLAG_DOUBLE_SIDED) == 0u) {
-      // Backfaces of ordinary one-sided opaque surfaces are not occluders.
-      return true;
-    }
-  }
-  if (packedMaterialHasTransmission(idxEntry.w)) {
-    // Glass hit — multiply visibility by sqrt(Beer x trans x texMod).
-    let idx = idxEntry.xyz;
-    let matCol = decodeMaterialColor(idxEntry.w);
-    let p = origin + dir * t;
-    let perHitFactor = _bvhBeerTintFactor(triIdx, idx, idxEntry.w, matCol.a, p, bvh_beer);
-    *visibility = (*visibility) * perHitFactor;
-  } else {
-    // Opaque hit — fully shadowed.
-    *visibility = vec3f(0.0);
-    return false;
-  }
-  return true;
-}
-
-fn materialGlassTintForShadowHit(
-  hit:          IntersectionResult,
-  materialWord: u32,
-  origin:       vec3f,
-  dir:          vec3f,
-  bvh_beer:     texture_2d<u32>,
+fn materialShadowAuthoredBeerTint(
+  hit: IntersectionResult,
+  bvh_beer: texture_2d<u32>,
 ) -> vec3f {
-  if ((materialWord & 1u) != 0u) {
-    return vec3f(1.0);
-  }
-  if (!packedMaterialHasTransmission(hit.matColorPacked)) {
-    return vec3f(1.0);
-  }
-  let idx = hit.indices.xyz;
   let triIdx = hit.indices.w;
-  let matCol = decodeMaterialColor(hit.matColorPacked);
-  let p = origin + dir * hit.dist;
-  let bulkTint = _bvhBeerTintFactor(triIdx, idx, hit.matColorPacked, matCol.a, p, bvh_beer);
-  let layer = sampleFaceLayerControls(triIdx, hit.side >= 0.0);
+  let coord = vec2u(
+    triIdx % BVH_BEER_TEX_WIDTH,
+    triIdx / BVH_BEER_TEX_WIDTH,
+  );
+  let packed = textureLoad(bvh_beer, vec2i(coord), 0).r;
+  let tint = vec3f(
+    f32((packed >> 24u) & 0xffu),
+    f32((packed >> 16u) & 0xffu),
+    f32((packed >> 8u) & 0xffu),
+  ) / 255.0;
+  return applyThicknessMapToBeerTint(
+    triIdx,
+    hit.uv,
+    materialAtlasUv1ForHit(hit),
+    tint,
+  );
+}
+
+fn materialShadowEffectiveThickness(hit: IntersectionResult) -> f32 {
+  var thickness = max(materialOpticalThickness(hit.indices.w), 0.0);
+  let texel = sampleMaterialAtlasRawAtOffsetForHit(
+    hit,
+    MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+  );
+  if (texel.x >= 0.0) {
+    thickness = thickness * clamp(texel.g, 0.0, 1.0);
+  }
+  return thickness;
+}
+
+fn materialShadowBeerForSegment(
+  triIdx: u32,
+  authoredTint: vec3f,
+  authoredThickness: f32,
+  segmentLength: f32,
+) -> vec3f {
+  if (segmentLength <= 0.0) { return vec3f(1.0); }
+  if (!(authoredThickness > 0.0)) { return vec3f(0.0); }
+  let rgbBeer = pow(
+    clamp(authoredTint, vec3f(0.0), vec3f(1.0)),
+    vec3f(segmentLength / authoredThickness),
+  );
+  return materialSpectralAttenuation(triIdx, segmentLength, rgbBeer);
+}
+
+fn materialShadowFaceTransmission(
+  hit: IntersectionResult,
+  dir: vec3f,
+) -> vec3f {
+  let layer = sampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);
   let film = materialThinFilmResponse(
-    triIdx, hit.side >= 0.0, abs(dot(hit.normal, dir)),
+    hit.indices.w,
+    hit.side >= 0.0,
+    abs(dot(hit.normal, dir)),
   );
   let filmT = select(vec3f(1.0), film.transmittance, film.present != 0u);
-  return bulkTint * faceLayerTransmission(layer) * filmT;
+  return faceLayerTransmission(layer) * filmT;
+}
+
+fn materialShadowCoverageForHit(
+  hit: IntersectionResult,
+  materialWord: u32,
+) -> f32 {
+  if ((materialWord & 1u) != 0u) {
+    return 0.0;
+  }
+  let alpha = materialAlphaCoverageForHit(hit, materialWord);
+  if (alpha.scalarDiscarded != 0u) {
+    return 0.0;
+  }
+  if (alpha.mode == 0u) {
+    return 1.0;
+  }
+  if (alpha.mode == 1u) {
+    return select(0.0, 1.0, alpha.coverage >= alpha.cutoff);
+  }
+  if (alpha.mode == 2u) {
+    return clamp(alpha.coverage, 0.0, 1.0);
+  }
+  return select(0.0, 1.0, alpha.coverage > 0.0);
+}
+
+fn materialShadowWorldSurfaceBudget(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+) -> u32 {
+  let triangleCount = bvhIndexCount();
+  if (triangleCount == 0u) { return 1u; }
+  var instanceCount = 1u;
+  if (bvhMode == 1u && tlasNodeCount > 0u) {
+    instanceCount = max(tlasBlasRootCount(), 1u);
+  }
+  if (triangleCount > 0xfffffffeu / instanceCount) {
+    return 0xffffffffu;
+  }
+  return triangleCount * instanceCount + 1u;
 }
 
 // Shared transparent-visibility walker. When blockMaterialTransmission is
@@ -318,7 +288,17 @@ fn traceSceneAlphaTintTransmittanceTexturedWithOwnership(
   var traveled = 0.0;
   var tau = vec3f(1.0);
   let step = max(1e-4, triEps * 4.0);
-  for (var i = 0u; i < 32u; i = i + 1u) {
+  var mediumMaterialId: array<u32, 16>;
+  var mediumTri: array<u32, 16>;
+  var mediumInstance: array<u32, 16>;
+  var mediumTint: array<vec3f, 16>;
+  var mediumThickness: array<f32, 16>;
+  var mediumDepth = 0u;
+  let surfaceBudget = materialShadowWorldSurfaceBudget(
+    bvhMode,
+    tlasNodeCount,
+  );
+  for (var i = 0u; i < surfaceBudget; i = i + 1u) {
     let remaining = tMax - traveled;
     if (remaining <= step || max(max(tau.x, tau.y), tau.z) <= 0.0) {
       return clamp(tau, vec3f(0.0), vec3f(1.0));
@@ -328,7 +308,28 @@ fn traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       walkRay, triEps,
     );
     if (!hit.didHit || hit.dist >= remaining) {
+      if (mediumDepth > 0u) {
+        let top = mediumDepth - 1u;
+        tau = tau * materialShadowBeerForSegment(
+          mediumTri[top],
+          mediumTint[top],
+          mediumThickness[top],
+          remaining,
+        );
+      }
       return clamp(tau, vec3f(0.0), vec3f(1.0));
+    }
+    if (mediumDepth > 0u) {
+      let top = mediumDepth - 1u;
+      tau = tau * materialShadowBeerForSegment(
+        mediumTri[top],
+        mediumTint[top],
+        mediumThickness[top],
+        hit.dist,
+      );
+      if (max(max(tau.x, tau.y), tau.z) <= 0.0) {
+        return vec3f(0.0);
+      }
     }
     let word = textureLoad(
       materialMask,
@@ -336,33 +337,100 @@ fn traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       0,
     ).r;
     let hasMaterialTransmission = packedMaterialHasTransmission(hit.matColorPacked);
-    let alphaT = materialShadowTransmittanceForHit(
-      hit,
-      word,
-      !blockMaterialTransmission,
-    );
-    if (alphaT <= 0.0) {
-      return vec3f(0.0);
+    if (!hasMaterialTransmission) {
+      let alphaT = materialShadowTransmittanceForHit(hit, word, false);
+      if (alphaT <= 0.0) { return vec3f(0.0); }
+      tau = tau * vec3f(alphaT);
+    } else if ((word & 1u) == 0u) {
+      let materialId = materialAtlasMaterialId(hit.indices.w);
+      if (materialId == 0xffffffffu) {
+        return vec3f(0.0);
+      }
+      if (
+        hit.side < 0.0 &&
+        mediumDepth > 0u &&
+        mediumMaterialId[mediumDepth - 1u] == materialId &&
+        mediumInstance[mediumDepth - 1u] == hit.instanceIndex
+      ) {
+        tau = tau * materialShadowFaceTransmission(hit, dir);
+        mediumDepth = mediumDepth - 1u;
+      } else {
+        let coverage = materialShadowCoverageForHit(hit, word);
+        if (coverage <= 0.0) {
+          // Alpha cut-out or castShadow:false: the geometric boundary is absent.
+        } else if (blockMaterialTransmission) {
+          // The explicit specular estimator owns covered transmission. Preserve
+          // only the uncovered fraction of alpha-blended geometry.
+          tau = tau * vec3f(1.0 - coverage);
+        } else {
+          let scalar = decodeMaterialColor(hit.matColorPacked);
+          let mappedTransmission = clamp(
+            sampleTransmissionMapForHit(hit, scalar.a) *
+              surfaceTextureMod(
+                hit.uv,
+                decodeSurfaceTextureId(hit.matColorPacked),
+              ),
+            0.0,
+            1.0,
+          );
+          let interfaceTransmission =
+            materialShadowFaceTransmission(hit, dir) *
+            vec3f(mappedTransmission);
+          let thickness = materialShadowEffectiveThickness(hit);
+
+          // Partial alpha coverage represents a mixture of an uncovered ray
+          // and a covered material ray. Treat it as a weighted interface rather
+          // than incorrectly placing the entire ray inside the bulk medium.
+          if (coverage < 1.0 || thickness <= 0.0) {
+            tau = tau * mix(
+              vec3f(1.0),
+              interfaceTransmission,
+              vec3f(coverage),
+            );
+          } else if (hit.side >= 0.0) {
+            if (mediumDepth >= 16u) { return vec3f(0.0); }
+            tau = tau * interfaceTransmission;
+            mediumMaterialId[mediumDepth] = materialId;
+            mediumTri[mediumDepth] = hit.indices.w;
+            mediumInstance[mediumDepth] = hit.instanceIndex;
+            mediumTint[mediumDepth] = materialShadowAuthoredBeerTint(
+              hit,
+              bvh_beer,
+            );
+            mediumThickness[mediumDepth] = thickness;
+            mediumDepth = mediumDepth + 1u;
+          } else if (mediumDepth > 0u) {
+            // A back face that does not close the active medium is ambiguous
+            // ownership (overlap, corrupt winding, or a skipped boundary).
+            return vec3f(0.0);
+          } else {
+            // The ray starts inside this medium. There was no observed entry
+            // at which to pay scalar transmission, so pay it exactly once here.
+            tau = tau * interfaceTransmission *
+              materialShadowBeerForSegment(
+                hit.indices.w,
+                materialShadowAuthoredBeerTint(hit, bvh_beer),
+                thickness,
+                hit.dist,
+              );
+          }
+        }
+      }
     }
-    tau = tau * vec3f(alphaT);
-    if (!blockMaterialTransmission || !hasMaterialTransmission) {
-      tau = tau * materialGlassTintForShadowHit(
-        hit, word, walkRay.origin, dir, bvh_beer,
+    if (mediumDepth > 0u) {
+      let top = mediumDepth - 1u;
+      tau = tau * materialShadowBeerForSegment(
+        mediumTri[top],
+        mediumTint[top],
+        mediumThickness[top],
+        step,
       );
     }
     traveled = traveled + hit.dist + step;
     walkRay.origin = origin + dir * traveled;
   }
 
-  if (traceSceneAnyCastMask(
-    bvhMode, tlasNodeCount,
-    walkRay.origin, dir, max(0.0, tMax - traveled), triEps,
-    !blockMaterialTransmission,
-    materialMask, materialMaskWidth,
-  )) {
-    return vec3f(0.0);
-  }
-  return clamp(tau, vec3f(0.0), vec3f(1.0));
+  return vec3f(0.0);
 }
 
 fn traceSceneAlphaTintTransmittanceTextured(
@@ -382,242 +450,23 @@ fn traceSceneAlphaTintTransmittanceTextured(
   );
 }
 
-// Inner helper: traverse one BLAS from blasRoot, accumulating tinted visibility.
-// Positions in bvh_position are LOCAL-space. In TLAS mode, hit barycentrics use
-// local t, but segment clipping uses world t reconstructed through localToWorld.
-// Returns false early (sets visibility = 0) on opaque hit.
-fn _bvhTraceTintedBlasLeaves(
-  bvh_beer:     texture_2d<u32>,
-  origin:   vec3f,   // LOCAL-space ray origin
-  dir:      vec3f,   // LOCAL-space ray direction (unit)
-  tMaxCompare: f32,
-  blasRoot:  u32,
-  useWorldTMax: bool,
-  l2w0: vec4f,
-  l2w1: vec4f,
-  l2w2: vec4f,
-  l2w3: vec4f,
-  worldOrigin: vec3f,
-  worldDir: vec3f,
-  visibility: ptr<function, vec3f>,
-) -> bool {
-  // Returns true if we should keep going; false if opaque hit (caller should
-  // abort and return vec3f(0)).
-  var stack: array<u32, 64>;
-  var stackPtr = 0u;
-  stack[stackPtr] = blasRoot; stackPtr++;
-
-  while (stackPtr > 0u) {
-    stackPtr--;
-    let nodeIdx = stack[stackPtr];
-    if (nodeIdx >= bvhNodeCapacity()) { continue; }
-    let node = bvhLoadNode(nodeIdx);
-
-    let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-    let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    // Williams 2005 §4 IEEE-safe inverse-direction.
-    let invDir = safeInvDir(dir);
-    let t1 = (nMin - origin) * invDir;
-    let t2 = (nMax - origin) * invDir;
-    let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
-    let tFar  = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
-    let nodeTMax = select(tMaxCompare, BVH_INTERSECT_INFINITY, useWorldTMax);
-    if (tNear > tFar || tFar < 0.0 || tNear > nodeTMax) { continue; }
-
-    let splitOrCount = node.splitAxisOrTriCount;
-    if ((splitOrCount & 0xFFFF0000u) == LEAFNODE_FLAG) {
-      let count = splitOrCount & 0x0000FFFFu;
-      let offset = node.rightChildOrTriOffset;
-      for (var i = 0u; i < count; i++) {
-        let triIdx = offset + i;
-        if (triIdx >= bvhIndexCount()) { continue; }
-        let idxEntry = bvhLoadIndex(triIdx);
-        let idx = idxEntry.xyz;
-        let a = bvhLoadPosition(idx.x).xyz;
-        let b = bvhLoadPosition(idx.y).xyz;
-        let c = bvhLoadPosition(idx.z).xyz;
-        // Canonical intersectTriangle returns IntersectionResult; unwrap .dist.
-        let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
-        let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
-        var tCompare = t;
-        if (useWorldTMax && triRes.didHit) {
-          let localHitPos = origin + dir * t;
-          let worldHitPos = tlasTransformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
-          tCompare = dot(worldHitPos - worldOrigin, worldDir);
-        }
-        var worldSide = triRes.side;
-        if (useWorldTMax && triRes.didHit) {
-          worldSide = worldSide * tlasLinearOrientationSign(l2w0, l2w1, l2w2);
-        }
-        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, worldSide, tCompare, tMaxCompare, origin, dir, bvh_beer, visibility)) {
-          return false;
-        }
-      }
-    } else {
-      let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr < 62u) {
-        stack[stackPtr] = rightChild; stackPtr++;
-        stack[stackPtr] = nodeIdx + 1u; stackPtr++;
-      } else {
-        // Stack overflow: conservatively treat as occluded.
-        *visibility = vec3f(0.0);
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 fn bvhTraceTintedVisibility(
   bvh_beer:     texture_2d<u32>,
   origin: vec3f,
   dir:    vec3f,
   tMax:   f32,
 ) -> vec3f {
-  tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_COMPLETE;
-  var visibility = vec3f(1.0);
-
-  // §4.10 — TLAS mode: traverse the TLAS tree, transform the ray to each
-  // instance's local space, and accumulate tinted visibility via
-  // _bvhTraceTintedBlasLeaves. World-space t is recovered from the local hit
-  // position by dot(worldHitPos − origin, dir) (matches traceTlasAny/FirstHit).
-  if (ubo.bvhMode == 1u && ubo.tlasNodeCount > 0u &&
-      tlasNodeCapacity() > 0u && tlasInstanceIndexCount() > 0u) {
-
-    var tlasStack: array<u32, 64>;
-    var tlasStackPtr = 0u;
-    tlasStack[tlasStackPtr] = 0u; tlasStackPtr++;
-
-    while (tlasStackPtr > 0u) {
-      tlasStackPtr--;
-      let nodeIdx = tlasStack[tlasStackPtr];
-      if (nodeIdx >= min(ubo.tlasNodeCount, tlasNodeCapacity())) { continue; }
-      let node = tlasLoadNode(nodeIdx);
-
-      let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-      let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-      let invDirT = safeInvDir(dir);
-      let t1t = (nMin - origin) * invDirT;
-      let t2t = (nMax - origin) * invDirT;
-      let tNearT = max(max(min(t1t.x, t2t.x), min(t1t.y, t2t.y)), min(t1t.z, t2t.z));
-      let tFarT  = min(min(max(t1t.x, t2t.x), max(t1t.y, t2t.y)), max(t1t.z, t2t.z));
-      if (tNearT > tFarT || tFarT < 0.0 || tNearT > tMax) { continue; }
-
-      let splitOrCount = node.splitAxisOrTriCount;
-      if ((splitOrCount & BVH_LEAFNODE_FLAG) == BVH_LEAFNODE_FLAG) {
-        let count = splitOrCount & 0x0000FFFFu;
-        let start = node.rightChildOrTriOffset;
-        for (var i = 0u; i < count; i++) {
-          let permIdx = start + i;
-          if (permIdx >= tlasInstanceIndexCount()) { continue; }
-          let instIdx = tlasLoadInstanceIndex(permIdx);
-          let m = instIdx * 4u;
-          if (m + 3u >= tlasWorldToLocalColumnCount() ||
-              m + 3u >= tlasLocalToWorldColumnCount()) { continue; }
-          let w2l0 = tlasLoadWorldToLocalColumn(m);
-          let w2l1 = tlasLoadWorldToLocalColumn(m + 1u);
-          let w2l2 = tlasLoadWorldToLocalColumn(m + 2u);
-          let w2l3 = tlasLoadWorldToLocalColumn(m + 3u);
-          // Transform ray to local space (mirrors traceTlasFirstHit).
-          let localOrigin = tlasTransformPointCols(w2l0, w2l1, w2l2, w2l3, origin);
-          let localDir    = tlasTransformDirectionCols(w2l0, w2l1, w2l2, dir);
-          let blasRoot = select(0u, tlasLoadBlasRoot(instIdx), instIdx < tlasBlasRootCount());
-          let l2w0 = tlasLoadLocalToWorldColumn(m);
-          let l2w1 = tlasLoadLocalToWorldColumn(m + 1u);
-          let l2w2 = tlasLoadLocalToWorldColumn(m + 2u);
-          let l2w3 = tlasLoadLocalToWorldColumn(m + 3u);
-          // Run tinted BLAS traversal; local t drives barycentrics, reconstructed
-          // world t enforces the caller's finite [0, tMax) segment.
-          let cont = _bvhTraceTintedBlasLeaves(
-            bvh_beer,
-            localOrigin, localDir, tMax,
-            blasRoot, true,
-            l2w0, l2w1, l2w2, l2w3,
-            origin, dir,
-            &visibility,
-          );
-          if (!cont) { return vec3f(0.0); }
-        }
-      } else {
-        let rightChild = nodeIdx + node.rightChildOrTriOffset;
-        if (tlasStackPtr + 2u <= 64u) {
-          tlasStack[tlasStackPtr] = rightChild; tlasStackPtr++;
-          tlasStack[tlasStackPtr] = nodeIdx + 1u; tlasStackPtr++;
-        } else {
-          tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_STACK_OVERFLOW;
-          // Accepted internal trees are proven not to reach this branch.
-          // Foreign/corrupt trees fail closed rather than leaking light.
-          return vec3f(0.0);
-        }
-      }
-    }
-    return visibility;
-  }
-
-  // ── Merged world-BVH path (bvhMode == 0) ─────────────────────────────────
-  // All positions in bvh_position are world-space; t is directly comparable
-  // to tMax. Unchanged from the pre-§4.10 implementation.
-  var stack: array<u32, 64>;
-  var stackPtr = 0u;
-  stack[stackPtr] = 0u; stackPtr++;
-
-  while (stackPtr > 0u) {
-    stackPtr--;
-    let nodeIdx = stack[stackPtr];
-    let node = bvhLoadNode(nodeIdx);
-
-    let nMin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
-    let nMax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
-    // Williams 2005 §4 IEEE-safe inverse-direction. Plain \`vec3f(1.0)/dir\`
-    // produces ±Inf when a component of \`dir\` is exactly zero (axis-aligned
-    // sun-shadow rays, axis-aligned hit normals, sky-aperture taps along
-    // ±X/Y/Z), and \`0 * Inf = NaN\` then poisons the slab test when the ray
-    // origin sits on the corresponding AABB face. safeInvDir lives in
-    // @vitrum/shared-bvh's bvhIntersect.wgsl and is in scope because composeWgsl
-    // topo-sorts that module ahead of this one when building the shade module.
-    let invDir = safeInvDir(dir);
-    let t1 = (nMin - origin) * invDir;
-    let t2 = (nMax - origin) * invDir;
-    let tNear = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
-    let tFar  = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
-    if (tNear > tFar || tFar < 0.0 || tNear > tMax) { continue; }
-
-    let splitOrCount = node.splitAxisOrTriCount;
-    if ((splitOrCount & 0xFFFF0000u) == LEAFNODE_FLAG) {
-      let count = splitOrCount & 0x0000FFFFu;
-      let offset = node.rightChildOrTriOffset;
-      for (var i = 0u; i < count; i++) {
-        let triIdx = offset + i;
-        let idxEntry = bvhLoadIndex(triIdx);
-        let idx = idxEntry.xyz;
-        let a = bvhLoadPosition(idx.x).xyz;
-        let b = bvhLoadPosition(idx.y).xyz;
-        let c = bvhLoadPosition(idx.z).xyz;
-        // Canonical intersectTriangle now returns IntersectionResult; unwrap
-        // .dist (or INFINITY when !didHit) so the rest of this helper continues
-        // to operate on a plain f32 t-value.
-        let triRes = intersectTriangle(origin, dir, a, b, c, ubo.triIntersectEpsilon);
-        let t = select(BVH_INTERSECT_INFINITY, triRes.dist, triRes.didHit);
-        if (!_bvhTintedTriAccumulate(triIdx, idxEntry, t, triRes.side, t, tMax, origin, dir, bvh_beer, &visibility)) {
-          return vec3f(0.0);
-        }
-      }
-    } else {
-      let rightChild = nodeIdx + node.rightChildOrTriOffset;
-      if (stackPtr < 62u) {
-        stack[stackPtr] = rightChild; stackPtr++;
-        stack[stackPtr] = nodeIdx + 1u; stackPtr++;
-      } else {
-        // Stack overflow: bail out with current accumulated visibility
-        // rather than silently dropping the right subtree.  At depth 64
-        // a balanced BVH spans 2^64 triangles, so this branch is
-        // unreachable for any real scene; the guard exists for invariant
-        // clarity.
-        return visibility;
-      }
-    }
-  }
-  return visibility;
+  return traceSceneAlphaTintTransmittanceTextured(
+    ubo.bvhMode,
+    ubo.tlasNodeCount,
+    origin,
+    dir,
+    tMax,
+    ubo.triIntersectEpsilon,
+    bvh_material,
+    BVH_MATERIAL_TEX_WIDTH,
+    bvh_beer,
+  );
 }
 `;
 

@@ -33,6 +33,14 @@ describe('SPPM mutation-safe scene bounds', () => {
     ).toEqual(scanned);
   });
 
+  it('preserves non-degenerate scene scales without a metre-scale floor', () => {
+    for (const scale of [1e-30, 1, 1e30]) {
+      const bounds = sppmSceneBoundsFromCenterRadius([0, 0, 0], scale)!;
+      expect(bounds.extent).toBe(scale);
+      expect(bounds.initialRadius / bounds.extent).toBeCloseTo(0.02, 14);
+    }
+  });
+
   it('refreshes derived stats for transform-only TLAS and analytic mutations', () => {
     expect(sceneGeometryStatsNeedRefresh(
       { tlasNodes: new Uint32Array(8) },

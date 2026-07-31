@@ -30,7 +30,6 @@ interface PassInternals {
   _envRotationY: number;
   _envIntensity: number;
   _envMapView: GPUTextureView | null;
-  _envSampler: GPUSampler | null;
   _lastTangentSource: ArrayBuffer | null;
   _lastVertexColorSource: ArrayBuffer | null;
   _ensureRayResultsCapacity(device: GPUDevice, maxProbes: number): void;
@@ -285,14 +284,12 @@ describe('ProbeUpdatePass candidate-first resource replacement', () => {
       envMapView: externalView,
       envMapOwnedByPass: false,
       envMapPlaceholderTex: null,
-      envSamplerForProbe: sampler,
       linearSampler: sampler,
     } as ProbeUpdateGpuState;
     internal._hasEnv = true;
     internal._envRotationY = 0.75;
     internal._envIntensity = 3;
     internal._envMapView = externalView;
-    internal._envSampler = sampler;
 
     expect(() => pass.setEnvironment(null, null, 0, 0, false)).toThrow('env view failed');
     expect(internal._gpu.envMapView).toBe(externalView);
@@ -303,7 +300,6 @@ describe('ProbeUpdatePass candidate-first resource replacement', () => {
     expect(internal._envRotationY).toBe(0.75);
     expect(internal._envIntensity).toBe(3);
     expect(internal._envMapView).toBe(externalView);
-    expect(internal._envSampler).toBe(sampler);
 
     pass.setEnvironment(null, null, 0, 0, false);
     expect(internal._gpu.envMapView).not.toBe(externalView);

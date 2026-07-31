@@ -84,6 +84,40 @@ function baseOpts(device: GPUDevice): RCDispatchOptsRaw {
 }
 
 describe('RCDispatcher binding cache invalidation', () => {
+  it('packs the same resolved emitter data/alias layout that preflight validates', () => {
+    installWebGpuConstants();
+    const { device } = makeMockDevice();
+    const dispatcher = new RCDispatcher(DIMS);
+    const queue = device.queue as unknown as {
+      writeBuffer: { mock: { calls: unknown[][] } };
+    };
+    const latestUniformWords = (): Uint32Array => {
+      const write = queue.writeBuffer.mock.calls
+        .filter((call) => call[2] instanceof ArrayBuffer && (call[2] as ArrayBuffer).byteLength === 160)
+        .at(-1);
+      if (write == null) throw new Error('missing CascadeUniforms write');
+      return new Uint32Array(write[2] as ArrayBuffer);
+    };
+
+    dispatcher.dispatchFrameRaw({
+      ...baseOpts(device),
+      emittersBuf: makeExternalBuffer('emitter-data-and-alias', 96),
+      emitterCount: 1,
+    });
+    expect(latestUniformWords()[32]).toBe(0);
+    expect(latestUniformWords()[33]).toBe(20);
+
+    dispatcher.dispatchFrameRaw({
+      ...baseOpts(device),
+      emittersBuf: makeExternalBuffer('offset-emitter-data-and-alias', 112),
+      emitterDataOffset: 16,
+      emitterCount: 1,
+      frameSeed: 2,
+    });
+    expect(latestUniformWords()[32]).toBe(4);
+    expect(latestUniformWords()[33]).toBe(24);
+  });
+
   it('packs scalar-sky radiance and preserves raw custom-map inference', () => {
     installWebGpuConstants();
     const { device } = makeMockDevice();

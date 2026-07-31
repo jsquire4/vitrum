@@ -8,6 +8,11 @@ import {
   HG_G_STABILITY_LIMIT,
 } from '@vitrum/shared-samplers';
 import { buildDirectionalEnv, type DirectionalEnvData } from './equirectDirectional.js';
+import {
+  assertWalkaroundEnvironmentScaleF32,
+  packWalkaroundEnvironmentRotationF32,
+  stageWalkaroundEnvironmentScaleProductF32,
+} from './environmentRadianceScale.js';
 
 type HybridSkyVec3 = [number, number, number];
 
@@ -280,17 +285,21 @@ function resolveHdriWithExtensionResolver(
     : null;
   const tint = strictOptionalRadianceVec3(resolved.skyTint, 'HDRI resolver skyTint')
     ?? rawResolved?.skyTint;
+  const skyIrradiance = resolved.skyIrradiance !== undefined
+    ? stageWalkaroundEnvironmentScaleProductF32(
+      strictFiniteNonNegativeScalar(
+        resolved.skyIrradiance,
+        1,
+        'HDRI resolver skyIrradiance',
+      ),
+      intensity,
+      'HDRI resolver skyIrradiance × HDRI intensity',
+    )
+    : rawResolved?.skyIrradiance ?? intensity;
   return {
     mode: 'hdri-extension-resolver',
     ...(tint !== undefined ? { skyTint: tint } : {}),
-    skyIrradiance:
-      resolved.skyIrradiance !== undefined
-        ? strictFiniteNonNegativeScalar(
-          resolved.skyIrradiance,
-          1,
-          'HDRI resolver skyIrradiance',
-        ) * intensity
-        : rawResolved?.skyIrradiance ?? intensity,
+    skyIrradiance,
     warnings,
     ...(rawResolved?.directional !== undefined
       ? {
@@ -368,11 +377,7 @@ function resolveRawHdriAverage(
 }
 
 function strictRotationY(value: number | undefined): number {
-  if (value === undefined) return 0;
-  if (!Number.isFinite(value)) {
-    throw new TypeError('HDRI rotationY must be finite.');
-  }
-  return value;
+  return packWalkaroundEnvironmentRotationF32(value ?? 0);
 }
 
 function readRawNumericHdriPayload(value: EnvironmentMapRef): RawPayloadRead {
@@ -475,11 +480,7 @@ function strictFiniteNonNegativeScalar(
   fallback: number,
   label: string,
 ): number {
-  if (value === undefined) return fallback;
-  if (!Number.isFinite(value) || value < 0) {
-    throw new TypeError(`${label} must be a finite non-negative number.`);
-  }
-  return value;
+  return assertWalkaroundEnvironmentScaleF32(value ?? fallback, label);
 }
 
 /** Procedural-sky authoring keeps its historical finite fallback/clamp policy;
@@ -576,7 +577,11 @@ function averageRawRadiancePayload(
       average[1] / maxChannel,
       average[2] / maxChannel,
     ],
-    skyIrradiance: maxChannel * intensity,
+    skyIrradiance: stageWalkaroundEnvironmentScaleProductF32(
+      maxChannel,
+      intensity,
+      `${label} skyIrradiance × intensity`,
+    ),
   };
 }
 

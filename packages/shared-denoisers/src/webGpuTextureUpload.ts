@@ -12,6 +12,10 @@
 
 import { float32ToFloat16Bits, float16BitsToFloat32 } from './halfFloat.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
+import {
+  assertFiniteFloat16Slice,
+  assertOneShotArrayLength,
+} from './webGpuOneShotValidation.js';
 
 // Bytes-per-pixel constants for the formats we upload to — all file-local.
 const RGBA32F_BPP = 16 as const;
@@ -71,6 +75,19 @@ export function uploadRgbAsRgba16f(
   width: number,
   height: number,
 ): void {
+  const usedLength = width * height * 3;
+  assertOneShotArrayLength(
+    'uploadRgbAsRgba16f',
+    'rgb',
+    rgb,
+    usedLength,
+  );
+  assertFiniteFloat16Slice(
+    'uploadRgbAsRgba16f',
+    'rgb',
+    rgb,
+    usedLength,
+  );
   uploadTexture2D(device, texture, width, height, RGBA16F_BPP, Uint8Array, 1, (buf, rowStrideBytes) => {
     const dv = new DataView(buf.buffer);
     for (let y = 0; y < height; y += 1) {

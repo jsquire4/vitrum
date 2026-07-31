@@ -89,8 +89,9 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
   });
 
   it('only dispatches over half-resolution pixels (W/2 × H/2)', () => {
-    expect(RIS_GI_WGSL).toContain('halfDims = fullDims / 2u');
+    expect(RIS_GI_WGSL).toContain('halfDims = restirGiDimensions()');
     expect(RIS_GI_WGSL).toContain('if (any(gid.xy >= halfDims)) { return; }');
+    expect(RIS_GI_WGSL).toContain('let fullPx = restirGiFullPixel(gid.xy);');
   });
 });
 

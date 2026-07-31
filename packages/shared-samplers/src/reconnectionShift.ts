@@ -145,11 +145,39 @@ export function reconnectionGeometryTerm(x1: Vec3, x2: Vec3, n2: Vec3): number {
   requireFinite(d[0], 'reconnectionGeometryTerm.delta[0]');
   requireFinite(d[1], 'reconnectionGeometryTerm.delta[1]');
   requireFinite(d[2], 'reconnectionGeometryTerm.delta[2]');
-  const dist = len(d);
-  const normalLength = len(n2);
-  if (dist <= 0 || normalLength < 1e-12) return 0;
-  const cosOut = Math.abs(dot(n2, d) / (dist * normalLength));
-  const result = cosOut / (dist * dist);
+  const distanceScale = Math.max(
+    Math.abs(d[0]),
+    Math.abs(d[1]),
+    Math.abs(d[2]),
+  );
+  const normalScale = Math.max(
+    Math.abs(n2[0]),
+    Math.abs(n2[1]),
+    Math.abs(n2[2]),
+  );
+  if (
+    !(distanceScale > 0) || !Number.isFinite(distanceScale) ||
+    !(normalScale > 0) || !Number.isFinite(normalScale)
+  ) {
+    return 0;
+  }
+  const scaledDistance: Vec3 = [
+    d[0] / distanceScale,
+    d[1] / distanceScale,
+    d[2] / distanceScale,
+  ];
+  const scaledNormal: Vec3 = [
+    n2[0] / normalScale,
+    n2[1] / normalScale,
+    n2[2] / normalScale,
+  ];
+  const distanceLength = len(scaledDistance);
+  const normalLength = len(scaledNormal);
+  const cosOut = Math.abs(
+    dot(scaledNormal, scaledDistance) / (distanceLength * normalLength),
+  );
+  const distance = distanceScale * distanceLength;
+  const result = cosOut / (distance * distance);
   return Number.isFinite(result) ? result : Number.MAX_VALUE;
 }
 

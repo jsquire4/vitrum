@@ -16,9 +16,34 @@
 export const tonemap_functions = /* glsl */ `
 // --- vitrum tonemap operators (port of @vitrum/shared-samplers) ---
 
+const float VT_MAX_FINITE_F32 = 3.402823466e38;
+
+float vt_safeExposureScalar(float channel, float exposure) {
+  if (isnan(channel) || isnan(exposure) || !(exposure > 0.0)) return 0.0;
+  float boundedExposure = min(exposure, VT_MAX_FINITE_F32);
+  float magnitude = min(abs(channel) * boundedExposure, VT_MAX_FINITE_F32);
+  return channel < 0.0 ? -magnitude : magnitude;
+}
+
+vec3 vt_safeExposure(vec3 color, float exposure) {
+  return vec3(
+    vt_safeExposureScalar(color.x, exposure),
+    vt_safeExposureScalar(color.y, exposure),
+    vt_safeExposureScalar(color.z, exposure)
+  );
+}
+
 vec3 vt_aces(vec3 x) {
   float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-  return clamp((x * (a * x + b)) / (x * (c * x + d) + e), vec3(0.0), vec3(1.0));
+  vec3 v = max(x, vec3(0.0));
+  vec3 inv = vec3(1.0) / max(v, vec3(1e-20));
+  vec3 curved = (vec3(a) + b * inv) /
+    (vec3(c) + d * inv + e * inv * inv);
+  return mix(
+    clamp(curved, vec3(0.0), vec3(1.0)),
+    vec3(0.0),
+    equal(v, vec3(0.0))
+  );
 }
 
 float vt_agx_curve(float x) {
@@ -43,7 +68,7 @@ vec3 vt_linearToSrgb(vec3 c) {
 // mode: 0=aces(default) 1=agx 2=reinhard 3=linear(clamped) 4=none.
 // Exposure is applied first (same as WGSL vitrumTonemap + TS applyTonemap).
 vec3 vitrumTonemap(vec3 color, int mode, float exposure) {
-  vec3 x = color * exposure;
+  vec3 x = vt_safeExposure(color, exposure);
   if (mode == 1) { return vt_agx(x); }
   if (mode == 2) {
     vec3 v = max(x, vec3(0.0));

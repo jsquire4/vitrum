@@ -37,7 +37,12 @@ export const DDGI_PROBE_STATE_INACTIVE = 0;
 export const DDGI_PROBE_BACKFACE_THRESHOLD = 0.25;
 export const DDGI_PROBE_MAX_OFFSET_NORMALIZED = 0.45;
 export const DDGI_PROBE_MAX_RELOCATION_STEP_NORMALIZED = 0.20;
-export const DDGI_PROBE_MIN_HIT_DISTANCE = 0.05;
+/**
+ * Probe-clearance and blend-validity distance as a fraction of grid spacing.
+ * Keeping this dimensionless is required for equivalent scenes expressed in
+ * different world-unit scales.
+ */
+export const DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED = 0.05;
 export const DDGI_PROBE_MISS_DISTANCE = 1.0e19;
 /** Maximum half-float rounding error for normalized values in [-0.5, 0.5]. */
 export const DDGI_PROBE_STATE_MAX_QUANTIZATION_ERROR_NORMALIZED = 1 / 8192;
@@ -68,9 +73,21 @@ function length3(v: ProbeStateVec3): number {
 }
 
 function normalize3(v: ProbeStateVec3): ProbeStateVec3 {
-  const len = length3(v);
-  if (!(len > 1e-12) || !Number.isFinite(len)) return [0, 0, 0];
-  return [v[0] / len, v[1] / len, v[2] / len];
+  if (!finiteVec3(v)) return [0, 0, 0];
+  const maxComponent = Math.max(Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2]));
+  if (!(maxComponent > 0) || !Number.isFinite(maxComponent)) return [0, 0, 0];
+  const scaled: ProbeStateVec3 = [
+    v[0] / maxComponent,
+    v[1] / maxComponent,
+    v[2] / maxComponent,
+  ];
+  const scaledLength = length3(scaled);
+  if (!(scaledLength > 0) || !Number.isFinite(scaledLength)) return [0, 0, 0];
+  return [
+    scaled[0] / scaledLength,
+    scaled[1] / scaledLength,
+    scaled[2] / scaledLength,
+  ];
 }
 
 function addScaled(a: ProbeStateVec3, b: ProbeStateVec3, scale: number): ProbeStateVec3 {
@@ -116,10 +133,8 @@ export function classifyAndRelocateProbe(
   }
 
   const offset = clampProbeRelocationOffset(currentOffset, spacing);
-  const minFrontDistance = Math.max(
-    DDGI_PROBE_MIN_HIT_DISTANCE,
-    spacing * 0.05,
-  );
+  const minFrontDistance =
+    spacing * DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED;
   const maxStep = spacing * DDGI_PROBE_MAX_RELOCATION_STEP_NORMALIZED;
 
   let closestBackfaceDistance = Number.POSITIVE_INFINITY;
@@ -161,7 +176,7 @@ export function classifyAndRelocateProbe(
       farthestFrontfaceDirection = direction;
     }
     if (
-      distance >= DDGI_PROBE_MIN_HIT_DISTANCE &&
+      distance >= minFrontDistance &&
       distance < DDGI_PROBE_MISS_DISTANCE
     ) {
       validRayCount += 1;
@@ -174,7 +189,7 @@ export function classifyAndRelocateProbe(
       Math.abs(direction[1]),
       Math.abs(direction[2]),
     );
-    const voxelPlaneDistance = spacing / Math.max(maxAxis, 1e-6);
+    const voxelPlaneDistance = spacing / maxAxis;
     if (
       distance < DDGI_PROBE_MISS_DISTANCE &&
       distance <= voxelPlaneDistance

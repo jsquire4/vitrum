@@ -254,7 +254,7 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
 
   let sigC2 = atrousUBO.sigmaColor  * atrousUBO.sigmaColor;
   let sigN  = max(1.0, atrousUBO.sigmaNormal);
-  let sigZ2 = atrousUBO.sigmaDepth  * atrousUBO.sigmaDepth + 1e-6;
+  let sigZ2 = atrousUBO.sigmaDepth * atrousUBO.sigmaDepth;
 
   for (var dy = -2; dy <= 2; dy++) {
     for (var dx = -2; dx <= 2; dx++) {
@@ -275,10 +275,14 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // color neighborhoods, converged pixels apply tighter edges.
       let lumP = luminance(cP);
       let dLum = lumP - lumCenter;
-      // Add a small epsilon to the denominator so the first-frame case
-      // (zero variance) still allows some neighborhood smoothing.
-      let colorDenom = sigC2 * (varEstimate + 0.001) + 1e-6;
-      let wc = exp(-dLum * dLum / colorDenom);
+      let colorDenom = sigC2 * varEstimate;
+      var wc = 1.0;
+      if (dLum != 0.0) {
+        wc = 0.0;
+        if (colorDenom > 0.0) {
+          wc = exp(-dLum * dLum / colorDenom);
+        }
+      }
 
       // ── Normal edge stop ────────────────────────────────────────────────
       // Clamp both ends: finite-but-imperfect normal inputs and f32 roundoff
@@ -287,7 +291,14 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let wn = pow(dn, sigN);
 
       // ── Depth edge stop ─────────────────────────────────────────────────
-      let wz = exp(-(zP - zCenter) * (zP - zCenter) / sigZ2);
+      let depthDelta = zP - zCenter;
+      var wz = 1.0;
+      if (depthDelta != 0.0) {
+        wz = 0.0;
+        if (sigZ2 > 0.0) {
+          wz = exp(-(depthDelta * depthDelta) / sigZ2);
+        }
+      }
 
       let w  = h * wc * wn * wz;
       sumColor  += cP * w;
@@ -295,7 +306,10 @@ fn svgfAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  let result = select(cCenter, sumColor / sumWeight, sumWeight > 1e-6);
+  var result = cCenter;
+  if (sumWeight > 0.0) {
+    result = sumColor / sumWeight;
+  }
   textureStore(atrous_outputColor, gid.xy, vec4f(result, 1.0));
 }
 `;

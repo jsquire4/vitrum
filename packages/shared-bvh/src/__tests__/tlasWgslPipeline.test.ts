@@ -97,7 +97,7 @@ describe('TLAS WGSL pipeline exports', () => {
   it('threads skipGlass through TLAS closest-hit shadow traversal (H32)', () => {
     expect(TLAS_TRAVERSAL_WGSL).toContain('fn traceTlasAny(');
     expect(TLAS_TRAVERSAL_WGSL).toContain(
-      'bvhIntersectFirstHitAtRoot(localRay, triEps, blasRoot, skipGlass)',
+      'bvhIntersectFirstHitAtRoot(localRay, localTMin, blasRoot, skipGlass)',
     );
     expect(BVH_INTERSECT_WGSL).toContain('if (skipGlass) {');
     expect(BVH_INTERSECT_WGSL).toContain(
@@ -135,6 +135,16 @@ describe('TLAS WGSL pipeline exports', () => {
   });
 
   it('converts world TLAS bounds into normalized BLAS-local distance', () => {
+    expect(TLAS_TRAVERSAL_WGSL).toContain(
+      'let localTMin = max(tlasRayParameterAtPoint(localRay, localStart), 0.0);',
+    );
+    expect(TLAS_TRAVERSAL_WGSL).toContain(
+      'bvhIntersectFirstHitAtRoot(localRay, localTMin, blasRoot, false)',
+    );
+    expect(TLAS_TRAVERSAL_WGSL).toContain(
+      'return worldDist > triEps && worldDist < tMax;',
+    );
+    expect(TLAS_TRAVERSAL_WGSL).not.toContain('worldDist > 1e-4');
     expect(TLAS_SCENE_HIT_TRAVERSAL_WGSL).toContain(
       'let localTMin = max(dot(localStart - localRay.origin, localRay.direction), 0.0);',
     );

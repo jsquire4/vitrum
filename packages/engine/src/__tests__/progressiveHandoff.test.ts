@@ -1,5 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { asMat4, type Engine, type FrameInput, type FrameOutput, type Scene, type ScenePrimitive } from '@vitrum/core';
+import {
+  asMat4,
+  type Engine,
+  type FrameInput,
+  type FrameOutput,
+  type Scene,
+  type ScenePrimitive,
+  type ScenePrimitivePatch,
+} from '@vitrum/core';
 import {
   ProgressiveHandoffCoordinator,
   type ProgressiveHandoffController,
@@ -175,7 +183,7 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(cv.setScene).toHaveBeenCalledWith(scene);
     expect(c.phase).toBe('realtime'); // scene change → back to real-time
 
-    c.updatePrimitive('p', { transform: undefined } as never);
+    c.updatePrimitive('p', { transform: undefined });
     expect(rt.updatePrimitive).toHaveBeenCalledTimes(1);
     expect(cv.updatePrimitive).toHaveBeenCalledTimes(1);
 
@@ -565,7 +573,7 @@ describe('ProgressiveHandoffCoordinator', () => {
     const cv = makeStubEngine();
     const materialPatch = {
       material: { baseColor: [0.25, 0.5, 0.75], roughness: 1, metallic: 0 },
-    } as Partial<ScenePrimitive>;
+    } as ScenePrimitivePatch;
     const advance = vi.fn(
       (_deltaSeconds: number, options?: Parameters<ProgressiveHandoffController['advance']>[1]) => {
         options?.engine?.updatePrimitive?.('p', materialPatch);
@@ -752,6 +760,37 @@ describe('ProgressiveHandoffCoordinator — seed-on-handoff (P8 increment 2)', (
     c.frame(input(9));                                        // moved → stale
     c.frame(input(9)); c.frame(input(9));                     // settle → handoff 2 → re-seed
     expect(cv.seedAccumulator).toHaveBeenCalledTimes(2);
+  });
+
+  it('retires the seeded preview before publishing a terminal converged frame', () => {
+    const rt = seedSource();
+    const cv = seedSink(2);
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      stillFramesBeforeHandoff: 1,
+      seedFromRealtime: true,
+      convergedDisplaySamples: 64,
+    });
+
+    c.frame(input(0)); // initial realtime frame
+    const preview = c.frame(input(0)); // seeded PT sample 1
+    expect(preview.output.isConverged).toBe(false);
+
+    // The seeded cohort reaches its terminal SPP on the next call. It is a
+    // presentation preview only: the coordinator must reset it and return the
+    // first clean canonical sample instead of publishing the contaminated
+    // terminal output.
+    const canonicalFirst = c.frame(input(0));
+    expect(cv.reset).toHaveBeenCalledTimes(2);
+    expect(cv.seedAccumulator).toHaveBeenCalledTimes(1);
+    expect(canonicalFirst.output.samplesAccumulated).toBe(1);
+    expect(canonicalFirst.output.isConverged).toBe(false);
+
+    const canonicalTerminal = c.frame(input(0));
+    expect(canonicalTerminal.output.samplesAccumulated).toBe(2);
+    expect(canonicalTerminal.output.isConverged).toBe(true);
+    expect(cv.reset).toHaveBeenCalledTimes(2);
   });
 
   it('Bug2 fix — passes DESTINATION (viewport) dims to seedAccumulator, not source dims', () => {

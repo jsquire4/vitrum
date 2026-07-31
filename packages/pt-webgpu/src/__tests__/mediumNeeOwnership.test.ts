@@ -3,9 +3,15 @@ import { PT_WEBGPU_PATH_TRACE_KERNEL_WGSL } from '../wgsl/pathTrace/kernel.wgsl.
 import { PT_WEBGPU_MEDIUM_NEE_WGSL } from '../wgsl/pathTrace/mediumNee.wgsl.js';
 
 function powerHeuristic(pdfA: number, pdfB: number): number {
-  const a2 = pdfA * pdfA;
-  const b2 = pdfB * pdfB;
-  return a2 / (a2 + b2);
+  if (
+    !(pdfA >= 0) || !(pdfB >= 0) ||
+    pdfA > 3.402823466e38 || pdfB > 3.402823466e38
+  ) return 0;
+  const scale = Math.max(pdfA, pdfB);
+  if (!(scale > 0)) return 0;
+  const a = pdfA / scale;
+  const b = pdfB / scale;
+  return (a * a) / (a * a + b * b);
 }
 
 function localMediumNeeWeight(options: {

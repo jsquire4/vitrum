@@ -11,6 +11,16 @@ import { asMat4, resolveFrameCameraPosition } from '@vitrum/core';
 import { FrameParamsSlot, FRAME_PARAMS_BYTE_SIZE } from './scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from './math/mat4.js';
 import type { PtWebgpuTraceTier } from './traceTier.js';
+import {
+  assertPtWebgpuDistantLaunchDiskRepresentable,
+  ptWebgpuRayOriginBias,
+  ptWebgpuRayTMin,
+  resolvePtWebgpuSceneRadius,
+} from './scene/sceneScalePolicy.js';
+import {
+  assertPtWebgpuEnvironmentScaleF32,
+  packPtWebgpuEnvironmentRotationF32,
+} from './environmentRadianceScale.js';
 
 // The CPU payload, GPU buffer, and generated WGSL struct have one exact size.
 // Keeping a larger fixed allocation would silently retain dead per-frame payload.
@@ -54,6 +64,8 @@ export interface FrameParamsSceneInputs {
   readonly environmentTint: readonly [number, number, number];
   /** H14-E: map-backed environment-radiance intensity lane. */
   readonly environmentHdriIntensity: number;
+  /** Integrated luminance of the intensity-scaled HDRI for distant-light selection. */
+  readonly environmentLightTreePower: number;
   /**
    * H6: HDRI dome CCW Y-rotation in radians (default 0).
    * Packed into params.environmentTint.w (the previously-zero .w lane — no layout
@@ -111,6 +123,18 @@ export function packFrameParams(
     input,
     'PTEngineWebGPU.renderFrame',
   );
+  const sceneRadius = resolvePtWebgpuSceneRadius(
+    sb.sceneCenter,
+    sb.sceneRadius,
+  );
+  const hasDistantEmitter =
+    sb.directionalLightCount > 0 || sb.hasEnvironmentMap;
+  const usesDistantLaunchDisk =
+    (config.bdpt && config.traceTier === 'full') ||
+    (config.causticStrategy === 'photon-map' && config.traceTier === 'full');
+  if (hasDistantEmitter && usesDistantLaunchDisk) {
+    assertPtWebgpuDistantLaunchDiskRepresentable(sceneRadius);
+  }
 
   const paramsArrayBuffer = new ArrayBuffer(FRAME_PARAMS_BUFFER_ALLOC_BYTES);
   const paramsU32 = new Uint32Array(paramsArrayBuffer);
@@ -146,7 +170,8 @@ export function packFrameParams(
         : 0;
   paramsU32[FrameParamsSlot.environmentMapWidth] = sb.environmentMapWidth >>> 0;
   paramsU32[FrameParamsSlot.environmentMapHeight] = sb.environmentMapHeight >>> 0;
-  paramsF32[FrameParamsSlot.triIntersectEpsilon] = 1e-5; // triIntersectEpsilon: default metre-scale (D12)
+  paramsF32[FrameParamsSlot.triIntersectEpsilon] =
+    ptWebgpuRayTMin(sceneRadius);
   paramsU32[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
   paramsU32[FrameParamsSlot.spectralEnabled] = config.spectralEnabled ? 1 : 0;
   // Spectral kernels sample a hero wavelength per path invocation. These lanes
@@ -168,11 +193,19 @@ export function packFrameParams(
   paramsF32[FrameParamsSlot.sceneCenterX] = sb.sceneCenter[0];
   paramsF32[FrameParamsSlot.sceneCenterY] = sb.sceneCenter[1];
   paramsF32[FrameParamsSlot.sceneCenterZ] = sb.sceneCenter[2];
-  paramsF32[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
+  paramsF32[FrameParamsSlot.sceneRadius] = sceneRadius;
   paramsU32[FrameParamsSlot.directLightingMode] =
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
+  paramsF32[FrameParamsSlot.rayOriginBias] =
+    ptWebgpuRayOriginBias(sceneRadius, sb.sceneCenter);
+  paramsF32[FrameParamsSlot.environmentDistantPower] =
+    sb.environmentLightTreePower;
   // H14-E: HDRI intensity lives in its own f32 slot (slot 31).
-  paramsF32[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
+  paramsF32[FrameParamsSlot.environmentHdriIntensity] =
+    assertPtWebgpuEnvironmentScaleF32(
+      sb.environmentHdriIntensity,
+      'frame HDRI intensity',
+    );
   paramsF32[FrameParamsSlot.cameraPos] = cameraPosition[0];
   paramsF32[FrameParamsSlot.cameraPos + 1] = cameraPosition[1];
   paramsF32[FrameParamsSlot.cameraPos + 2] = cameraPosition[2];
@@ -182,7 +215,11 @@ export function packFrameParams(
   // H6: environmentTint.w was always 0 (unused). It now carries environmentHdriRotationY
   // so the WGSL equirect helpers can apply the CCW Y-rotation without a new UBO field.
   // rotationY = 0 → writes 0.0 → WGSL cos(0)=1, sin(0)=0 → identity → zero-rotation invariant.
-  paramsF32[FrameParamsSlot.environmentTint + 3] = sb.environmentHdriRotationY;
+  paramsF32[FrameParamsSlot.environmentTint + 3] =
+    packPtWebgpuEnvironmentRotationF32(
+      sb.environmentHdriRotationY,
+      'frame HDRI rotationY',
+    );
   paramsF32.set(invVp, FrameParamsSlot.invViewProj);
   paramsF32.set(vp, FrameParamsSlot.viewProj);
   const prevVp = multiplyMat4(

@@ -88,19 +88,31 @@ import {
   assertValidDdgiLights,
 } from './inputValidation.js';
 import {
+  assertWalkaroundEnvironmentScaleF32,
+  packWalkaroundEnvironmentRotationF32,
+} from '../environment/environmentRadianceScale.js';
+import {
+  packLightingRgbScaleEnvelopeF32,
+  packNonNegativeLightingFloat32,
+} from '../lightingFloat32.js';
+import {
   isValidProbeStateData,
   readPackedProbeStateFromIrradianceAtlas,
   writePackedProbeStateToIrradianceAtlas,
 } from './probeState.js';
 
+const DDGI_PLACEHOLDER_META = new Float32Array(4 * 4);
+DDGI_PLACEHOLDER_META.set([
+  3, 0, 0, 157,
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+]);
+
 const DDGI_PLACEHOLDER_MATERIAL_ATLAS: MaterialTextureAtlasPayload = {
-  atlasData: new Float32Array([1, 1, 1, 1]),
-  atlasDim: 1,
-  atlasLayerCount: 1,
-  atlasMipLevelCount: 1,
+  atlasLayers: [],
   gpuSourceLayers: [],
-  baseColorMetaData: new Float32Array([-1, 0, 0, 0]),
-  baseColorMetaWidth: 1,
+  baseColorMetaData: DDGI_PLACEHOLDER_META,
+  baseColorMetaWidth: 4,
   baseColorMetaHeight: 1,
   readableBaseColorLayerCount: 0,
   readableNormalLayerCount: 0,
@@ -273,6 +285,19 @@ function packEmitterTriSamplingPayload(
   return packed;
 }
 
+function samePackedEmitterTriPayload(
+  previous: Float32Array,
+  previousCount: number,
+  next: Float32Array,
+  nextCount: number,
+): boolean {
+  if (previousCount !== nextCount || previous.length !== next.length) return false;
+  for (let index = 0; index < next.length; index += 1) {
+    if (!Object.is(previous[index], next[index])) return false;
+  }
+  return true;
+}
+
 export class ProbeUpdatePass {
   private _bvh:  SceneBvh;
   private _grid: ProbeGrid;
@@ -287,6 +312,7 @@ export class ProbeUpdatePass {
   private _lastTlasVersion = -1;
   private _lastMaterialVersion = -1;
   private _lastMaterialAtlasPayload: MaterialTextureAtlasPayload | null = null;
+  private _materialAtlasAllocatedBytes = 0;
   private _lastTangentSource: ArrayBuffer | null = null;
   private _lastVertexColorSource: ArrayBuffer | null = null;
   private _frameIndex = 0;
@@ -335,7 +361,6 @@ export class ProbeUpdatePass {
   // Optional externally-provided env map view. When null, a 1×1 placeholder is
   // created at init time and destroyed on dispose.
   private _envMapView:    GPUTextureView | null = null;
-  private _envSampler:    GPUSampler | null = null;
 
   // DDGI round-robin probe-update divisor. This directly controls the active
   // probe stratum assembled and dispatched by runFrame.
@@ -406,7 +431,12 @@ export class ProbeUpdatePass {
 
   setLights(lights: DDGILight[]): void {
     assertValidDdgiLights(lights);
-    this._lights = snapshotDdgiLights(lights);
+    const nextLights = snapshotDdgiLights(lights);
+    // Preflight the exact GPU record/product envelope before replacing the
+    // configured list. Otherwise an accepted setter could fail much later in
+    // an unrelated renderFrame upload.
+    packDDGIProbeLights(nextLights, this._sunIntensityMul);
+    this._lights = nextLights;
   }
 
   /** Multiplier on the sun's stored intensity. Hybrid pipeline
@@ -414,7 +444,12 @@ export class ProbeUpdatePass {
    *  the sun's Le matches shade.wgsl's Lo_emit. */
   setSunIntensityMultiplier(mul: number): void {
     assertNonNegativeDdgiNumber(mul, 'DDGI sun intensity multiplier');
-    this._sunIntensityMul = mul;
+    const packed = packNonNegativeLightingFloat32(
+      mul,
+      'DDGI sun intensity multiplier',
+    );
+    packDDGIProbeLights(this._lights, packed);
+    this._sunIntensityMul = packed;
   }
 
   /**
@@ -436,8 +471,13 @@ export class ProbeUpdatePass {
       assertNonNegativeDdgiNumber(channel, `DDGI sky tint[${index}]`);
     });
     assertNonNegativeDdgiNumber(irradiance, 'DDGI sky irradiance');
-    this._skyTint = [...tint];
-    this._skyIrradiance = irradiance;
+    const packed = packLightingRgbScaleEnvelopeF32(
+      tint,
+      irradiance,
+      'DDGI sky radiance',
+    );
+    this._skyTint = packed.value;
+    this._skyIrradiance = packed.scale;
   }
 
   /**
@@ -470,8 +510,10 @@ export class ProbeUpdatePass {
   /**
    * Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
    *
-   * Supply the equirect env-map texture view and matching sampler so probe
-   * miss-rays sample the actual HDRI instead of the procedural sky gradient.
+   * Supply the equirect env-map texture view so probe miss-rays sample the
+   * actual HDRI instead of the procedural sky gradient. The sampler argument
+   * is retained for API compatibility; the portable rgba32float path performs
+   * explicit bilinear textureLoad filtering.
    *
    * Call with `hasEnv = false` (or omit the call entirely) to keep the
    * procedural gradient — byte-identical to pre-Wave-4 behaviour for scenes
@@ -482,7 +524,7 @@ export class ProbeUpdatePass {
    * ownership of the view — the caller is responsible for its lifetime (the
    * pipeline's BvhBufferHost owns the env textures).
    *
-   * If the GPU state is already initialised, the new view / sampler is picked
+   * If the GPU state is already initialised, the new view is picked
    * up on the NEXT `runFrame` call (the bind group is rebuilt each frame so
    * there is no explicit invalidation step).
    *
@@ -490,9 +532,8 @@ export class ProbeUpdatePass {
    *   lookupDir = RY(-rotationY) · worldDir   [H6 world→map]
    *   u = fract(atan2(z,x)/(2π) + 0.5),  v = clamp(acos(y)/π, 0, 1)
    *
-   * @param view       GPUTextureView for the rgba16float equirect radiance map.
-   * @param sampler    GPUSampler (clamp-to-edge, linear) for the same texture.
-   *                   Pass null to reuse the pass's internal linearSampler.
+   * @param view       GPUTextureView for the rgba32float equirect radiance map.
+   * @param _sampler   Retained compatibility argument; filtering is explicit.
    * @param rotationY  Y-axis rotation in radians (H6 — CCW dome rotation means
    *                   lookupDir = RY(-rotationY)·worldDir). Pass 0 for no rotation.
    * @param intensity  Radiance multiplier applied to the texel after lookup.
@@ -502,13 +543,20 @@ export class ProbeUpdatePass {
    */
   setEnvironment(
     view: GPUTextureView | null,
-    sampler: GPUSampler | null,
+    _sampler: GPUSampler | null,
     rotationY: number,
     intensity: number,
     hasEnv: boolean,
   ): void {
-    assertFiniteDdgiNumber(rotationY, 'DDGI environment rotation');
+    const packedRotationY = packWalkaroundEnvironmentRotationF32(
+      rotationY,
+      'DDGI environment rotation',
+    );
     assertNonNegativeDdgiNumber(intensity, 'DDGI environment intensity');
+    const packedIntensity = assertWalkaroundEnvironmentScaleF32(
+      intensity,
+      'DDGI environment intensity',
+    );
     assertDdgiBoolean(hasEnv, 'DDGI environment hasEnv');
     if (hasEnv && view == null) {
       throw new TypeError('DDGI environment view is required when hasEnv is true.');
@@ -518,13 +566,11 @@ export class ProbeUpdatePass {
       rotationY: this._envRotationY,
       intensity: this._envIntensity,
       view: this._envMapView,
-      sampler: this._envSampler,
     };
     this._hasEnv       = hasEnv;
-    this._envRotationY = rotationY;
-    this._envIntensity = intensity;
+    this._envRotationY = packedRotationY;
+    this._envIntensity = packedIntensity;
     this._envMapView   = view;
-    this._envSampler   = sampler;
     try {
       // If GPU is already up, update the env fields in the GpuState immediately
       // so the next runFrame bind-group creation picks them up without a re-init.
@@ -537,7 +583,6 @@ export class ProbeUpdatePass {
       this._envRotationY = previous.rotationY;
       this._envIntensity = previous.intensity;
       this._envMapView = previous.view;
-      this._envSampler = previous.sampler;
       throw error;
     }
   }
@@ -596,29 +641,54 @@ export class ProbeUpdatePass {
    * Stage a complete DDGI lighting replacement without touching the live
    * light list or emitter-triangle GPU buffer.
    *
-   * A fresh emitter buffer is allocated and populated at preparation time.
-   * Commit is therefore pointer/CPU-state publication only; rollback can
-   * restore the previous buffer and host mirrors without issuing GPU work.
+   * When the packed emitter payload changes, a fresh buffer is allocated and
+   * populated at preparation time. An identical payload reuses the live
+   * buffer. Commit is pointer/CPU-state publication only; rollback can restore
+   * the previous buffer and host mirrors without issuing GPU work.
    */
   prepareLightingMutation(
     lights: readonly DDGILight[],
     sunIntensityMultiplier: number,
     tris: Float32Array,
     count: number,
+    sky?: {
+      readonly tint: readonly [number, number, number];
+      readonly irradiance: number;
+    },
   ): PreparedSceneMutation {
     assertValidDdgiLights(lights);
     assertNonNegativeDdgiNumber(
       sunIntensityMultiplier,
       'DDGI sun intensity multiplier',
     );
+    const packedSunIntensityMultiplier = packNonNegativeLightingFloat32(
+      sunIntensityMultiplier,
+      'DDGI sun intensity multiplier',
+    );
     const nextLights = snapshotDdgiLights(lights);
+    // Validate record fields, emitted radiance, and alias weights before the
+    // first candidate GPU allocation.
+    packDDGIProbeLights(nextLights, packedSunIntensityMultiplier);
+    const packedSky = sky == null
+      ? null
+      : packLightingRgbScaleEnvelopeF32(
+          sky.tint,
+          sky.irradiance,
+          'DDGI sky radiance',
+        );
     const nextTris = packEmitterTriSamplingPayload(tris, count);
     const gpu = this._gpu;
     const previousGpuBuffer = gpu?.emitterTrisBuf ?? null;
     const previousGpuCount = gpu?.emitterTrisCount ?? 0;
+    const emitterPayloadUnchanged = samePackedEmitterTriPayload(
+      this._emitterTrisData,
+      this._emitterTrisCount,
+      nextTris,
+      count,
+    );
     let candidateGpuBuffer: GPUBuffer | null = null;
 
-    if (gpu != null && count > 0) {
+    if (gpu != null && count > 0 && !emitterPayloadUnchanged) {
       const byteLength = nextTris.byteLength;
       const candidate = gpu.device.createBuffer({
         label: 'ddgi.emitter-tris.candidate',
@@ -648,6 +718,8 @@ export class ProbeUpdatePass {
     const previousSunIntensityMultiplier = this._sunIntensityMul;
     const previousTris = this._emitterTrisData;
     const previousCount = this._emitterTrisCount;
+    const previousSkyTint = this._skyTint;
+    const previousSkyIrradiance = this._skyIrradiance;
     let committed = false;
     let closed = false;
 
@@ -655,16 +727,20 @@ export class ProbeUpdatePass {
       if (candidateGpuBuffer == null) return;
       const candidate = candidateGpuBuffer;
       candidateGpuBuffer = null;
-      candidate.destroy();
+      destroyProbeResourceBestEffort(candidate);
     };
 
     return {
       commit: () => {
         if (closed || committed) return;
         this._lights = nextLights;
-        this._sunIntensityMul = sunIntensityMultiplier;
+        this._sunIntensityMul = packedSunIntensityMultiplier;
         this._emitterTrisData = nextTris;
         this._emitterTrisCount = count;
+        if (packedSky != null) {
+          this._skyTint = packedSky.value;
+          this._skyIrradiance = packedSky.scale;
+        }
         if (gpu != null) {
           if (candidateGpuBuffer != null) gpu.emitterTrisBuf = candidateGpuBuffer;
           gpu.emitterTrisCount = count;
@@ -679,6 +755,8 @@ export class ProbeUpdatePass {
           this._sunIntensityMul = previousSunIntensityMultiplier;
           this._emitterTrisData = previousTris;
           this._emitterTrisCount = previousCount;
+          this._skyTint = previousSkyTint;
+          this._skyIrradiance = previousSkyIrradiance;
           if (gpu != null) {
             gpu.emitterTrisBuf = previousGpuBuffer!;
             gpu.emitterTrisCount = previousGpuCount;
@@ -691,7 +769,7 @@ export class ProbeUpdatePass {
         closed = true;
         if (committed && candidateGpuBuffer != null) {
           candidateGpuBuffer = null;
-          previousGpuBuffer?.destroy();
+          destroyProbeResourceBestEffort(previousGpuBuffer);
         } else {
           destroyCandidate();
         }
@@ -743,6 +821,16 @@ export class ProbeUpdatePass {
 
   get fullBlendGeneration(): number {
     return this._fullBlendGeneration;
+  }
+
+  /**
+   * Whether a false result from the most recent {@link init} call is
+   * retryable. Pipeline compilation clears `_initAttempted`; definitive
+   * no-device failures leave it set so frame loops do not request an adapter
+   * forever.
+   */
+  get initializationRetryable(): boolean {
+    return !this._disposed && !this._initAttempted;
   }
 
   captureFullBlendState(): ProbeFullBlendState {
@@ -978,14 +1066,18 @@ export class ProbeUpdatePass {
         placeholderEnvTex = registerTexture(device.createTexture({
           label: 'vitrum.ddgi.env.placeholder',
           size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-          format: 'rgba16float',
+          format: 'rgba32float',
           usage: 0x04 | 0x02, // TEXTURE_BINDING | COPY_DST
         }));
         envMapView = placeholderEnvTex.createView();
       }
 
       const placeholderMaterialAtlas =
-        uploadMaterialTextureAtlas(device, DDGI_PLACEHOLDER_MATERIAL_ATLAS);
+        uploadMaterialTextureAtlas(
+          device,
+          DDGI_PLACEHOLDER_MATERIAL_ATLAS,
+          { replicatedResidentCopies: 2 },
+        );
       registerTexture(placeholderMaterialAtlas.atlasTexture);
       registerTexture(placeholderMaterialAtlas.baseColorMetaTexture);
       const placeholderTangents = uploadTangentTexture(device, new Float32Array(4), 1);
@@ -1048,13 +1140,14 @@ export class ProbeUpdatePass {
         envMapView,
         envMapOwnedByPass: placeholderEnvTex != null,
         envMapPlaceholderTex: placeholderEnvTex,
-        envSamplerForProbe: this._envSampler ?? linearSampler,
       };
 
       // Publish only after every buffer, texture upload, and view creation has
       // completed. The candidate sets become owned by _gpu at this point.
       this._gpu = candidateGpu;
       this._lastMaterialAtlasPayload = DDGI_PLACEHOLDER_MATERIAL_ATLAS;
+      this._materialAtlasAllocatedBytes =
+        placeholderMaterialAtlas.allocatedBytes;
     } catch (error) {
       cleanupCandidates();
       throw error;
@@ -1439,7 +1532,14 @@ export class ProbeUpdatePass {
   private _syncMaterialTextureAtlas(device: GPUDevice, payload: MaterialTextureAtlasPayload): void {
     const gpu = this._gpu;
     if (gpu == null || this._lastMaterialAtlasPayload === payload) return;
-    const next = uploadMaterialTextureAtlas(device, payload);
+    const next = uploadMaterialTextureAtlas(
+      device,
+      payload,
+      {
+        retainedBytes: this._materialAtlasAllocatedBytes,
+        replicatedResidentCopies: 2,
+      },
+    );
     const previousAtlas = gpu.materialTextureAtlas;
     const previousMeta = gpu.materialTextureAtlasMeta;
     if (next.atlasTexture === previousAtlas || next.baseColorMetaTexture === previousMeta) {
@@ -1456,6 +1556,7 @@ export class ProbeUpdatePass {
     gpu.materialTextureAtlasMeta = next.baseColorMetaTexture;
     gpu.materialTextureAtlasMetaView = next.baseColorMetaTextureView;
     this._lastMaterialAtlasPayload = payload;
+    this._materialAtlasAllocatedBytes = next.allocatedBytes;
     destroyProbeResourceBestEffort(previousAtlas);
     destroyProbeResourceBestEffort(previousMeta);
   }
@@ -1570,7 +1671,7 @@ export class ProbeUpdatePass {
     device.queue.writeBuffer(this._gpu!.frameParamsBuf, 0, data);
   }
 
-  /** Wave 4 — sync the external env-map view + sampler into GpuState.
+  /** Wave 4 — sync the external env-map view into GpuState.
    *  Called after init() (to apply early setEnvironment() calls) and
    *  directly from setEnvironment() (when gpu is already live). */
   private _syncEnvViewsToGpu(): void {
@@ -1583,7 +1684,6 @@ export class ProbeUpdatePass {
         ? gpu.envMapPlaceholderTex
         : null;
       gpu.envMapView = this._envMapView;
-      gpu.envSamplerForProbe = this._envSampler ?? gpu.linearSampler;
       gpu.envMapPlaceholderTex = null;
       gpu.envMapOwnedByPass = false;
       destroyProbeResourceBestEffort(previousPlaceholder);
@@ -1593,13 +1693,12 @@ export class ProbeUpdatePass {
       // 1x1 placeholder so future probe-ray bind groups cannot retain a stale or
       // destroyed environment view after updateEnvironment(null).
       if (gpu.envMapOwnedByPass) {
-        gpu.envSamplerForProbe = gpu.linearSampler;
         return;
       }
       const placeholder = gpu.device.createTexture({
         label: 'ddgi.env-placeholder',
         size: [1, 1, 1],
-        format: 'rgba16float',
+        format: 'rgba32float',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
       });
       let placeholderView: GPUTextureView;
@@ -1612,7 +1711,6 @@ export class ProbeUpdatePass {
       gpu.envMapPlaceholderTex = placeholder;
       gpu.envMapView = placeholderView;
       gpu.envMapOwnedByPass = true;
-      gpu.envSamplerForProbe = gpu.linearSampler;
     }
   }
 
@@ -1881,6 +1979,7 @@ export class ProbeUpdatePass {
     this._gpu = null;
     this._ownedDevice = null;
     this._lastMaterialAtlasPayload = null;
+    this._materialAtlasAllocatedBytes = 0;
     this._lastTangentSource = null;
     this._lastVertexColorSource = null;
     if (g != null) {

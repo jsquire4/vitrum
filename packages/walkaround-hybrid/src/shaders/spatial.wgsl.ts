@@ -51,7 +51,7 @@ fn poissonDisk(i: u32, rotation: f32) -> vec2f {
 }
 
 fn spatialPixelFromInvocation(gid: vec3u) -> vec2u {
-  if (ubo.checkerboardOn == 1u) {
+  if (ubo.checkerboardOn == 1u && restirReservoirScaleValue() == 1u) {
     let startColumn = (gid.y + ubo.frameParity) & 1u;
     return vec2u(gid.x * 2u + startColumn, gid.y);
   }
@@ -61,16 +61,103 @@ fn spatialPixelFromInvocation(gid: vec3u) -> vec2u {
 @compute @workgroup_size(8, 8, 1)
 fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
+  let reservoirDims = restirDiDimensions();
   let pixel = spatialPixelFromInvocation(gid);
-  if (any(pixel >= dims)) { return; }
+  if (any(pixel >= reservoirDims)) { return; }
 
-  let pixelIndex = pixel.y * dims.x + pixel.x;
+  let pixelIndex = pixel.y * reservoirDims.x + pixel.x;
   var centerReservoir = loadReservoirDI_rw(pixelIndex);
   scaleReservoirDIToM(&centerReservoir, M_SCALE);
 
+  if (restirReservoirScaleValue() > 1u) {
+    let roundSalt = SPATIAL_ROUND_INDEX * 0x9e3779b9u;
+    var coarseRng = pcgInit(
+      pixel.x ^ 54321u ^ roundSalt,
+      pixel.y ^ 98765u ^ (roundSalt >> 1u),
+      ubo.frameSeed ^ 0xCAFEu ^ (roundSalt * 0x85ebca6bu),
+    );
+    let rotation =
+      rand_f32(&coarseRng) * 6.28318530718 +
+      f32(SPATIAL_ROUND_INDEX) * 2.39996322973;
+    var output = emptyReservoirDI();
+    updateReservoirDI(
+      &output,
+      centerReservoir.lightId,
+      centerReservoir.xi,
+      max(0.0, centerReservoir.w_sum),
+      &coarseRng,
+    );
+    var areaSupport = centerReservoir.areaM;
+    var environmentSupport = centerReservoir.envM;
+    var representedAttempts = centerReservoir.M;
+    let coarseRadius = max(
+      1.0,
+      ubo.spatialReuseRadiusPx / f32(restirReservoirScaleValue()),
+    );
+    for (var neighborIndex = 0u; neighborIndex < NEIGHBORS; neighborIndex++) {
+      let offset = poissonDisk(neighborIndex, rotation);
+      let neighborPixel = vec2i(pixel) + vec2i(offset * coarseRadius);
+      if (
+        any(neighborPixel < vec2i(0))
+        || any(neighborPixel >= vec2i(reservoirDims))
+      ) {
+        continue;
+      }
+      let neighborPixelIndex =
+        u32(neighborPixel.y) * reservoirDims.x + u32(neighborPixel.x);
+      var neighbor = loadReservoirDI_rw(neighborPixelIndex);
+      let targetM = select(
+        0u,
+        max(1u, neighbor.M / M_SCALE),
+        neighbor.M > 0u,
+      );
+      scaleReservoirDIToM(&neighbor, targetM);
+      updateReservoirDI(
+        &output,
+        neighbor.lightId,
+        neighbor.xi,
+        max(0.0, neighbor.w_sum),
+        &coarseRng,
+      );
+      areaSupport = reservoirDiSaturatingAddU32(
+        areaSupport,
+        neighbor.areaM,
+      );
+      environmentSupport = reservoirDiSaturatingAddU32(
+        environmentSupport,
+        neighbor.envM,
+      );
+      representedAttempts = reservoirDiSaturatingAddU32(
+        representedAttempts,
+        neighbor.M,
+      );
+    }
+    output.areaM = areaSupport;
+    output.envM = environmentSupport;
+    output.M = representedAttempts;
+    if (output.M > 0u && output.w_sum > 0.0) {
+      let pHat = restir_di_coarse_proposal_phat(
+        output.lightId,
+        output.xi,
+      );
+      output.W = select(
+        0.0,
+        output.w_sum / (f32(output.M) * pHat),
+        pHat > 0.0,
+      );
+    }
+    storeReservoirDI_rw(pixelIndex, output);
+    return;
+  }
+
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
-  let centerSurface = castPrimary(pixel, dims, ubo.cameraPos, invVP);
+  let centerSurface = castPrimary(
+    restirDiFullPixel(pixel),
+    dims,
+    ubo.cameraPos,
+    invVP,
+  );
   if (!centerSurface.hit) {
     storeReservoirDI_rw(pixelIndex, centerReservoir);
     return;

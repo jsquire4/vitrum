@@ -17,25 +17,28 @@ describe('affine transformed disc-area measure', () => {
 
     // |u×v| = 6. The former π|u|² formula gives 4π, while the also-stale
     // π|u||v| formula gives 2π√10; this fixture distinguishes all three.
-    expect(discArea(u, v)).toBeCloseTo(6 * Math.PI, 12);
+    // The CPU mirror intentionally rounds each packed-area operation to f32,
+    // matching the shader rather than JavaScript's binary64 arithmetic.
+    expect(discArea(u, v)).toBeCloseTo(6 * Math.PI, 6);
     expect(discArea(u, v)).not.toBeCloseTo(4 * Math.PI, 12);
     expect(discArea(u, v)).not.toBeCloseTo(2 * Math.sqrt(10) * Math.PI, 12);
   });
 
-  it('pins every pt-webgpu disc sampling and connection branch to π|u×v|', () => {
+  it('pins every pt-webgpu disc branch to the scale-equilibrated π|u×v| helper', () => {
     const sites: ReadonlyArray<readonly [string, string, string]> = [
-      ['BDPT light subpath', PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL, 'areaS = PI * length(cross(ru, rv));'],
-      ['MNEE caustic emitter', PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL, 'out.area = PI * length(cross(u, v));'],
-      ['full BSDF connection', PT_WEBGPU_PATH_TRACE_CONNECT_WGSL, 'PI * sqrt(axisCrossLen2),'],
-      ['lite BSDF connection', PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL, 'PI * sqrt(axisCrossLen2),'],
-      ['full NEE', PT_WEBGPU_PATH_TRACE_KERNEL_WGSL, 'area = PI * length(cross(ru, rv));'],
-      ['lite NEE', PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL, 'area = PI * length(cross(ru, rv));'],
-      ['medium NEE', PT_WEBGPU_MEDIUM_NEE_WGSL, 'area = PI * length(cross(uAxis, vAxis));'],
-      ['one-edge suffix NEE', RESTIR_PT_PRODUCER_WGSL, 'area = PI * length(cross(ru, rv));'],
-      ['SPPM photon emission', SPPM_PHOTON_PASS_WGSL, 'area = PI * normalLen;'],
+      ['BDPT light subpath', PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL, 'ru, rv, select(4.0, PI, isDiscS),'],
+      ['MNEE caustic emitter', PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL, 'u, v, select(4.0, PI, isDisc),'],
+      ['full BSDF connection', PT_WEBGPU_PATH_TRACE_CONNECT_WGSL, 'uAxis, vAxis, select(4.0, PI, isDisc),'],
+      ['lite BSDF connection', PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL, 'uAxis, vAxis, select(4.0, PI, isDisc),'],
+      ['full NEE', PT_WEBGPU_PATH_TRACE_KERNEL_WGSL, 'ru, rv, select(4.0, PI, isDisc),'],
+      ['lite NEE', PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL, 'ru, rv, select(4.0, PI, isDiscL),'],
+      ['medium NEE', PT_WEBGPU_MEDIUM_NEE_WGSL, 'uAxis, vAxis, select(4.0, PI, disc),'],
+      ['one-edge suffix NEE', RESTIR_PT_PRODUCER_WGSL, 'ru, rv, select(4.0, PI, isDiscR),'],
+      ['SPPM photon emission', SPPM_PHOTON_PASS_WGSL, 'ru, rv, select(4.0, PI, isDisc),'],
     ];
 
     for (const [label, source, expected] of sites) {
+      expect(source, label).toContain('measureAreaVector(');
       expect(source, label).toContain(expected);
     }
 
@@ -45,17 +48,14 @@ describe('affine transformed disc-area measure', () => {
     expect(allSources).not.toMatch(/PI\s*\*\s*(?:r|rrad|rradL)\s*\*\s*(?:r|rrad|rradL)/);
   });
 
-  it('solves affine light coordinates with the full Gram matrix', () => {
-    const expected = [
-      'let uv = dot(uAxis, vAxis);',
-      'let uCoord = (relU * vLen2 - relV * uv) / axisCrossLen2;',
-      'let vCoord = (relV * uLen2 - relU * uv) / axisCrossLen2;',
-    ];
+  it('solves exact affine coordinates through the scale-safe dominant projection', () => {
     for (const source of [
       PT_WEBGPU_PATH_TRACE_CONNECT_WGSL,
       PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL,
     ]) {
-      for (const line of expected) expect(source).toContain(line);
+      expect(source).toContain('let areaCoordinates = solveAreaVectorCoordinates(');
+      expect(source).toContain('uAxis, vAxis, rel, areaMeasure,');
+      expect(source).not.toContain('let axisCrossLen2 =');
       expect(source).not.toContain('dot(rel, uAxis) / uLen2');
       expect(source).not.toContain('dot(rel, vAxis) / vLen2');
     }

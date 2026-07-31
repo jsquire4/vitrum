@@ -54,6 +54,7 @@ import type { DDGILight } from './ddgi/types.js';
 import { syncDdgiFromCoreScene } from './HybridEngineDdgiSync.js';
 import type { EngineError, EngineWarning, Scene } from '@vitrum/core';
 import type { NrcConfig } from './neural/nrc/nrcSubsystem.js';
+import { assertHybridSwapChainFormat } from './presentationTarget.js';
 
 /**
  * Per-engine warning state for the host-sun/scene-directional conflict.
@@ -81,6 +82,10 @@ export interface PipelineInitHost {
   readonly device: GPUDevice;
   readonly width: number;
   readonly height: number;
+  /** Exact steady-state ceiling already used to resolve the engine's internal size. */
+  readonly maxPersistentFrameResourceBytes?: number;
+  /** Integer ReSTIR DI/GI grid scale selected by the frame-resource resolver. */
+  readonly restirReservoirScale?: number;
   /** Latest render-ingestion scene; analytic primitives have already been
    * converted to generated MeshPrimitive fallbacks. May be null pre-bootstrap. */
   readonly lastScene: Scene | null;
@@ -203,6 +208,7 @@ export interface PipelineInitHost {
 export type HybridInitStaticConfig = Pick<
   PipelineInitHost,
   | 'device'
+  | 'maxPersistentFrameResourceBytes'
   | 'restirBvhModeOverride'
   | 'neuralTensorStorage'
   | 'denoiser'
@@ -278,6 +284,22 @@ export class PipelineInitCoordinator {
     if (this._disposed) return;
 
     const host = this.host;
+    let preferredSwapChainFormat: GPUTextureFormat;
+    try {
+      // Snapshot the browser/host getter exactly once before scene polling,
+      // BVH publication, pipeline construction, or any GPU allocation. A
+      // hostile/dynamic getter therefore cannot change the pipeline target
+      // between validation and asynchronous initialization.
+      const candidate = host.preferredSwapChainFormat;
+      assertHybridSwapChainFormat(
+        candidate,
+        'PipelineInitHost.preferredSwapChainFormat',
+      );
+      preferredSwapChainFormat = candidate;
+    } catch (error) {
+      reportFatalInitError(host, error);
+      return;
+    }
     const device = host.device;
     // Capture our sequence number — any newer startInit/requestTeardown
     // bump invalidates the writes below.
@@ -292,7 +314,7 @@ export class PipelineInitCoordinator {
     // not await this — the engine state machine is the synchronisation
     // point.
     this._initRunning = true;
-    void this._runInitChain(mySeq, device);
+    void this._runInitChain(mySeq, device, preferredSwapChainFormat);
   }
 
   /**
@@ -357,7 +379,11 @@ export class PipelineInitCoordinator {
     return true;
   }
 
-  private async _runInitChain(mySeq: number, device: GPUDevice): Promise<void> {
+  private async _runInitChain(
+    mySeq: number,
+    device: GPUDevice,
+    preferredSwapChainFormat: GPUTextureFormat,
+  ): Promise<void> {
     const host = this.host;
     const initStart = host.debug ? performance.now() : 0;
 
@@ -517,7 +543,7 @@ export class PipelineInitCoordinator {
 
       const pipelineInitialization = pipeline.initialize(
         bvhPublished,
-        host.preferredSwapChainFormat,
+        preferredSwapChainFormat,
         {
           verbose: host.verbose || host.debug,
           debug: host.debug,
@@ -548,6 +574,15 @@ export class PipelineInitCoordinator {
           // which checkerboard is forced full-rate (finer than the temporal
           // reset). Only consulted when checkerboard is on.
           checkerboardMotionThresholdSq: host.checkerboardMotionThresholdSq,
+          ...(host.maxPersistentFrameResourceBytes !== undefined
+            ? {
+                maxPersistentFrameResourceBytes:
+                  host.maxPersistentFrameResourceBytes,
+              }
+            : {}),
+          ...(host.restirReservoirScale !== undefined
+            ? { reservoirScale: host.restirReservoirScale }
+            : {}),
           // Phase-0 — PPG train-pass cadence (ppg-update gates on
           // `frameCount % N`). Only takes effect when PPG is enabled at the
           // pipeline level; harmless (= every frame) otherwise.

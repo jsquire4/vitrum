@@ -60,6 +60,15 @@ import {
   resolveNrcConfig,
   type NrcConfig,
 } from './neural/nrc/nrcSubsystem.js';
+import {
+  DEFAULT_FRAME_RESOURCE_BUDGET_BYTES,
+  DEFAULT_MAX_RESTIR_RESERVOIR_SCALE,
+} from './pipeline/frameResourcePlan.js';
+import {
+  canonicalizeLightingDirectionF32,
+  packNonNegativeLightingFloat32,
+  packNonNegativeLightingRgbF32,
+} from './lightingFloat32.js';
 
 /** Default per-frame target interval (~60 FPS soft-cap). */
 const DEFAULT_TARGET_FRAME_INTERVAL_MS = 1000 / 60 - 1;
@@ -73,6 +82,9 @@ const HYBRID_ENGINE_OPTION_KEYS = {
   device: true,
   width: true,
   height: true,
+  frameResourceResolutionPolicy: true,
+  maxPersistentFrameResourceBytes: true,
+  restirReservoirScale: true,
   gpuSkinning: true,
   isSceneReady: true,
   pipelineRebuildKey: true,
@@ -538,9 +550,30 @@ function validateHybridOptionValueDomains(opts: HybridEngineOptions): void {
   ) {
     throw new RangeError('[HybridEngine] options.primaryLightDir must be non-zero.');
   }
+  if (opts.primaryLightDir !== undefined) {
+    canonicalizeLightingDirectionF32(
+      opts.primaryLightDir,
+      'options.primaryLightDir',
+    );
+  }
   assertFiniteTuple(opts.skyTint, 'options.skyTint', { nonNegative: true });
+  if (opts.skyTint !== undefined) {
+    packNonNegativeLightingRgbF32(opts.skyTint, 'options.skyTint');
+  }
   assertFiniteNumber(opts.primaryLightIntensity, 'options.primaryLightIntensity', { min: 0 });
+  if (opts.primaryLightIntensity !== undefined) {
+    packNonNegativeLightingFloat32(
+      opts.primaryLightIntensity,
+      'options.primaryLightIntensity',
+    );
+  }
   assertFiniteNumber(opts.skyIrradiance, 'options.skyIrradiance', { min: 0 });
+  if (opts.skyIrradiance !== undefined) {
+    packNonNegativeLightingFloat32(
+      opts.skyIrradiance,
+      'options.skyIrradiance',
+    );
+  }
   if (opts.lights !== undefined) {
     assertDenseDataArray(opts.lights, 'options.lights');
     assertValidDdgiLights(opts.lights, 'options.lights');
@@ -549,6 +582,32 @@ function validateHybridOptionValueDomains(opts: HybridEngineOptions): void {
   assertEnum(opts.qualityTier, 'options.qualityTier', ['ultra', 'high', 'medium', 'low']);
   assertEnum(opts.tier, 'options.tier', ['full', 'lite']);
   assertEnum(opts.gtaoMode, 'options.gtaoMode', ['on', 'quarter', 'off']);
+  assertEnum(
+    opts.frameResourceResolutionPolicy,
+    'options.frameResourceResolutionPolicy',
+    ['auto', 'native'],
+  );
+  assertSafeInteger(
+    opts.maxPersistentFrameResourceBytes,
+    'options.maxPersistentFrameResourceBytes',
+    1,
+  );
+  assertSafeInteger(
+    opts.restirReservoirScale,
+    'options.restirReservoirScale',
+    1,
+    DEFAULT_MAX_RESTIR_RESERVOIR_SCALE,
+  );
+  if (
+    opts.restirReservoirScale !== undefined
+    && opts.restirReservoirScale !== 1
+    && (opts.ppgEnabled === true || opts.nrcEnabled === true)
+  ) {
+    throw new RangeError(
+      '[HybridEngine] restirReservoirScale > 1 is incompatible with PPG/NRC training layouts; ' +
+      'use scale 1 or disable ppgEnabled/nrcEnabled.',
+    );
+  }
   if (opts.diSpatialPasses !== undefined && opts.diSpatialPasses !== 1 && opts.diSpatialPasses !== 2) {
     throw new RangeError('[HybridEngine] options.diSpatialPasses must be 1 or 2.');
   }
@@ -731,6 +790,9 @@ function warnLiteBvhModeOverride(opts: HybridEngineOptions): void {
  * returned record.
  */
 export interface ParsedHybridEngineConfig {
+  readonly frameResourceResolutionPolicy: 'auto' | 'native';
+  readonly maxPersistentFrameResourceBytes: number;
+  readonly restirReservoirScale: 1 | 2 | 3 | 4 | undefined;
   readonly denoiser: ResolvedHybridDenoiser;
   readonly denoiserAutoResolution: DenoiserAutoResolution | undefined;
   readonly neuralWeights: ModelWeights | undefined;
@@ -1378,6 +1440,14 @@ export function deriveHybridEngineConfig(
   const denoiser = resolveHybridDenoiser(opts, preset, oidnModelUrl, neuralTensorStorage);
 
   return {
+    frameResourceResolutionPolicy:
+      opts.frameResourceResolutionPolicy ?? 'auto',
+    maxPersistentFrameResourceBytes:
+      opts.maxPersistentFrameResourceBytes ?? DEFAULT_FRAME_RESOURCE_BUDGET_BYTES,
+    restirReservoirScale:
+      opts.ppgEnabled === true || opts.nrcEnabled === true
+        ? 1
+        : opts.restirReservoirScale,
     // Preset supplies the denoiser fallback (low ⇒ 'atrous'); explicit
     // opts.denoiser wins, then the engine default 'atrous-variance'.
     denoiser: denoiser.denoiser,

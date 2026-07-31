@@ -287,6 +287,32 @@ describe('AdjointPass emissive-only packing and preflight', () => {
     expect(Array.from(override!.triMaterialIds)).toEqual([7]);
   });
 
+  it('does not elide a non-identity transform merely because its delta is small', () => {
+    const scene = unlitScene();
+    const primitive = scene.primitives[0]!;
+    if (primitive.kind !== 'mesh') throw new Error('fixture');
+    const translation = Math.fround(5e-7);
+    const transformed: Scene = {
+      ...scene,
+      primitives: [{
+        ...primitive,
+        transform: asMat4(new Float32Array([
+          1, 0, 0, 0,
+          0, 1, 0, 0,
+          0, 0, 1, 0,
+          translation, 0, 0, 1,
+        ])),
+      }],
+    };
+
+    const override = buildAdjointWorldSpaceGeometryOverride(
+      transformed,
+      () => 0,
+    );
+    expect(override).not.toBeNull();
+    expect(override?.positions[0]).toBe(Math.fround(-1 + translation));
+  });
+
   it('solves skinning and morph targets before applying the primitive transform', () => {
     const identity = new Float32Array([
       1, 0, 0, 0,

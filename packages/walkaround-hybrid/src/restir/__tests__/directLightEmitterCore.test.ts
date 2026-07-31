@@ -30,6 +30,7 @@ interface DecodedEmitter {
   area: number;
   color: [number, number, number];
   castShadowDisabled: number;
+  twoSided: number;
   centroid: [number, number, number];
 }
 
@@ -83,7 +84,9 @@ function decodeEmitters(buffer: ArrayBuffer): DecodedEmitter[] {
       emitterFloats[b + 17]!,
       emitterFloats[b + 18]!,
     ];
-    const castShadowDisabled = emitterFloats[b + 19]!;
+    const emitterFlags = emitterFloats[b + 19]! | 0;
+    const castShadowDisabled = emitterFlags & 1;
+    const twoSided = (emitterFlags & 2) >>> 1;
     out.push({
       vA,
       sourceTriIndex,
@@ -95,6 +98,7 @@ function decodeEmitters(buffer: ArrayBuffer): DecodedEmitter[] {
       area,
       color,
       castShadowDisabled,
+      twoSided,
       centroid: [
         (vA[0] + vB[0] + vC[0]) / 3,
         (vA[1] + vB[1] + vC[1]) / 3,
@@ -261,6 +265,47 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       expect(emitters[0]!.color).toEqual([3, 1.5, 0.5]);
       expect(emitters[0]!.castShadowDisabled).toBe(1);
     }
+  });
+
+  it('packs material-owned two-sided emission for every realtime emitter consumer', () => {
+    const panel: MeshPrimitive = {
+      ...supportTriangle('two-sided-emissive-panel'),
+      castShadow: false,
+      material: {
+        ...emissiveMaterial([1, 0.5, 0.25], 2),
+        doubleSided: true,
+      },
+    };
+    const scene: Scene = {
+      primitives: [panel, supportTriangle('force-tlas')],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    for (const bvhMode of ['merged', 'tlas'] as const) {
+      const buffers = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode });
+      const emitters = stripPlaceholder(decodeEmitters(buffers.emitters.cpuData));
+      expect(emitters).toHaveLength(1);
+      expect(emitters[0]!.castShadowDisabled).toBe(1);
+      expect(emitters[0]!.twoSided).toBe(1);
+      expect(new Float32Array(buffers.emitters.cpuData)[19]).toBe(3);
+    }
+
+    const explicitScene: Scene = {
+      ...scene,
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'two-sided-explicit',
+        meshId: panel.id,
+        color: [1, 1, 1],
+        intensity: 1,
+        castShadow: false,
+      }],
+    };
+    const extra = collectMeshAreaEmitterTrisFromCore(explicitScene);
+    expect(extra).toHaveLength(1);
+    expect(extra[0]!.twoSided).toBe(true);
+    expect(packEmitterTrisForDDGI(extra).data[19]).toBe(3);
   });
 
   it('retains every positive finite dim emitter in the CDF and light proposal', () => {
@@ -611,6 +656,33 @@ describe('core ReSTIR direct-light emitter fidelity', () => {
       expect(emitters[0]!.color).toEqual([4, 2, 1]);
       expect(emitters[0]!.castShadowDisabled).toBe(1);
     }
+  });
+
+  it('retains a finite nanometer-scale mesh-area emitter', () => {
+    const panel: MeshPrimitive = {
+      ...supportTriangle('tiny-panel'),
+      positions: new Float32Array([
+        0, 0, 0,
+        1e-8, 0, 0,
+        0, 1e-8, 0,
+      ]),
+    };
+    const scene: Scene = {
+      primitives: [panel],
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'tiny-panel-emitter',
+        meshId: panel.id,
+        color: [1, 1, 1],
+        intensity: 1,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    const triangles = collectMeshAreaEmitterTrisFromCore(scene);
+    expect(triangles).toHaveLength(1);
+    expect((triangles[0]?.area ?? 0) / 5e-17).toBeCloseTo(1, 6);
+    expect(triangles[0]?.normal).toEqual([0, 0, 1]);
   });
 
   it('routes missing mesh-area DDGI emitter references through structured warnings', () => {

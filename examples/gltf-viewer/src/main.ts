@@ -6,13 +6,24 @@
  * loadGltfWithEngine() -> adapter feature report -> backend recommendation ->
  * createEngine({ gltfAsset }) -> GltfSceneController attachment.
  *
- * Capture protocol: sets globalThis.VITRUM_CAPTURE_READY = true after the
- * engine reports samplesAccumulated >= targetSpp.
+ * Capture protocol: waits for targetSpp accumulated PT samples, or the same
+ * number of rendered frames when the selected backend is real-time.
  */
 
 import { asMat4 } from '@vitrum/core';
-import type { Mat4, Scene, ScenePrimitive } from '@vitrum/core';
-import { loadGltfWithEngine } from '@vitrum/engine/gltf';
+import type { FrameStats, ProgressStats, Scene } from '@vitrum/core';
+import { attachVitrum, computeSceneAABB } from '@vitrum/engine';
+import type { AttachVitrumHandle, CameraLike, SceneAABB } from '@vitrum/engine';
+import type { AttachVitrumSceneController } from '@vitrum/engine/lifecycle';
+import { loadGltfWithEngine, releaseGltfResources } from '@vitrum/engine/gltf';
+import {
+  createAxisAlignedView,
+  createPerspectiveProjection,
+  syncCanvasToDisplaySize,
+  writePerspectiveProjection,
+  type ExampleVec3,
+  type PerspectiveOptions,
+} from '../../shared/exampleHost.js';
 
 const params = new URLSearchParams(location.search);
 const targetSpp = Number(params.get('vitrumSpp')) || 128;
@@ -56,36 +67,12 @@ const REAL_GLTF_ASSETS: Record<string, RealGltfAsset> = {
 };
 
 const canvas = document.getElementById('vitrum-canvas') as HTMLCanvasElement;
-
-const viewMatrix = asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, -3, 1]));
-
-function projectionForCanvas(): Float32Array {
-  const width = Math.max(1, canvas.clientWidth);
-  const height = Math.max(1, canvas.clientHeight);
-  const aspect = width / height;
-  const fovY = Math.PI / 3;
-  const near = 0.1;
-  const far = 100;
-  const f = 1 / Math.tan(fovY / 2);
-  return new Float32Array([
-    f / aspect,
-    0,
-    0,
-    0,
-    0,
-    f,
-    0,
-    0,
-    0,
-    0,
-    (far + near) / (near - far),
-    -1,
-    0,
-    0,
-    (2 * far * near) / (near - far),
-    0,
-  ]);
-}
+const initialViewport = syncCanvasToDisplaySize(canvas);
+const viewMatrix = asMat4(createAxisAlignedView([0, 0, 3]));
+const projMatrix = asMat4(
+  createPerspectiveProjection(initialViewport.width, initialViewport.height),
+);
+let disposeAfterFatalError: (() => void) | undefined;
 
 async function main(): Promise<void> {
   const realAsset = requestedAssetId ? REAL_GLTF_ASSETS[requestedAssetId] : undefined;
@@ -114,13 +101,47 @@ async function main(): Promise<void> {
     },
   });
   const engine = requireEngine(result.engine);
+  let resourcesReleased = false;
+  const releaseResources = (): void => {
+    if (resourcesReleased) return;
+    resourcesReleased = true;
+    releaseGltfResources(result);
+  };
+  disposeAfterFatalError = () => {
+    try {
+      engine.dispose();
+    } finally {
+      releaseResources();
+    }
+  };
+  const sceneBounds = computeSceneAABB(result.controller.scene);
   const renderScene =
     realAsset == null
       ? result.controller.scene
-      : addRealAssetLighting(normalizeSceneForViewer(result.controller.scene));
+      : addRealAssetLighting(result.controller.scene, sceneBounds);
   if (renderScene !== result.controller.scene) {
     engine.setScene(renderScene);
   }
+  const cameraPosition = { x: 0, y: 0, z: 0 };
+  const refreshCameraFrame = (width: number, height: number): void => {
+    const frame = deriveViewerCamera(sceneBounds, width / Math.max(height, 1));
+    viewMatrix.set(createAxisAlignedView(frame.position));
+    writePerspectiveProjection(projMatrix, width, height, frame.projection);
+    cameraPosition.x = frame.position[0];
+    cameraPosition.y = frame.position[1];
+    cameraPosition.z = frame.position[2];
+  };
+  refreshCameraFrame(initialViewport.width, initialViewport.height);
+  const camera: CameraLike = {
+    updateMatrixWorld() {
+      // Re-fit the asset when aspect changes, rather than updating projection
+      // alone and allowing narrow resizes to crop a previously fitted model.
+      refreshCameraFrame(canvas.width, canvas.height);
+    },
+    matrixWorldInverse: { elements: viewMatrix },
+    projectionMatrix: { elements: projMatrix },
+    position: cameraPosition,
+  };
 
   (globalThis as Record<string, unknown>).VITRUM_CAPTURE_FRAME = async (
     colorSpace: 'linear' | 'output' = 'output',
@@ -157,57 +178,85 @@ async function main(): Promise<void> {
         )),
   };
 
-  let frameIndex = 0;
   let captureSignalled = false;
-  let lastSpp = 0;
-  let lastAnimationNowMs: number | null = null;
+  let renderedRealtimeFrames = 0;
+  let capturePaused = false;
 
-  engine.onFrame?.((stats) => {
-    lastSpp = stats.spp ?? lastSpp;
-    (globalThis as Record<string, unknown>).VITRUM_MS_PER_SAMPLE =
-      stats.frameTimeMs > 0 && lastSpp > 0 ? stats.frameTimeMs / lastSpp : 0;
-  });
+  const playbackController: AttachVitrumSceneController = {
+    animations: result.controller.animations,
+    attachEngine(target, options) {
+      result.controller.attachEngine(target, options);
+    },
+    advance(deltaSeconds, options) {
+      if (!capturePaused) result.controller.advance(deltaSeconds, options);
+    },
+  };
 
-  function tick(now: number): void {
-    if ((globalThis as Record<string, unknown>).VITRUM_CAPTURE_PAUSED === true) {
-      requestAnimationFrame(tick);
-      return;
-    }
-
-    if (result.asset.animations.length > 0) {
-      if (lastAnimationNowMs != null) {
-        const deltaSeconds = Math.max(0, (now - lastAnimationNowMs) / 1000);
-        if (deltaSeconds > 0) result.controller.advance(deltaSeconds, { engine });
-      }
-      lastAnimationNowMs = now;
-    }
-
-    const width = Math.max(1, canvas.clientWidth);
-    const height = Math.max(1, canvas.clientHeight);
-    canvas.width = width;
-    canvas.height = height;
-
-    const output = engine.renderFrame({
-      viewMatrix,
-      projMatrix: asMat4(projectionForCanvas()),
-      cameraPosition: [0, 0, 3],
-      viewport: { width, height, devicePixelRatio: 1 },
-      frameIndex,
-      frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,
-    });
-
-    if (output.kind === 'rendered') {
-      frameIndex += 1;
-      if (!captureSignalled && output.samplesAccumulated >= targetSpp) {
+  // loadGltfWithEngine owns import/backend selection; attachVitrum owns the
+  // selected engine's presentation mode, resize propagation, and RAF cadence.
+  // This is required for both swapchain-required and offscreen WebGPU engines.
+  const handle = await attachVitrum({
+    canvas,
+    scene: renderScene,
+    camera,
+    engine,
+    sceneController: playbackController,
+    sceneControllerPlayback: result.asset.animations.length > 0,
+    quality: { samplesTarget: targetSpp },
+    onFrame(stats: FrameStats) {
+      const spp = stats.spp ?? 0;
+      (globalThis as Record<string, unknown>).VITRUM_MS_PER_SAMPLE =
+        stats.frameTimeMs > 0 && spp > 0 ? stats.frameTimeMs / spp : 0;
+      if (
+        !engine.capabilities.accumulates &&
+        spp > 0 &&
+        !captureSignalled &&
+        ++renderedRealtimeFrames >= targetSpp
+      ) {
         (globalThis as Record<string, unknown>).VITRUM_CAPTURE_READY = true;
         captureSignalled = true;
       }
+    },
+    onProgress(progress: ProgressStats) {
+      if (
+        progress.kind === 'pt-spp' &&
+        !captureSignalled &&
+        progress.current >= targetSpp
+      ) {
+        (globalThis as Record<string, unknown>).VITRUM_CAPTURE_READY = true;
+        captureSignalled = true;
+      }
+    },
+  });
+  const dispose = (): void => {
+    try {
+      handle.dispose();
+    } finally {
+      releaseResources();
     }
+  };
+  disposeAfterFatalError = dispose;
 
-    requestAnimationFrame(tick);
-  }
-
-  requestAnimationFrame(tick);
+  Object.defineProperty(globalThis, 'VITRUM_CAPTURE_PAUSED', {
+    configurable: true,
+    enumerable: true,
+    get: () => capturePaused,
+    set: (value: unknown) => {
+      capturePaused = value === true;
+      if (capturePaused) handle.engine.pause();
+      else handle.engine.resume();
+    },
+  });
+  const publicHandle: AttachVitrumHandle = {
+    get engine() { return handle.engine; },
+    get backendId() { return handle.backendId; },
+    get backendProfileId() { return handle.backendProfileId; },
+    get profileId() { return handle.profileId; },
+    dispose,
+    captureFrame: (options) => handle.captureFrame(options),
+  };
+  (globalThis as Record<string, unknown>).VITRUM_HANDLE = publicHandle;
+  (globalThis as Record<string, unknown>).VITRUM_DISPOSE = dispose;
 }
 
 function compressionDecoderReport(asset: RealGltfAsset | undefined): Record<string, unknown> {
@@ -332,88 +381,70 @@ async function decodeBrowserImagePixels(
   const bytes = new Uint8Array(handle.data);
   const blob = new Blob([bytes.buffer], { type: handle.mimeType ?? 'application/octet-stream' });
   const bitmap = await createImageBitmap(blob);
-  const width = bitmap.width;
-  const height = bitmap.height;
-  const canvas2d =
-    typeof OffscreenCanvas !== 'undefined'
-      ? new OffscreenCanvas(width, height)
-      : document.createElement('canvas');
-  canvas2d.width = width;
-  canvas2d.height = height;
-  const ctx = canvas2d.getContext('2d') as
-    | CanvasRenderingContext2D
-    | OffscreenCanvasRenderingContext2D
-    | null;
-  if (ctx == null)
-    throw new Error('[gltf-viewer example] 2D canvas unavailable for texture decode.');
-  ctx.drawImage(bitmap, 0, 0);
-  const pixels = ctx.getImageData(0, 0, width, height).data;
-  bitmap.close();
+  try {
+    const width = bitmap.width;
+    const height = bitmap.height;
+    const canvas2d =
+      typeof OffscreenCanvas !== 'undefined'
+        ? new OffscreenCanvas(width, height)
+        : document.createElement('canvas');
+    canvas2d.width = width;
+    canvas2d.height = height;
+    const ctx = canvas2d.getContext('2d') as
+      | CanvasRenderingContext2D
+      | OffscreenCanvasRenderingContext2D
+      | null;
+    if (ctx == null) {
+      throw new Error('[gltf-viewer example] 2D canvas unavailable for texture decode.');
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    const pixels = ctx.getImageData(0, 0, width, height).data;
+    return {
+      width,
+      height,
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: context.colorSpace,
+      data: pixels,
+    };
+  } finally {
+    bitmap.close();
+  }
+}
+
+interface ViewerCameraFrame {
+  readonly position: ExampleVec3;
+  readonly projection: PerspectiveOptions;
+}
+
+function deriveViewerCamera(bounds: SceneAABB, aspect: number): ViewerCameraFrame {
+  const safeAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const fovY = Math.PI / 3;
+  const tanHalfFovY = Math.tan(fovY / 2);
+  const halfWidth = Math.max(bounds.extent[0] * 0.5, bounds.diagonal * 0.005);
+  const halfHeight = Math.max(bounds.extent[1] * 0.5, bounds.diagonal * 0.005);
+  const halfDepth = Math.max(bounds.extent[2] * 0.5, 0);
+  const distanceToFront =
+    1.15 * Math.max(halfHeight / tanHalfFovY, halfWidth / (tanHalfFovY * safeAspect));
+  const distance = Math.max(
+    halfDepth + distanceToFront,
+    bounds.diagonal,
+    0.01,
+  );
+  const near = Math.max(bounds.diagonal * 0.0001, 0.0001);
+  const far = Math.max(near * 2, distance + halfDepth + bounds.diagonal * 2);
   return {
-    width,
-    height,
-    channels: 4,
-    dataType: 'uint8',
-    colorSpace: context.colorSpace,
-    data: pixels,
+    position: [
+      bounds.center[0],
+      bounds.center[1],
+      bounds.center[2] + distance,
+    ],
+    projection: { fovY, near, far },
   };
 }
 
-function normalizeSceneForViewer(scene: Scene): Scene {
-  const aabb = sceneBounds(scene.primitives);
-  if (aabb == null) return scene;
-  const center: [number, number, number] = [
-    (aabb.min[0] + aabb.max[0]) * 0.5,
-    (aabb.min[1] + aabb.max[1]) * 0.5,
-    (aabb.min[2] + aabb.max[2]) * 0.5,
-  ];
-  const extent = Math.max(
-    aabb.max[0] - aabb.min[0],
-    aabb.max[1] - aabb.min[1],
-    aabb.max[2] - aabb.min[2],
-  );
-  if (!(extent > 0)) return scene;
-  const s = 1.35 / extent;
-  const normalization = asMat4(
-    new Float32Array([
-      s,
-      0,
-      0,
-      0,
-      0,
-      s,
-      0,
-      0,
-      0,
-      0,
-      s,
-      0,
-      -center[0] * s,
-      -center[1] * s,
-      -center[2] * s,
-      1,
-    ]),
-  );
-  return {
-    ...scene,
-    primitives: scene.primitives.map((primitive) => {
-      if (primitive.kind === 'instanced-mesh') {
-        return {
-          ...primitive,
-          instances: primitive.instances.map((instance) =>
-            asMat4(multiplyMat4(normalization, instance)),
-          ),
-        };
-      }
-      return {
-        ...primitive,
-        transform: asMat4(multiplyMat4(normalization, primitive.transform ?? IDENTITY_MAT4)),
-      };
-    }),
-  };
-}
-
-function addRealAssetLighting(scene: Scene): Scene {
+function addRealAssetLighting(scene: Scene, bounds: SceneAABB): Scene {
+  const scale = Math.max(bounds.extent[0], bounds.extent[1], bounds.extent[2], 0.01);
   return {
     ...scene,
     emitters: [
@@ -421,9 +452,14 @@ function addRealAssetLighting(scene: Scene): Scene {
       {
         kind: 'rect-area',
         id: 'gltf-viewer-real-asset-key-light',
-        position: [0, 0.95, 0.65],
-        uAxis: [0.45, 0, 0],
-        vAxis: [0, 0.45, 0],
+        position: [
+          bounds.center[0],
+          bounds.max[1] + scale * 0.2,
+          bounds.max[2] + scale * 0.45,
+        ],
+        uAxis: [scale * 0.3, 0, 0],
+        // uAxis × vAxis points toward -Z, back into the framed asset.
+        vAxis: [0, -scale * 0.3, 0],
         color: [1, 1, 1],
         intensity: 18.0,
       },
@@ -440,60 +476,6 @@ function addRealAssetLighting(scene: Scene): Scene {
       intensity: 1.0,
     },
   };
-}
-
-const IDENTITY_MAT4 = asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
-
-function multiplyMat4(a: Float32Array, b: Float32Array): Mat4 {
-  const out = new Float32Array(16);
-  for (let col = 0; col < 4; col += 1) {
-    for (let row = 0; row < 4; row += 1) {
-      out[col * 4 + row] =
-        a[0 * 4 + row]! * b[col * 4 + 0]! +
-        a[1 * 4 + row]! * b[col * 4 + 1]! +
-        a[2 * 4 + row]! * b[col * 4 + 2]! +
-        a[3 * 4 + row]! * b[col * 4 + 3]!;
-    }
-  }
-  return asMat4(out);
-}
-
-function sceneBounds(
-  primitives: readonly ScenePrimitive[],
-): { min: [number, number, number]; max: [number, number, number] } | null {
-  let found = false;
-  const min: [number, number, number] = [Infinity, Infinity, Infinity];
-  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-  for (const primitive of primitives) {
-    if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') continue;
-    const transform = primitive.transform ?? IDENTITY_MAT4;
-    const positions = primitive.positions;
-    for (let i = 0; i + 2 < positions.length; i += 3) {
-      const p = transformPoint(transform, positions[i]!, positions[i + 1]!, positions[i + 2]!);
-      for (let axis = 0; axis < 3; axis += 1) {
-        const currentMin = min[axis]!;
-        const currentMax = max[axis]!;
-        const value = p[axis]!;
-        min[axis] = Math.min(currentMin, value);
-        max[axis] = Math.max(currentMax, value);
-      }
-      found = true;
-    }
-  }
-  return found ? { min, max } : null;
-}
-
-function transformPoint(
-  m: Float32Array,
-  x: number,
-  y: number,
-  z: number,
-): [number, number, number] {
-  return [
-    m[0]! * x + m[4]! * y + m[8]! * z + m[12]!,
-    m[1]! * x + m[5]! * y + m[9]! * z + m[13]!,
-    m[2]! * x + m[6]! * y + m[10]! * z + m[14]!,
-  ];
 }
 
 function createTriangleBuffer(): Uint8Array {
@@ -531,6 +513,11 @@ function requireEngine<T>(engine: T | undefined): T {
 }
 
 main().catch((err: unknown) => {
+  try {
+    disposeAfterFatalError?.();
+  } catch (cleanupError) {
+    console.error('[gltf-viewer example] cleanup after fatal error failed:', cleanupError);
+  }
   console.error('[gltf-viewer example] fatal:', err);
   (globalThis as Record<string, unknown>).VITRUM_CAPTURE_ERROR = String(err);
 });

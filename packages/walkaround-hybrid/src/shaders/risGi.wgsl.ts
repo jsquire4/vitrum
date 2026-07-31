@@ -88,8 +88,6 @@ ${reservoirGiAccessorsWgsl({ storeReadWriteBinding: 'reservoirGiCurrent' })}
 // Base RIS-GI candidate count. Scaled per pixel by adaptive-sampling tier:
 // tier=1 → M_GI_eff = 4; tier=2 → 8 (default); tier=4 → 16.
 const M_GI_BASE: u32 = 8u;
-const RECONNECT_MAX_DIST: f32 = 100.0;
-const NORMAL_BIAS_GI: f32 = 1e-3;
 
 // sampleCosineHemisphere is the canonical helper from @vitrum/shared-samplers'
 // bsdfPrimitives.wgsl, injected into the composed shade module via composeWgsl
@@ -98,13 +96,13 @@ const NORMAL_BIAS_GI: f32 = 1e-3;
 @compute @workgroup_size(8, 8, 1)
 fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let fullDims = ubo.screenSize;
-  let halfDims = fullDims / 2u;
+  let halfDims = restirGiDimensions();
   if (any(gid.xy >= halfDims)) { return; }
 
   let pixelIdxGi = gid.y * halfDims.x + gid.x;
 
   // Sample point in full-res: centre of the 2×2 quad.
-  let fullPx = gid.xy * 2u + 1u;
+  let fullPx = restirGiFullPixel(gid.xy);
 
   var rng = pcgInit(
     gid.x ^ (ubo.frameSeed * 0xA5A5u),
@@ -201,6 +199,13 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   var r: ReservoirGI = emptyReservoirGI();
   r.xv = pos;
   r.nv = normal;
+  r.receiverMaterialKey = restir_gi_receiver_domain_key(
+    hit.matColorPacked,
+    receiverMaterialWord,
+    hit.indices.w,
+    select(0u, hit.instanceIndex, ubo.bvhMode == 1u),
+    receiverPayload,
+  );
   r.historyEpoch = currentGrisEpoch;
 
   // Adaptive-sampling tier read at the full-res quad centre. Clamped to
@@ -249,9 +254,9 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     }
 
     // Trace from the visible point along wi. Reconnection vertex is the
-    // first BVH hit (or sky-miss at RECONNECT_MAX_DIST).
+    // first BVH hit (or a scene-scale-relative sky-miss proxy).
     // WS1 — offset the bounce-ray origin along the GEOMETRIC normal.
-    let bounceRay = Ray(pos + geoNormal * NORMAL_BIAS_GI, wi);
+    let bounceRay = Ray(pos + geoNormal * walkaroundRayOriginBias(), wi);
     let bounceHit = traceSceneFirstHitAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
 
@@ -305,7 +310,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       // map along wi (rotationY-aware) as the reconnection radiance; envRadiance
       // falls back to the scalar skyTint × skyIrradiance with no HDRI bound
       // (no-HDRI byte-identity: the cosine RIS shortcut below is unchanged).
-      xs = pos + wi * RECONNECT_MAX_DIST;
+      xs = pos + wi * walkaroundReconnectMaxDistance();
       ns = -wi;
       Lo = envRadiance(wi);
     }
@@ -315,17 +320,24 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     // while glossy/metal/clearcoat/sheen receivers retain their actual target.
     var candidateVisibility: f32 = 1.0;
     var pHat: f32;
-    var tMax = 1e20;
+    var tMax = INFINITY;
     if (sampleKind == GI_SAMPLE_SURFACE) {
-      tMax = max(0.0, length(xs - pos) - 2e-3);
+      tMax = max(0.0, safe_length(xs - pos) - walkaroundRayEndMargin());
     }
     let shadowTint = traceSceneAlphaTintTransmittanceTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
 
-      pos + geoNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
+      pos + geoNormal * walkaroundRayOriginBias(), wi, tMax, ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
     );
     candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
+    var receiverLo = Lo;
+    if (sampleKind == GI_SAMPLE_ENVIRONMENT) {
+      receiverLo = walkaroundScaleEnvironmentRadiance(
+        receiverLo,
+        receiverPayload.envMapIntensity,
+      );
+    }
     pHat = restir_gi_receiver_phat_from_payload(
       pos,
       normal,
@@ -333,7 +345,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       safe_normalize(-primaryRay.direction),
       receiverPayload,
       xs,
-      Lo,
+      receiverLo,
     ) * candidateVisibility;
     if (!reservoirGiFinite(pHat) || !(pHat > 0.0) || !reservoirGiFinite(candidateVisibility) || !(candidateVisibility > 0.0)) {
       recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);

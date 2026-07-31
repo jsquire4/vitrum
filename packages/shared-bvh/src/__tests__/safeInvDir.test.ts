@@ -10,23 +10,22 @@
  * exact-zero direction yielded inv-component `0`, collapsing the X
  * slab's t0/t1 to 0 regardless of origin position. Slab tests passed
  * (tNear == tFar == 0) even when the ray's origin was outside the AABB
- * on the parallel axis. The fix replaces `sign(d.x) * 1e30` with
- * `select(-1e30, 1e30, d.x >= 0.0)` so the sentinel always carries a
- * definite sign even for d.x = 0.
+ * on the parallel axis. The current helper uses the largest finite f32 for
+ * exact zero and saturates overflowing reciprocals to that same bound. This
+ * keeps the definite sign while preserving the full finite reciprocal range.
  */
 
 import { describe, expect, it } from 'vitest';
 
-const NEAR_ZERO = 1e-30;
-const SENTINEL = 1e30;
+const SENTINEL = 3.402823e38;
 
 /** Mirror of the WGSL safeInvDir post-fix. d.x = 0 → +SENTINEL. */
 function safeInvDir(d: [number, number, number]): [number, number, number] {
   function safeRecip(v: number): number {
-    if (Math.abs(v) < NEAR_ZERO) {
+    if (v === 0) {
       return v >= 0 ? SENTINEL : -SENTINEL;
     }
-    return 1.0 / v;
+    return Math.max(-SENTINEL, Math.min(SENTINEL, 1.0 / v));
   }
   return [safeRecip(d[0]), safeRecip(d[1]), safeRecip(d[2])];
 }
@@ -56,9 +55,13 @@ describe('safeInvDir mirror — post-fix WGSL semantics', () => {
     expect(inv[2]).toBe(SENTINEL);
   });
 
-  it('negative-near-zero direction component yields -SENTINEL', () => {
+  it('negative reciprocal overflow saturates to -f32 max', () => {
+    expect(safeInvDir([-1e-39, 1, 0])[0]).toBe(-SENTINEL);
+  });
+
+  it('finite tiny direction components retain their reciprocal magnitude', () => {
     const inv = safeInvDir([-1e-31, 1, 0]);
-    expect(inv[0]).toBe(-SENTINEL);
+    expect(inv[0]).toBe(-1e31);
     expect(inv[1]).toBe(1);
     expect(inv[2]).toBe(SENTINEL);
   });

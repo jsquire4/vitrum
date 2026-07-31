@@ -10,10 +10,14 @@ export const trace_scene_function = /* glsl */`
 	// For more information, refer to: https://github.com/gkjohnson/three-gpu-pathtracer/pull/457
 	int traceScene(
 		Ray ray, const in FogMaterial fogMaterial, inout SurfaceHit surfaceHit
-	) {
+		) {
 
-		int result = NO_HIT;
-		bool hit = bvhIntersectFirstHit( bvh, ray.origin, ray.direction, surfaceHit.faceIndices, surfaceHit.faceNormal, surfaceHit.barycoord, surfaceHit.side, surfaceHit.dist );
+			int result = NO_HIT;
+			// BVH traversal writes dist only when it accepts a triangle. Fog
+			// free-flight comparison must therefore start from an explicit miss
+			// distance rather than reading an uninitialized SurfaceHit field.
+			surfaceHit.dist = INFINITY;
+			bool hit = bvhIntersectFirstHit( bvh, ray.origin, ray.direction, surfaceHit.faceIndices, surfaceHit.faceNormal, surfaceHit.barycoord, surfaceHit.side, surfaceHit.dist );
 
 		#if FEATURE_FOG
 

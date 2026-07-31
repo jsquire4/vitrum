@@ -95,5 +95,20 @@ describe('cascadeDims override (B3b)', () => {
     expect(() => new RCDispatcher([
       { probes: [2, 2, 2], rays: 16, intervalNear: 4, intervalFar: 4 },
     ])).toThrow(/interval/);
+    expect(() => new RCDispatcher([
+      { probes: [2, 2, 2], rays: 16, intervalNear: 1, intervalFar: 4 },
+    ])).toThrow(/intervalNear must be 0/);
+    expect(() => new RCDispatcher([
+      { probes: [2, 2, 2], rays: 16, intervalNear: 0, intervalFar: 4 },
+      { probes: [1, 1, 1], rays: 64, intervalNear: 5, intervalFar: 8 },
+    ])).toThrow(/must equal the previous cascade intervalFar/);
+    expect(() => new RCDispatcher([
+      {
+        probes: [2, 2, 2],
+        rays: 16,
+        intervalNear: 0,
+        intervalFar: Number.MIN_VALUE,
+      },
+    ])).toThrow(/f32 interval/);
   });
 });

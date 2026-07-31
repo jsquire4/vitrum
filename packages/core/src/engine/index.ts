@@ -21,7 +21,12 @@
 // Sweep A-7 split this module into six sibling files; this index re-exports
 // every sibling so `@vitrum/core`'s public surface is unchanged.
 
-import type { Scene, ScenePrimitive, SceneEmitter } from '../scene/index.js';
+import type {
+  Scene,
+  SceneEmitter,
+  ScenePrimitive,
+  ScenePrimitivePatch,
+} from '../scene/index.js';
 import type { BackendTexture, FrameInput, FrameOutput } from '../frame.js';
 import type { InverseSession, InverseSessionOptions } from '../inverse.js';
 import type { EngineState } from './state.js';
@@ -151,7 +156,7 @@ export interface Engine {
    *  full `setScene` rebuild if the diff is too disruptive (e.g., changing
    *  geometry vertex counts). Available only when
    *  `capabilities.supportsIncrementalScene = true`. */
-  updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
+  updatePrimitive?(id: string, patch: ScenePrimitivePatch): void;
 
   /** Add one whole primitive to the live scene without the host re-authoring
    *  the full {@link Scene} and calling {@link setScene}. Unlike

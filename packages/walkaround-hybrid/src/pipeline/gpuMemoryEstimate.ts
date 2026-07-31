@@ -219,17 +219,22 @@ export function estimateFrameResourcesMemory(
   const byTextureFormat: Record<string, number> = {};
   const byBufferUsage: Record<string, number> = {};
   let total = 0;
+  // Frame-resource lifetime aliases intentionally expose one GPU object under
+  // multiple semantic field names. Count each physical allocation once.
+  const seen = new Set<object>();
 
   const addSection = (cat: string, section: GpuMemoryResourceSection): void => {
     let catBytes = 0;
     for (const fieldName of Object.keys(section)) {
       const obj = section[fieldName] as Record<string, unknown> | null | undefined;
       if (obj == null) continue;
+      if (seen.has(obj)) continue;
 
       if (typeof obj.format === 'string' &&
           typeof obj.width === 'number' &&
           typeof obj.height === 'number') {
         const tex = obj as unknown as MeasurableTexture;
+        seen.add(obj);
         const bytes = textureBytes(tex);
         catBytes += bytes;
         byTextureFormat[tex.format] = (byTextureFormat[tex.format] ?? 0) + bytes;
@@ -239,6 +244,7 @@ export function estimateFrameResourcesMemory(
       if (typeof obj.size === 'number' &&
           typeof obj.usage === 'number') {
         const buf = obj as unknown as MeasurableBuffer;
+        seen.add(obj);
         const bytes = buf.size;
         catBytes += bytes;
         const usageClass = classifyBufferUsage(buf.usage);

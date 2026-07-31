@@ -131,6 +131,12 @@ const PT_WEBGPU_LITE_MATERIALS: BackendSupportManifest['materials'] =
     envMapIntensity: 'unsupported',
     anisotropy: 'unsupported',
     anisotropyRotation: 'unsupported',
+    // Lite transports surface refraction plus absorption-only Beer attenuation.
+    // It has no medium collision/phase walk, so authored scattering must select
+    // the full tier instead of being accepted and silently discarded.
+    scatteringCoefficient: 'unsupported',
+    scatteringAnisotropy: 'unsupported',
+    scatteringCoefficientRGB: 'unsupported',
     // Scalar tint/roughness are consumed, but lite omits per-face normal maps.
     frontLayer: 'approximate',
     backLayer: 'approximate',

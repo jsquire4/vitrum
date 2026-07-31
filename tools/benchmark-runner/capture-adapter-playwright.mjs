@@ -1,5 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { resolveUniqueVisibleCaptureSurface } from './captureSurfaceValidation.mjs';
 
 /**
  * Launch a Playwright Chromium browser configured for WebGPU / WebGL2 capture.
@@ -144,8 +145,7 @@ try {
           return typeof s === 'string' && s.length > 0 ? s : 'canvas';
         });
 
-  const locator = page.locator(selector).first();
-  await locator.waitFor({ timeout: Math.max(1000, timeoutMs / 2) });
+  const locator = await resolveUniqueVisibleCaptureSurface(page, selector);
   await mkdir(dirname(outputPng), { recursive: true });
   await locator.screenshot({ path: outputPng });
 

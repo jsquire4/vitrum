@@ -149,14 +149,10 @@ function ddgiSampleCPU(
       else if (opt.cosine === 'wrapNoFloor') { const s = Math.max(0, d * 0.5 + 0.5); w *= s * s; }
     }
     if (opt.useChebyshev && probeDist > 1e-3) {
-      const surfDir = norm(sub(probeWorld, biased)); // dir from probe to surface = -(surf->probe); receiver uses dirV = surf->probe? see code
-      // ddgiSample: probeDirToSurf = normalize(biased - probeWorld); dirV = -probeDirToSurf = normalize(probeWorld-biased)
-      const dirV = norm(sub(probeWorld, biased));
-      const { mean, var_ } = meanDepth(probeWorld, scale(dirV, -1)); // visibility stored along surf->probe? atlas dir = ray.direction; query dir matches probe->surface
-      // Actually receiver queries the atlas at dirV (probe->surface-ish). The
-      // stored depth is along ray.direction = outgoing from probe. The cheby
-      // distance compared is probeDist.
-      void surfDir;
+      // Probe blend stores moments under the outward probe-ray direction. The
+      // receiver therefore queries the probe→surface hemisphere directly.
+      const probeToSurface = norm(sub(biased, probeWorld));
+      const { mean, var_ } = meanDepth(probeWorld, probeToSurface);
       let cheby = 1;
       if (probeDist > mean) {
         const dminus = Math.max(0, probeDist - mean);

@@ -81,6 +81,8 @@ describe('DDGI structured error reporting', () => {
   it('reports GPU init failure through the structured error sink', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(ProbeUpdatePass.prototype, 'init').mockResolvedValue(false);
+    vi.spyOn(ProbeUpdatePass.prototype, 'initializationRetryable', 'get')
+      .mockReturnValue(false);
     const received: EngineError[] = [];
 
     const ddgi = new DDGI({ onError: (error) => received.push(error) });
@@ -103,6 +105,8 @@ describe('DDGI structured error reporting', () => {
   it('routes GPU init disabled fallback through the structured warning sink', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     vi.spyOn(ProbeUpdatePass.prototype, 'init').mockResolvedValue(false);
+    vi.spyOn(ProbeUpdatePass.prototype, 'initializationRetryable', 'get')
+      .mockReturnValue(false);
     const warnings: EngineWarning[] = [];
     const errors: EngineError[] = [];
 

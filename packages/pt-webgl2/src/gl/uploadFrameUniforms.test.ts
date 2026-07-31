@@ -19,6 +19,7 @@ function frameWithBdpt(bdpt: boolean): FrameUniforms {
     backgroundBlur: 0,
     spectralEnabled: false,
     backgroundAlpha: 1,
+    rayOriginBias: 0.00025,
     bdpt,
     bdptMaxLightBounces: 6,
     bdptSceneCenter: [3, 5, 7],
@@ -54,6 +55,7 @@ describe('uploadFrameUniforms BDPT pass parity', () => {
     expect(calls).toContain('float:uBdptSceneRadius:11');
     expect(calls).toContain('float:uBdptSharedWavelength:550');
     expect(calls).toContain('float:uBdptSharedWavelengthPdf:0.25');
+    expect(calls).toContain('float:uRayOriginBias:0.00025');
   });
 
   it('does not upload BDPT-only uniforms for the unidirectional program', () => {
@@ -62,5 +64,6 @@ describe('uploadFrameUniforms BDPT pass parity', () => {
 
     expect(calls.some((call) => call.includes('uBdptScene'))).toBe(false);
     expect(calls.some((call) => call.includes('uBdptSharedWavelength'))).toBe(false);
+    expect(calls).toContain('float:uRayOriginBias:0.00025');
   });
 });

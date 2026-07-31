@@ -24,7 +24,7 @@ import {
   DDGI_PROBE_BACKFACE_THRESHOLD,
   DDGI_PROBE_MAX_OFFSET_NORMALIZED,
   DDGI_PROBE_MAX_RELOCATION_STEP_NORMALIZED,
-  DDGI_PROBE_MIN_HIT_DISTANCE,
+  DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED,
 } from '../probeState.js';
 
 export const PROBE_CLASSIFY_RELOCATE_WGSL = /* wgsl */`
@@ -32,7 +32,7 @@ const RAYS_PER_PROBE: u32 = ${RAYS_PER_PROBE}u;
 const BACKFACE_THRESHOLD: f32 = ${DDGI_PROBE_BACKFACE_THRESHOLD};
 const MAX_OFFSET_NORMALIZED: f32 = ${DDGI_PROBE_MAX_OFFSET_NORMALIZED};
 const MAX_RELOCATION_STEP_NORMALIZED: f32 = ${DDGI_PROBE_MAX_RELOCATION_STEP_NORMALIZED};
-const MIN_HIT_DISTANCE: f32 = ${DDGI_PROBE_MIN_HIT_DISTANCE};
+const MIN_HIT_DISTANCE_NORMALIZED: f32 = ${DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED};
 const IRRADIANCE_STRIDE: u32 = ${IRR_STRIDE}u;
 const STATE_LOCAL_X: u32 = ${IRR_PROBE_STATE_LOCAL_X}u;
 const STATE_LOCAL_Y: u32 = ${IRR_PROBE_STATE_LOCAL_Y}u;
@@ -74,19 +74,37 @@ fn stateCoord(probeIdx: u32) -> vec2u {
 }
 
 fn safeDirection(direction: vec3f) -> vec3f {
-  let len2 = dot(direction, direction);
-  if (!(len2 > 1.0e-12) || !(len2 < 1.0e20)) { return vec3f(0.0); }
-  return direction * inverseSqrt(len2);
+  let maxComponent = max(abs(direction.x), max(abs(direction.y), abs(direction.z)));
+  if (
+    !(maxComponent > 0.0) ||
+    !(maxComponent <= 3.402823e+38)
+  ) {
+    return vec3f(0.0);
+  }
+  let scaled = direction / maxComponent;
+  let scaledLen2 = dot(scaled, scaled);
+  if (!(scaledLen2 > 0.0) || !(scaledLen2 <= 3.0)) {
+    return vec3f(0.0);
+  }
+  return scaled * inverseSqrt(scaledLen2);
 }
 
 fn clampOffset(offset: vec3f) -> vec3f {
   let maxLength = MAX_OFFSET_NORMALIZED * gridParams.spacing;
   let guardedMaxLength =
     max(0.0, maxLength - gridParams.spacing * 1.0e-6);
-  let len2 = dot(offset, offset);
-  if (!(len2 >= 0.0) || !(len2 < 1.0e20)) { return vec3f(0.0); }
-  if (len2 <= maxLength * maxLength) { return offset; }
-  return offset * (guardedMaxLength * inverseSqrt(max(len2, 1.0e-12)));
+  let maxComponent = max(abs(offset.x), max(abs(offset.y), abs(offset.z)));
+  if (!(maxComponent >= 0.0) || !(maxComponent <= 3.402823e+38)) {
+    return vec3f(0.0);
+  }
+  if (maxComponent == 0.0) { return offset; }
+  let scaled = offset / maxComponent;
+  let scaledLength = length(scaled);
+  if (!(scaledLength > 0.0) || !(scaledLength <= 1.732051)) {
+    return vec3f(0.0);
+  }
+  if (maxComponent <= maxLength / scaledLength) { return offset; }
+  return scaled * (guardedMaxLength / scaledLength);
 }
 
 @compute @workgroup_size(64, 1, 1)
@@ -101,7 +119,8 @@ fn probeClassifyRelocate(@builtin(global_invocation_id) gid: vec3u) {
   let previous = textureLoad(irradiancePrev, vec2i(coord), 0);
   // The packed rgba16float texel stores scale-independent normalized offsets.
   let currentOffset = clampOffset(previous.xyz * gridParams.spacing);
-  let minFrontDistance = max(MIN_HIT_DISTANCE, gridParams.spacing * 0.05);
+  let minFrontDistance =
+    gridParams.spacing * MIN_HIT_DISTANCE_NORMALIZED;
   let maxStep = gridParams.spacing * MAX_RELOCATION_STEP_NORMALIZED;
 
   var closestBackfaceDistance = 1.0e20;
@@ -148,7 +167,7 @@ fn probeClassifyRelocate(@builtin(global_invocation_id) gid: vec3u) {
     }
 
     let maxAxis = max(abs(direction.x), max(abs(direction.y), abs(direction.z)));
-    let voxelPlaneDistance = gridParams.spacing / max(maxAxis, 1.0e-6);
+    let voxelPlaneDistance = gridParams.spacing / maxAxis;
     if (
       ray.hitDistance < MISS_DISTANCE &&
       ray.hitDistance <= voxelPlaneDistance

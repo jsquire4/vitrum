@@ -65,7 +65,9 @@ function applyBeerLambert(
   thickness: number | undefined,
   attDist: number | undefined,
 ): ColorLike {
-  if (thickness === undefined || attDist === undefined) return attCol;
+  if (thickness === undefined || attDist === undefined) {
+    return { r: 1, g: 1, b: 1 };
+  }
   if (!Number.isFinite(thickness) || !Number.isFinite(attDist)) return attCol;
   if (thickness <= 0 || attDist <= 0) return attCol;
   const k = thickness / attDist;

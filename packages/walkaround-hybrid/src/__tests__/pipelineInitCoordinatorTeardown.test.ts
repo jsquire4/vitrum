@@ -100,6 +100,64 @@ describe('PipelineInitCoordinator — deferred teardown on dispose-races-poll', 
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
+  it('reads and rejects an invalid preferred format once before allocation or publication', () => {
+    const gpuMutation = vi.fn();
+    const device = {
+      createBuffer: gpuMutation,
+      createTexture: gpuMutation,
+      createShaderModule: gpuMutation,
+      createPipelineLayout: gpuMutation,
+      queue: {
+        writeBuffer: gpuMutation,
+        writeTexture: gpuMutation,
+        submit: gpuMutation,
+      },
+    } as unknown as GPUDevice;
+    const publishBvh = vi.fn();
+    const publishPipeline = vi.fn();
+    const isSceneReadyForBvh = vi.fn(() => true);
+    const { host, spies } = makePollingHost({
+      device,
+      publishBvh,
+      publishPipeline,
+      isSceneReadyForBvh,
+    });
+    let preferredReads = 0;
+    Object.defineProperty(host, 'preferredSwapChainFormat', {
+      configurable: true,
+      get: () => {
+        preferredReads += 1;
+        return (
+          preferredReads === 1 ? 'depth24plus' : 'bgra8unorm'
+        ) as GPUTextureFormat;
+      },
+    });
+    const coord = new PipelineInitCoordinator(host);
+
+    coord.startInit();
+
+    expect(preferredReads).toBe(1);
+    expect(gpuMutation).not.toHaveBeenCalled();
+    expect(isSceneReadyForBvh).not.toHaveBeenCalled();
+    expect(publishBvh).not.toHaveBeenCalled();
+    expect(publishPipeline).not.toHaveBeenCalled();
+    expect(spies.rollbackBvh).not.toHaveBeenCalled();
+    expect(spies.reportError).toHaveBeenCalledOnce();
+    expect(spies.reportError).toHaveBeenCalledWith({
+      kind: 'render',
+      message: expect.stringMatching(
+        /preferredSwapChainFormat.*unsupported.*depth24plus/i,
+      ),
+      fatal: true,
+      raw: expect.any(RangeError),
+    });
+    expect(spies.setState.mock.calls.map(([state]) => state)).toEqual([
+      'error',
+    ]);
+    expect(coord.initSeq).toBe(0);
+    expect(coord.initRunning).toBe(false);
+  });
+
   it('finalises the deferred teardown (pipeline+DDGI+RC+skinning) when dispose races the readiness poll', async () => {
     const { host, spies } = makePollingHost();
     const coord = new PipelineInitCoordinator(host);

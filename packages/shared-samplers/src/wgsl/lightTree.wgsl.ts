@@ -69,18 +69,25 @@ fn lt_coneFactor(
   c: vec3f,
   radius: f32,
 ) -> f32 {
-  let al = dot(axis, axis);
-  if (al < 1e-12) { return 1.0; }            // unoriented / full sphere — no culling
+  let axisScale = max(abs(axis.x), max(abs(axis.y), abs(axis.z)));
+  if (!(axisScale > 0.0) || axisScale > 3.402823e38) {
+    return 1.0; // unoriented / full sphere, or invalid input
+  }
+  let scaledAxis = axis / axisScale;
+  let axisLength = length(scaledAxis);
   let dv = p - c;
-  let dl2 = dot(dv, dv);
-  // CPU compares distance <= max(radius, 1e-12), so the squared-distance
-  // mirror must square that absolute floor as well.
-  if (dl2 <= max(radius * radius, 1e-24)) { return 1.0; } // inside bounding sphere
-  let dl = sqrt(dl2);
-  let d = dv * inverseSqrt(dl2);
-  let a = axis * inverseSqrt(al);
+  let distanceScale = max(abs(dv.x), max(abs(dv.y), abs(dv.z)));
+  if (!(distanceScale > 0.0) || distanceScale > 3.402823e38) {
+    return 1.0;
+  }
+  let scaledDistance = dv / distanceScale;
+  let scaledDistanceLength = length(scaledDistance);
+  let radiusOverDistance = (radius / distanceScale) / scaledDistanceLength;
+  if (radiusOverDistance >= 1.0) { return 1.0; } // inside bounding sphere
+  let d = scaledDistance / scaledDistanceLength;
+  let a = scaledAxis / axisLength;
   let cosTheta = clamp(dot(a, d), -1.0, 1.0);
-  let sinThetaU = clamp(radius / dl, 0.0, 1.0);
+  let sinThetaU = clamp(radiusOverDistance, 0.0, 1.0);
   let cosThetaU = sqrt(max(0.0, 1.0 - sinThetaU * sinThetaU));
   var cosAdjusted = 1.0;
   if (cosTheta < cosThetaU) {

@@ -27,7 +27,7 @@ export const common_functions = /* glsl */`
 #endif
 
 #ifndef INFINITY
-#define INFINITY 1e20
+#define INFINITY 3.402823466e38
 #endif
 
 // Utilities

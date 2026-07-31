@@ -13,6 +13,7 @@
 
 import type { MaterialSpec } from '@vitrum/core';
 import {
+  materialSpecScalarEmissiveLe,
   materialSpecTriColor,
   quantizePackedMaterialTransmission,
   toProductionEmissiveRadiance,
@@ -238,19 +239,7 @@ function materialSurfaceTextureId(
  * still uses map-averaged power through `materialSpecEmissiveLe`.
  */
 function scalarProductionEmissiveLe(m: MaterialSpec): [number, number, number] | null {
-  const production = toProductionEmissiveRadiance(m);
-  const em = production.emissive;
-  if (!em) return null;
-  const ei = production.emissiveIntensity ?? 1;
-  if (!(ei > 0)) return null;
-  if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
-  const out: [number, number, number] = [
-    em[0] * ei,
-    em[1] * ei,
-    em[2] * ei,
-  ];
-  if (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) return null;
-  return out;
+  return materialSpecScalarEmissiveLe(toProductionEmissiveRadiance(m));
 }
 
 /**

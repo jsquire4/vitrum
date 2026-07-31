@@ -21,6 +21,11 @@ export {
 } from './createEngine.js';
 export { auditSceneNeedsTlas, type SceneTlasAudit } from '@vitrum/core';
 export { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
+export {
+  createOffscreenPresenter,
+  type CreateOffscreenPresenterArgs,
+  type OffscreenPresenter,
+} from './presentOffscreen.js';
 
 // Phase-0 productization — graceful-degradation adapter probe. The function
 // lives here (it imports the real backend limit thresholds); the data shape

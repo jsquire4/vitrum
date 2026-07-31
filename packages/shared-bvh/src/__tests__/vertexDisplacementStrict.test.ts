@@ -140,7 +140,9 @@ describe('strict CPU displacement contract', () => {
 
   it.each([
     [{ wrapS: 'border' }, 'wrapS has unsupported mode'],
+    [{ magFilter: 'cubic' }, 'magFilter must be "nearest" or "linear"'],
     [{ magFilter: 'linear', minFilter: 'nearest' }, 'requires matching magFilter/minFilter'],
+    [{ mipFilter: 'nearest' }, 'cannot be honored by the base-level CPU displacement sampler'],
     [{ mipFilter: 'linear' }, 'cannot be honored by the base-level CPU displacement sampler'],
   ])('rejects sampler semantics it cannot honor %#', (sampler, message) => {
     expect(() => maybeDisplaceMeshPositions(vertexInput(map(
@@ -167,7 +169,94 @@ describe('strict CPU displacement contract', () => {
       minFilter: 'linear',
     }), { uvs }));
     expect(nearest?.[2]).toBeCloseTo(1);
-    expect(linear?.[2]).toBeCloseTo(0.6);
+    // Normalized texture coordinates address texel centres at
+    // (i + 0.5) / width, so u=0.6 lies 70% of the way from texel 0 to 1.
+    expect(linear?.[2]).toBeCloseTo(0.7);
+  });
+
+  it('uses normalized-sampler texel centres for nearest filtering', () => {
+    const data = new Float32Array([0, 0.25, 0.5, 1]);
+    const descriptor = { width: 4, height: 1, channels: 1 };
+    const uvs = new Float32Array([0.2, 0, 0.2, 0, 0.2, 0]);
+    const displaced = maybeDisplaceMeshPositions(vertexInput(map(data, descriptor, {
+      wrapS: 'clamp-to-edge',
+      wrapT: 'clamp-to-edge',
+      magFilter: 'nearest',
+      minFilter: 'nearest',
+    }), { uvs }));
+
+    // floor(0.2 * 4) = texel 0. The old round(u * (width - 1)) path
+    // incorrectly selected texel 1.
+    expect(displaced?.[2]).toBeCloseTo(0);
+  });
+
+  it.each([
+    ['repeat', 0, 0.5],
+    ['repeat', 0.875, 0.75],
+    ['clamp-to-edge', 0.25, 0],
+    ['mirrored-repeat', 1.25, 1],
+  ] as const)(
+    'applies %s independently to linear-filter texel taps',
+    (wrapS, u, expectedHeight) => {
+      const data = new Float32Array([0, 1]);
+      const descriptor = { width: 2, height: 1, channels: 1 };
+      const uvs = new Float32Array([u, 0, u, 0, u, 0]);
+      const displaced = maybeDisplaceMeshPositions(vertexInput(map(data, descriptor, {
+        wrapS,
+        wrapT: 'clamp-to-edge',
+        magFilter: 'linear',
+        minFilter: 'linear',
+      }), { uvs }));
+      expect(displaced?.[2]).toBeCloseTo(expectedHeight);
+    },
+  );
+
+  it.each([
+    ['repeat', 0, 0.5],
+    ['repeat', -0.125, 0.75],
+    ['clamp-to-edge', 0.25, 0],
+    ['mirrored-repeat', 1.25, 1],
+  ] as const)(
+    'applies %s independently to vertical linear-filter texel taps',
+    (wrapT, v, expectedHeight) => {
+      const data = new Float32Array([0, 1]);
+      const descriptor = { width: 1, height: 2, channels: 1 };
+      const uvs = new Float32Array([0, v, 0, v, 0, v]);
+      const displaced = maybeDisplaceMeshPositions(vertexInput(map(data, descriptor, {
+        wrapS: 'clamp-to-edge',
+        wrapT,
+        magFilter: 'linear',
+        minFilter: 'linear',
+      }), { uvs }));
+      expect(displaced?.[2]).toBeCloseTo(expectedHeight);
+    },
+  );
+
+  it('decodes explicitly sRGB CPU pixels before filtering displacement heights', () => {
+    const displacementMap = map(
+      new Float32Array([0.5]),
+      { __vitrum_hint__: { channels: 1, dataType: 'float32', colorSpace: 'srgb' } },
+    );
+    const displaced = maybeDisplaceMeshPositions(vertexInput(displacementMap));
+    expect(displaced?.[2]).toBeCloseTo(0.21404114, 6);
+  });
+
+  it('rejects an unknown CPU pixel color space instead of guessing', () => {
+    const displacementMap = map(
+      new Float32Array([0.5]),
+      { __vitrum_hint__: { channels: 1, dataType: 'float32', colorSpace: 'display-p3' } },
+    );
+    expect(() => maybeDisplaceMeshPositions(vertexInput(displacementMap)))
+      .toThrow('colorSpace must be "linear" or "srgb"');
+  });
+
+  it('samples the red lane only from multi-channel height payloads', () => {
+    const displacementMap = map(
+      new Float32Array([0.25, 0.75, 1, 0]),
+      { channels: 4, colorSpace: 'linear' },
+    );
+    const displaced = maybeDisplaceMeshPositions(vertexInput(displacementMap));
+    expect(displaced?.[2]).toBeCloseTo(0.25);
   });
 
   it('rejects outputs that overflow float32', () => {
@@ -199,6 +288,106 @@ describe('strict CPU displacement contract', () => {
     expect(() => maybeMicrodisplaceMeshGeometry(microInput(1, {
       indices: new Uint32Array([0, 1, 3]),
     }))).toThrow('is outside vertexCount 3');
+  });
+
+  it('welds regenerated normals across indexed source-triangle boundaries', () => {
+    const invSqrt2 = Math.SQRT1_2;
+    const result = maybeMicrodisplaceMeshGeometry(microInput(1, {
+      material: material(map(new Float32Array([0])), {
+        displacementSubdivisions: 1,
+      }),
+      positions: new Float32Array([
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1,
+      ]),
+      normals: new Float32Array([
+        0, invSqrt2, invSqrt2,
+        0, invSqrt2, invSqrt2,
+        0, 0, 1,
+        0, 1, 0,
+      ]),
+      uvs: new Float32Array([
+        0, 0,
+        1, 0,
+        0, 1,
+        0, 1,
+      ]),
+      indices: new Uint32Array([0, 1, 2, 1, 0, 3]),
+    }));
+
+    expect(result).not.toBeNull();
+    const sharedMidpointNormals: number[][] = [];
+    for (let vertex = 0; vertex < result!.positions.length / 3; vertex += 1) {
+      const offset = vertex * 3;
+      if (
+        Math.abs(result!.positions[offset]! - 0.5) < 1e-6 &&
+        Math.abs(result!.positions[offset + 1]!) < 1e-6 &&
+        Math.abs(result!.positions[offset + 2]!) < 1e-6
+      ) {
+        sharedMidpointNormals.push(Array.from(result!.normals.subarray(offset, offset + 3)));
+      }
+    }
+    expect(sharedMidpointNormals).toHaveLength(2);
+    for (const normal of sharedMidpointNormals) {
+      expect(normal[0]).toBeCloseTo(0, 6);
+      expect(normal[1]).toBeCloseTo(invSqrt2, 6);
+      expect(normal[2]).toBeCloseTo(invSqrt2, 6);
+    }
+  });
+
+  it('preserves authored hard edges represented by duplicated source vertices', () => {
+    const result = maybeMicrodisplaceMeshGeometry(microInput(1, {
+      material: material(map(new Float32Array([0])), {
+        displacementSubdivisions: 1,
+      }),
+      positions: new Float32Array([
+        0, 0, 0,
+        1, 0, 0,
+        0, 1, 0,
+        1, 0, 0,
+        0, 0, 0,
+        0, 0, 1,
+      ]),
+      normals: new Float32Array([
+        0, 0, 1,
+        0, 0, 1,
+        0, 0, 1,
+        0, 1, 0,
+        0, 1, 0,
+        0, 1, 0,
+      ]),
+      uvs: new Float32Array([
+        0, 0,
+        1, 0,
+        0, 1,
+        1, 1,
+        0, 1,
+        1, 0,
+      ]),
+      indices: new Uint32Array([0, 1, 2, 3, 4, 5]),
+    }));
+
+    expect(result).not.toBeNull();
+    const sharedMidpointNormals: number[][] = [];
+    for (let vertex = 0; vertex < result!.positions.length / 3; vertex += 1) {
+      const offset = vertex * 3;
+      if (
+        Math.abs(result!.positions[offset]! - 0.5) < 1e-6 &&
+        Math.abs(result!.positions[offset + 1]!) < 1e-6 &&
+        Math.abs(result!.positions[offset + 2]!) < 1e-6
+      ) {
+        sharedMidpointNormals.push(Array.from(result!.normals.subarray(offset, offset + 3)));
+      }
+    }
+    expect(sharedMidpointNormals).toHaveLength(2);
+    expect(sharedMidpointNormals).toEqual(
+      expect.arrayContaining([
+        [0, 0, 1],
+        [0, 1, 0],
+      ]),
+    );
   });
 
   it('warns and falls back to authored-vertex displacement at the exact dicing cap', () => {

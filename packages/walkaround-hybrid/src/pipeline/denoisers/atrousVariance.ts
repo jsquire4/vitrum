@@ -51,6 +51,8 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import type { PreparedSceneMutation } from '../../SceneMutationTransaction.js';
+import { commitPreparedDenoiserResize } from './resizeTransaction.js';
 import { publishFrameState } from '../FramePublication.js';
 import { shouldResetDenoiserHistory } from './historyReset.js';
 
@@ -422,11 +424,29 @@ export class AtrousVarianceDenoiser implements Denoiser {
     return denoised;
   }
 
-  resize(_w: number, _h: number): void {
+  prepareResize(_w: number, _h: number): PreparedSceneMutation {
     // The Welford ping-pong index must reset on resize: the new variance
     // textures (owned by FrameResources) are blank, so the accumulator
     // restarts from scratch.
-    this._welfordPing = 0;
+    const previous = this._welfordPing;
+    let committed = false;
+    return {
+      commit: () => {
+        if (committed) return;
+        this._welfordPing = 0;
+        committed = true;
+      },
+      rollback: () => {
+        if (!committed) return;
+        this._welfordPing = previous;
+        committed = false;
+      },
+      finalize: () => undefined,
+    };
+  }
+
+  resize(w: number, h: number): void {
+    commitPreparedDenoiserResize(this.prepareResize(w, h));
   }
 
   dispose(): void {

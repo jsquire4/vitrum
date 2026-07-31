@@ -2170,7 +2170,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
         // Fresnel-weighted specular reflection branch.
         // materialDielectricFresnel preserves frDielectric's 1.0 for TIR, so
         // the refract branch is never selected when transmission is impossible.
-        result.newRayOrigin = hitPos + normal * 1e-3;
+        result.newRayOrigin = hitPos + normal * ptRayOriginBias();
         var bs: BsdfSample;
         bs.wi = safe_normalize(reflect(incomingDir, wm));
         bs.pdf = bsdfSpecularReflectionPdf(
@@ -2216,7 +2216,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
         }
         let outDir = safe_normalize(refractedDir);
         let offsetN = select(-normal, normal, dot(outDir, normal) > 0.0);
-        result.newRayOrigin = hitPos + offsetN * 1e-3;
+        result.newRayOrigin = hitPos + offsetN * ptRayOriginBias();
         result.sampledDir = outDir;
         result.newRayDir = outDir;
         if (bsdfDielectricIsSmooth(roughness)) {
@@ -2276,7 +2276,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
         result.enteredMedium = isTranslucent && frontFace;
         result.exitedMedium = isTranslucent && !frontFace;
       } else {
-        result.newRayOrigin = hitPos + normal * 1e-3;
+        result.newRayOrigin = hitPos + normal * ptRayOriginBias();
         let bsDiffuse = cosineHemisphereSample(rng, normal);
         result.sampledDir = bsDiffuse.wi;
         result.newRayDir = bsDiffuse.wi;
@@ -2287,13 +2287,14 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       var ccTanT: vec3f;
       var ccTanB: vec3f;
       buildOnb(clearcoatNormal, &ccTanT, &ccTanB);
-      result.newRayOrigin = hitPos + clearcoatNormal * 1e-3;
+      result.newRayOrigin =
+        hitPos + clearcoatNormal * ptRayOriginBias();
       let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
       result.sampledDir = bsCc.wi;
       result.newRayDir = bsCc.wi;
       result.sampledLobe = BSDF_LOBE_CLEARCOAT;
     } else {
-      result.newRayOrigin = hitPos + normal * 1e-3;
+      result.newRayOrigin = hitPos + normal * ptRayOriginBias();
       let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);
       result.sampledDir = bs.wi;
       result.newRayDir = bs.wi;
@@ -2351,7 +2352,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       // Item 7 — use anisotropic sampler when anisotropy > 0; isotropic otherwise.
       // The tangent frame (tanT, tanB) is already rotated by anisotropyRotation above.
       let wo = -incomingDir;
-      result.newRayOrigin = hitPos + normal * 1e-3;
+      result.newRayOrigin = hitPos + normal * ptRayOriginBias();
       var bs2: BsdfSample;
       if (anisotropy > 0.0) {
         bs2 = glossyReflectionSampleAnisotropic(rng, wo, normal, tanT, tanB, roughness, anisotropy);
@@ -2364,7 +2365,7 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
       // The shared finite finalizer below owns the marginal density and the
       // complete layered-BSDF estimator for every continuous event.
     } else {
-      result.newRayOrigin = hitPos + normal * 1e-3;
+      result.newRayOrigin = hitPos + normal * ptRayOriginBias();
       let bs = cosineHemisphereSample(rng, normal);
       result.sampledDir = bs.wi;
       result.newRayDir = bs.wi;
@@ -2375,13 +2376,14 @@ fn sampleNextBounceDirectionWithClearcoatNormal(
     var ccTanT: vec3f;
     var ccTanB: vec3f;
     buildOnb(clearcoatNormal, &ccTanT, &ccTanB);
-    result.newRayOrigin = hitPos + clearcoatNormal * 1e-3;
+    result.newRayOrigin =
+      hitPos + clearcoatNormal * ptRayOriginBias();
     let bsCc = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);
     result.sampledDir = bsCc.wi;
     result.newRayDir = bsCc.wi;
     result.sampledLobe = BSDF_LOBE_CLEARCOAT;
   } else {
-    result.newRayOrigin = hitPos + normal * 1e-3;
+    result.newRayOrigin = hitPos + normal * ptRayOriginBias();
     let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);
     result.sampledDir = bs.wi;
     result.newRayDir = bs.wi;

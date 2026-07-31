@@ -19,8 +19,9 @@ import {
 import { PT_WEBGPU_FULL_SUPPORT_MANIFEST } from '../supportManifest.js';
 
 const BDPT_OFF_SOURCE_SHA256 =
-  // Re-pinned 2026-07-29 after the d-line-anchored Cauchy/Abbe correction.
-  '5338042a063c4b059fc89233c22fc1b052ad6fd9f730fc5f51479401f3bf7433';
+  // Re-pinned after canonical finite-f32 environment scaling. BDPT-off remains
+  // byte-identical to the canonical full trace assembled below.
+  '1d5dcb0b612968a93ad71d3fe9f00eab6f87bce227006b9ad0c1fd9ed952c6b6';
 
 function source(relative: string): string {
   return readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -118,6 +119,9 @@ describe('BDPT t=1 camera-splat production wiring', () => {
     );
     expect(PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL).toContain(
       'result.sampleWiOverPdf = result.cameraDirectionalPdf / distanceSquared',
+    );
+    expect(PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL).toContain(
+      'let clip = rawClip / clipScale;',
     );
     expect(PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL).toContain('let n = c + 2u;');
     expect(PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL).toContain(

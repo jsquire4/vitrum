@@ -49,24 +49,25 @@ function gpuHarness() {
   });
   const writeBuffer = vi.fn();
   const pipeline = { getBindGroupLayout: vi.fn(() => ({} as GPUBindGroupLayout)) };
+  const createCommandEncoder = vi.fn(() => ({
+    beginComputePass: vi.fn(() => ({
+      setPipeline: vi.fn(),
+      setBindGroup: vi.fn((_index: number, group: GPUBindGroup) => dispatchedBindGroups.push(group)),
+      dispatchWorkgroups: vi.fn(), end: vi.fn(),
+    })),
+    finish: vi.fn(() => ({} as GPUCommandBuffer)),
+  }));
   const device = {
     createBuffer,
     createShaderModule: vi.fn(() => ({} as GPUShaderModule)),
     createComputePipeline: vi.fn(() => pipeline as unknown as GPUComputePipeline),
     createBindGroup,
-    createCommandEncoder: vi.fn(() => ({
-      beginComputePass: vi.fn(() => ({
-        setPipeline: vi.fn(),
-        setBindGroup: vi.fn((_index: number, group: GPUBindGroup) => dispatchedBindGroups.push(group)),
-        dispatchWorkgroups: vi.fn(), end: vi.fn(),
-      })),
-      finish: vi.fn(() => ({} as GPUCommandBuffer)),
-    })),
+    createCommandEncoder,
     queue: { writeBuffer, submit: vi.fn() },
   } as unknown as GPUDevice;
   return {
     device, buffers, bindGroups, bindGroupDescriptors, dispatchedBindGroups,
-    writeBuffer, createBuffer, createBindGroup,
+    writeBuffer, createBuffer, createBindGroup, createCommandEncoder,
     injectNextBuffer(buffer: GPUBuffer) { injectedBuffer = buffer; },
     failNextBindGroup(beforeThrow: () => void) { bindFailure = beforeThrow; },
   };
@@ -104,6 +105,104 @@ function hostHarness(id: string | readonly string[]) {
 }
 
 describe('GpuSkinningSubsystem cached mesh state', () => {
+  it('does not solve, encode, or publish a second frame when pose inputs are unchanged', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const primitive = mesh('skin');
+
+    subsystem.run(host.host, sceneOf(primitive));
+    subsystem.run(host.host, sceneOf(primitive));
+
+    expect(gpu.createCommandEncoder).toHaveBeenCalledTimes(1);
+    expect(host.applySkinningBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('detects an in-place bone-matrix animation edit after an unchanged frame', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const primitive = mesh('skin');
+
+    subsystem.run(host.host, sceneOf(primitive));
+    subsystem.run(host.host, sceneOf(primitive));
+    primitive.bones[12] = 0.25;
+    subsystem.run(host.host, sceneOf(primitive));
+
+    expect(gpu.createCommandEncoder).toHaveBeenCalledTimes(2);
+    expect(host.applySkinningBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('detects in-place morph-weight edits but skips a steady CPU-fallback pose', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, false);
+    const primitive: SkinnedMeshPrimitive = {
+      ...mesh('skin'),
+      morphTargets: [new Float32Array(9)],
+      morphWeights: new Float32Array([0]),
+    };
+
+    subsystem.run(host.host, sceneOf(primitive));
+    subsystem.run(host.host, sceneOf(primitive));
+    primitive.morphWeights![0] = 0.5;
+    subsystem.run(host.host, sceneOf(primitive));
+
+    expect(gpu.createCommandEncoder).not.toHaveBeenCalled();
+    expect(host.applySkinningBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-applies an unchanged pose when the renderer replaces its target buffers', () => {
+    const gpu = gpuHarness();
+    const firstHost = hostHarness('skin');
+    const replacementHost = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const primitive = mesh('skin');
+
+    subsystem.run(firstHost.host, sceneOf(primitive));
+    subsystem.run(replacementHost.host, sceneOf(primitive));
+
+    expect(firstHost.applySkinningBatch).toHaveBeenCalledOnce();
+    expect(replacementHost.applySkinningBatch).toHaveBeenCalledOnce();
+    expect(gpu.createCommandEncoder).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not accept a pose fingerprint when publication fails', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const primitive = mesh('skin');
+    host.applySkinningBatch.mockImplementationOnce(() => {
+      throw new Error('injected publication failure');
+    });
+
+    expect(() => subsystem.run(host.host, sceneOf(primitive)))
+      .toThrow('injected publication failure');
+    subsystem.run(host.host, sceneOf(primitive));
+
+    expect(host.applySkinningBatch).toHaveBeenCalledTimes(2);
+    expect(gpu.createCommandEncoder).toHaveBeenCalledTimes(2);
+  });
+
+  it('retires cached per-mesh GPU buffers when the skinned primitive disappears', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+
+    subsystem.run(host.host, sceneOf(mesh('skin')));
+    subsystem.run(host.host, {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' },
+    });
+
+    expect(gpu.buffers).toHaveLength(6);
+    for (const record of gpu.buffers) {
+      expect(record.destroy).toHaveBeenCalledOnce();
+    }
+    expect(host.applySkinningBatch).toHaveBeenCalledOnce();
+  });
+
   it('routes wider-than-four influence sets through the exact CPU solver', () => {
     const gpu = gpuHarness();
     const host = hostHarness('skin');
@@ -141,6 +240,27 @@ describe('GpuSkinningSubsystem cached mesh state', () => {
     expect(Array.from(updates[0].patch.positions)).toEqual([
       1, 0, 0, 2, 0, 0, 1, 1, 0,
     ]);
+  });
+
+  it('routes any stored-f32 non-identity bind through the CPU solver', () => {
+    const gpu = gpuHarness();
+    const host = hostHarness('skin');
+    const subsystem = new GpuSkinningSubsystem(gpu.device, true);
+    const primitive = mesh('skin');
+    const bindMatrix = new Float32Array(IDENTITY);
+    bindMatrix[12] = 1e-7;
+    const bindMatrixInverse = new Float32Array(IDENTITY);
+    bindMatrixInverse[12] = -1e-7;
+
+    subsystem.run(host.host, sceneOf({
+      ...primitive,
+      bindMatrix,
+      bindMatrixInverse,
+    }));
+
+    expect(gpu.createCommandEncoder).not.toHaveBeenCalled();
+    expect(host.applySkinningBatch).toHaveBeenCalledOnce();
+    expect(host.applySkinningBatch.mock.calls[0]?.[0]?.[0]?.gpuWritten).toBe(false);
   });
 
   it('propagates morph-animated arbitrary UV lanes through the CPU batch', () => {
@@ -368,7 +488,7 @@ describe('GpuSkinningSubsystem cached mesh state', () => {
     expect(gpu.buffers).toHaveLength(18);
     for (const retired of old) expect(retired.destroy).toHaveBeenCalledTimes(1);
     for (const accepted of gpu.buffers.slice(12)) expect(accepted.destroy).not.toHaveBeenCalled();
-    expect(host.applySkinningBatch).toHaveBeenCalledTimes(3);
+    expect(host.applySkinningBatch).toHaveBeenCalledTimes(2);
   });
 
   it('rebuilds for a same-count rest edit, then reuses its new rest buffer for two poses', () => {
@@ -405,28 +525,35 @@ describe('GpuSkinningSubsystem cached mesh state', () => {
   it('rejects a private buffer alias owned by another cached mesh', () => {
     const gpu = gpuHarness();
     const subsystem = new GpuSkinningSubsystem(gpu.device, true);
-    const otherHost = hostHarness('other');
+    const host = hostHarness(['other', 'skin']);
     const other = mesh('other');
-    subsystem.run(otherHost.host, sceneOf(other));
+    const original = mesh('skin');
+    const originalScene: Scene = {
+      primitives: [other, original],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    subsystem.run(host.host, originalScene);
     const otherPrivateBuffer = gpu.buffers[0]!;
 
-    const host = hostHarness('skin');
-    const original = mesh('skin');
-    subsystem.run(host.host, sceneOf(original));
     expect(gpu.buffers).toHaveLength(12);
     const edited = {
       ...original,
       positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
     };
+    const editedScene: Scene = {
+      ...originalScene,
+      primitives: [other, edited],
+    };
 
     gpu.injectNextBuffer(otherPrivateBuffer.buffer);
-    expect(() => subsystem.run(host.host, sceneOf(edited)))
+    expect(() => subsystem.run(host.host, editedScene))
       .toThrow(/live\/shared buffer alias/);
     expect(otherPrivateBuffer.destroy).not.toHaveBeenCalled();
     expect(gpu.buffers).toHaveLength(12);
 
-    subsystem.run(host.host, sceneOf(original));
+    subsystem.run(host.host, originalScene);
     expect(gpu.buffers).toHaveLength(12);
-    expect(host.applySkinningBatch).toHaveBeenCalledTimes(2);
+    expect(host.applySkinningBatch).toHaveBeenCalledOnce();
   });
 });

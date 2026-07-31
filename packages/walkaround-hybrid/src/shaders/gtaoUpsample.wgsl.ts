@@ -53,10 +53,16 @@ fn similarityWeight(
   // σ = up_gtao.bilateralDepthSigma. Squaring both quantities makes the
   // exponent dimensionless and keeps the filter stable under scene rescaling.
   let depthDelta = abs(centerDepth - sampleDepth);
-  let sigma = max(1e-6, up_gtao.bilateralDepthSigma);
-  let depthW = exp(-(depthDelta * depthDelta) / (2.0 * sigma * sigma));
   let nDot = max(0.0, dot(centerNormal, sampleNormal));
   let normW = pow(nDot, 16.0);
+  if (!(sampleDepth > 0.0)) {
+    return 0.0;
+  }
+  let sigma = up_gtao.bilateralDepthSigma;
+  if (!(sigma > 0.0)) {
+    return select(0.0, normW, depthDelta == 0.0);
+  }
+  let depthW = exp(-(depthDelta * depthDelta) / (2.0 * sigma * sigma));
   return depthW * normW;
 }
 
@@ -67,7 +73,7 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // AO downscale factor (2 = half-res input, 4 = quarter-res). Clamp ≥ 1.
   let ds = max(1u, u32(up_gtao.gtaoDownscale));
-  let halfDims = fullDims / ds;
+  let halfDims = max(vec2u(1u), fullDims / ds);
 
   // Read center pixel's normal + depth.
   let center = textureLoad(up_normalDepth, gid.xy, 0);
@@ -75,7 +81,7 @@ fn gtaoUpsampleMain(@builtin(global_invocation_id) gid: vec3u) {
   let centerDepth = abs(center.w);
 
   // Sky-miss pixels are fully lit.
-  if (centerDepth < 1e-4) {
+  if (!(centerDepth > 0.0)) {
     textureStore(up_aoFullOut, gid.xy, vec4f(1.0));
     return;
   }

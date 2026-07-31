@@ -1248,6 +1248,32 @@ describe('loadGltfAsset', () => {
     });
   });
 
+  it('decodes percent-encoded data URI octets without UTF-8 reinterpretation', async () => {
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    gltf.meshes![0]!.primitives[0]!.material = 0;
+    gltf.materials = [{
+      pbrMetallicRoughness: {
+        baseColorFactor: [1, 1, 1, 1],
+        baseColorTexture: { index: 0 },
+      },
+    }];
+    gltf.textures = [{ source: 0 }];
+    gltf.images = [{
+      uri: 'data:application/octet-stream,%89%FF%00A%E2%82%AC',
+      mimeType: 'application/octet-stream',
+    }];
+    const decodeImage = vi.fn(async (data: Uint8Array) => {
+      expect(Array.from(data)).toEqual([
+        0x89, 0xff, 0x00, 0x41, 0xe2, 0x82, 0xac,
+      ]);
+      return { kind: 'decoded-image' };
+    });
+
+    await loadGltfAsset(gltf, { buffers, decodeImage });
+
+    expect(decodeImage).toHaveBeenCalledOnce();
+  });
+
   it('throws typed fetch failures with resource identity', async () => {
     const fetch = vi.fn(async () => ({
       ok: false,

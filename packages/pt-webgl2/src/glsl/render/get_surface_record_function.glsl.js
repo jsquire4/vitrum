@@ -187,12 +187,17 @@ export const get_surface_record_function = /* glsl */`
 		}
 
 		// emission (emissiveMap = bit 4)
-		vec3 emission = material.emissiveIntensity * material.emissive;
+		vec3 emission = vitrumFiniteNonNegativeRadianceProduct(
+			material.emissive, vec3( material.emissiveIntensity )
+		);
 		if ( useTextures && material.emissiveMap != - 1 ) {
 
-			emission *= MAP_RADIANCE_SAMPLE(
-				material.emissiveMap, ${MATERIAL_TRANSFORM_TEXEL.emissiveMap}u,
-				${MATERIAL_WRAP_TEXEL_OFFSET + 4}u, MAP_UV( 4u )
+			emission = vitrumFiniteNonNegativeRadianceProduct(
+				emission,
+				MAP_RADIANCE_SAMPLE(
+					material.emissiveMap, ${MATERIAL_TRANSFORM_TEXEL.emissiveMap}u,
+					${MATERIAL_WRAP_TEXEL_OFFSET + 4}u, MAP_UV( 4u )
+				).xyz
 			).xyz;
 
 		}
@@ -203,11 +208,16 @@ export const get_surface_record_function = /* glsl */`
 		// at indirect depths would double-count the live lights the bake encodes.
 		if ( useTextures && material.lightMap != - 1 && pathDepth == 0 ) {
 
-			emission += material.lightMapIntensity *
-				MAP_RADIANCE_SAMPLE(
-					material.lightMap, ${MATERIAL_LIGHTMAP_TRANSFORM_TEXEL}u,
-					${MATERIAL_WRAP_TEXEL_OFFSET + 17}u, MAP_UV( 17u )
-				).rgb;
+			emission = vitrumFiniteNonNegativeRadianceSum(
+				emission,
+				vitrumFiniteNonNegativeRadianceProduct(
+					vec3( material.lightMapIntensity ),
+					MAP_RADIANCE_SAMPLE(
+						material.lightMap, ${MATERIAL_LIGHTMAP_TRANSFORM_TEXEL}u,
+						${MATERIAL_WRAP_TEXEL_OFFSET + 17}u, MAP_UV( 17u )
+					).rgb
+				)
+			);
 
 		}
 
@@ -293,9 +303,10 @@ export const get_surface_record_function = /* glsl */`
 
 		}
 
-		// D3 — bumpMap (bit 18): height-field normal perturbation (Blinn 1978), central
-		// differences in UV space (no screen derivatives on secondary rays; mirrors
-		// pt-webgpu applyBumpMap's fixed 1/512 step + n - scale·(dh/du·T + dh/dv·B)).
+		// D3 — bumpMap (bit 18): height-field normal perturbation (Blinn 1978),
+		// forward differences in UV space (no screen derivatives on secondary rays).
+		// The packed policy records each map's true source extent inside the atlas;
+		// derive one logical source-texel step independently on each axis.
 		// Applied AFTER the normal map so the two compose.
 		if ( useTextures && material.bumpMap != - 1 ) {
 
@@ -315,23 +326,25 @@ export const get_surface_record_function = /* glsl */`
 				textureSampleBarycoord( attributesArray, bumpUvLayer, surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy,
 				1
 			);
-				vec4 bumpMapPolicy = MAP_POLICY( ${MATERIAL_WRAP_TEXEL_OFFSET + 18}u );
-				float du = 1.0 / 512.0;
-				float hC = sampleMaterialTexture( textures, uvPrime.xy, material.bumpMap, bumpMapPolicy ).r;
-				float hU = sampleMaterialTexture(
-					textures,
-					uvPrime.xy + vec2( du, 0.0 ),
+			vec4 bumpMapPolicy = MAP_POLICY( ${MATERIAL_WRAP_TEXEL_OFFSET + 18}u );
+			vec2 bumpTexel = 1.0 / vec2(
+				materialTextureSourceSize( textures, bumpMapPolicy, 0 )
+			);
+			float hC = sampleMaterialTexture( textures, uvPrime.xy, material.bumpMap, bumpMapPolicy ).r;
+			float hU = sampleMaterialTexture(
+				textures,
+				uvPrime.xy + vec2( bumpTexel.x, 0.0 ),
 					material.bumpMap,
 					bumpMapPolicy
 				).r;
-				float hV = sampleMaterialTexture(
-					textures,
-					uvPrime.xy + vec2( 0.0, du ),
+			float hV = sampleMaterialTexture(
+				textures,
+				uvPrime.xy + vec2( 0.0, bumpTexel.y ),
 					material.bumpMap,
 					bumpMapPolicy
 				).r;
-				float dhdu = ( hU - hC ) / du;
-				float dhdv = ( hV - hC ) / du;
+			float dhdu = ( hU - hC ) / bumpTexel.x;
+			float dhdv = ( hV - hC ) / bumpTexel.y;
 				vec3 tangent = bumpBasis[ 0 ];
 				vec3 bitangent = bumpBasis[ 1 ];
 				vec3 perturbed = normal - material.bumpScale * ( dhdu * tangent + dhdv * bitangent );

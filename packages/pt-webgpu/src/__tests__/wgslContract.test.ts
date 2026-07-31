@@ -369,8 +369,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // window in the canonical point/spot helper shared by every estimator.
     // Re-pinned 2026-07-29: Abbe-derived Cauchy IOR is anchored at the authored
     // Fraunhofer d-line and accepts the complete finite-positive Abbe domain.
-    expect(digest).toBe('5338042a063c4b059fc89233c22fc1b052ad6fd9f730fc5f51479401f3bf7433');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(558559);
+    // Re-pinned 2026-07-30: every environment-radiance scale crosses the
+    // canonical finite-f32 helper, including miss, SPPM, BDPT, and NEE paths.
+    expect(digest).toBe('1d5dcb0b612968a93ad71d3fe9f00eab6f87bce227006b9ad0c1fd9ed952c6b6');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(588007);
   });
 });
 
@@ -656,14 +658,17 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('suppresses the raw environment miss after an MIS-accounted BSDF connection', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toMatch(
-      /if \(!hit\.didHit\) \{[\s\S]*?if \(!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission\) \{[\s\S]*?radiance = radiance \+ throughput \* envContribution \* lastEnvMapIntensity;[\s\S]*?\}\s*break;/,
+      /if \(!hit\.didHit\) \{[\s\S]*?if \(!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission\) \{[\s\S]*?let receiverEnvironment = ptScaleEnvironmentRadiance\([\s\S]*?envContribution,[\s\S]*?lastEnvMapIntensity,[\s\S]*?\);[\s\S]*?radiance = radiance \+ throughput \* receiverEnvironment;[\s\S]*?\}\s*break;/,
     );
     const rawMissAdds = (
       PT_WEBGPU_TRACE_WGSL.match(
-        /radiance = radiance \+ throughput \* envContribution \* lastEnvMapIntensity;/g,
+        /radiance = radiance \+ throughput \* receiverEnvironment;/g,
       ) ?? []
     ).length;
     expect(rawMissAdds).toBe(1);
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'radiance = radiance + throughput * envContribution * lastEnvMapIntensity;',
+    );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'radiance = radiance + bsdfEnvironmentConnectionContribution(',
     );

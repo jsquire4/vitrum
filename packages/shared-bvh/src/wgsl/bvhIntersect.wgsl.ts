@@ -12,7 +12,7 @@
  *   - The `IntersectionResult` struct (superset of all three consumers'
  *     fields, so any caller can read what it needs and ignore the rest).
  *   - The Williams-2005 IEEE-safe `safeInvDir` helper (deduplicated).
- *   - `intersectTriangle(origin, dir, a, b, c, triEps) -> IntersectionResult`
+ *   - `intersectTriangle(origin, dir, a, b, c, tMin) -> IntersectionResult`
  *     — the algorithm itself; storage-agnostic (takes three world-space
  *     vertex positions).
  *   - `bvhIntersectFirstHit(ray, triEps) ->
@@ -68,27 +68,44 @@ const BVH_MATERIAL_TRANSMISSION_PREDICATE_WGSL =
 // keep getting `safeInvDir` from the same single source with no change.
 //
 // Prevents NaN from 0 * ±Inf in slab tests when a ray direction component
-// is exactly zero. For the zero/near-zero case the inv-component is set
-// to a large signed sentinel (±1e30) so the slab test still picks up
+// is exactly zero. For zero or reciprocal-overflow cases the inverse is
+// saturated to the largest finite signed f32 so the slab test still picks up
 // whether the ray's origin is inside the AABB on the parallel axis:
 //
-//   - origin inside the X slab → t0/t1 ~= ±1e30, contributes ~unbounded
+//   - origin inside the X slab → t0/t1 ~= ±f32::MAX, contributes ~unbounded
 //     range, and the other two axes determine entry/exit (correct).
 //   - origin outside the X slab → t0 and t1 are both far negative or both
 //     far positive, so tNear pushes past tFar and the slab test rejects.
 //
-// Earlier revision used sign(d.x) * 1e30, but WGSL sign(0) == 0 so an
+// An earlier revision used sign(d.x) * 1e30, but WGSL sign(0) == 0 so an
 // exact-zero direction yielded 0, collapsing the X slab's contribution
 // to t0 == t1 == 0 regardless of origin position — a false positive for
-// rays whose origin sat outside the AABB on the parallel axis. The
-// select(-1e30, 1e30, d.x >= 0.0) form picks a definite sign even when
-// d.x is exactly zero (treated as positive, matching IEEE 754 +0 >= 0).
+// rays whose origin sat outside the AABB on the parallel axis. Saturating at
+// f32::MAX also avoids the later ±1e30 implementation's accidental loss of
+// one or more decades of reciprocal range for valid tiny nonzero components.
 export const SAFE_INV_DIR_WGSL = /* wgsl */ `
+const SAFE_INV_DIR_MAX_FINITE: f32 = 3.402823e38;
+
+fn safeInvDirComponent(v: f32) -> f32 {
+  if (v == 0.0) {
+    return select(
+      -SAFE_INV_DIR_MAX_FINITE,
+      SAFE_INV_DIR_MAX_FINITE,
+      v >= 0.0,
+    );
+  }
+  return clamp(
+    1.0 / v,
+    -SAFE_INV_DIR_MAX_FINITE,
+    SAFE_INV_DIR_MAX_FINITE,
+  );
+}
+
 fn safeInvDir(d: vec3f) -> vec3f {
   return vec3f(
-    select(1.0 / d.x, select(-1e30, 1e30, d.x >= 0.0), abs(d.x) < 1e-30),
-    select(1.0 / d.y, select(-1e30, 1e30, d.y >= 0.0), abs(d.y) < 1e-30),
-    select(1.0 / d.z, select(-1e30, 1e30, d.z >= 0.0), abs(d.z) < 1e-30),
+    safeInvDirComponent(d.x),
+    safeInvDirComponent(d.y),
+    safeInvDirComponent(d.z),
   );
 }
 `;
@@ -113,51 +130,101 @@ fn safeInvDir(d: vec3f) -> vec3f {
 //   v = -dot(e1, DAO) * invDet
 //   w = 1 - u - v
 //   t = dot(AO, n) * invDet
-// triEps is the coplanarity floor: |det| < triEps ⇒ parallel ⇒ no hit. The
-// barycentric edge tests use a SIGNED triEps tolerance (u/v/w < -triEps), so a
-// hit grazing an edge by less than the floor is ACCEPTED rather than rejected —
-// matching three-mesh-bvh upstream and closing edge cracks at shared
-// triangle boundaries. (The pre-canonical pt-webgpu copy used strict
-// u<0||u>1 / v<0||u+v>1 tests, which could reject a grazing edge hit — that is
-// the behavioural delta this unification removes; see V7 in
-// HARDWARE-VALIDATION-NEEDS.md.)
+// The three tolerances in this solve have different units and therefore cannot
+// share one scalar:
+//   - determinant rejection is an angular comparison after normalising the
+//     ray direction and geometric normal (scale-independent);
+//   - barycentric edge tolerance is dimensionless;
+//   - tMin is a caller-owned ray-parameter distance floor.
+// Keeping those domains separate is load-bearing for small geometry: a
+// perpendicular triangle with 1 mm edges has |det|≈1e-6 and must not be
+// rejected merely because the caller's world-space tMin is 1e-5.
+//
+// The signed barycentric tolerance accepts a hit grazing a shared edge by less
+// than the dimensionless floor, matching three-mesh-bvh's crack-avoidance
+// intent without scaling that tolerance with triangle area or scene units.
 //
 // @see CREDITS.md (Möller & Trumbore 1997; three-mesh-bvh)
 export const MOLLER_TRUMBORE_WGSL = /* wgsl */ `
+const MOLLER_TRUMBORE_ANGULAR_EPSILON: f32 = 1e-7;
+const MOLLER_TRUMBORE_BARYCENTRIC_EPSILON: f32 = 1e-6;
+
 struct TriHit {
-  hit:  bool,
-  t:    f32,
-  bary: vec3f,   // (w, u, v) on the hit triangle
-  det:  f32,     // signed determinant (-dot(dir, n)); sign(det) is the face side
+  hit:    bool,
+  t:      f32,
+  bary:   vec3f, // (w, u, v) on the hit triangle
+  det:    f32,   // equilibrated signed determinant; sign(det) is the face side
+  normal: vec3f, // scale-safe unit geometric normal in authored winding
 };
 
 fn mollerTrumboreCore(
   origin: vec3f, dir: vec3f,
   a: vec3f, b: vec3f, c: vec3f,
-  triEps: f32,
+  tMin: f32,
 ) -> TriHit {
   var result: TriHit;
   result.hit  = false;
-  result.t    = 1e20;
+  result.t    = 3.402823e38;
   result.bary = vec3f(0.0);
   result.det  = 0.0;
+  result.normal = vec3f(0.0);
 
-  let e1 = b - a;
-  let e2 = c - a;
-  let n  = cross(e1, e2);
-  let det = -dot(dir, n);
-  if (abs(det) < triEps) { return result; }
+  let e1Raw = b - a;
+  let e2Raw = c - a;
+  let edgeScale = max(
+    max(max(abs(e1Raw.x), abs(e1Raw.y)), abs(e1Raw.z)),
+    max(max(abs(e2Raw.x), abs(e2Raw.y)), abs(e2Raw.z)),
+  );
+  let directionScale = max(abs(dir.x), max(abs(dir.y), abs(dir.z)));
+  if (
+    !(edgeScale > 0.0) || edgeScale > 3.402823e38 ||
+    !(directionScale > 0.0) || directionScale > 3.402823e38
+  ) {
+    return result;
+  }
+  // Solve in equilibrated ray/triangle coordinates. This avoids both the
+  // underflow of cross(e1,e2) for tiny triangles and overflow for huge ones;
+  // barycentrics are unchanged and t is converted back to caller ray units.
+  let e1 = e1Raw / edgeScale;
+  let e2 = e2Raw / edgeScale;
+  let direction = dir / directionScale;
+  let AO = (origin - a) / edgeScale;
+  let n = cross(e1, e2);
+  let normalScale = max(abs(n.x), max(abs(n.y), abs(n.z)));
+  if (!(normalScale > 0.0) || normalScale > 3.402823e38) { return result; }
+  let normalDirection = n / normalScale;
+  let normalLength = length(normalDirection);
+  let rayDirection = direction / length(direction);
+  let det = -dot(direction, n);
+  let angularDet = abs(dot(
+    rayDirection,
+    normalDirection / normalLength,
+  ));
+  if (
+    !(angularDet > MOLLER_TRUMBORE_ANGULAR_EPSILON) ||
+    det == 0.0
+  ) {
+    return result;
+  }
 
   let invDet = 1.0 / det;
-  let AO  = origin - a;
-  let DAO = cross(AO, dir);
+  let DAO = cross(AO, direction);
 
   let u = dot(e2, DAO) * invDet;
   let v = -dot(e1, DAO) * invDet;
-  let t = dot(AO, n)    * invDet;
+  let scaledT = dot(AO, n) * invDet;
+  let t = scaledT * edgeScale / directionScale;
   let w = 1.0 - u - v;
 
-  if (u < -triEps || v < -triEps || w < -triEps || t < triEps) {
+  if (
+    u != u || v != v || w != w || t != t ||
+    abs(u) > 3.402823e38 || abs(v) > 3.402823e38 ||
+    abs(w) > 3.402823e38 || abs(t) > 3.402823e38 ||
+    u < -MOLLER_TRUMBORE_BARYCENTRIC_EPSILON ||
+    v < -MOLLER_TRUMBORE_BARYCENTRIC_EPSILON ||
+    w < -MOLLER_TRUMBORE_BARYCENTRIC_EPSILON ||
+    t < max(tMin, 0.0)
+  ) {
     return result;
   }
 
@@ -165,6 +232,7 @@ fn mollerTrumboreCore(
   result.t    = t;
   result.bary = vec3f(w, u, v);
   result.det  = det;
+  result.normal = normalDirection / normalLength;
   return result;
 }
 `;
@@ -212,7 +280,9 @@ ${MOLLER_TRUMBORE_WGSL}
 // for any real scene. The two pre-canonical copies used 60 (DDGI/RC) and 64
 // (ReSTIR); 60 is sufficient and matches three-mesh-bvh upstream.
 const BVH_INTERSECT_STACK_DEPTH: u32 = ${BVH_INTERSECT_STACK_DEPTH}u;
-const BVH_INTERSECT_INFINITY: f32 = 1e20;
+// Largest finite f32 rounded safely below +Inf. A world-space distance
+// sentinel must not impose an accidental ~1e20-unit scene ceiling.
+const BVH_INTERSECT_INFINITY: f32 = 3.402823e38;
 const BVH_LEAFNODE_FLAG: u32 = 0xFFFF0000u;
 
 // ─── BVH structs ─────────────────────────────────────────────────────────────
@@ -276,30 +346,28 @@ struct IntersectionResult {
 // Thin adapter over the shared mollerTrumboreCore fragment (prepended above as
 // MOLLER_TRUMBORE_WGSL): the algorithm + edge tolerance are single-sourced
 // there. This wrapper only re-shapes the core's TriHit into the richer
-// IntersectionResult struct (adds the sign-correct geometric normal). triEps
-// is the coplanarity floor and the signed barycentric edge tolerance; see the
-// core function's comment for the full math + edge-tolerance rationale.
+// IntersectionResult struct. The canonical core already supplies the
+// scale-safe authored-winding normal; this adapter only orients it against the
+// incident ray using the determinant sign. The caller parameter is only the
+// ray-distance floor; determinant and barycentric tolerances are dimensionless
+// constants in mollerTrumboreCore.
 fn intersectTriangle(
   origin: vec3f, dir: vec3f,
   a: vec3f, b: vec3f, c: vec3f,
-  triEps: f32,
+  tMin: f32,
 ) -> IntersectionResult {
   var result: IntersectionResult;
   result.didHit = false;
   result.dist = BVH_INTERSECT_INFINITY;
 
-  let core = mollerTrumboreCore(origin, dir, a, b, c, triEps);
+  let core = mollerTrumboreCore(origin, dir, a, b, c, tMin);
   if (!core.hit) { return result; }
-
-  let e1 = b - a;
-  let e2 = c - a;
-  let n  = cross(e1, e2);
 
   result.didHit    = true;
   result.dist      = core.t;
   result.barycoord = core.bary;
   result.side      = sign(core.det);
-  result.normal    = result.side * normalize(n);
+  result.normal    = result.side * core.normal;
   return result;
 }
 
@@ -379,7 +447,7 @@ fn bvhIntersectFirstHitAtRoot(
           pa4.xyz, pb4.xyz, pc4.xyz,
           triEps,
         );
-        if (tri.didHit && tri.dist < best.dist) {
+        if (tri.didHit && tri.dist > triEps && tri.dist < best.dist) {
           best = tri;
           best.indices        = vec4u(idx, triIdx);
           best.matColorPacked = idxEntry.w;
@@ -423,9 +491,9 @@ fn bvhIntersectFirstHitAtRoot(
 }
 
 // ─── BVH any-hit (shadow ray) traversal — vec4 storage (ReSTIR) ──────────────
-// Returns true on the first triangle hit in (1e-4, tMax). The 1e-4 floor
-// matches the pre-canonical ReSTIR bvhIntersectAny — it avoids self-
-// intersection on shadow rays cast from a hit point.
+// Returns true on the first triangle hit in the caller-owned open interval
+// (triEps, tMax). Keeping the strict interval here matches closest traversal
+// and lets TLAS callers supply a correctly transformed local-space tMin.
 //
 // skipGlass selects the glass filter behaviour:
 //   true  → treat triangles whose physical-transmission lane is nonzero as
@@ -490,7 +558,7 @@ fn bvhIntersectAnyAtRoot(
         let b = bvhLoadPosition(idx.y).xyz;
         let c = bvhLoadPosition(idx.z).xyz;
         let tri = intersectTriangle(origin, dir, a, b, c, triEps);
-        if (tri.didHit && tri.dist > 1e-4 && tri.dist < tMax) { return true; }
+        if (tri.didHit && tri.dist > triEps && tri.dist < tMax) { return true; }
       }
     } else {
       // Ordered traversal (Wald 2007 / PBR4e §7.3.3).

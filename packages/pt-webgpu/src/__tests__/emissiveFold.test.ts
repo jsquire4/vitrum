@@ -81,6 +81,49 @@ function implicitEmissiveScene(
   };
 }
 
+function movableMeshEmitterScene(): Scene {
+  const triangle = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
+  const normals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'panel-a',
+        positions: triangle,
+        normals,
+        material: {
+          baseColor: [0.5, 0.5, 0.5],
+          roughness: 0.8,
+          metallic: 0,
+          emissive: [0.25, 0, 0],
+          emissiveIntensity: 2,
+        },
+      },
+      {
+        kind: 'mesh',
+        id: 'panel-b',
+        positions: triangle,
+        normals,
+        material: {
+          baseColor: [0.5, 0.5, 0.5],
+          roughness: 0.8,
+          metallic: 0,
+          emissive: [0, 0.5, 0],
+          emissiveIntensity: 3,
+        },
+      },
+    ],
+    emitters: [{
+      kind: 'mesh-area',
+      id: 'light',
+      meshId: 'panel-a',
+      color: [1, 1, 1],
+      intensity: 4,
+    }],
+    environment: { kind: 'none' },
+  };
+}
+
 /** Float offset of emissive.rgb in a packed material. */
 const EMISSIVE_OFFSET = 4; // vec4 #1: emissive.rgb + metallic
 const MESH_AREA_RADIANCE_OFFSET = 12; // first packed mesh-area triangle, vec4 #3
@@ -107,6 +150,26 @@ describe('packFoldedMaterialEntry (H10 helper)', () => {
     expect(packed[EMISSIVE_OFFSET]).toBeCloseTo(6, 5);
     expect(packed[EMISSIVE_OFFSET + 1]).toBeCloseTo(1.5, 5);
     expect(packed[EMISSIVE_OFFSET + 2]).toBeCloseTo(0.3, 5);
+  });
+
+  it('folds camera-visible radiance with the exact staged Float32 product', () => {
+    const authored = 1.0000002;
+    const intensity = 1.0000002;
+    const directBinary64Product = Math.fround(authored * intensity);
+    const expected = Math.fround(
+      Math.fround(authored) * Math.fround(intensity),
+    );
+    expect(expected).not.toBe(directBinary64Product);
+    const stagedScene = meshEmitterScene(
+      [authored, authored, authored],
+      intensity,
+    );
+    const packed = packFoldedMaterialEntry(prim, stagedScene, true);
+    expect(packed.slice(EMISSIVE_OFFSET, EMISSIVE_OFFSET + 3)).toEqual([
+      expected,
+      expected,
+      expected,
+    ]);
   });
 
   it('does NOT apply the fold when cameraVisibleEmitters=false', () => {
@@ -225,7 +288,7 @@ function makeHostWithScene(scene: Scene, cameraVisible: boolean): {
     } as unknown as GPUBuffer,
     bvhNodeCount: 0,
     tlasNodeCount: 0,
-    materialCount: 1,
+    materialCount: packed.materials.length / MATERIAL_FLOAT_STRIDE,
     // GPU buffer stubs — not used by the material fast path.
     positionsBuffer: { destroy: vi.fn() } as unknown as GPUBuffer,
     normalsBuffer: { destroy: vi.fn() } as unknown as GPUBuffer,
@@ -391,5 +454,51 @@ describe('SceneMutationRouter fold-preservation (H10)', () => {
 
     // Still no fold
     expect(sceneBuffers.materials[EMISSIVE_OFFSET]).toBeCloseTo(0, 5);
+  });
+
+  it.each([
+    { cameraVisible: true, nextOwnerEmission: [4, 4, 4] },
+    { cameraVisible: false, nextOwnerEmission: [0, 0, 0] },
+  ])(
+    'reconciles old and new owner slots when meshId moves (visible=$cameraVisible)',
+    ({ cameraVisible, nextOwnerEmission }) => {
+      const scene = movableMeshEmitterScene();
+      const { host, sceneBuffers } = makeHostWithScene(scene, cameraVisible);
+      const router = new SceneMutationRouter(host);
+
+      router.updateEmitter('light', { meshId: 'panel-b' });
+
+      expect(Array.from(
+        sceneBuffers.materials.slice(EMISSIVE_OFFSET, EMISSIVE_OFFSET + 3),
+      )).toEqual([0.5, 0, 0]);
+      const panelBOffset = MATERIAL_FLOAT_STRIDE + EMISSIVE_OFFSET;
+      expect(Array.from(
+        sceneBuffers.materials.slice(panelBOffset, panelBOffset + 3),
+      )).toEqual(nextOwnerEmission);
+    },
+  );
+
+  it('reconciles removed and added owner slots for whole-list lighting updates', () => {
+    const scene = movableMeshEmitterScene();
+    const { host, sceneBuffers } = makeHostWithScene(scene, false);
+    const router = new SceneMutationRouter(host);
+
+    router.updateLighting({
+      emitters: [{
+        kind: 'mesh-area',
+        id: 'replacement',
+        meshId: 'panel-b',
+        color: [1, 1, 1],
+        intensity: 4,
+      }],
+    });
+
+    expect(Array.from(
+      sceneBuffers.materials.slice(EMISSIVE_OFFSET, EMISSIVE_OFFSET + 3),
+    )).toEqual([0.5, 0, 0]);
+    const panelBOffset = MATERIAL_FLOAT_STRIDE + EMISSIVE_OFFSET;
+    expect(Array.from(
+      sceneBuffers.materials.slice(panelBOffset, panelBOffset + 3),
+    )).toEqual([0, 0, 0]);
   });
 });

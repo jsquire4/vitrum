@@ -97,22 +97,33 @@ int getSurfaceRecord(
       textures, uvPrime.xy, material.metalnessMap, material.metalnessMapWrap
     ).b;
   }
-  vec3 emission = material.emissiveIntensity * material.emissive;
+  vec3 emission = vitrumFiniteNonNegativeRadianceProduct(
+    material.emissive, vec3( material.emissiveIntensity )
+  );
   if ( useTextures && material.emissiveMap != -1 ) {
     vec3 uvPrime =
       material.emissiveMapTransform * vec3( MAPPED_PBR_UV( 4u ), 1.0 );
-    emission *= sampleMaterialTexture(
-      materialRadianceTextures, uvPrime.xy,
-      material.emissiveMap, material.emissiveMapWrap
-    ).rgb;
+    emission = vitrumFiniteNonNegativeRadianceProduct(
+      emission,
+      sampleMaterialTexture(
+        materialRadianceTextures, uvPrime.xy,
+        material.emissiveMap, material.emissiveMapWrap
+      ).rgb
+    );
   }
   if ( useTextures && material.lightMap != -1 && pathDepth == 0 ) {
     vec3 uvPrime =
       material.lightMapTransform * vec3( MAPPED_PBR_UV( 17u ), 1.0 );
-    emission += material.lightMapIntensity * sampleMaterialTexture(
-      materialRadianceTextures, uvPrime.xy,
-      material.lightMap, material.lightMapWrap
-    ).rgb;
+    emission = vitrumFiniteNonNegativeRadianceSum(
+      emission,
+      vitrumFiniteNonNegativeRadianceProduct(
+        vec3( material.lightMapIntensity ),
+        sampleMaterialTexture(
+          materialRadianceTextures, uvPrime.xy,
+          material.lightMap, material.lightMapWrap
+        ).rgb
+      )
+    );
   }
 
   vec3 normal = normalize( textureSampleBarycoord(
@@ -159,24 +170,27 @@ int getSurfaceRecord(
       surfaceHit.barycoord, surfaceHit.faceIndices.xyz
     ).xy;
     vec3 uvPrime = material.bumpMapTransform * vec3( bumpUv, 1.0 );
-      float du = 1.0 / 512.0;
-      float hC = sampleMaterialTexture(
-        textures, uvPrime.xy, material.bumpMap, material.bumpMapWrap
-      ).r;
-      float hU = sampleMaterialTexture(
-        textures, uvPrime.xy + vec2( du, 0.0 ),
-        material.bumpMap, material.bumpMapWrap
-      ).r;
-      float hV = sampleMaterialTexture(
-        textures, uvPrime.xy + vec2( 0.0, du ),
-        material.bumpMap, material.bumpMapWrap
-      ).r;
-      vec3 tangent = bumpBasis[ 0 ];
-      vec3 bitangent = bumpBasis[ 1 ];
-      vec3 perturbed = normal - material.bumpScale * (
-        ( hU - hC ) / du * tangent + ( hV - hC ) / du * bitangent
-      );
-      if ( length( perturbed ) > 1e-6 ) normal = normalize( perturbed );
+    vec2 bumpTexel = 1.0 / vec2(
+      materialTextureSourceSize( textures, material.bumpMapWrap, 0 )
+    );
+    float hC = sampleMaterialTexture(
+      textures, uvPrime.xy, material.bumpMap, material.bumpMapWrap
+    ).r;
+    float hU = sampleMaterialTexture(
+      textures, uvPrime.xy + vec2( bumpTexel.x, 0.0 ),
+      material.bumpMap, material.bumpMapWrap
+    ).r;
+    float hV = sampleMaterialTexture(
+      textures, uvPrime.xy + vec2( 0.0, bumpTexel.y ),
+      material.bumpMap, material.bumpMapWrap
+    ).r;
+    vec3 tangent = bumpBasis[ 0 ];
+    vec3 bitangent = bumpBasis[ 1 ];
+    vec3 perturbed = normal - material.bumpScale * (
+      ( hU - hC ) / bumpTexel.x * tangent
+      + ( hV - hC ) / bumpTexel.y * bitangent
+    );
+    if ( length( perturbed ) > 1e-6 ) normal = normalize( perturbed );
   }
   normal *= surfaceHit.side;
 
@@ -228,7 +242,7 @@ int getSurfaceRecord(
   surf.hasActiveLayer = false;
   surf.materialIndex = materialIndex;
   surf.attenuationColor = vec3( 1.0 );
-  surf.attenuationDistance = 1e20;
+  surf.attenuationDistance = INFINITY;
   surf.attenuationThickness = 0.0;
   surf.hasAttenuationThickness = false;
   surf.clearcoatNormal = normal;

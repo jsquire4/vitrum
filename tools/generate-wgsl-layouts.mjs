@@ -55,6 +55,11 @@ const FRAME_FIELDS = [
   // candidates instead of sampling one emitter. Appended after the existing
   // scalar tail so no earlier field offsets move.
   ['directLightingMode', 'u32'],
+  // Scene-relative secondary-ray offset; occupies former tail padding.
+  ['rayOriginBias', 'f32'],
+  // Integrated luminance of the intensity-scaled HDRI. Distant-direct
+  // selection needs the physical source power, not the normalized CDF tail.
+  ['environmentDistantPower', 'f32'],
 ];
 
 const SIZE_BYTES = { u32: 4, f32: 4, vec3f: 12, vec3u: 12, vec4f: 16, mat4x4f: 64 };

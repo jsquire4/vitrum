@@ -205,7 +205,39 @@ describe('buildArrayBvh', () => {
     expect(Array.from(a.reorderedTriMaterialIds)).toEqual(Array.from(b.reorderedTriMaterialIds));
   });
 
-  it('8. caps canonical build depth at the smallest live traversal budget', () => {
+  it('8. enforces maxLeafTriangles for coincident centroids with a deterministic median split', () => {
+    const triangleCount = 17;
+    const positions = new Float32Array([
+      0, 0, 0, 0,
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+    ]);
+    const indices = new Uint32Array(triangleCount * 4);
+    for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+      indices.set([0, 1, 2, 0], triangle * 4);
+    }
+    const built = buildArrayBvh(
+      positions,
+      indices,
+      new Uint32Array(triangleCount),
+      { maxLeafTriangles: 3 },
+    );
+    const words = new Uint32Array(built.bvhNodes.buffer);
+    let leafTriangles = 0;
+    for (let node = 0; node < built.bvhNodes.length / 8; node += 1) {
+      const splitOrCount = words[node * 8 + 7]!;
+      if ((splitOrCount >>> 16) !== LEAFNODE_FLAG) continue;
+      const count = splitOrCount & 0xffff;
+      expect(count).toBeLessThanOrEqual(3);
+      leafTriangles += count;
+    }
+    expect(leafTriangles).toBe(triangleCount);
+    expect(Array.from(built.reorderedToSourceTriangle)).toEqual(
+      Array.from({ length: triangleCount }, (_, index) => index),
+    );
+  });
+
+  it('9. fails instead of violating the leaf cap when maxDepth is too small', () => {
     const positions = makeStride4Positions(24);
     const indices = new Uint32Array([
       0, 1, 2, 0,
@@ -217,31 +249,13 @@ describe('buildArrayBvh', () => {
       18, 19, 20, 0,
       21, 22, 23, 0,
     ]);
-    const built = buildArrayBvh(positions, indices, new Uint32Array(8), {
+    expect(() => buildArrayBvh(positions, indices, new Uint32Array(8), {
       maxLeafTriangles: 1,
       maxDepth: 1,
-    });
-    const words = new Uint32Array(built.bvhNodes.buffer);
-    let maxDepth = 0;
-    let leafTriangles = 0;
-    const walk = (nodeIndex: number, depth: number): void => {
-      maxDepth = Math.max(maxDepth, depth);
-      const splitOrCount = words[nodeIndex * 8 + 7]!;
-      if ((splitOrCount >>> 16) === LEAFNODE_FLAG) {
-        leafTriangles += splitOrCount & 0xffff;
-        return;
-      }
-      walk(nodeIndex + 1, depth + 1);
-      walk(nodeIndex + words[nodeIndex * 8 + 6]!, depth + 1);
-    };
-    walk(0, 0);
-
-    expect(maxDepth).toBe(1);
-    expect(leafTriangles).toBe(8);
-    expect(() => validateBvhEncoding(built.bvhNodes, built.bvhNodes.length / 8)).not.toThrow();
+    })).toThrow(/maxDepth=1 prevents enforcing maxLeafTriangles=1/);
   });
 
-  it('9. rejects invalid depth budgets and a forced leaf that cannot be encoded', () => {
+  it('10. rejects invalid depth budgets and a forced leaf that cannot be encoded', () => {
     const positions = new Float32Array([
       0, 0, 0, 0,
       1, 0, 0, 0,
@@ -267,6 +281,6 @@ describe('buildArrayBvh', () => {
     expect(() => buildArrayBvh(positions, indices, new Uint32Array(triangleCount), {
       maxLeafTriangles: 1,
       maxDepth: 0,
-    })).toThrow(/Depth-cap leaf triangle count 65536 exceeds the 16-bit limit/);
+    })).toThrow(/maxDepth=0 prevents enforcing maxLeafTriangles=1.*16-bit limit/);
   });
 });

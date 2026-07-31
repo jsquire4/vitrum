@@ -18,6 +18,13 @@
 import { buildAliasTable, luminance } from '@vitrum/shared-samplers';
 import type { DDGILight } from '../ddgi/types.js';
 import {
+  canonicalizeLightingDirectionF32,
+  packFiniteLightingFloat32,
+  packLightingRgbScaleEnvelopeF32,
+  packNonNegativeLightingFloat32,
+  packNonNegativeLightingRgbF32,
+} from '../lightingFloat32.js';
+import {
   RC_PARAMS_BYTE_SIZE,
   RCParamsOffset,
   RC_LIGHTS_BUFFER_BYTES,
@@ -130,6 +137,23 @@ export const RC_LIGHT_KIND_POINT = 1;
 export const RC_LIGHT_KIND_SPOT = 2;
 export const RC_LIGHT_KIND_DIRECTIONAL = 3;
 
+/**
+ * Proposal weights are binary64 host-only inputs to the robust alias builder,
+ * not GPU f32 fields. Preserve the wider product so `radiance × 4π` cannot
+ * invalidate otherwise representable RCLight radiance.
+ */
+function rcAliasProposalWeight(
+  emittedLuminance: number,
+  solidAngle: number,
+  label: string,
+): number {
+  const weight = emittedLuminance * solidAngle;
+  if (!Number.isFinite(weight) || weight < 0) {
+    throw new RangeError(`${label} must be finite and non-negative.`);
+  }
+  return weight;
+}
+
 export function rcLightsBufferByteLength(count: number): number {
   if (!Number.isSafeInteger(count) || count < 0 || count > 0xffff_ffff) {
     throw new RangeError('[RC] light count must fit in u32.');
@@ -140,18 +164,6 @@ export function rcLightsBufferByteLength(count: number): number {
     throw new RangeError('[RC] runtime light buffer byte length exceeds Number.MAX_SAFE_INTEGER.');
   }
   return bytes;
-}
-
-function finiteNonnegative(value: number, label: string): number {
-  if (!Number.isFinite(value) || value < 0) {
-    throw new RangeError(`[RC] ${label} must be finite and nonnegative.`);
-  }
-  return value;
-}
-
-function finite(value: number, label: string): number {
-  if (!Number.isFinite(value)) throw new RangeError(`[RC] ${label} must be finite.`);
-  return value;
 }
 
 /** Runtime-sized RCLight records followed by a represented-PMF alias table. */
@@ -183,33 +195,92 @@ export function packRCLights(lights: readonly DDGILight[]): ArrayBuffer {
     const shadowFlag = l.castShadow === false ? RC_LIGHT_CAST_SHADOW_DISABLED : 0;
     const kind = isSun ? RC_LIGHT_KIND_DIRECTIONAL : isSpot ? RC_LIGHT_KIND_SPOT : RC_LIGHT_KIND_POINT;
     ui[base + O.kind / 4] = (kind | shadowFlag) >>> 0;
-    data[base + O.distance / 4] = isSun ? 0 : finiteNonnegative(l.distance ?? 0, `light[${i}].distance`);
-    data[base + O.decay / 4] = isSun ? 0 : finiteNonnegative(l.decay ?? 2, `light[${i}].decay`);
-    data[base + O.position / 4 + 0] = finite(l.position?.x ?? 0, `light[${i}].position.x`);
-    data[base + O.position / 4 + 1] = finite(l.position?.y ?? 0, `light[${i}].position.y`);
-    data[base + O.position / 4 + 2] = finite(l.position?.z ?? 0, `light[${i}].position.z`);
-    const intensity = finiteNonnegative(l.intensity, `light[${i}].intensity`);
+    data[base + O.distance / 4] = isSun
+      ? 0
+      : packNonNegativeLightingFloat32(
+          l.distance ?? 0,
+          `packRCLights lights[${i}].distance`,
+        );
+    data[base + O.decay / 4] = isSun
+      ? 0
+      : packNonNegativeLightingFloat32(
+          l.decay ?? 2,
+          `packRCLights lights[${i}].decay`,
+        );
+    data[base + O.position / 4 + 0] = packFiniteLightingFloat32(
+      l.position?.x ?? 0,
+      `packRCLights lights[${i}].position.x`,
+    );
+    data[base + O.position / 4 + 1] = packFiniteLightingFloat32(
+      l.position?.y ?? 0,
+      `packRCLights lights[${i}].position.y`,
+    );
+    data[base + O.position / 4 + 2] = packFiniteLightingFloat32(
+      l.position?.z ?? 0,
+      `packRCLights lights[${i}].position.z`,
+    );
+    const intensity = packNonNegativeLightingFloat32(
+      l.intensity,
+      `packRCLights lights[${i}].intensity`,
+    );
     data[base + O.intensity / 4] = intensity;
     // Spot axis (forward beam/travel direction; zero vector → point light → cone skipped).
-    const direction = isSun ? (l.direction ?? { x: 0, y: -1, z: 0 }) : l.spotAxis;
-    data[base + O.direction / 4 + 0] = finite(direction?.x ?? 0, `light[${i}].direction.x`);
-    data[base + O.direction / 4 + 1] = finite(direction?.y ?? 0, `light[${i}].direction.y`);
-    data[base + O.direction / 4 + 2] = finite(direction?.z ?? 0, `light[${i}].direction.z`);
-    data[base + O.innerCone / 4] = isSun ? 0 : finite(l.spotCosInner ?? 1, `light[${i}].innerCone`);
+    const sourceDirection = isSun
+      ? (l.direction ?? { x: 0, y: -1, z: 0 })
+      : l.spotAxis;
+    const direction = sourceDirection == null
+      ? [0, 0, 0] as [number, number, number]
+      : canonicalizeLightingDirectionF32(
+          [sourceDirection.x, sourceDirection.y, sourceDirection.z],
+          `packRCLights lights[${i}].direction`,
+        );
+    data[base + O.direction / 4 + 0] = direction[0];
+    data[base + O.direction / 4 + 1] = direction[1];
+    data[base + O.direction / 4 + 2] = direction[2];
+    data[base + O.innerCone / 4] = isSun
+      ? 0
+      : packFiniteLightingFloat32(
+          l.spotCosInner ?? 1,
+          `packRCLights lights[${i}].innerCone`,
+        );
     const fallback = isSun ? { r: 1, g: 0.95, b: 0.85 } : { r: 1, g: 1, b: 1 };
     const color = l.color ?? fallback;
-    const r = finiteNonnegative(color.r, `light[${i}].color.r`);
-    const g = finiteNonnegative(color.g, `light[${i}].color.g`);
-    const b = finiteNonnegative(color.b, `light[${i}].color.b`);
+    const [r, g, b] = packNonNegativeLightingRgbF32(
+      [color.r, color.g, color.b],
+      `packRCLights lights[${i}].color`,
+    );
     data[base + O.color / 4 + 0] = r;
     data[base + O.color / 4 + 1] = g;
     data[base + O.color / 4 + 2] = b;
     const outer = isSun
-      ? finiteNonnegative(l.angularRadius ?? 0, `light[${i}].angularRadius`)
-      : finite(l.spotCosOuter ?? 0, `light[${i}].outerCone`);
+      ? packNonNegativeLightingFloat32(
+          l.angularRadius ?? 0,
+          `packRCLights lights[${i}].angularRadius`,
+        )
+      : packFiniteLightingFloat32(
+          l.spotCosOuter ?? 0,
+          `packRCLights lights[${i}].outerCone`,
+        );
     data[base + O.outerCone / 4] = outer;
-    const solidAngle = isSun ? 1 : isSpot ? 2 * Math.PI * Math.max(0, 1 - outer) : 4 * Math.PI;
-    weights.push(luminance(r * intensity, g * intensity, b * intensity) * solidAngle);
+    const emitted = packLightingRgbScaleEnvelopeF32(
+      [r, g, b],
+      intensity,
+      `packRCLights lights[${i}]`,
+    ).scaled;
+    const emittedLuminance = packNonNegativeLightingFloat32(
+      luminance(emitted[0], emitted[1], emitted[2]),
+      `packRCLights lights[${i}] emitted luminance`,
+    );
+    const solidAngle = isSun
+      ? 1
+      : isSpot
+        ? 2 * Math.PI * Math.max(0, 1 - outer)
+        : 4 * Math.PI;
+    weights.push(rcAliasProposalWeight(
+      emittedLuminance,
+      solidAngle,
+      `packRCLights lights[${i}] alias weight`,
+    ));
   });
 
   const alias = buildAliasTable(weights);

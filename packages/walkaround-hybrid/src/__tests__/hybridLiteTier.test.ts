@@ -69,9 +69,9 @@ describe('walkaround device-limit constructor preflight', () => {
 
   it('rejects an under-limit real device surface before any GPU allocation', () => {
     const device = fakeDevice();
-    (device.limits as unknown as Record<string, number>).maxSampledTexturesPerShaderStage = 15;
+    (device.limits as unknown as Record<string, number>).maxSampledTexturesPerShaderStage = 16;
     expect(() => new HybridEngine(baseOpts({ device, tier: 'full' })))
-      .toThrow(/maxSampledTexturesPerShaderStage=15 \(requires >= 16\)/);
+      .toThrow(/maxSampledTexturesPerShaderStage=16 \(requires >= 17\)/);
     expect(device.createBuffer).not.toHaveBeenCalled();
   });
 });

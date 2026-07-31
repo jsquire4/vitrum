@@ -61,31 +61,48 @@ const FEATURE_SETS: Record<string, TraceFeatures> = {
 // continuation can run, enforces one eye-plus-light path-depth budget, and
 // preserves a light vertex's RGB throughput when a delayed reverse-density
 // patch updates its row-2 w lane.
+// The final completeness pass crosses delta vertices without terminating the
+// BDPT density recurrence, gives shadow-disabled finite lights exclusive NEE
+// ownership, and makes mesh-emitter sampling and forward visibility obey the
+// material's authored sidedness. The common transport delta is +669 bytes;
+// enabling BDPT adds its recurrence changes for a +1633-byte total delta.
+// The render-target closure folds main-path samples into a shader-readable
+// progressive history, initializes fog-miss distance, and packs the two
+// environment inverse-CDF lookups into one sampler.
+// Bump-map finite differences now derive their independent UV steps from each
+// packed source rectangle rather than assuming a fixed or atlas-wide extent.
+// The 2026-07-30 numerical-safety closure makes transport distances,
+// normalization, MIS products, directional cones, BVH slabs, BDPT records, and
+// finite-light visibility well-defined across every accepted scene scale.
+// The final frame-boundary closure adds pre-mutation camera/transport
+// representability, scale-stable thin-lens refocusing, exact max-float
+// infinite-distance classification, staged environment radiance products, and
+// finite-f32 exposure with an RGBA16F final-write ceiling.
 // length + sha256(utf8) of composeTraceGlsl(features) for each set.
 const GOLDENS: Record<string, { length: number; sha256: string }> = {
   default: {
-    length: 139235,
-    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
+    length: 159443,
+    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
   },
   bdptOn: {
-    length: 184194,
-    sha256: 'e82db65f4d826df58407415195b84a5d2733bb969df03ffa8b924171e0a9e7de',
+    length: 216704,
+    sha256: '91429dca45f6cd9a88c25f31e7d2fdba9062fda9d418553c99932562b536f6ed',
   },
   bdptOff: {
-    length: 139235,
-    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
+    length: 159443,
+    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
   },
   sobol: {
-    length: 145107,
-    sha256: 'acec1c2160d3b8f4735de9d24c7e60579b70dfe3d29e41f2e499b0003b4f7557',
+    length: 165315,
+    sha256: '4845f1e81e0ca68161d0787b5e706e538de239e381890ffefe64697221182248',
   },
   orthographic: {
-    length: 139235,
-    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
+    length: 159443,
+    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
   },
   dof: {
-    length: 139235,
-    sha256: '06c9902d5d7ec324ab885f09ac4794d7a5046b14fa3f383d09b4dd7bd834ad1f',
+    length: 159443,
+    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
   },
 };
 

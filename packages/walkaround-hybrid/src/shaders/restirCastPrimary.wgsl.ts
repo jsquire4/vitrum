@@ -106,10 +106,13 @@ fn primarySurfaceFromRay(ray: Ray) -> PrimarySurface {
   s.depth  = hit.dist;
   s.triangleId = hit.indices.w;
   s.instanceId = select(0u, hit.instanceIndex, ubo.bvhMode == 1u);
-  s.materialKey =
-    hit.matColorPacked ^
-    (materialWord * 0x9e3779b9u) ^
-    (hit.indices.w * 0x85ebca6bu);
+  s.materialKey = restir_gi_receiver_domain_key(
+    hit.matColorPacked,
+    materialWord,
+    hit.indices.w,
+    s.instanceId,
+    payload,
+  );
   return s;
 }
 
@@ -133,5 +136,5 @@ export const RESTIR_CAST_PRIMARY_MODULE: WgslModule = {
   source: RESTIR_CAST_PRIMARY_WGSL,
   // Focused closure: UBO + traversal/types + PrimarySurface + shared math +
   // material atlas payloads + camera ray generation.
-  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialAtlas', 'cameraRays'],
+  requires: ['walkaroundUbo', 'sceneTraversal', 'reservoirGi', 'sharedPrimitives', 'materialAtlas', 'restirGiMaterial', 'cameraRays'],
 };

@@ -498,4 +498,26 @@ describe('compressedWideBvh', () => {
       /indexStride >= 4/,
     );
   });
+
+  it('intersects a well-conditioned nanometer-scale triangle', () => {
+    const positions = new Float32Array([
+      -5e-9, -5e-9, 0, 0,
+      5e-9, -5e-9, 0, 0,
+      0, 5e-9, 0, 0,
+    ]);
+    const built = buildCompressedWideBvh(
+      positions,
+      new Uint32Array([0, 1, 2, 0]),
+      new Uint32Array([0]),
+    );
+    const ray: CwbvhRay = {
+      origin: [0, 0, 1],
+      direction: [0, 0, -1],
+    };
+
+    const hit = intersectCompressedWideBvhFirstHit(built, positions, ray);
+    expect(hit.didHit).toBe(true);
+    expect(hit.dist).toBeCloseTo(1, 6);
+    expect(intersectCompressedWideBvhAnyHit(built, positions, ray)).toBe(true);
+  });
 });

@@ -337,14 +337,33 @@ fn bdptGeometricTerm(
   mediumY: bool,
 ) -> f32 {
   let d = posY - posX;
-  let dist2 = dot(d, d);
-  if (dist2 <= 1e-12) {
+  let edgeScale = max(abs(d.x), max(abs(d.y), abs(d.z)));
+  if (!(edgeScale > 0.0) || edgeScale > 3.402823466e38) {
     return 0.0;
   }
-  let w = d * inverseSqrt(dist2);
+  let scaledEdge = d / edgeScale;
+  let scaledDist2 = dot(scaledEdge, scaledEdge);
+  if (!(scaledDist2 > 0.0) || scaledDist2 > 3.402823466e38) {
+    return 0.0;
+  }
+  let w = scaledEdge * inverseSqrt(scaledDist2);
   let cosX = select(abs(dot(nX, w)), 1.0, mediumX);
   let cosY = select(abs(dot(nY, -w)), 1.0, mediumY);
-  return (cosX * cosY) / dist2;
+  if (!(cosX > 0.0) || !(cosY > 0.0)) {
+    return 0.0;
+  }
+  // Evaluate cosX*cosY/|d|² in log space. Squaring a valid finite world-space
+  // edge directly can underflow or overflow before the quotient is formed.
+  let logG =
+    log(cosX) + log(cosY) -
+    2.0 * log(edgeScale) - log(scaledDist2);
+  if (logG >= 88.722839) {
+    return 3.402823466e38;
+  }
+  if (logG <= -103.27893) {
+    return 0.0;
+  }
+  return exp(logG);
 }
 
 struct BdptLogDensity {
@@ -388,6 +407,50 @@ fn bdptLogDensitySAtoArea(
   return BdptLogDensity(log(pdfSA) + log(cosDest) - logDist2, true);
 }
 
+// PBRT MISWeight's Remap0, expressed in the log domain. A stored zero is the
+// continuous-density sentinel for a delta event; it contributes a neutral
+// ratio (log(1) = 0) while the explicit connection-edge mask decides whether
+// the corresponding technique is eligible. Exact zero from a tangent or
+// coincident conversion is remapped the same way, matching PBRT's area-density
+// recurrence. Non-finite or negative state still fails closed.
+fn bdptRemappedLogDensitySAtoArea(
+  pdfSA: f32,
+  fromPos: vec3f,
+  destPos: vec3f,
+  destNorm: vec3f,
+  destIsMedium: bool,
+) -> BdptLogDensity {
+  if (pdfSA < 0.0 || pdfSA - pdfSA != 0.0) {
+    return BdptLogDensity(0.0, false);
+  }
+  if (pdfSA == 0.0) {
+    return BdptLogDensity(0.0, true);
+  }
+  let d = destPos - fromPos;
+  let edgeScale = max(abs(d.x), max(abs(d.y), abs(d.z)));
+  if (edgeScale - edgeScale != 0.0) {
+    return BdptLogDensity(0.0, false);
+  }
+  if (edgeScale == 0.0) {
+    return BdptLogDensity(log(pdfSA), true);
+  }
+  let scaledEdge = d / edgeScale;
+  let scaledDist2 = dot(scaledEdge, scaledEdge);
+  if (!bdptFinitePositive(scaledDist2)) {
+    return BdptLogDensity(0.0, false);
+  }
+  let edgeDir = scaledEdge * inverseSqrt(scaledDist2);
+  let cosDest = select(abs(dot(destNorm, edgeDir)), 1.0, destIsMedium);
+  if (cosDest < 0.0 || cosDest - cosDest != 0.0) {
+    return BdptLogDensity(0.0, false);
+  }
+  if (cosDest == 0.0) {
+    return BdptLogDensity(0.0, true);
+  }
+  let logDist2 = 2.0 * log(edgeScale) + log(scaledDist2);
+  return BdptLogDensity(log(pdfSA) + log(cosDest) - logDist2, true);
+}
+
 fn bdptInfiniteLaunchLogArea(
   launchPdf: f32,
   receiverNormal: vec3f,
@@ -413,9 +476,14 @@ fn bdptInfiniteLaunchLogArea(
 fn bdptInfiniteRootLaunchPdf(directionPdf: f32) -> f32 {
   let emitterCount = bdptEmitterCount();
   if (emitterCount == 0u || !bdptFinitePositive(directionPdf)) { return 0.0; }
-  let radius = max(params.sceneRadius, 1e-3);
-  return directionPdf /
-    (f32(emitterCount) * PI * radius * radius);
+  let radius = params.sceneRadius;
+  let launchArea = measureAreaVector(
+    vec3f(radius, 0.0, 0.0),
+    vec3f(0.0, radius, 0.0),
+    PI,
+  );
+  if (launchArea.valid == 0u) { return 0.0; }
+  return (directionPdf / f32(emitterCount)) / launchArea.area;
 }
 
 // Complete infinite-emitter strategy family for a fixed geometric path:
@@ -467,17 +535,17 @@ fn bdptInfiniteEyeFamilyWeight(
     let launchArea = bdptInfiniteLaunchLogArea(
       launchPdf, currentNormal, receiverToSource, currentIsMedium,
     );
-    let incomingEyeArea = bdptLogDensitySAtoArea(
+    let incomingEyeArea = bdptRemappedLogDensitySAtoArea(
       currentIncomingEyePdf,
       previous.pos,
       currentPosition,
       currentNormal,
       currentIsMedium,
     );
-    if (!transitionBlocked && launchArea.valid && incomingEyeArea.valid) {
+    if (launchArea.valid && incomingEyeArea.valid) {
       var logRatio = launchArea.value - log(neePdf) - incomingEyeArea.value;
       logPdfs[2u] = logRatio;
-      validPdfs[2u] = true;
+      validPdfs[2u] = !transitionBlocked;
 
       for (var strategy = 3u; strategy < BDPT_MAX_INFINITE_STRATEGIES;
            strategy = strategy + 1u) {
@@ -491,21 +559,21 @@ fn bdptInfiniteEyeFamilyWeight(
         if (destinationDepth < 1u) { break; }
         let destination = bdptEyeStackLoad(destinationDepth);
         let predecessor = bdptEyeStackLoad(destinationDepth - 1u);
-        if (destination.spec || predecessor.spec) { break; }
+        let connectionIsDelta = destination.spec || predecessor.spec;
         var lightwardPosition = currentPosition;
         var forwardPdf = currentSwappedPdf;
         if (strategy > 3u) {
           lightwardPosition = bdptEyeStackLoad(destinationDepth + 1u).pos;
           forwardPdf = destination.pdfFwd;
         }
-        let forwardArea = bdptLogDensitySAtoArea(
+        let forwardArea = bdptRemappedLogDensitySAtoArea(
           forwardPdf,
           lightwardPosition,
           destination.pos,
           destination.nrm,
           destination.medium,
         );
-        let reverseArea = bdptLogDensitySAtoArea(
+        let reverseArea = bdptRemappedLogDensitySAtoArea(
           destination.pdfRev,
           predecessor.pos,
           destination.pos,
@@ -515,7 +583,7 @@ fn bdptInfiniteEyeFamilyWeight(
         if (!forwardArea.valid || !reverseArea.valid) { break; }
         logRatio = logRatio + forwardArea.value - reverseArea.value;
         logPdfs[strategy] = logRatio;
-        validPdfs[strategy] = true;
+        validPdfs[strategy] = !connectionIsDelta;
       }
     }
   }
@@ -759,32 +827,40 @@ fn bdptMergedVertex(
   return v;
 }
 
-// Log area-measure forward density of merged vertex i (edge v_{i-1}→v_i).
+// Remap0 log area-measure forward density of merged vertex i
+// (edge v_{i-1}→v_i).
 fn bdptFwdLogArea(i: u32, c: u32, e: u32, n: u32,
   fwdEe: f32, fwdEeMinus: f32, revLc: f32, revLcMinus: f32, camPos: vec3f, camNrm: vec3f) -> BdptLogDensity {
   let v = bdptMergedVertex(i, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
   if (i == 0u) {
+    if (v.pdfFwd == 0.0) {
+      return BdptLogDensity(0.0, true);
+    }
     if (!bdptFinitePositive(v.pdfFwd)) {
       return BdptLogDensity(0.0, false);
     }
     return BdptLogDensity(log(v.pdfFwd), true);
   }
   let prev = bdptMergedVertex(i - 1u, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
-  return bdptLogDensitySAtoArea(v.pdfFwd, prev.pos, v.pos, v.nrm, v.medium);
+  return bdptRemappedLogDensitySAtoArea(v.pdfFwd, prev.pos, v.pos, v.nrm, v.medium);
 }
 
-// Log area-measure reverse density of merged vertex i (edge v_{i+1}→v_i).
+// Remap0 log area-measure reverse density of merged vertex i
+// (edge v_{i+1}→v_i).
 fn bdptRevLogArea(i: u32, c: u32, e: u32, n: u32,
   fwdEe: f32, fwdEeMinus: f32, revLc: f32, revLcMinus: f32, camPos: vec3f, camNrm: vec3f) -> BdptLogDensity {
   let v = bdptMergedVertex(i, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
   if (i == n - 1u) {
+    if (v.pdfRev == 0.0) {
+      return BdptLogDensity(0.0, true);
+    }
     if (!bdptFinitePositive(v.pdfRev)) {
       return BdptLogDensity(0.0, false);
     }
     return BdptLogDensity(log(v.pdfRev), true);
   }
   let next = bdptMergedVertex(i + 1u, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
-  return bdptLogDensitySAtoArea(v.pdfRev, next.pos, v.pos, v.nrm, v.medium);
+  return bdptRemappedLogDensitySAtoArea(v.pdfRev, next.pos, v.pos, v.nrm, v.medium);
 }
 
 // Full Veach §10.3 power-heuristic MIS weight for the selected strategy
@@ -805,11 +881,14 @@ fn bdptMISWeightFull(
   // reference log-density is exactly zero. Every other technique is represented
   // only by a sum of log-ratios relative to that reference.
   var logPdfs: array<f32, BDPT_MAX_MERGED>;
+  var knownPdfs: array<bool, BDPT_MAX_MERGED>;
   var validPdfs: array<bool, BDPT_MAX_MERGED>;
   for (var k = 0u; k < n; k = k + 1u) {
     logPdfs[k] = 0.0;
+    knownPdfs[k] = false;
     validPdfs[k] = false;
   }
+  knownPdfs[selectedS] = true;
   validPdfs[selectedS] = true;
 
   // Left sweep: log p_{s-1} = log p_s + log pRev(s-1) - log pFwd(s-1).
@@ -824,13 +903,14 @@ fn bdptMISWeightFull(
         let nb = bdptMergedVertex(s - 2u, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
         neighborSpec = nb.spec;
       }
-      if (flip.spec || neighborSpec) { break; }
+      let connectionIsDelta = flip.spec || neighborSpec;
       let logFwd = bdptFwdLogArea(s - 1u, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
       let logRev = bdptRevLogArea(s - 1u, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
       if (!logFwd.valid || !logRev.valid) { break; }
       logP = logP + logRev.value - logFwd.value;
       logPdfs[s - 1u] = logP;
-      validPdfs[s - 1u] = true;
+      knownPdfs[s - 1u] = true;
+      validPdfs[s - 1u] = !connectionIsDelta;
       s = s - 1u;
     }
   }
@@ -842,13 +922,14 @@ fn bdptMISWeightFull(
       if (s >= n - 1u) { break; }
       let flip = bdptMergedVertex(s, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
       let nb = bdptMergedVertex(s + 1u, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
-      if (flip.spec || nb.spec) { break; }
+      let connectionIsDelta = flip.spec || nb.spec;
       let logFwd = bdptFwdLogArea(s, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
       let logRev = bdptRevLogArea(s, c, e, n, fwdEe, fwdEeMinus, revLc, revLcMinus, camPos, camNrm);
       if (!logFwd.valid || !logRev.valid) { break; }
       logP = logP + logFwd.value - logRev.value;
       logPdfs[s + 1u] = logP;
-      validPdfs[s + 1u] = true;
+      knownPdfs[s + 1u] = true;
+      validPdfs[s + 1u] = !connectionIsDelta;
       s = s + 1u;
     }
   }
@@ -860,7 +941,7 @@ fn bdptMISWeightFull(
     validPdfs[0u] = false;
     validPdfs[1u] = false;
     if (
-      n >= 3u && validPdfs[2u] &&
+      n >= 3u && knownPdfs[2u] &&
       bdptFinitePositive(infiniteNeePdf) &&
       bdptFinitePositive(infiniteLaunchPdf)
     ) {
@@ -886,13 +967,18 @@ fn bdptMISWeightFull(
       if (launchArea.valid && eyeArea.valid) {
         logPdfs[1u] = logPdfs[2u] + log(infiniteNeePdf) -
           launchArea.value + eyeArea.value;
-        validPdfs[1u] = true;
+        knownPdfs[1u] = true;
+        // Distant NEE connects the infinite source directly to v1. A delta at
+        // v2 can invalidate s=2 without invalidating this technique; only v1
+        // is an endpoint of the s=1 connection edge.
+        validPdfs[1u] = !firstReceiver.spec;
         if (
           infiniteEnvironmentRoot && !infiniteEyeEscapeDelta &&
           bdptFinitePositive(infiniteEyeEscapePdf)
         ) {
           logPdfs[0u] = logPdfs[1u] + log(infiniteEyeEscapePdf) -
             log(infiniteNeePdf);
+          knownPdfs[0u] = true;
           validPdfs[0u] = true;
         }
       }
@@ -995,11 +1081,11 @@ fn evaluateBdptConnection(
   let lightNormal = lv1.xyz;
   let lightThroughput = lv2.xyz;
   let toLight = lightPos - eyePos;
-  let dist = length(toLight);
-  if (dist < 1e-4) {
+  let dist = safe_length(toLight);
+  if (!(dist > 0.0)) {
     return vec3f(0.0);
   }
-  let connDir = toLight / dist;                 // E_e → L_c
+  let connDir = safe_normalize(toLight);         // E_e → L_c
   let lv3 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 3u)];
   let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];
   let lv5 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 5u)];
@@ -1089,9 +1175,12 @@ fn evaluateBdptConnection(
     return vec3f(0.0);
   }
   let lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lvMatId < 0.0 && lv4.x > 0.5;
-  let shadowRay = Ray(eyePos + connDir * 1e-3, connDir);
+  let shadowRay = Ray(
+    eyePos + connDir * ptRayOriginBias(),
+    connDir,
+  );
   if (!lightEmitterCastShadowDisabled && traceAny(
-    shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng,
+    shadowRay, ptRayTMin(), ptFiniteSegmentTMax(dist), rng,
   )) {
     return vec3f(0.0);
   }
@@ -1112,7 +1201,14 @@ fn evaluateBdptConnection(
   // Keep the BSDF value itself here so the connection does not double-count
   // cos(theta) at the eye endpoint.
   let eyeBsdfCosTheta = eyeBrdf;
-  let cosLight = select(max(dot(lightNormal, -connDir), 0.0), 1.0, lightIsMedium);
+  let twoSidedAreaEndpoint =
+    lvMatId == BDPT_LV_AREA_EMITTER_MATID && lv4.y > 0.5;
+  let endpointCosine = select(
+    max(dot(lightNormal, -connDir), 0.0),
+    abs(dot(lightNormal, -connDir)),
+    twoSidedAreaEndpoint,
+  );
+  let cosLight = select(endpointCosine, 1.0, lightIsMedium);
   if (lvMatId < 0.0 && !isPointEndpoint && !isSpotEndpoint && cosLight <= 0.0) {
     return vec3f(0.0);
   }
@@ -1172,7 +1268,9 @@ fn evaluateBdptConnection(
   // emitter (matId < 0). Keeps the MIS pdf bookkeeping consistent with the glossy
   // light-vertex BSDF used in lightBsdfCosTheta.
   var fwdEe = bdptLambertDirPdf(lightNormal, lcToE);
-  if (isPointEndpoint) {
+  if (twoSidedAreaEndpoint) {
+    fwdEe = abs(dot(lightNormal, lcToE)) * 0.5 * INV_PI;
+  } else if (isPointEndpoint) {
     fwdEe = 0.25 * INV_PI;
   } else if (isSpotEndpoint) {
     let solidAngle = 2.0 * PI * (1.0 - lv4.w);

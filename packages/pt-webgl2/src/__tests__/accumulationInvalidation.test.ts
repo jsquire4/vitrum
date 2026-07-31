@@ -56,6 +56,24 @@ function withProjectionScale(input: FrameInput, scale: number): FrameInput {
 }
 
 describe('PTEngineWebGL2 accumulation invalidation', () => {
+  it('derives a distinct geometry seed for each accumulated sample and replays it after reset', async () => {
+    const record = new Map<string, unknown>();
+    const engine = await createPTEngine_WebGL2({ device: createMockGl(record) });
+    engine.setScene(scene());
+    const repeated = { ...frame(), frameIndex: 11, frameSeed: 37 };
+
+    engine.renderFrame(repeated);
+    const firstSeed = record.get('seed');
+    engine.renderFrame(repeated);
+    const secondSeed = record.get('seed');
+
+    expect(firstSeed).not.toBe(secondSeed);
+
+    engine.reset();
+    engine.renderFrame(repeated);
+    expect(record.get('seed')).toBe(firstSeed);
+  });
+
   it('restarts when either camera matrix changes', async () => {
     const engine = await createPTEngine_WebGL2({ device: createMockGl() });
     engine.setScene(scene());

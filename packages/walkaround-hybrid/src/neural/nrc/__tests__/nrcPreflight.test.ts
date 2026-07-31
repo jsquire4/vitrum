@@ -261,14 +261,14 @@ describe('NRC resource preflight', () => {
       deviceWith({
         maxBindGroups: 4,
         maxStorageBuffersPerShaderStage: 8,
-        maxSampledTexturesPerShaderStage: 16,
+        maxSampledTexturesPerShaderStage: 17,
       }), CONFIG, MIN, MAX,
     )).not.toThrow();
     expect(() => preflightNrcResources(
       deviceWith({
         maxBindGroups: 4,
         maxStorageBuffersPerShaderStage: 7,
-        maxSampledTexturesPerShaderStage: 16,
+        maxSampledTexturesPerShaderStage: 17,
       }), CONFIG, MIN, MAX,
     )).toThrow(/gi-ris storage bindings requires 8, adapter reports 7/);
   });

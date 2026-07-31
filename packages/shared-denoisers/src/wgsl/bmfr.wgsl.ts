@@ -14,6 +14,8 @@
  * Real-Time Path-Tracing Reconstruction. ACM TOG 38(5), 2019.
  */
 
+import { FLOAT16_MAX_FINITE } from '../halfFloat.js';
+
 /** Cooperative TSQR lanes used by one deterministic block fit. */
 export const BMFR_WORKGROUP_SIZE = 32 as const;
 
@@ -291,7 +293,7 @@ fn bmfrMain(
     zBState[index] = 0.0;
   }
 
-  let inverseScale = 1.0 / max(bmfr_ubo.positionScale, 1e-4);
+  let inverseScale = 1.0 / bmfr_ubo.positionScale;
   for (
     var chunkStart = lane * QR_CHUNK_ROWS;
     chunkStart < pixelCapacity;
@@ -474,6 +476,21 @@ fn firstCoveringBlock(pixel: u32, blockSize: u32, stride: u32) -> u32 {
   return ceilDiv(pixel + 1u - blockSize, stride);
 }
 
+fn finiteHalfChannel(value: f32) -> f32 {
+  if (value != value) {
+    return 0.0;
+  }
+  return clamp(value, -${FLOAT16_MAX_FINITE}.0, ${FLOAT16_MAX_FINITE}.0);
+}
+
+fn finiteHalfRgb(value: vec3f) -> vec3f {
+  return vec3f(
+    finiteHalfChannel(value.r),
+    finiteHalfChannel(value.g),
+    finiteHalfChannel(value.b),
+  );
+}
+
 @compute @workgroup_size(${BMFR_RESOLVE_WORKGROUP_SIZE}, ${BMFR_RESOLVE_WORKGROUP_SIZE}, 1)
 fn bmfrResolve(@builtin(global_invocation_id) globalId: vec3u) {
   let dimensions = textureDimensions(bmfr_color);
@@ -485,7 +502,7 @@ fn bmfrResolve(@builtin(global_invocation_id) globalId: vec3u) {
   let rawColor = textureLoad(bmfr_color, coord, 0).rgb;
   let position = loadPosition(coord);
   if (position.w <= 0.0) {
-    textureStore(bmfr_out, coord, vec4f(rawColor, 1.0));
+    textureStore(bmfr_out, coord, vec4f(finiteHalfRgb(rawColor), 1.0));
     return;
   }
 
@@ -501,7 +518,7 @@ fn bmfrResolve(@builtin(global_invocation_id) globalId: vec3u) {
   );
   let lastBlock = min(coord / stride, blockCount - vec2u(1u));
   let normal = textureLoad(bmfr_normal, coord, 0).xyz * 2.0 - 1.0;
-  let inverseScale = 1.0 / max(bmfr_ubo.positionScale, 1e-4);
+  let inverseScale = 1.0 / bmfr_ubo.positionScale;
 
   var reconstructionSum = vec3f(0.0);
   var contributionCount = 0u;
@@ -545,6 +562,6 @@ fn bmfrResolve(@builtin(global_invocation_id) globalId: vec3u) {
     let history = textureLoad(bmfr_history, coord, 0).rgb;
     outputColor = mix(history, outputColor, bmfr_ubo.temporalAlpha);
   }
-  textureStore(bmfr_out, coord, vec4f(outputColor, 1.0));
+  textureStore(bmfr_out, coord, vec4f(finiteHalfRgb(outputColor), 1.0));
 }
 `;

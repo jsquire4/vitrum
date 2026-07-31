@@ -4,6 +4,11 @@
 // finite measurements; fresh recaptures additionally require current-source
 // provenance.
 
+import {
+  buildRestirPtCaptureConfig,
+  RESTIR_PT_WEIGHT_MODE,
+} from './restirPtResultContract.mjs';
+
 export const RADIOMETRIC_RESULT_SCHEMA = 'vitrum.radiometric-ab.result.v1';
 
 export class RadiometricResultValidationError extends Error {
@@ -289,7 +294,7 @@ function expectedRestirCaptureConfig(proof) {
       },
     ),
   );
-  return {
+  return buildRestirPtCaptureConfig({
     scene: proof.capture.scene,
     traceTier: proof.capture.traceTier,
     colorSpace: proof.capture.colorSpace,
@@ -301,20 +306,13 @@ function expectedRestirCaptureConfig(proof) {
     meanFrames: proof.meanFrames,
     varianceRuns: proof.varianceRuns,
     varianceFramesPerRun: proof.varianceFramesPerRun,
-    arms: {
-      base: { restirPtReuse: false },
-      candidate: {
-        restirPtReuse: true,
-        effectiveMClamp: proof.capture.effectiveMClamp,
-        effectivePackedWCap: Math.fround(proof.professionalDefaultWeightCeiling),
-      },
-    },
+    effectiveMClamp: proof.capture.effectiveMClamp,
     seeds: {
       ...schedule,
       meanFrameSeeds,
       varianceRunFrameSeeds,
     },
-  };
+  });
 }
 
 /** @param {any} proof @param {any} result */
@@ -405,8 +403,9 @@ function validateRestirPt(proof, result) {
     fail(id, 'highFrameMeanAgreement does not match globalRelErr');
   }
   if (result.varianceNotWorse !== varianceNotWorse) fail(id, 'varianceNotWorse does not match varRatio');
-  if (result.defaultWeightMode !== 'effectively-unclamped-f32-max') {
-    fail(id, 'defaultWeightMode must identify the professional unclamped estimator');
+  if (result.weightMode !== proof.weightMode ||
+      result.weightMode !== RESTIR_PT_WEIGHT_MODE) {
+    fail(id, 'weightMode must identify the shared-max-log estimator');
   }
   if (!sameJson(result.roi, proof.roi)) fail(id, 'roi differs from proof');
   const expectedCaptureConfig = expectedRestirCaptureConfig(proof);
@@ -452,33 +451,6 @@ function validateRestirPt(proof, result) {
     }
   }
   finite(id, stats.weight?.mean, 'reservoirWeightStats.weight.mean', 0);
-  if (!(stats.weight.max < proof.professionalDefaultWeightCeiling)) {
-    fail(id, 'professional default clipped or saturated resolved reservoir weights');
-  }
-
-  if (!Array.isArray(result.clampControls) || result.clampControls.length !== proof.clampControls.length) {
-    fail(id, 'clampControls must contain every proved cap exactly once');
-  }
-  if (!sameJson(result.clampControls.map((/** @type {any} */ entry) => entry.wCap), proof.clampControls)) {
-    fail(id, 'clampControls caps are missing, duplicated, or out of order');
-  }
-  for (const entry of result.clampControls) {
-    if (entry.effectivePackedWCap !== Math.fround(entry.wCap)) {
-      fail(id, `clamp ${entry.wCap}.effectivePackedWCap differs from f32 packing`);
-    }
-    if (entry.promotionEligible !== false ||
-        entry.estimatorMode !== 'intentionally-biased-finite-weight-clamp') {
-      fail(id, `clamp ${entry.wCap} must be explicitly non-promotable and biased`);
-    }
-    const globalLum = positive(id, entry.globalLum, `clamp ${entry.wCap}.globalLum`);
-    const roiLum = positive(id, entry.roiLum, `clamp ${entry.wCap}.roiLum`);
-    near(id, entry.globalRelErr, relativeError(globalLum, base.globalLum), `clamp ${entry.wCap}.globalRelErr`);
-    near(id, entry.roiRelErr, relativeError(roiLum, base.roiLum), `clamp ${entry.wCap}.roiRelErr`);
-  }
-  const legacyClampControl = result.clampControls[proof.clampControls.indexOf(proof.diagnosticClamp)];
-  if (legacyClampControl == null || !(legacyClampControl.globalRelErr > globalRelErr)) {
-    fail(id, 'legacy W clamp does not empirically move the mean farther from baseline than the default');
-  }
 
   const paired = result.pairedSeedAnalysis;
   if (!isRecord(paired)) fail(id, 'pairedSeedAnalysis must be an object');
@@ -552,8 +524,8 @@ function validateRestirPt(proof, result) {
     pairedGlobal95: derivedGlobal95,
     pairedRoi95: derivedRoi95,
     varianceNotWorse,
-    legacyClampWeightMassFraction: stats.clippedWeightMassFraction,
-    professionalDefaultClippedWeightMass: 0,
+    diagnosticClampWeightMassFraction: stats.clippedWeightMassFraction,
+    weightMode: result.weightMode,
   };
 }
 

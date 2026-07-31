@@ -10,7 +10,7 @@ import {
   type TextureWrapMode,
   type UvTransform,
 } from '@vitrum/core';
-import { halfToFloat } from './textureDecode.js';
+import { halfToFloat, srgbToLinear } from './textureDecode.js';
 
 interface RawHeightPixels {
   readonly width: number;
@@ -111,7 +111,11 @@ function handlePayload(handle: unknown): {
   readonly width: unknown;
   readonly height: unknown;
   readonly data: ArrayLike<number> | undefined;
-  readonly hint?: { readonly channels?: number; readonly dataType?: string };
+  readonly hint?: {
+    readonly channels?: number;
+    readonly dataType?: string;
+    readonly colorSpace?: string;
+  };
 } | null {
   if (handle == null || typeof handle !== 'object') return null;
   const h = handle as {
@@ -124,20 +128,27 @@ function handlePayload(handle: unknown): {
       readonly data?: ArrayLike<number>;
       readonly channels?: number;
       readonly dataType?: string;
+      readonly colorSpace?: string;
     };
-    readonly __vitrum_hint__?: { readonly channels?: number; readonly dataType?: string };
+    readonly __vitrum_hint__?: {
+      readonly channels?: number;
+      readonly dataType?: string;
+      readonly colorSpace?: string;
+    };
     readonly channels?: number;
     readonly dataType?: string;
+    readonly colorSpace?: string;
   };
   // One coherent payload only: dimensions and data may not be borrowed across
   // a partial raw handle and a separate image object.
   const source = h.data != null ? h : h.image;
   if (source == null) return null;
   const hint = h.__vitrum_hint__ ?? (
-    source.channels != null || source.dataType != null
+    source.channels != null || source.dataType != null || source.colorSpace != null
       ? {
           ...(source.channels != null ? { channels: source.channels } : {}),
           ...(source.dataType != null ? { dataType: source.dataType } : {}),
+          ...(source.colorSpace != null ? { colorSpace: source.colorSpace } : {}),
         }
       : undefined
   );
@@ -253,7 +264,24 @@ function readHeightPixels(
       `data length ${data.length} must equal width*height*channels (${expectedValueCount}).`,
     );
   }
-  const decode = decoderFor(data, hint?.dataType, primitiveId, ref);
+  const decodeStorage = decoderFor(data, hint?.dataType, primitiveId, ref);
+  if (
+    hint?.colorSpace != null &&
+    hint.colorSpace !== 'linear' &&
+    hint.colorSpace !== 'srgb'
+  ) {
+    throw displacementError(
+      primitiveId,
+      ref,
+      `colorSpace must be "linear" or "srgb" (got ${String(hint.colorSpace)}).`,
+    );
+  }
+  // Displacement is a linear scalar field. A CPU snapshot explicitly tagged
+  // sRGB represents the same decoded values that an sRGB GPU texture returns:
+  // transfer-decode each texel before any linear filtering.
+  const decode = hint?.colorSpace === 'srgb'
+    ? (value: number): number => srgbToLinear(decodeStorage(value))
+    : decodeStorage;
   for (let index = 0; index < data.length; index += 1) {
     const decoded = decode(Number(data[index]));
     assertFiniteFloat32(decoded, primitiveId, ref, `decoded pixel[${index}]`);
@@ -362,10 +390,34 @@ function applyUvTransform(
   return [transformedU, transformedV];
 }
 
-function redAt(pixels: RawHeightPixels, x: number, y: number): number {
-  const clampedX = Math.min(pixels.width - 1, Math.max(0, x));
-  const clampedY = Math.min(pixels.height - 1, Math.max(0, y));
-  const offset = (clampedY * pixels.width + clampedX) * pixels.channels;
+function addressedTexelIndex(
+  index: number,
+  size: number,
+  mode: TextureWrapMode | undefined,
+): number {
+  switch (mode ?? 'repeat') {
+    case 'clamp-to-edge':
+      return Math.min(size - 1, Math.max(0, index));
+    case 'mirrored-repeat': {
+      const period = size * 2;
+      const repeated = ((index % period) + period) % period;
+      return repeated < size ? repeated : period - 1 - repeated;
+    }
+    case 'repeat':
+      return ((index % size) + size) % size;
+  }
+}
+
+function redAt(
+  pixels: RawHeightPixels,
+  x: number,
+  y: number,
+  wrapS: TextureWrapMode | undefined,
+  wrapT: TextureWrapMode | undefined,
+): number {
+  const addressedX = addressedTexelIndex(x, pixels.width, wrapS);
+  const addressedY = addressedTexelIndex(y, pixels.height, wrapT);
+  const offset = (addressedY * pixels.width + addressedX) * pixels.channels;
   return pixels.decode(Number(pixels.data[offset]));
 }
 
@@ -380,21 +432,35 @@ function sampleHeight(
   const wu = wrapCoord(tu, ref.wrapS, primitiveId, ref, 'transformed UV u');
   const wv = wrapCoord(tv, ref.wrapT, primitiveId, ref, 'transformed UV v');
   if (pixels.width === 1 && pixels.height === 1) {
-    return redAt(pixels, 0, 0);
+    return redAt(pixels, 0, 0, ref.wrapS, ref.wrapT);
   }
-  const x = wu * Math.max(0, pixels.width - 1);
-  const y = wv * Math.max(0, pixels.height - 1);
-  if (pixels.filter === 'nearest') return redAt(pixels, Math.round(x), Math.round(y));
+  if (pixels.filter === 'nearest') {
+    // Normalized nearest sampling selects floor(uv * size). Addressing the
+    // resulting integer separately preserves the u/v=1 clamp/mirror edge.
+    return redAt(
+      pixels,
+      Math.floor(wu * pixels.width),
+      Math.floor(wv * pixels.height),
+      ref.wrapS,
+      ref.wrapT,
+    );
+  }
+  // Normalized linear sampling interpolates around texel centres
+  // ((i + 0.5) / size), not around the texture's endpoint coordinates.
+  // Address every tap independently so repeat blends across the seam while
+  // clamp and mirrored-repeat duplicate their edge texels.
+  const x = wu * pixels.width - 0.5;
+  const y = wv * pixels.height - 0.5;
   const x0 = Math.floor(x);
   const y0 = Math.floor(y);
-  const x1 = Math.min(pixels.width - 1, x0 + 1);
-  const y1 = Math.min(pixels.height - 1, y0 + 1);
+  const x1 = x0 + 1;
+  const y1 = y0 + 1;
   const fx = x - x0;
   const fy = y - y0;
-  const h00 = redAt(pixels, x0, y0);
-  const h10 = redAt(pixels, x1, y0);
-  const h01 = redAt(pixels, x0, y1);
-  const h11 = redAt(pixels, x1, y1);
+  const h00 = redAt(pixels, x0, y0, ref.wrapS, ref.wrapT);
+  const h10 = redAt(pixels, x1, y0, ref.wrapS, ref.wrapT);
+  const h01 = redAt(pixels, x0, y1, ref.wrapS, ref.wrapT);
+  const h11 = redAt(pixels, x1, y1, ref.wrapS, ref.wrapT);
   const hx0 = h00 * (1 - fx) + h10 * fx;
   const hx1 = h01 * (1 - fx) + h11 * fx;
   const sampled = hx0 * (1 - fy) + hx1 * fy;
@@ -801,6 +867,36 @@ function accumulateFaceNormal(
   }
 }
 
+function displacementWeldKey(
+  ia: number,
+  ib: number,
+  ic: number,
+  wa: number,
+  wb: number,
+  wc: number,
+  steps: number,
+): string | null {
+  if (wa === steps) return `v:${ia}`;
+  if (wb === steps) return `v:${ib}`;
+  if (wc === steps) return `v:${ic}`;
+
+  const edgeKey = (
+    firstIndex: number,
+    firstWeight: number,
+    secondIndex: number,
+    secondWeight: number,
+  ): string => {
+    if (firstIndex < secondIndex) {
+      return `e:${firstIndex}:${secondIndex}:${firstWeight}`;
+    }
+    return `e:${secondIndex}:${firstIndex}:${secondWeight}`;
+  };
+  if (wa === 0) return edgeKey(ib, wb, ic, wc);
+  if (wb === 0) return edgeKey(ia, wa, ic, wc);
+  if (wc === 0) return edgeKey(ia, wa, ib, wb);
+  return null;
+}
+
 /**
  * Dice triangle-list geometry and apply CPU-readable displacement at generated
  * vertices before BVH construction. This is intentionally uniform and bounded:
@@ -897,7 +993,7 @@ export function maybeMicrodisplaceMeshGeometry(input: {
   for (const setIndex of sourceUvSetIndices) {
     if (sourceUvSets[setIndex] != null) presentUvSetCount += 1;
   }
-  const bytesPerVertex = 12n + 12n + 24n + 12n +
+  const bytesPerVertex = 12n + 12n + 24n + 12n + 4n + 24n +
     BigInt(presentUvSetCount * 8) +
     (input.tangents != null ? 16n : 0n) +
     BigInt(colorStride * 4);
@@ -926,6 +1022,9 @@ export function maybeMicrodisplaceMeshGeometry(input: {
     ? new Float32Array(generatedVertexCount * colorStride)
     : undefined;
   const outIndices = new Uint32Array(generatedTriCount * 3);
+  const weldGroupByVertex = new Uint32Array(generatedVertexCount);
+  const weldGroupByKey = new Map<string, number>();
+  let weldGroupCount = 0;
   let vertexCursor = 0;
   let indexCursor = 0;
 
@@ -936,6 +1035,7 @@ export function maybeMicrodisplaceMeshGeometry(input: {
     wa: number,
     wb: number,
     wc: number,
+    weldKey: string | null,
   ): number => {
     const px = lerpScalar(input.positions, 3, ia, ib, ic, 0, wa, wb, wc);
     const py = lerpScalar(input.positions, 3, ia, ib, ic, 1, wa, wb, wc);
@@ -959,6 +1059,13 @@ export function maybeMicrodisplaceMeshGeometry(input: {
     assertFiniteFloat32(oy, input.primitiveId, ref, `generated positions[${vertexCursor * 3 + 1}]`);
     assertFiniteFloat32(oz, input.primitiveId, ref, `generated positions[${vertexCursor * 3 + 2}]`);
     const outIndex = vertexCursor;
+    let weldGroup = weldKey == null ? undefined : weldGroupByKey.get(weldKey);
+    if (weldGroup === undefined) {
+      weldGroup = weldGroupCount;
+      weldGroupCount += 1;
+      if (weldKey != null) weldGroupByKey.set(weldKey, weldGroup);
+    }
+    weldGroupByVertex[vertexCursor] = weldGroup;
     outPositions[vertexCursor * 3] = ox;
     outPositions[vertexCursor * 3 + 1] = oy;
     outPositions[vertexCursor * 3 + 2] = oz;
@@ -1025,7 +1132,23 @@ export function maybeMicrodisplaceMeshGeometry(input: {
         const wb = row / steps;
         const wc = col / steps;
         const wa = 1 - wb - wc;
-        rows[row]![col] = pushVertex(ia, ib, ic, wa, wb, wc);
+        rows[row]![col] = pushVertex(
+          ia,
+          ib,
+          ic,
+          wa,
+          wb,
+          wc,
+          displacementWeldKey(
+            ia,
+            ib,
+            ic,
+            steps - row - col,
+            row,
+            col,
+            steps,
+          ),
+        );
       }
     }
     for (let row = 0; row < steps; row += 1) {
@@ -1065,11 +1188,23 @@ export function maybeMicrodisplaceMeshGeometry(input: {
       ref,
     );
   }
+  const weldNormalAccum = new Float64Array(weldGroupCount * 3);
+  for (let vertex = 0; vertex < generatedVertexCount; vertex += 1) {
+    const group = weldGroupByVertex[vertex]!;
+    weldNormalAccum[group * 3] =
+      weldNormalAccum[group * 3]! + normalAccum[vertex * 3]!;
+    weldNormalAccum[group * 3 + 1] =
+      weldNormalAccum[group * 3 + 1]! + normalAccum[vertex * 3 + 1]!;
+    weldNormalAccum[group * 3 + 2] =
+      weldNormalAccum[group * 3 + 2]! + normalAccum[vertex * 3 + 2]!;
+  }
   const outNormals = new Float32Array(generatedVertexCount * 3);
   for (let i = 0; i < outNormals.length; i += 3) {
-    const ax = normalAccum[i]!;
-    const ay = normalAccum[i + 1]!;
-    const az = normalAccum[i + 2]!;
+    const vertex = i / 3;
+    const group = weldGroupByVertex[vertex]!;
+    const ax = weldNormalAccum[group * 3]!;
+    const ay = weldNormalAccum[group * 3 + 1]!;
+    const az = weldNormalAccum[group * 3 + 2]!;
     const [nx, ny, nz] = ax === 0 && ay === 0 && az === 0
       ? [outNormalFallback[i]!, outNormalFallback[i + 1]!, outNormalFallback[i + 2]!] as const
       : normalizeStrict(ax, ay, az, input.primitiveId, ref, `output normal ${i / 3}`);

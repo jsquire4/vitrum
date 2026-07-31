@@ -23,8 +23,19 @@ import { describe, it, expect } from 'vitest';
  *  Item #39: use n[0] >= 0 ? 1 : -1 (maps 0 → +1) to match the WGSL
  *  select(-1.0, 1.0, n.x >= 0.0) fix; Math.sign(0) = 0 is wrong here. */
 function octEncodeTS(v: [number, number, number]): [number, number] {
-  const denom = Math.abs(v[0]) + Math.abs(v[1]) + Math.abs(v[2]);
-  const n: [number, number, number] = [v[0] / denom, v[1] / denom, v[2] / denom];
+  const scale = Math.max(Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2]));
+  if (!(scale > 0) || !Number.isFinite(scale)) return [0, 0];
+  const scaled: [number, number, number] = [
+    v[0] / scale,
+    v[1] / scale,
+    v[2] / scale,
+  ];
+  const denom = Math.abs(scaled[0]) + Math.abs(scaled[1]) + Math.abs(scaled[2]);
+  const n: [number, number, number] = [
+    scaled[0] / denom,
+    scaled[1] / denom,
+    scaled[2] / denom,
+  ];
   if (n[2] >= 0) {
     return [n[0], n[1]];
   }
@@ -174,6 +185,14 @@ describe('octahedral encode/decode (33-E)', () => {
     it('+X axis direction round-trips correctly', () => {
       const v: [number, number, number] = [1, 0, 0];
       expect(dotV(v, roundTrip(v))).toBeGreaterThan(0.9999);
+    });
+
+    it('encodes a tiny non-zero direction identically to its unit direction', () => {
+      const tiny = octEncodeTS([1e-30, -2e-30, 3e-30]);
+      const unitScale = octEncodeTS([1, -2, 3]);
+      expect(tiny[0]).toBeCloseTo(unitScale[0], 15);
+      expect(tiny[1]).toBeCloseTo(unitScale[1], 15);
+      expect(octEncodeTS([0, 0, 0])).toEqual([0, 0]);
     });
 
     it('-X axis direction round-trips correctly', () => {

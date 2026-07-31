@@ -1,12 +1,19 @@
 import { createHash } from 'node:crypto';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runCommandWithTimeout } from './runCommandWithTimeout.mjs';
 import { GAP_CLOSURE_SCENARIOS } from './scenario-presets.mjs';
 import { PT_WEBGPU_GAP_SCENARIOS } from './gapClosurePtWebgpuMap.mjs';
 import { getRepoRoot } from './repoRoot.mjs';
+import {
+  evaluateCaptureFreshness,
+  GAP_CLOSURE_CAPTURE_PROVENANCE_SCHEMA,
+  mechanicalGapClosureRow,
+  selectGapClosureScenarios,
+  strictGapClosureProblems,
+} from './gapClosureProofValidation.mjs';
 
 const scenarios = GAP_CLOSURE_SCENARIOS;
 
@@ -44,10 +51,13 @@ const scenarioFilter = (process.env.VITRUM_GAP_SCENARIOS ?? '')
   .split(',')
   .map((s) => s.trim())
   .filter((s) => s.length > 0);
-let activeScenarios =
-  scenarioFilter.length > 0
-    ? scenarios.filter((s) => scenarioFilter.includes(s.scenarioId))
-    : scenarios;
+let activeScenarios;
+try {
+  activeScenarios = selectGapClosureScenarios(scenarios, scenarioFilter);
+} catch (error) {
+  console.error(`[gap-closure] ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
 if (gapMechanical && scenarioFilter.length === 0) {
   const withBaseline = [];
   for (const s of scenarios) {
@@ -89,6 +99,25 @@ async function fileExists(path) {
 async function sha256(path) {
   const data = await readFile(path);
   return createHash('sha256').update(data).digest('hex');
+}
+
+function artifactPath(path) {
+  return relative(repoRoot, path).replaceAll('\\', '/');
+}
+
+async function readArtifactState(path) {
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) return null;
+    return {
+      artifactPath: artifactPath(path),
+      mtimeMs: info.mtimeMs,
+      size: info.size,
+      sha256: await sha256(path),
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function readPerfSidecar(imagePath) {
@@ -196,6 +225,8 @@ async function runCapture(scenario, variant, outputImagePath) {
         'VITRUM_CAPTURE_URL to your running example server URL to enable GPU captures.',
     };
   }
+  const stateBefore = await readArtifactState(outputImagePath);
+  const captureStartedAtMs = Date.now();
   const run = await runCommand(captureCommand, {
     VITRUM_SCENARIO_ID: effectiveScenario.scenarioId,
     VITRUM_SEED: String(effectiveScenario.seed),
@@ -212,12 +243,21 @@ async function runCapture(scenario, variant, outputImagePath) {
     VITRUM_OUTPUT_PNG: outputImagePath,
     VITRUM_CAPTURE_TIMEOUT_MS: String(captureProcessTimeoutMs),
   }, captureProcessTimeoutMs);
-  const imageExists = await fileExists(outputImagePath);
+  const stateAfter = await readArtifactState(outputImagePath);
+  const imageExists = stateAfter != null;
   if (run.code !== 0 || !imageExists) {
     return {
       ok: false,
       status: 'capture-failed',
       reason: `adapter exit=${run.code}; imageExists=${imageExists}; stderr=${run.stderr || '(none)'}`,
+    };
+  }
+  const freshness = evaluateCaptureFreshness(stateBefore, stateAfter, captureStartedAtMs);
+  if (!freshness.fresh) {
+    return {
+      ok: false,
+      status: 'capture-stale',
+      reason: freshness.reason,
     };
   }
 
@@ -242,39 +282,26 @@ async function runCapture(scenario, variant, outputImagePath) {
     reason: run.stderr || 'capture complete',
     perfMsPerSample: perfTelemetry?.msPerSample ?? null,
     perfTelemetry,
+    provenance: {
+      ...stateAfter,
+      fresh: true,
+      previousArtifact: stateBefore,
+      captureStartedAt: new Date(captureStartedAtMs).toISOString(),
+      capturedAt: new Date(stateAfter.mtimeMs).toISOString(),
+    },
   };
 }
 
 async function evaluateScenario(scenario) {
   const baselineImagePath = resolve(baselineDir, `${scenario.scenarioId}.png`);
-  if (
-    gapMechanical &&
-    (scenario.backend === 'pt-webgpu' || PT_WEBGPU_GAP_SCENARIOS.includes(scenario.scenarioId))
-  ) {
+  if (gapMechanical) {
     const baselineExists = await fileExists(baselineImagePath);
-    if (!baselineExists) {
-      return {
-        ...scenario,
-        status: 'blocked-missing-baseline',
-        beforeImageHash: null,
-        afterImageHash: null,
-        deltaSummary: `Mechanical mode: missing ${baselineImagePath}`,
-        perfBaselineMsPerSample: null,
-        perfCandidateMsPerSample: null,
-        passFail: 'BLOCKED',
-      };
-    }
-    const hash = await sha256(baselineImagePath);
-    return {
-      ...scenario,
-      status: 'mechanical-baseline-locked',
-      beforeImageHash: hash,
-      afterImageHash: hash,
-      deltaSummary: 'mechanical: baseline PNG committed; GPU re-capture skipped (VITRUM_GAP_MECHANICAL=1)',
-      perfBaselineMsPerSample: null,
-      perfCandidateMsPerSample: null,
-      passFail: 'PASS',
-    };
+    const hash = baselineExists ? await sha256(baselineImagePath) : null;
+    return mechanicalGapClosureRow(scenario, {
+      baselineExists,
+      baselineHash: hash,
+      baselinePath: artifactPath(baselineImagePath),
+    });
   }
 
   const scenarioDir = resolve(captureDir, scenario.scenarioId);
@@ -298,6 +325,7 @@ async function evaluateScenario(scenario) {
   if (!baselineExists) {
     return {
       ...scenario,
+      evidenceClass: 'NONE',
       status: baselineCaptureInfo?.status ?? 'blocked-missing-baseline',
       beforeImageHash: null,
       afterImageHash: null,
@@ -310,12 +338,17 @@ async function evaluateScenario(scenario) {
     };
   }
 
-  const baselineHash = await sha256(baselineImagePath);
+  const baselineArtifact = await readArtifactState(baselineImagePath);
+  if (baselineArtifact == null) {
+    throw new Error(`baseline artifact disappeared during evaluation: ${baselineImagePath}`);
+  }
+  const baselineHash = baselineArtifact.sha256;
   const baselineTelemetry = baselineCaptureInfo?.perfTelemetry ?? (await readPerfSidecar(baselineImagePath));
   const perfBaseline = baselineTelemetry?.msPerSample ?? null;
   let aggregateCandidateHash = '';
   const perfSamples = [];
   const perfTelemetrySamples = [];
+  const candidateArtifacts = [];
   const modeSummaries = [];
   for (const variant of variants) {
     const outputImagePath = resolve(scenarioDir, `${variant.id}.png`);
@@ -323,6 +356,7 @@ async function evaluateScenario(scenario) {
     if (!capture.ok) {
       return {
         ...scenario,
+        evidenceClass: 'NONE',
         status: capture.status,
         beforeImageHash: baselineHash,
         afterImageHash: null,
@@ -332,6 +366,7 @@ async function evaluateScenario(scenario) {
         passFail: 'BLOCKED',
       };
     }
+    candidateArtifacts.push(capture.provenance);
     const variantHash = await sha256(outputImagePath);
     aggregateCandidateHash += `${variant.id}:${variantHash}|`;
     if (capture.perfMsPerSample != null) {
@@ -359,6 +394,7 @@ async function evaluateScenario(scenario) {
   const passFail = failedByIdentical ? 'FAIL' : allVariantsMatchBaseline ? 'PASS' : 'FAIL';
   return {
     ...scenario,
+    evidenceClass: 'LIVE_GPU',
     status: failedByIdentical ? 'failed-identical-hash' : allVariantsMatchBaseline ? 'captured' : 'hash-mismatch',
     beforeImageHash: baselineHash,
     afterImageHash: afterHash,
@@ -368,6 +404,11 @@ async function evaluateScenario(scenario) {
     perfTelemetry: {
       baseline: baselineTelemetry,
       candidates: perfTelemetrySamples,
+    },
+    captureProvenance: {
+      schema: GAP_CLOSURE_CAPTURE_PROVENANCE_SCHEMA,
+      baseline: baselineArtifact,
+      candidates: candidateArtifacts,
     },
     passFail,
   };
@@ -419,6 +460,7 @@ const report = {
     scenarioFilter: scenarioFilter.length > 0 ? scenarioFilter : null,
     allowBaselineGeneration: allowBaselineGen,
     gapMechanical,
+    proofMode: gapMechanical ? 'MECHANICAL' : 'LIVE_GPU',
   },
   results: entries,
 };
@@ -430,11 +472,11 @@ console.log(`Wrote ${outputPath}`);
 
 const strict = process.env.VITRUM_STRICT_GAP_CLOSURE === '1';
 if (strict) {
-  const bad = report.results.filter((r) => r.passFail !== 'PASS');
-  if (bad.length > 0) {
+  const problems = strictGapClosureProblems(report.results);
+  if (problems.length > 0) {
     console.error(
-      `[gap-closure] VITRUM_STRICT_GAP_CLOSURE=1: ${bad.length} scenario(s) not PASS:`,
-      bad.map((r) => `${r.scenarioId}:${r.passFail}`).join(', '),
+      `[gap-closure] VITRUM_STRICT_GAP_CLOSURE=1: ${problems.length} scenario(s) lack strict proof:`,
+      problems.join(', '),
     );
     process.exit(1);
   }

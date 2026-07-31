@@ -192,6 +192,14 @@ describe('NRC one-blob direction encoding', () => {
       expect(v).toBeGreaterThanOrEqual(0); expect(v).toBeLessThanOrEqual(1);
     }
   });
+
+  it('octEncodeDir is invariant to every finite non-zero direction scale', () => {
+    const expected = octEncodeDir([1, -2, 3]);
+    const tiny = octEncodeDir([1e-30, -2e-30, 3e-30]);
+    expect(tiny[0]).toBeCloseTo(expected[0], 15);
+    expect(tiny[1]).toBeCloseTo(expected[1], 15);
+    expect(octEncodeDir([0, 0, 0])).toEqual([0.5, 0.5]);
+  });
 });
 
 describe('NRC full input assembly', () => {

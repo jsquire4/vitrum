@@ -4,6 +4,8 @@ import { buildLightTree, lightTreePdfCPU } from '@vitrum/shared-samplers';
 import { buildLightTreeInputForScene, packEmitterArrays } from '../scene/emitterPacking.js';
 import { materialToPackedVec4s } from '../scene/materialPacking.js';
 import { assertVolumeSceneSupported } from '../spectralSceneValidation.js';
+import { collectUnsupportedMaterialFieldsForTraceTier } from '../supportDetails.js';
+import { PT_WEBGPU_LITE_SUPPORT_MANIFEST } from '../supportManifest.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 import { PT_WEBGPU_TRACE_LITE_WGSL } from '../wgsl/pathTraceBruteforceLite.wgsl.js';
 import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
@@ -282,12 +284,27 @@ describe('SSS production closure — boundaries, textures, and safety', () => {
     );
   });
 
-  it('degrades lite to absorption-only without destroying scattering energy', () => {
+  it('limits lite volume transport to absorption and rejects scattering fields', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
       'throughput = throughput * exp(-sigmaA * materialAttenuationDistance',
     );
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('0.02 * scatteringCoeff');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('sigmaA + sigmaS');
+    expect(PT_WEBGPU_LITE_SUPPORT_MANIFEST.materials.scatteringCoefficient)
+      .toBe('unsupported');
+    expect(PT_WEBGPU_LITE_SUPPORT_MANIFEST.materials.scatteringCoefficientRGB)
+      .toBe('unsupported');
+    expect(PT_WEBGPU_LITE_SUPPORT_MANIFEST.materials.scatteringAnisotropy)
+      .toBe('unsupported');
+    expect(collectUnsupportedMaterialFieldsForTraceTier({
+      scatteringCoefficient: 0.2,
+      scatteringCoefficientRGB: [0.1, 0.2, 0.3],
+      scatteringAnisotropy: 0.4,
+    }, 'lite')).toEqual([
+      'scatteringAnisotropy',
+      'scatteringCoefficient',
+      'scatteringCoefficientRGB',
+    ]);
   });
 });
 

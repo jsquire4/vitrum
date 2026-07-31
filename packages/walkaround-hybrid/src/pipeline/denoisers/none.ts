@@ -19,6 +19,11 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import type { PreparedSceneMutation } from '../../SceneMutationTransaction.js';
+import {
+  commitPreparedDenoiserResize,
+  noOpDenoiserResizeMutation,
+} from './resizeTransaction.js';
 
 export class NoneDenoiser implements Denoiser {
   readonly id = 'none' as const;
@@ -36,8 +41,13 @@ export class NoneDenoiser implements Denoiser {
     return null;
   }
 
-  resize(_w: number, _h: number): void {
+  prepareResize(_w: number, _h: number): PreparedSceneMutation {
     // No resources to resize.
+    return noOpDenoiserResizeMutation();
+  }
+
+  resize(w: number, h: number): void {
+    commitPreparedDenoiserResize(this.prepareResize(w, h));
   }
 
   dispose(): void {

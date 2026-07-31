@@ -92,6 +92,39 @@ function capacity(config: ReGIRConfig): {
   return { cells, survivors, floats };
 }
 
+/**
+ * Preserve every positive authored scene span. A degenerate single-point AABB
+ * receives only a coordinate-relative f32-safe thickness so ReGIR can still
+ * construct a finite grid without imposing a world-unit floor.
+ */
+export function resolveReGIRMaxSpan(
+  min: readonly [number, number, number],
+  max: readonly [number, number, number],
+): number {
+  const spans = [
+    max[0] - min[0],
+    max[1] - min[1],
+    max[2] - min[2],
+  ] as const;
+  if (spans.some((span) => !Number.isFinite(span) || span < 0)) {
+    throw new RangeError('[ReGIR] scene AABB must contain finite ordered bounds.');
+  }
+  const positiveSpan = Math.max(...spans);
+  if (positiveSpan > 0) return positiveSpan;
+  const coordinateScale = Math.max(
+    Math.abs(min[0]),
+    Math.abs(min[1]),
+    Math.abs(min[2]),
+    Math.abs(max[0]),
+    Math.abs(max[1]),
+    Math.abs(max[2]),
+  );
+  return Math.max(
+    coordinateScale * 2 ** -20,
+    1.1754943508222875e-38,
+  );
+}
+
 function reportedDeviceLimit(device: GPUDevice, name: string): number | undefined {
   const raw = (device.limits as unknown as Record<string, unknown> | undefined)?.[name];
   return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
@@ -246,7 +279,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
     const spanX = aabb.max[0] - aabb.min[0];
     const spanY = aabb.max[1] - aabb.min[1];
     const spanZ = aabb.max[2] - aabb.min[2];
-    const maxSpan = Math.max(spanX, spanY, spanZ, 1e-4);
+    const maxSpan = resolveReGIRMaxSpan(aabb.min, aabb.max);
     const N = this._config.cellsPerAxis;
     this._cellSize = maxSpan / N;
     this._origin = [aabb.min[0], aabb.min[1], aabb.min[2]];

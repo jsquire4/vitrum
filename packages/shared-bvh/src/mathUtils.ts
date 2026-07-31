@@ -12,16 +12,38 @@ import type { Mat4 } from '@vitrum/core';
 
 /**
  * Invert a column-major 4×4 matrix (float-array of 16 elements).
- * Returns a new Float32Array of 16 floats, or null when the matrix is singular
- * (|det| < 1e-10).
+ * Returns a new Float32Array of 16 floats, or null when the matrix is singular,
+ * non-finite, not representable in Float32, or loses reciprocal accuracy after
+ * Float32 packing. Singularity is not classified with an absolute determinant
+ * epsilon: determinant magnitude scales with authored units, so a small but
+ * well-conditioned transform remains valid.
  */
 export function invertMat4(m: Mat4): Float32Array | null {
   const at = (index: number): number => m[index] ?? 0;
   const out = new Float32Array(16);
-  const a00 = at(0), a01 = at(1), a02 = at(2), a03 = at(3);
-  const a10 = at(4), a11 = at(5), a12 = at(6), a13 = at(7);
-  const a20 = at(8), a21 = at(9), a22 = at(10), a23 = at(11);
-  const a30 = at(12), a31 = at(13), a32 = at(14), a33 = at(15);
+  const a00 = at(0),
+    a01 = at(1),
+    a02 = at(2),
+    a03 = at(3);
+  const a10 = at(4),
+    a11 = at(5),
+    a12 = at(6),
+    a13 = at(7);
+  const a20 = at(8),
+    a21 = at(9),
+    a22 = at(10),
+    a23 = at(11);
+  const a30 = at(12),
+    a31 = at(13),
+    a32 = at(14),
+    a33 = at(15);
+  if (
+    ![a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33].every(
+      Number.isFinite,
+    )
+  ) {
+    return null;
+  }
   const b00 = a00 * a11 - a01 * a10;
   const b01 = a00 * a12 - a02 * a10;
   const b02 = a00 * a13 - a03 * a10;
@@ -35,7 +57,7 @@ export function invertMat4(m: Mat4): Float32Array | null {
   const b10 = a21 * a33 - a23 * a31;
   const b11 = a22 * a33 - a23 * a32;
   const det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (Math.abs(det) < 1e-10) return null;
+  if (!Number.isFinite(det) || det === 0) return null;
   const invDet = 1.0 / det;
   out[0] = (a11 * b11 - a12 * b10 + a13 * b09) * invDet;
   out[1] = (-a01 * b11 + a02 * b10 - a03 * b09) * invDet;
@@ -53,6 +75,32 @@ export function invertMat4(m: Mat4): Float32Array | null {
   out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * invDet;
   out[14] = (-a30 * b03 + a31 * b01 - a32 * b00) * invDet;
   out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * invDet;
+  if (!Array.from(out).every(Number.isFinite)) return null;
+
+  // Match core scene validation's reciprocal criterion. Checking both orders
+  // catches a finite cofactor result that becomes unusable after Float32
+  // packing without reintroducing an authored-scale-dependent determinant gate.
+  for (const [left, right] of [
+    [m, out],
+    [out, m],
+  ] as const) {
+    for (let column = 0; column < 4; column += 1) {
+      for (let row = 0; row < 4; row += 1) {
+        let product = 0;
+        let absoluteTermSum = 0;
+        for (let inner = 0; inner < 4; inner += 1) {
+          const term = left[inner * 4 + row]! * right[column * 4 + inner]!;
+          product += term;
+          absoluteTermSum += Math.abs(term);
+        }
+        const expected = row === column ? 1 : 0;
+        const tolerance = 1e-5 * Math.max(1, absoluteTermSum);
+        if (!Number.isFinite(product) || Math.abs(product - expected) > tolerance) {
+          return null;
+        }
+      }
+    }
+  }
   return out;
 }
 

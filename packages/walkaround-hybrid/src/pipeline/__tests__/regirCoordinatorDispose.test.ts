@@ -18,6 +18,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ReGIRCoordinator,
   resolveReGIRConfig,
+  resolveReGIRMaxSpan,
   type ReGIRConfig,
 } from '../ReGIRCoordinator.js';
 import type { SceneBVHBuffers } from '../../restir/bvhTypes.js';
@@ -61,6 +62,28 @@ function makeBvh(): SceneBVHBuffers {
 // ── ReGIRCoordinator.dispose() ───────────────────────────────────────────────
 
 describe('ReGIRCoordinator.dispose', () => {
+  it.each([1e-20, 1, 1e20])(
+    'preserves a positive scene span of %g without a world-unit floor',
+    (span) => {
+      expect(resolveReGIRMaxSpan([0, 0, 0], [span, span / 2, 0])).toBe(span);
+    },
+  );
+
+  it('uses only coordinate-relative thickness for a degenerate AABB', () => {
+    expect(resolveReGIRMaxSpan([2e-20, -2e-20, 0], [2e-20, -2e-20, 0]))
+      .toBeCloseTo(2e-20 * 2 ** -20, 35);
+    expect(resolveReGIRMaxSpan([0, 0, 0], [0, 0, 0]))
+      .toBe(1.1754943508222875e-38);
+  });
+
+  it('rejects non-finite or reversed scene bounds', () => {
+    expect(() => resolveReGIRMaxSpan([1, 0, 0], [0, 0, 0])).toThrow(
+      /finite ordered bounds/,
+    );
+    expect(() => resolveReGIRMaxSpan([0, 0, 0], [Number.POSITIVE_INFINITY, 0, 0]))
+      .toThrow(/finite ordered bounds/);
+  });
+
   it('dispose() on a never-initialized coordinator is a safe no-op', () => {
     const coord = new ReGIRCoordinator(makeConfig(false));
     expect(() => coord.dispose()).not.toThrow();

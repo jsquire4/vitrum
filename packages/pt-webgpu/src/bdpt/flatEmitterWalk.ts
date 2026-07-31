@@ -9,9 +9,8 @@
  * H51-D bumped the strides: point 8→12 (added distance/decay vec4),
  * spot 12→16 (added penumbra inner-cone cosine in slot 2.w + distance/decay vec4).
  *
- * Disc-area emitters are lowered by emitterPacking.ts into the mesh-triangle
- * section as an equal-area fan, so the stride walk still mirrors the GPU kernel
- * without a dedicated disc storage layout.
+ * Disc-area emitters share the rect-area stream with a shape discriminator, so
+ * the stride walk mirrors the GPU kernel without a separate disc array.
  *
  * That walk was historically open-coded across the bounce-0 CPU sampler and
  * `buildLightTreeInputForScene` (`../scene/emitterPacking.ts`). The
@@ -31,6 +30,11 @@
  * GPU uploads, so the strides below are the load-bearing layout
  * contract — they are NOT free to change without the matching WGSL change.
  */
+
+import {
+  measureAreaVectorF32,
+  measureTriangleAreaF32,
+} from '../scene/areaEmitterGeometry.js';
 
 export type Vec3 = [number, number, number];
 
@@ -82,6 +86,8 @@ export type PositionalEmitter =
       readonly triB: Vec3;
       readonly triC: Vec3;
       readonly radiance: Vec3;
+      /** Material-owned emission sidedness, decoded from mesh row 6.w. */
+      readonly twoSided: boolean;
     };
 
 /** The packed positional-light arrays + their counts (subset of UploadedSceneBuffers). */
@@ -100,7 +106,7 @@ const v3 = (a: ArrayLike<number>, o: number): Vec3 => [a[o]!, a[o + 1]!, a[o + 2
 
 /**
  * Yield every positional selectable light in the EXACT pt-webgpu walk order:
- * point[stride12] → spot[stride16] → rect[stride16] → mesh[stride16].
+ * point[stride12] → spot[stride16] → rect[stride16] → mesh[stride28].
  *
  * The directional slot precedes this sequence and the env slot follows it; those
  * are appended by callers because their per-consumer handling differs. The flat
@@ -154,18 +160,14 @@ export function* walkPositionalEmitters(
       triB: v3(sb.meshAreaLightsData, o + 4),
       triC: v3(sb.meshAreaLightsData, o + 8),
       radiance: v3(sb.meshAreaLightsData, o + 12),
+      twoSided: (sb.meshAreaLightsData[o + 27] ?? 0) > 0.5,
     };
   }
 }
 
 /** Quad area = 4·|u×v| (matches the WGSL rect-area NEE term for rect lights). */
 export function rectQuadArea(uAxis: Vec3, vAxis: Vec3): number {
-  const cross: Vec3 = [
-    uAxis[1] * vAxis[2] - uAxis[2] * vAxis[1],
-    uAxis[2] * vAxis[0] - uAxis[0] * vAxis[2],
-    uAxis[0] * vAxis[1] - uAxis[1] * vAxis[0],
-  ];
-  return 4 * Math.hypot(cross[0], cross[1], cross[2]);
+  return measureAreaVectorF32(uAxis, vAxis, 4)?.area ?? 0;
 }
 
 /**
@@ -175,22 +177,10 @@ export function rectQuadArea(uAxis: Vec3, vAxis: Vec3): number {
  * after non-uniform scale or shear.
  */
 export function discArea(uAxis: Vec3, vAxis: Vec3): number {
-  const cross: Vec3 = [
-    uAxis[1] * vAxis[2] - uAxis[2] * vAxis[1],
-    uAxis[2] * vAxis[0] - uAxis[0] * vAxis[2],
-    uAxis[0] * vAxis[1] - uAxis[1] * vAxis[0],
-  ];
-  return Math.PI * Math.hypot(cross[0], cross[1], cross[2]);
+  return measureAreaVectorF32(uAxis, vAxis, Math.PI)?.area ?? 0;
 }
 
 /** Triangle area = 0.5·|(B−A)×(C−A)| (matches the WGSL mesh-area NEE term). */
 export function meshTriangleArea(a: Vec3, b: Vec3, c: Vec3): number {
-  const ab: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-  const ac: Vec3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-  const cross: Vec3 = [
-    ab[1] * ac[2] - ab[2] * ac[1],
-    ab[2] * ac[0] - ab[0] * ac[2],
-    ab[0] * ac[1] - ab[1] * ac[0],
-  ];
-  return 0.5 * Math.hypot(cross[0], cross[1], cross[2]);
+  return measureTriangleAreaF32(a, b, c)?.area ?? 0;
 }

@@ -22,7 +22,7 @@ export type TexAllocSpec =
       readonly internalFormat: number;
       readonly format: number;
       readonly type: number;
-      readonly data: ArrayBufferView;
+      readonly data: ArrayBufferView | null;
       readonly resourceName: string;
     }
   | {
@@ -33,7 +33,7 @@ export type TexAllocSpec =
       readonly internalFormat: number;
       readonly format: number;
       readonly type: number;
-      readonly data: ArrayBufferView;
+      readonly data: ArrayBufferView | null;
       readonly resourceName: string;
     }
   | {
@@ -44,7 +44,7 @@ export type TexAllocSpec =
       readonly internalFormat: number;
       readonly format: number;
       readonly type: number;
-      readonly data: ArrayBufferView;
+      readonly data: ArrayBufferView | null;
       readonly resourceName: string;
     };
 
@@ -60,7 +60,11 @@ function glErrorName(gl: WebGL2RenderingContext, error: number): string {
   return entries.find(([value]) => value === error)?.[1] ?? `0x${error.toString(16)}`;
 }
 
-function assertNoGlError(gl: WebGL2RenderingContext, resourceName: string, phase: 'before' | 'after'): void {
+export function assertNoGlError(
+  gl: WebGL2RenderingContext,
+  resourceName: string,
+  phase: 'before' | 'after',
+): void {
   if (typeof gl.getError !== 'function' || typeof gl.NO_ERROR !== 'number') return;
   const error = gl.getError();
   if (error === gl.NO_ERROR) return;
@@ -153,7 +157,7 @@ export function allocGlTexture(
   const tex = gl.createTexture();
   if (tex == null) {
     throw new Error(
-      `pt-webgl2: WebGL context lost — cannot create ${resourceName} texture`,
+      `pt-webgl2: failed to create ${resourceName} texture`,
     );
   }
 

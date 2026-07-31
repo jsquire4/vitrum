@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { asMat4, type FrameInput } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
-import { validatePtWebgpuFrameInput } from '../ptWebgpuValidation.js';
+import {
+  assertPtWebgpuBdptFrameCameraSupported,
+  validatePtWebgpuFrameInput,
+} from '../ptWebgpuValidation.js';
 
 const validationOnlyDevice = {
   createCommandEncoder() { return {}; },
@@ -60,6 +63,20 @@ describe('pt-webgpu strict numeric construction validation', () => {
 });
 
 describe('pt-webgpu strict per-frame numeric validation', () => {
+  it('rejects orthographic projection for the perspective-only BDPT endpoint', () => {
+    const orthographic = frameInput();
+    expect(() => assertPtWebgpuBdptFrameCameraSupported(orthographic))
+      .toThrow(/bdpt:true supports perspective camera projections only/);
+
+    const perspective = new Float32Array(orthographic.projMatrix);
+    perspective[11] = -1;
+    perspective[15] = 0;
+    expect(() => assertPtWebgpuBdptFrameCameraSupported({
+      ...orthographic,
+      projMatrix: asMat4(perspective),
+    })).not.toThrow();
+  });
+
   it('accepts valid quality dials and values above the engine caps for documented upper clamping', () => {
     expect(() => validatePtWebgpuFrameInput({
       ...frameInput(),
@@ -130,6 +147,8 @@ describe('pt-webgpu strict per-frame numeric validation', () => {
     ['resolutionFactor', -0.25],
     ['resolutionFactor', 1.01],
     ['exposure', Infinity],
+    ['exposure', Number.MAX_VALUE],
+    ['exposure', Number.MIN_VALUE],
     ['exposure', -1],
     ['filteredGlossyFactor', NaN],
     ['filteredGlossyFactor', -0.01],

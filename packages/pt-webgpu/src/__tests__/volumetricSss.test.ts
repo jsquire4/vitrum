@@ -33,11 +33,9 @@ import {
   PT_WEBGPU_TRACE_WGSL,
   composePtWebgpuTraceWgsl,
 } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import { composePathTraceKernelWgsl } from '../wgsl/pathTrace/kernel.wgsl.js';
 import { MATERIAL_FLOAT_STRIDE, materialToPackedVec4s } from '../scene/materialPacking.js';
-import {
-  DIRECTIONAL_LIGHT_FLOAT_STRIDE,
-  packEmitterArrays,
-} from '../scene/emitterPacking.js';
+import { DIRECTIONAL_LIGHT_FLOAT_STRIDE, packEmitterArrays } from '../scene/emitterPacking.js';
 import { spectralEmissionAtHeroOracle } from './spectralScalarOracle.js';
 
 // ---------------------------------------------------------------------------
@@ -54,10 +52,7 @@ function hgPhase(cosTheta: number, g: number): number {
   const alignedCos = safeG >= 0 ? clampedCos : -clampedCos;
   const oneMinusA = 1 - a;
   const denom = oneMinusA * oneMinusA + 2 * a * (1 - alignedCos);
-  return (
-    (INV_4PI * oneMinusA * (1 + a)) /
-    (denom * Math.sqrt(denom))
-  );
+  return (INV_4PI * oneMinusA * (1 + a)) / (denom * Math.sqrt(denom));
 }
 
 function normalize3(v: readonly [number, number, number]): readonly [number, number, number] {
@@ -100,9 +95,21 @@ function directionalMediumNeeScene(): Scene {
     primitives: [],
     environment: { kind: 'none' },
     emitters: [
-      { kind: 'directional', id: 'sun-a', direction: [0, -1, 0], color: [1, 0.5, 0.25], intensity: 2 },
+      {
+        kind: 'directional',
+        id: 'sun-a',
+        direction: [0, -1, 0],
+        color: [1, 0.5, 0.25],
+        intensity: 2,
+      },
       { kind: 'directional', id: 'dark-sun', direction: [1, 0, 0], color: [8, 8, 8], intensity: 0 },
-      { kind: 'directional', id: 'sun-b', direction: [1, -1, 0], color: [0.25, 0.75, 1.5], intensity: 3 },
+      {
+        kind: 'directional',
+        id: 'sun-b',
+        direction: [1, -1, 0],
+        color: [0.25, 0.75, 1.5],
+        intensity: 3,
+      },
     ],
   };
 }
@@ -123,15 +130,11 @@ function hgSampleCosTheta(g: number, u1: number): number {
   if (Math.abs(safeG) < 0.125) {
     const d = 1 + safeG * q;
     const numerator =
-      2 * q +
-      safeG * (q * q + 3) +
-      2 * safeG * safeG * q +
-      safeG * safeG * safeG * (q * q - 1);
+      2 * q + safeG * (q * q + 3) + 2 * safeG * safeG * q + safeG * safeG * safeG * (q * q - 1);
     cosTheta = numerator / (2 * d * d);
   } else {
     const ratio = (1 - safeG * safeG) / (1 + safeG * q);
-    cosTheta =
-      (1 + safeG * safeG - ratio * ratio) / (2 * safeG);
+    cosTheta = (1 + safeG * safeG - ratio * ratio) / (2 * safeG);
   }
   return Math.max(-1, Math.min(1, cosTheta));
 }
@@ -143,9 +146,15 @@ function freeFlightDistance(sigmaT: number, xi: number): number {
 
 /** Power heuristic (β = 2) — matches WGSL powerHeuristic. */
 function powerHeuristic(pdfA: number, pdfB: number): number {
-  const a2 = pdfA * pdfA;
-  const b2 = pdfB * pdfB;
-  return a2 / Math.max(a2 + b2, 1e-6);
+  if (
+    !(pdfA >= 0) || !(pdfB >= 0) ||
+    pdfA > 3.402823466e38 || pdfB > 3.402823466e38
+  ) return 0;
+  const scale = Math.max(pdfA, pdfB);
+  if (!(scale > 0)) return 0;
+  const a = pdfA / scale;
+  const b = pdfB / scale;
+  return (a * a) / (a * a + b * b);
 }
 
 interface VolumeThicknessMaterial {
@@ -167,7 +176,9 @@ function beerLambertWithThicknessClamp(
   segmentDistance: number,
   mat: VolumeThicknessMaterial,
 ): number {
-  return Math.exp(-Math.max(sigmaA, 0) * materialAttenuationDistanceReference(segmentDistance, mat));
+  return Math.exp(
+    -Math.max(sigmaA, 0) * materialAttenuationDistanceReference(segmentDistance, mat),
+  );
 }
 
 // Simple deterministic LCG so the MC tests are reproducible.
@@ -275,9 +286,7 @@ describe('Volumetric in-medium directional NEE WGSL guard', () => {
       'for (var di = 0u; di < params.directionalLightCount; di = di + 1u)',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('directionalLights[base + 1u]');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'spectralEmissionAtHero(light.radiance, heroLambda)',
-    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('spectralEmissionAtHero(light.radiance, heroLambda)');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mediumNeeForEmitter(');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mediumPhaseEmitterConnection(');
   });
@@ -461,7 +470,10 @@ describe('volume thickness packing and attenuation-distance clamp', () => {
     expect(materialAttenuationDistanceReference(1.2, mat)).toBeCloseTo(0.4, 6);
     expect(materialAttenuationDistanceReference(Number.POSITIVE_INFINITY, mat)).toBeCloseTo(0.4, 6);
     expect(
-      materialAttenuationDistanceReference(1.2, { hasVolumeThickness: true, volumeThickness: -0.7 }),
+      materialAttenuationDistanceReference(1.2, {
+        hasVolumeThickness: true,
+        volumeThickness: -0.7,
+      }),
     ).toBe(0);
   });
 
@@ -498,6 +510,36 @@ describe('Structural symmetric-medium composition with BDPT', () => {
     expect(sssOn).toContain('fn hgPhase');
     expect(sssOn).toContain('fn sampleHenyeyGreenstein');
     expect(sssOn).toContain('freeFlightDist');
+  });
+
+  it('resolves the medium event before publishing any surface-owned contribution', () => {
+    const main = sssOn.slice(sssOn.lastIndexOf('fn main('));
+    const materialDecode = main.indexOf('let matId = hitMaterialId(hit);');
+    const mediumRace = main.indexOf('let freeFlightDist =');
+    const emissiveAdd = main.indexOf('radiance = radiance + throughput * emitContribution');
+    const unlitBranch = main.indexOf('if (mat.isUnlit) {');
+    const firstHitWrite = main.indexOf('firstHitValid = true;');
+    const surfaceThroughputSnapshot = main.indexOf('let throughputAtVertex = throughput;');
+
+    expect(materialDecode).toBeGreaterThan(-1);
+    expect(mediumRace).toBeGreaterThan(materialDecode);
+    expect(emissiveAdd).toBeGreaterThan(mediumRace);
+    expect(unlitBranch).toBeGreaterThan(mediumRace);
+    expect(firstHitWrite).toBeGreaterThan(mediumRace);
+    expect(surfaceThroughputSnapshot).toBeGreaterThan(mediumRace);
+  });
+
+  it('does not reinterpret ignored unlit transmission fields as a medium boundary', () => {
+    const boundaryGuard = '!mat.isUnlit && mat.isTranslucent && transmission > 0.0';
+
+    expect(
+      sssOn.match(new RegExp(boundaryGuard.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')),
+    ).toHaveLength(1);
+    expect(
+      composePathTraceKernelWgsl({ volumetricSss: false }).match(
+        new RegExp(boundaryGuard.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+      ),
+    ).toHaveLength(1);
   });
 
   it('BDPT-on kernel contains the matching volumetric-walk symbols', () => {
@@ -538,6 +580,8 @@ describe('Structural symmetric-medium composition with BDPT', () => {
     // attenuationColor is silently dropped.
     expect(sssOn).toContain('mat.hasSigmaA');
     expect(sssOn).toContain('mat.hasSpectralAttenuation');
-    expect(sssOn).not.toContain('mat.isTranslucent = mat.transmission > 0.0 && mat.scatteringCoeff > 0.0;');
+    expect(sssOn).not.toContain(
+      'mat.isTranslucent = mat.transmission > 0.0 && mat.scatteringCoeff > 0.0;',
+    );
   });
 });

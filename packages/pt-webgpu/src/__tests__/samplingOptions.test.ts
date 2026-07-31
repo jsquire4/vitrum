@@ -180,10 +180,11 @@ describe('pt-webgpu sampling options', () => {
     // blends remain unbiased for shadow and reconnection rays.
     // C65 expands the shared Joe-Kuo direction table to 512 dimensions; the
     // C28-C40/KHR pass also changes the composed production call graph.
-    // C35 composes its native t=1 strategy helper only for BDPT-on modules, so
-    // Sobol's default and composite-off assignment surface stays legacy-exact.
+    // C35 composes its native t=1 strategy helper only for BDPT-on modules.
+    // Scale-stable transport closure changed shared composed helpers while
+    // preserving the audited dimension ownership pinned by this digest.
     expect(digest.digest('hex')).toBe(
-      '8bf839f5011d981e70cb99dff48b429ca92e34f457968c3995e703c578920084',
+      '02c50b373269f5160756e2f171e03c9670ef5c24fa35dd33e870509b507e75e6',
     );
   });
   it('builds full and lite path-trace modules from the selected Sobol RNG', () => {

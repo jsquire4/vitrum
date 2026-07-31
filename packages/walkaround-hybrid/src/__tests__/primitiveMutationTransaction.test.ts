@@ -5,6 +5,7 @@ import {
   type MeshPrimitive,
   type Scene,
   type ScenePrimitive,
+  type ScenePrimitivePatch,
   type SkinnedMeshPrimitive,
 } from '@vitrum/core';
 import { tlasRefitNodeIndices } from '@vitrum/shared-bvh';
@@ -185,7 +186,7 @@ describe('primitive mutation journal and collector', () => {
     const undo = capturePrimitiveMutationUndo(
       bvh,
       'skin',
-      { material: { roughness: 0.25 } } as Partial<ScenePrimitive>,
+      { material: { roughness: 0.25 } },
     );
     expect(undo.retainedByteLength).toBe(0);
   });
@@ -300,7 +301,7 @@ describe('primitive mutation journal and collector', () => {
     const matrixAtBuildBefore = new Float32Array(matrixAtBuild);
     const patch = {
       transform: asMat4(translation(55)),
-    } as Partial<ScenePrimitive>;
+    } as ScenePrimitivePatch;
     const undo = capturePrimitiveMutationUndo(bvh, targetId, patch);
 
     expect(undo.retainedByteLength).toBe(
@@ -643,7 +644,7 @@ describe('skinned render-state ownership', () => {
       morphWeights: undefined,
       morphTargetUvs: undefined,
       morphTargetColors: undefined,
-    } as unknown as Partial<ScenePrimitive>;
+    } as unknown as ScenePrimitivePatch;
     const cleared = skinnedPosePatch(
       'skin',
       clearDefinitionPatch,
@@ -724,7 +725,7 @@ describe('skinned render-state ownership', () => {
       morphWeights: undefined,
       morphTargetUvs: undefined,
       morphTargetColors: undefined,
-    } as unknown as Partial<ScenePrimitive>;
+    } as unknown as ScenePrimitivePatch;
     const cleared = skinnedPosePatch(
       'skin',
       clearDefinitionAndBasePatch,
@@ -876,7 +877,7 @@ describe('material candidate isolation', () => {
 
     const result = materialPatch(
       'a',
-      { material: { roughness: 0.25 } } as Partial<ScenePrimitive>,
+      { material: { roughness: 0.25 } },
       ctx,
     );
 

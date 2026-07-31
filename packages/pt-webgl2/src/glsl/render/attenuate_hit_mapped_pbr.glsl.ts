@@ -1,9 +1,17 @@
 /** Alpha-aware visibility traversal for texture-capable opaque base PBR. */
 export const ATTENUATE_HIT_MAPPED_PBR_GLSL = /* glsl */ `
-bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
+bool attenuateHit(
+  RenderState state,
+  Ray ray,
+  float rayDist,
+  bool hasTargetFace,
+  uint targetFaceIndex,
+  out vec3 color
+) {
   uint originalBounceIndex = sobolBounceIndex;
   int remainingTraversals = max( state.traversals, 0 );
-  vec3 startPoint = ray.origin;
+  bool finiteRayDistance = ! vitrumIsInfiniteDistance( rayDist );
+  float traveledDistance = 0.0;
   SurfaceHit surfaceHit;
   color = vec3( 1.0 );
   bool result = true;
@@ -17,10 +25,20 @@ bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
       result = false;
       break;
     }
-    float totalDist = distance(
-      startPoint, ray.origin + ray.direction * surfaceHit.dist
-    );
-    if ( totalDist > rayDist ) {
+    if (
+      hasTargetFace &&
+      surfaceHit.faceIndices.w == targetFaceIndex
+    ) {
+      result = false;
+      break;
+    }
+    float remainingDistance = finiteRayDistance
+      ? max( rayDist - traveledDistance, 0.0 )
+      : INFINITY;
+    if (
+      finiteRayDistance &&
+      surfaceHit.dist >= remainingDistance
+    ) {
       result = false;
       break;
     }
@@ -30,6 +48,9 @@ bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
     ).r;
     Material material;
     readMaterialInfo( materials, materialIndex, material );
+    if ( finiteRayDistance ) {
+      traveledDistance += max( surfaceHit.dist, 0.0 );
+    }
     ray.origin = stepRayOrigin(
       ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
     );

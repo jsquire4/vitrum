@@ -24,6 +24,7 @@
 
 import type { BGLCache } from '../bindGroupLayouts.js';
 import type { PipelineResourceCache } from '../PipelineResourceCache.js';
+import type { PreparedSceneMutation } from '../../SceneMutationTransaction.js';
 import type { FramePublication } from '../FramePublication.js';
 import type { FrameResources } from '../resourceManager.js';
 import type { PassLabel } from '../timestampQueries.js';
@@ -194,7 +195,13 @@ export interface Denoiser {
    *  a separate queue-ordered copy before calling mapAsync. */
   afterFrameSubmit?(): void;
 
-  /** Resize callback — denoiser may reallocate persistent resources. */
+  /**
+   * Prepare a resize without publishing or retiring resources. The pipeline
+   * coordinates this participant with its frame-resource and PPG generations.
+   */
+  prepareResize(width: number, height: number): PreparedSceneMutation;
+
+  /** Transactional one-shot convenience wrapper around {@link prepareResize}. */
   resize(width: number, height: number): void;
 
   /** Release all GPU resources owned by this denoiser. */

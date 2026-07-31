@@ -76,13 +76,68 @@ fn temporalSurfaceCorresponds(
     dot(previousSurfaceNow.normal, currentSurface.normal) >= 0.9;
 }
 
+fn combineReceiverIndependentTemporalDI(
+  current: ReservoirDI,
+  previousInput: ReservoirDI,
+  rng: ptr<function, u32>,
+) -> ReservoirDI {
+  var previous = previousInput;
+  scaleReservoirDIToM(&previous, ubo.temporalMClampDI);
+  var combined = emptyReservoirDI();
+  updateReservoirDI(
+    &combined,
+    current.lightId,
+    current.xi,
+    max(0.0, current.w_sum),
+    rng,
+  );
+  updateReservoirDI(
+    &combined,
+    previous.lightId,
+    previous.xi,
+    max(0.0, previous.w_sum),
+    rng,
+  );
+  combined.areaM = reservoirDiSaturatingAddU32(current.areaM, previous.areaM);
+  combined.envM = reservoirDiSaturatingAddU32(current.envM, previous.envM);
+  combined.M = reservoirDiSaturatingAddU32(current.M, previous.M);
+  if (combined.M > 0u && combined.w_sum > 0.0) {
+    let pHat = restir_di_coarse_proposal_phat(
+      combined.lightId,
+      combined.xi,
+    );
+    combined.W = select(
+      0.0,
+      combined.w_sum / (f32(combined.M) * pHat),
+      pHat > 0.0,
+    );
+  }
+  return combined;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
-  if (any(gid.xy >= dims)) { return; }
+  let reservoirDims = restirDiDimensions();
+  if (any(gid.xy >= reservoirDims)) { return; }
 
-  let pixelIdx = gid.y * dims.x + gid.x;
+  let pixelIdx = gid.y * reservoirDims.x + gid.x;
   var current = loadReservoirDI_rw(pixelIdx);
+  if (restirReservoirScaleValue() > 1u) {
+    let previous = loadReservoirDI_ro(pixelIdx);
+    var coarseRng = pcgInit(
+      gid.x ^ 12345u,
+      gid.y ^ 67890u,
+      ubo.frameSeed ^ 0xABCDu,
+    );
+    current = combineReceiverIndependentTemporalDI(
+      current,
+      previous,
+      &coarseRng,
+    );
+    storeReservoirDI_rw(pixelIdx, current);
+    return;
+  }
   let vp = ubo.projMatrix * ubo.viewMatrix;
   let invVP = invertMat4_common(vp);
   let currentSurface = castPrimary(gid.xy, dims, ubo.cameraPos, invVP);

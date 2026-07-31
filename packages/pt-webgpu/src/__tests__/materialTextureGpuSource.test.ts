@@ -338,6 +338,18 @@ describe('PtWebgpuTextureSource', () => {
         data: new Uint8Array(7),
       },
     })).toThrow(/length must be exactly 8/);
+    expect(() => createPtWebgpuTextureSource(device, texture, {
+      format: 'rgba8unorm',
+      colorSpace: 'srgb',
+      cpuMirror: {
+        width: 2,
+        height: 1,
+        channels: 3,
+        dataType: 'uint8',
+        colorSpace: 'srgb',
+        data: new Uint8Array(6),
+      },
+    })).toThrow(/cpuMirror\.channels must match rgba8unorm \(4\)/);
   });
 
   it('rejects a CPU mirror snapshot above its explicit budget before reading data', () => {
@@ -445,7 +457,9 @@ describe('PtWebgpuTextureSource', () => {
     expect(device.queue.copyExternalImageToTexture).not.toHaveBeenCalled();
     expect(sourceTexture.destroy).not.toHaveBeenCalled();
     expect(createRenderPipeline).toHaveBeenCalledWith(expect.objectContaining({
-      fragment: expect.objectContaining({ constants: { decodeSrgb: 1 } }),
+      fragment: expect.objectContaining({
+        constants: { decodeSrgb: 1, sourceChannels: 4 },
+      }),
     }));
     expect(device.createShaderModule).toHaveBeenCalledWith(expect.objectContaining({
       code: MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL,
@@ -455,5 +469,127 @@ describe('PtWebgpuTextureSource', () => {
     // Source conversion, native-size mip generation, then exact per-mip copies
     // into the shared array are three ordered command-buffer submissions.
     expect(submit).toHaveBeenCalledTimes(3);
+  });
+
+  it('uploads the exact emissive cpuMirror snapshot and replicates one-channel RGB', () => {
+    installGpuConstStubs();
+    const { device, createRenderPipeline } = makeUploadDevice();
+    const sourceTexture = makeTexture({
+      width: 1,
+      height: 1,
+      format: 'r8unorm',
+    });
+    const source = createPtWebgpuTextureSource(device, sourceTexture, {
+      format: 'r8unorm',
+      colorSpace: 'srgb',
+      cpuMirror: {
+        width: 1,
+        height: 1,
+        channels: 1,
+        dataType: 'uint8',
+        colorSpace: 'srgb',
+        data: new Uint8Array([128]),
+      },
+    });
+
+    createMaterialTextureArray(
+      device,
+      [source],
+      'rgba16float',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 0,
+          field: 'emissiveMap',
+          colorSpace: 'srgb',
+          texCoord: 0,
+        }],
+      }],
+      new Set(),
+      { emissiveMap: [[[1, 1, 1]]] },
+    );
+
+    expect(device.queue.writeTexture).toHaveBeenCalledTimes(1);
+    const write = vi.mocked(device.queue.writeTexture).mock.calls[0] as [
+      GPUImageCopyTexture,
+      Uint16Array,
+      GPUImageDataLayout,
+      GPUExtent3D,
+    ];
+    expect(write[1][0]).toBe(write[1][1]);
+    expect(write[1][1]).toBe(write[1][2]);
+    expect(write[1][3]).toBe(0x3c00);
+    expect(sourceTexture.createView).not.toHaveBeenCalled();
+    expect(createRenderPipeline).not.toHaveBeenCalled();
+  });
+
+  it('uploads two-channel emissive cpuMirror snapshots as RG0 with opaque alpha', () => {
+    installGpuConstStubs();
+    const { device } = makeUploadDevice();
+    const source = createPtWebgpuTextureSource(
+      device,
+      makeTexture({ width: 1, height: 1, format: 'rg32float' }),
+      {
+        format: 'rg32float',
+        colorSpace: 'linear',
+        cpuMirror: {
+          width: 1,
+          height: 1,
+          channels: 2,
+          dataType: 'float32',
+          colorSpace: 'linear',
+          data: new Float32Array([0.25, 0.5]),
+        },
+      },
+    );
+
+    createMaterialTextureArray(
+      device,
+      [source],
+      'rgba16float',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 0,
+          field: 'emissiveMap',
+          colorSpace: 'srgb',
+          texCoord: 0,
+        }],
+      }],
+      new Set(),
+      { emissiveMap: [[[1, 1, 1]]] },
+    );
+
+    const write = vi.mocked(device.queue.writeTexture).mock.calls[0] as [
+      unknown,
+      Uint16Array,
+      unknown,
+      unknown,
+    ];
+    expect(Array.from(write[1])).toEqual([0x3400, 0x3800, 0, 0x3c00]);
+  });
+
+  it('configures opaque one-channel GPU blits to match CPU RRR expansion', () => {
+    installGpuConstStubs();
+    const { device, createRenderPipeline } = makeUploadDevice();
+    const source = createPtWebgpuTextureSource(
+      device,
+      makeTexture({ width: 1, height: 1, format: 'r8unorm' }),
+      { format: 'r8unorm', colorSpace: 'linear' },
+    );
+
+    createMaterialTextureArray(device, [source], 'rgba8unorm');
+
+    expect(createRenderPipeline).toHaveBeenCalledWith(expect.objectContaining({
+      fragment: expect.objectContaining({
+        constants: { decodeSrgb: 0, sourceChannels: 1 },
+      }),
+    }));
+    expect(MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL).toContain(
+      'value = vec4f(value.rrr, 1.0);',
+    );
+    expect(MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL).toContain(
+      'value = vec4f(value.r, value.g, 0.0, 1.0);',
+    );
   });
 });

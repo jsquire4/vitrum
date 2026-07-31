@@ -8,10 +8,10 @@
  * (`ubo.skyTint * ubo.skyIrradiance`) — so no-HDRI scenes are byte-identical.
  *
  * Bindings (scene group(1), appended after the B1 bvh_material at binding 14):
- *   @binding(15) env_map         rgba16float  : unit-intensity radiance (.rgb) +
- *                                               per-texel solid-angle pdf (.a)
+ *   @binding(15) env_map         rgba32float  : unit-intensity radiance (.rgb)
  *   @binding(16) env_marginal    r32float     : H×1 forward row CDF
  *   @binding(17) env_conditional r32float     : W×H forward column CDF
+ *   @binding(18) env_pdf         r32float     : per-texel solid-angle density
  *   @binding(19) envParams       uniform      : { hasEnv, width, height, rotationY,
  *                                               intensity } (own small uniform —
  *                                               the 416B WalkaroundUBO is frozen)
@@ -26,13 +26,16 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
+import { WALKAROUND_ENVIRONMENT_RADIANCE_SCALE_WGSL } from '../environment/environmentRadianceScale.js';
 
 export const ENVIRONMENT_SAMPLE_WGSL = /* wgsl */ `
+${WALKAROUND_ENVIRONMENT_RADIANCE_SCALE_WGSL}
 
 // ── B3 directional IBL — scene-group bindings ────────────────────────────────
 @group(1) @binding(15) var env_map: texture_2d<f32>;
 @group(1) @binding(16) var env_marginal: texture_2d<f32>;
 @group(1) @binding(17) var env_conditional: texture_2d<f32>;
+@group(1) @binding(18) var env_pdf: texture_2d<f32>;
 struct EnvParams {
   hasEnv:    u32,
   width:     u32,
@@ -107,7 +110,10 @@ fn envConditionalColumnFromCdf(xiRaw: f32, row: i32, w: i32) -> i32 {
 // (skyTint·skyIrradiance) when no map is bound — preserving the no-HDRI contract.
 fn envRadiance(dir: vec3f) -> vec3f {
   if (!envHasMap()) {
-    return ubo.skyTint * ubo.skyIrradiance;
+    return walkaroundScaleEnvironmentRadiance(
+      ubo.skyTint,
+      ubo.skyIrradiance,
+    );
   }
   let w = i32(envParams.width);
   let h = i32(envParams.height);
@@ -119,12 +125,16 @@ fn envRadiance(dir: vec3f) -> vec3f {
   let x = clamp(i32(floor(u * f32(w))), 0, w - 1);
   let y = clamp(i32(floor(v * f32(h))), 0, h - 1);
   let texel = textureLoad(env_map, vec2i(x, y), 0);
-  return texel.rgb * max(envParams.intensity, 0.0);
+  return walkaroundScaleEnvironmentRadiance(
+    texel.rgb,
+    envParams.intensity,
+  );
 }
 
 // Importance-sample the environment via the PBRT 2D distribution (marginal row
-// then conditional column). Two RNG draws. Returns pdf=0 when no map. The
-// sampled direction is in WORLD space (rotateYPos applied).
+// then conditional column), followed by a continuous solid-angle sample inside
+// the selected cell. Four RNG draws. Returns pdf=0 when no map. The sampled
+// direction is in WORLD space (rotateYPos applied).
 fn envImportanceSample(rng: ptr<function, u32>) -> EnvSample {
   var s: EnvSample;
   s.color = vec3f(0.0);
@@ -136,22 +146,29 @@ fn envImportanceSample(rng: ptr<function, u32>) -> EnvSample {
 
   // Exact discrete inversion: select the first forward-CDF entry > ξ. The
   // realized selection interval is therefore the source texel's exact PMF,
-  // matching the solid-angle density stored in env_map.a.
+  // matching the solid-angle density stored in env_pdf.
   let yTexel = envMarginalRowFromCdf(rand_f32(rng), h);
   let xTexel = envConditionalColumnFromCdf(rand_f32(rng), yTexel, w);
 
-  // Texel centre → direction (unrotated-map space), then rotate to world.
-  let uc = (f32(xTexel) + 0.5) / f32(w);
-  let vc = (f32(yTexel) + 0.5) / f32(h);
+  // Preserve exact discrete CDF inversion, then sample continuously and
+  // uniformly in solid angle inside the selected equirect cell. Using the
+  // texel centre here would collapse every cell's probability mass to a delta
+  // direction and bias visibility/MIS even though the discrete PMF is exact.
+  let uc = (f32(xTexel) + rand_f32(rng)) / f32(w);
+  let theta0 = f32(yTexel) * PI / f32(h);
+  let theta1 = f32(yTexel + 1) * PI / f32(h);
+  let cosTheta = mix(cos(theta0), cos(theta1), rand_f32(rng));
   let phi = (uc - 0.5) * (2.0 * PI);
-  let theta = vc * PI;
-  let sinTheta = sin(theta);
-  let mapDir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
+  let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+  let mapDir = vec3f(cos(phi) * sinTheta, cosTheta, sin(phi) * sinTheta);
   let texel = textureLoad(env_map, vec2i(xTexel, yTexel), 0);
 
   s.dir = safe_normalize(envRotateYPos(mapDir, envParams.rotationY));
-  s.color = texel.rgb * max(envParams.intensity, 0.0);
-  s.pdf = max(texel.w, 0.0);
+  s.color = walkaroundScaleEnvironmentRadiance(
+    texel.rgb,
+    envParams.intensity,
+  );
+  s.pdf = max(textureLoad(env_pdf, vec2i(xTexel, yTexel), 0).r, 0.0);
   return s;
 }
 

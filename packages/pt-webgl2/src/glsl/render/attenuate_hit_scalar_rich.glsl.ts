@@ -1,12 +1,20 @@
 /** Transparent-shadow traversal for scalar-rich materials without map fetches. */
 export const ATTENUATE_HIT_SCALAR_RICH_GLSL = /* glsl */ `
-bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
+bool attenuateHit(
+  RenderState state,
+  Ray ray,
+  float rayDist,
+  bool hasTargetFace,
+  uint targetFaceIndex,
+  out vec3 color
+) {
   uint originalBounceIndex = sobolBounceIndex;
   int remainingTraversals = max( state.traversals, 0 );
   int transmissiveTraversals = state.transmissiveTraversals;
   FogMaterial fogMaterial = state.fogMaterial;
   MediumStack mediumStack = state.mediumStack;
-  vec3 startPoint = ray.origin;
+  bool finiteRayDistance = ! vitrumIsInfiniteDistance( rayDist );
+  float traveledDistance = 0.0;
   SurfaceHit surfaceHit;
   color = vec3( 1.0 );
   bool result = true;
@@ -20,8 +28,9 @@ bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
       surfaceHit.faceIndices, surfaceHit.faceNormal,
       surfaceHit.barycoord, surfaceHit.side, surfaceHit.dist
     );
-    float traveled = distance( startPoint, ray.origin );
-    float remainingDistance = max( rayDist - traveled, 0.0 );
+    float remainingDistance = finiteRayDistance
+      ? max( rayDist - traveledDistance, 0.0 )
+      : INFINITY;
     float segmentDistance = surfaceFound
       ? min( max( surfaceHit.dist, 0.0 ), remainingDistance )
       : remainingDistance;
@@ -32,7 +41,21 @@ bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
       );
     }
     #endif
-    if ( ! surfaceFound || surfaceHit.dist > remainingDistance ) {
+    if ( ! surfaceFound ) {
+      result = false;
+      break;
+    }
+    if (
+      hasTargetFace &&
+      surfaceHit.faceIndices.w == targetFaceIndex
+    ) {
+      result = false;
+      break;
+    }
+    if (
+      finiteRayDistance &&
+      surfaceHit.dist >= remainingDistance
+    ) {
       result = false;
       break;
     }
@@ -43,6 +66,9 @@ bool attenuateHit( RenderState state, Ray ray, float rayDist, out vec3 color ) {
     Material material;
     readMaterialInfo( materials, materialIndex, material );
     bool isEntering = surfaceHit.side == 1.0;
+    if ( finiteRayDistance ) {
+      traveledDistance += max( surfaceHit.dist, 0.0 );
+    }
     ray.origin = stepRayOrigin(
       ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
     );

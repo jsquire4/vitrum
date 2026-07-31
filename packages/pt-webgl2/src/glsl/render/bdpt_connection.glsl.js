@@ -29,7 +29,9 @@
  * while their first real scattering vertex begins the c>=1 BDPT partition.
  *
  * Specular-vertex guard (Veach §10.3.5): a hypothetical strategy whose
- * connection edge touches a delta-BSDF vertex has zero weight; the sweep breaks.
+ * connection edge touches a delta-BSDF vertex has zero weight. The density
+ * recurrence still crosses that edge, using PBRT's Remap0, because a farther
+ * strategy may connect two finite vertices and remain eligible.
  *
  * References:
  *   Veach 1997 §10.3 (BDPT MIS), §9.2 (power heuristic β=2), §10.3.5, §8.3.2.
@@ -51,11 +53,28 @@ export const bdpt_connection = /* glsl */`
 		float pdfSA, vec3 fromPos, vec3 destPos, vec3 destNorm, bool destIsMedium
 	) {
 		vec3 d = destPos - fromPos;
-		float dist2 = dot( d, d );
-		if ( dist2 <= 0.0 ) return pdfSA; // coincident → unit Jacobian (endpoint)
-		float invDist = inversesqrt( dist2 );
-		float cosDest = destIsMedium ? 1.0 : abs( dot( destNorm, d * invDist ) );
-		return ( pdfSA * cosDest ) / dist2;
+		if (
+			! ( pdfSA >= 0.0 ) ||
+			! bdptFiniteFloat( pdfSA ) ||
+			! bdptFiniteVec3( d ) ||
+			( ! destIsMedium && ! vitrumFiniteNonZeroVec3( destNorm ) )
+		) return 0.0;
+		if ( all( equal( d, vec3( 0.0 ) ) ) ) {
+			return pdfSA; // coincident endpoint: unit Jacobian by convention
+		}
+		float distance = vitrumLengthVec3( d );
+		if ( ! ( distance > 0.0 ) ) return 0.0;
+		vec3 edgeDirection = vitrumNormalizeVec3( d, vec3( 0.0 ) );
+		vec3 destinationNormal = destIsMedium
+			? vec3( 0.0 )
+			: vitrumNormalizeVec3( destNorm, vec3( 0.0 ) );
+		float cosDest =
+			destIsMedium ? 1.0 : abs( dot( destinationNormal, edgeDirection ) );
+		return vitrumPositiveProductOverSquare( pdfSA, cosDest, distance );
+	}
+
+	float bdptRemapZeroDensity( float pdf ) {
+		return pdf == 0.0 ? 1.0 : pdf;
 	}
 
 
@@ -65,17 +84,28 @@ export const bdpt_connection = /* glsl */`
 		vec3 lightPos,
 		RenderState state,
 		bool skipOcclusion,
+		bool hasTargetFace,
+		uint targetFaceIndex,
 		out vec3 attenColor
 	) {
 		attenColor = vec3( 1.0 );
 		if ( skipOcclusion ) return true;
 		vec3 dir  = lightPos - eyePos;
-		float len = length( dir );
-		if ( len < RAY_OFFSET ) return false;
+		if ( ! bdptFiniteVec3( dir ) ) return false;
+		float len = vitrumLengthVec3( dir );
+		if ( ! ( len > RAY_OFFSET ) ) return false;
 		Ray shadowRay;
 		shadowRay.origin    = eyePos;
-		shadowRay.direction = dir / len;
-		bool occluded = attenuateHit( state, shadowRay, len - RAY_OFFSET, attenColor );
+		shadowRay.direction =
+			vitrumNormalizeVec3( dir, vec3( 0.0 ) );
+			bool occluded = attenuateHit(
+				state,
+				shadowRay,
+				len,
+				hasTargetFace,
+				targetFaceIndex,
+				attenColor
+			);
 		return ! occluded;
 	}
 
@@ -160,11 +190,14 @@ export const bdpt_connection = /* glsl */`
 		// This is the same Veach recurrence as the linear form, but remains finite
 		// across long/grazing paths where products of area densities overflow.
 		float logPdfs[ BDPT_MAX_MERGED ];
+		bool knownPdfs[ BDPT_MAX_MERGED ];
 		bool validPdfs[ BDPT_MAX_MERGED ];
 		for ( int k = 0; k < BDPT_MAX_MERGED; k ++ ) {
 			logPdfs[ k ] = 0.0;
+			knownPdfs[ k ] = false;
 			validPdfs[ k ] = false;
 		}
+		knownPdfs[ selectedS ] = true;
 		validPdfs[ selectedS ] = pRef > 0.0;
 
 		// Left sweep (decrement s): flip v[s-1]; p_{s-1} = p_s · pRev(s-1)/pFwd(s-1).
@@ -173,17 +206,24 @@ export const bdpt_connection = /* glsl */`
 			for ( int s = selectedS; s > 0; s -- ) {
 				bool flipSpec = mSpec[ s - 1 ];
 				bool nbSpec = ( s >= 2 ) ? mSpec[ s - 2 ] : false;
-				if ( flipSpec || nbSpec ) break;
+				bool connectionIsDelta = flipSpec || nbSpec;
 				float pFwd = ( s - 1 == 0 )
 					? mFwd[ 0 ]
 					: bdptConvertDensitySAtoArea( mFwd[ s - 1 ], mPos[ s - 2 ], mPos[ s - 1 ], mNrm[ s - 1 ], mMedium[ s - 1 ] );
 				float pRev = ( s - 1 == n - 1 )
 					? mRev[ s - 1 ]
 					: bdptConvertDensitySAtoArea( mRev[ s - 1 ], mPos[ s ], mPos[ s - 1 ], mNrm[ s - 1 ], mMedium[ s - 1 ] );
-				if ( pFwd <= 0.0 || pRev <= 0.0 ) break;
+				if (
+					pFwd < 0.0 || pRev < 0.0 ||
+					isnan( pFwd ) || isnan( pRev ) ||
+					isinf( pFwd ) || isinf( pRev )
+				) break;
+				pFwd = bdptRemapZeroDensity( pFwd );
+				pRev = bdptRemapZeroDensity( pRev );
 				logP += log( pRev ) - log( pFwd );
 				logPdfs[ s - 1 ] = logP;
-				validPdfs[ s - 1 ] = true;
+				knownPdfs[ s - 1 ] = true;
+				validPdfs[ s - 1 ] = ! connectionIsDelta;
 			}
 		}
 		// Right sweep (increment s): flip v[s]; p_{s+1} = p_s · pFwd(s)/pRev(s).
@@ -192,17 +232,24 @@ export const bdpt_connection = /* glsl */`
 			for ( int s = selectedS; s < n - 1; s ++ ) {
 				bool flipSpec = mSpec[ s ];
 				bool nbSpec = mSpec[ s + 1 ];
-				if ( flipSpec || nbSpec ) break;
+				bool connectionIsDelta = flipSpec || nbSpec;
 				float pFwd = ( s == 0 )
 					? mFwd[ 0 ]
 					: bdptConvertDensitySAtoArea( mFwd[ s ], mPos[ s - 1 ], mPos[ s ], mNrm[ s ], mMedium[ s ] );
 				float pRev = ( s == n - 1 )
 					? mRev[ s ]
 					: bdptConvertDensitySAtoArea( mRev[ s ], mPos[ s + 1 ], mPos[ s ], mNrm[ s ], mMedium[ s ] );
-				if ( pFwd <= 0.0 || pRev <= 0.0 ) break;
+				if (
+					pFwd < 0.0 || pRev < 0.0 ||
+					isnan( pFwd ) || isnan( pRev ) ||
+					isinf( pFwd ) || isinf( pRev )
+				) break;
+				pFwd = bdptRemapZeroDensity( pFwd );
+				pRev = bdptRemapZeroDensity( pRev );
 				logP += log( pFwd ) - log( pRev );
 				logPdfs[ s + 1 ] = logP;
-				validPdfs[ s + 1 ] = true;
+				knownPdfs[ s + 1 ] = true;
+				validPdfs[ s + 1 ] = ! connectionIsDelta;
 			}
                 }
 
@@ -215,8 +262,7 @@ export const bdpt_connection = /* glsl */`
                         validPdfs[ 1 ] = false;
                         if (
                                 n > 3 &&
-                                validPdfs[ 2 ] &&
-                                ! mSpec[ 1 ] &&
+                                knownPdfs[ 2 ] &&
                                 infiniteNeePdf > 0.0 &&
                                 infiniteLaunchPdf > 0.0
                         ) {
@@ -246,7 +292,11 @@ export const bdpt_connection = /* glsl */`
                                                 logPdfs[ 2 ] +
                                                 log( neeToLaunchAreaRatio ) +
                                                 log( eyeAreaPdf );
-                                        validPdfs[ 1 ] = true;
+                                        knownPdfs[ 1 ] = true;
+                                        // s=1 connects the distant source to
+                                        // v1. A delta at v2 invalidates s=2,
+                                        // but does not invalidate this edge.
+                                        validPdfs[ 1 ] = ! mSpec[ 1 ];
                                         if (
                                                 infiniteEnvironmentRoot &&
                                                 ! infiniteEyeEscapeDelta &&
@@ -256,6 +306,7 @@ export const bdpt_connection = /* glsl */`
                                                         logPdfs[ 1 ] +
                                                         log( infiniteEyeEscapePdf ) -
                                                         log( infiniteNeePdf );
+                                                knownPdfs[ 0 ] = true;
                                                 validPdfs[ 0 ] = true;
                                         }
                                 }
@@ -332,8 +383,22 @@ export const bdpt_connection = /* glsl */`
 		vec4 lv3 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 3 ), 0 );
                 vec4 lv4 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 4 ), 0 );
                 vec4 lv5 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 5 ), 0 );
+                vec4 lv6 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 6 ), 0 );
                 vec4 lv7 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 7 ), 0 );
 		if ( lv0.w == 3.0 ) return vec3( 0.0 ); // BDPT_KIND_INVALID
+		if (
+			! bdptStoredVertexRowsValid(
+				lv0, lv1, lv2, lv3, lv4, lv5, lv6, lv7
+			) ||
+			! bdptFiniteVec3( eyePos ) ||
+			( ! eyeSurf.volumeParticle &&
+				( ! bdptFiniteVec3( eyeNormal ) ||
+					! vitrumFiniteNonZeroVec3( eyeNormal ) ) ) ||
+			! bdptFiniteVec3( eyeWo ) ||
+			! vitrumFiniteNonZeroVec3( eyeWo ) ||
+			! bdptFiniteVec3( eyeThroughput ) ||
+			any( lessThan( eyeThroughput, vec3( 0.0 ) ) )
+		) return vec3( 0.0 );
 
 		vec3  lightPos        = lv0.xyz;
 		vec3  lightNormal     = lv1.xyz;
@@ -357,30 +422,72 @@ export const bdpt_connection = /* glsl */`
 		if ( ! lightIsEndpoint && lightMatId < 0.0 && ! lightIsMedium ) {
 			return vec3( 0.0 );
 		}
+			bool meshAreaEndpointHasTarget =
+				areaEndpoint && meshLightSourceFaceWordsValid( lv4.zw );
+			bool surfaceVertexHasTarget = ! lightIsEndpoint && ! lightIsMedium;
+			if (
+				surfaceVertexHasTarget &&
+				! meshLightSourceFaceWordsValid( lv7.zw )
+			) return vec3( 0.0 );
+		bool hasTargetFace =
+			meshAreaEndpointHasTarget || surfaceVertexHasTarget;
+		uint targetFaceIndex = 0u;
+			if ( meshAreaEndpointHasTarget ) {
+				targetFaceIndex = meshLightSourceFaceIndex( lv4.zw );
+			} else if ( surfaceVertexHasTarget ) {
+				targetFaceIndex = meshLightSourceFaceIndex( lv7.zw );
+			}
 
 
 		vec3 toLight = lightPos - eyePos;
-		float dist   = length( toLight );
-		if ( dist < RAY_OFFSET ) return vec3( 0.0 );
-		vec3 connDir = toLight / dist; // E_e → L_c
+		if ( ! bdptFiniteVec3( toLight ) ) return vec3( 0.0 );
+		float dist = vitrumLengthVec3( toLight );
+		if ( ! ( dist > RAY_OFFSET ) ) return vec3( 0.0 );
+			vec3 connDir =
+				vitrumNormalizeVec3( toLight, vec3( 0.0 ) ); // E_e → L_c
+			vec3 visibilityOffset = connDir;
+			if ( ! eyeSurf.volumeParticle ) {
+				if (
+					! bdptFiniteVec3( eyeSurf.faceNormal ) ||
+					! vitrumFiniteNonZeroVec3( eyeSurf.faceNormal )
+				) return vec3( 0.0 );
+				vec3 geometricNormal =
+					vitrumNormalizeVec3( eyeSurf.faceNormal, vec3( 0.0 ) );
+				float visibilitySide =
+					dot( connDir, geometricNormal ) < 0.0 ? -1.0 : 1.0;
+				visibilityOffset = geometricNormal * visibilitySide;
+			}
+			// Keep the BDPT vertex and its Jacobians at the exact geometric point.
+			// Only the visibility ray receives a connection-specific numerical step;
+			// bdptVisibilityAttenuation then rebuilds its direction and distance to
+			// the exact sampled endpoint from this stepped origin.
+			vec3 visibilityOrigin = stepRayOrigin(
+				eyePos, vec3( 0.0 ), visibilityOffset, 0.0
+			);
+			if ( ! bdptFiniteVec3( visibilityOrigin ) ) return vec3( 0.0 );
 
-		float gTerm = bdptConnectionInverseDistanceSquared( eyePos, lightPos );
+			float gTerm = bdptConnectionInverseDistanceSquared( eyePos, lightPos );
 		if ( pointEndpoint ) {
 			gTerm = getDistanceAttenuation( dist, lv4.y, lv4.z );
 		} else if ( spotEndpoint ) {
-			float spotCos = dot( normalize( lightNormal ), -connDir );
+			float spotCos = dot(
+				vitrumNormalizeVec3( lightNormal, vec3( 0.0, 1.0, 0.0 ) ),
+				-connDir
+			);
 			float spotAttenuation = getSpotAttenuation( lv4.w, lv3.x, spotCos );
 			if ( spotAttenuation <= 0.0 ) return vec3( 0.0 );
 			gTerm = spotAttenuation * getDistanceAttenuation( dist, lv4.y, lv4.z );
 		}
-		if ( gTerm <= 0.0 ) return vec3( 0.0 );
+		if ( gTerm <= 0.0 || ! bdptFiniteFloat( gTerm ) ) return vec3( 0.0 );
 		vec3 bdptVisibilityColor;
 		if (
-			! bdptVisibilityAttenuation(
-				eyePos,
-				lightPos,
+				! bdptVisibilityAttenuation(
+					visibilityOrigin,
+					lightPos,
 				eyeState,
 				lightIsEndpoint && lv4.x > 0.5,
+				hasTargetFace,
+				targetFaceIndex,
 				bdptVisibilityColor
 			)
 		) return vec3( 0.0 );
@@ -417,10 +524,11 @@ export const bdpt_connection = /* glsl */`
 			);
 			lightFog.fogVolume = true;
 			setFogSurfaceRecord( lightFog, lightSurf );
-		} else if ( ! lightIsEndpoint ) {
-			if ( ! bdptLoadSurfaceRecord(
-				lightMatId, lv4, lightNormal, eyeState.wavelength, lightSurf
-			) ) return vec3( 0.0 );
+			} else if ( ! lightIsEndpoint ) {
+				if ( ! bdptLoadSurfaceRecord(
+					lightMatId, lv4, lv7.zw,
+					lightNormal, eyeState.wavelength, lightSurf
+				) ) return vec3( 0.0 );
 		}
 
 		// Surface bsdfResult returns f*cos; medium bsdfResult returns phase value.
@@ -429,7 +537,13 @@ export const bdpt_connection = /* glsl */`
 			float lightBsdfPdfToEye = 1.0;
 			if ( areaEndpoint ) {
 				bool twoSidedEndpoint = lv4.y > 0.5;
-				float signedCosLight = dot( normalize( lightNormal ), -connDir );
+				if ( ! vitrumFiniteNonZeroVec3( lightNormal ) ) {
+					return vec3( 0.0 );
+				}
+				float signedCosLight = dot(
+					vitrumNormalizeVec3( lightNormal, vec3( 0.0 ) ),
+					-connDir
+				);
 				float cosLight = twoSidedEndpoint
 					? abs( signedCosLight )
 					: max( signedCosLight, 0.0 );
@@ -443,7 +557,11 @@ export const bdpt_connection = /* glsl */`
                         if ( spotSolidAngle <= 0.0 ) return vec3( 0.0 );
                         lightBsdfPdfToEye = 1.0 / spotSolidAngle;
                 } else {
-                        lightWoPrev = normalize( lightWoPrev );
+			if ( ! vitrumFiniteNonZeroVec3( lightWoPrev ) ) {
+				return vec3( 0.0 );
+			}
+                        lightWoPrev =
+				vitrumNormalizeVec3( lightWoPrev, vec3( 0.0 ) );
                         if ( ! lightIsMedium && dot( lightNormal, -connDir ) <= 0.0 ) {
                                 return vec3( 0.0 );
                         }
@@ -463,7 +581,10 @@ export const bdpt_connection = /* glsl */`
 			);
 		}
 
-		if ( lightBsdfPdfToEye <= 0.0 ) return vec3( 0.0 );
+		if (
+			lightBsdfPdfToEye <= 0.0 ||
+			! bdptFiniteFloat( lightBsdfPdfToEye )
+		) return vec3( 0.0 );
 		// ── Full §10.3 MIS weight ────────────────────────────────────────────
 		int c = lightVtxIdx;
 		int e = eyeDepth;
@@ -472,15 +593,31 @@ export const bdpt_connection = /* glsl */`
 		if ( n > BDPT_MAX_MERGED ) return vec3( 0.0 );
 
 		vec3 camPos = ( cameraWorldMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
-		vec3 camNrm = normalize( camPos - eyePos );
+		vec3 cameraEdge = camPos - eyePos;
+		if (
+			! bdptFiniteVec3( cameraEdge ) ||
+			! vitrumFiniteNonZeroVec3( cameraEdge )
+		) return vec3( 0.0 );
+		vec3 camNrm =
+			vitrumNormalizeVec3( cameraEdge, vec3( 0.0 ) );
 
 		// Connection-induced straddle overrides (PBRT MISWeight remapping).
 		vec3 lcToE = -connDir;                       // L_c → E_e
 		float fwdEe = lightBsdfPdfToEye;
 
-			vec3 eeToPrev = normalize( eyeWo );
+			vec3 eeToPrev =
+				vitrumNormalizeVec3( eyeWo, vec3( 0.0 ) );
 			if ( e >= 1 ) {
-				eeToPrev = normalize( bdptEyePos[ e - 1 ] - eyePos );
+				vec3 eyePredecessorEdge = bdptEyePos[ e - 1 ] - eyePos;
+				if (
+					! bdptFiniteVec3( eyePredecessorEdge ) ||
+					! vitrumFiniteNonZeroVec3( eyePredecessorEdge )
+				) {
+					return vec3( 0.0 );
+				}
+				eeToPrev = vitrumNormalizeVec3(
+					eyePredecessorEdge, vec3( 0.0 )
+				);
 			}
 			// At E_0, eyeWo is the actual camera-ray reverse direction. Using the
 			// camera transform's centre is wrong for orthographic and thin-lens rays.
@@ -500,7 +637,16 @@ export const bdpt_connection = /* glsl */`
 		float revLcMinus = 0.0;
 		if ( c >= 1 ) {
 			vec4 lcm0 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx - 1, 0 ), 0 );
-			vec3 lcToLcMinus = normalize( lcm0.xyz - lightPos );
+			vec3 lightPredecessorEdge = lcm0.xyz - lightPos;
+			if (
+				! bdptFiniteVec3( lightPredecessorEdge ) ||
+				! vitrumFiniteNonZeroVec3( lightPredecessorEdge )
+			) {
+				return vec3( 0.0 );
+			}
+			vec3 lcToLcMinus = vitrumNormalizeVec3(
+				lightPredecessorEdge, vec3( 0.0 )
+			);
                         revLcMinus = bsdfPdfResult(
                                 lcToE, lcToLcMinus, lightSurf, eyeState.wavelength, alternateDelta
                         );
@@ -518,7 +664,18 @@ export const bdpt_connection = /* glsl */`
                                 root3.w == BDPT_LV_ENVIRONMENT_EMITTER_MATID;
                         bool infiniteEnvironmentRoot =
                                 root3.w == BDPT_LV_ENVIRONMENT_EMITTER_MATID;
-                        vec3 infiniteSourceDirection = normalize( root1.xyz );
+                        vec3 infiniteSourceDirection = vec3( 0.0 );
+			if ( infiniteRoot ) {
+				if (
+					! bdptFiniteVec3( root1.xyz ) ||
+					! vitrumFiniteNonZeroVec3( root1.xyz )
+				) {
+					return vec3( 0.0 );
+				}
+				infiniteSourceDirection = vitrumNormalizeVec3(
+					root1.xyz, vec3( 0.0 )
+				);
+			}
                         float infiniteNeePdf = infiniteRoot ? root4.z : 0.0;
                         float infiniteLaunchPdf = infiniteRoot
                                 ? root1.w * root4.y
@@ -561,6 +718,7 @@ export const bdpt_connection = /* glsl */`
                                         firstSurfaceValid = bdptLoadSurfaceRecord(
                                                 first3.w,
                                                 first4,
+						first7.zw,
                                                 first1.xyz,
                                                 eyeState.wavelength,
                                                 firstSurface
@@ -575,16 +733,24 @@ export const bdpt_connection = /* glsl */`
                                                         0
                                                 ).xyz;
                                         }
-                                        vec3 firstCamerawardDirection = normalize(
-                                                firstCamerawardPosition - first0.xyz
-                                        );
-                                        infiniteEyeEscapePdf = bsdfPdfResult(
-                                                firstCamerawardDirection,
-                                                infiniteSourceDirection,
-                                                firstSurface,
-                                                eyeState.wavelength,
-                                                infiniteEyeEscapeDelta
-                                        );
+					vec3 firstCamerawardEdge =
+						firstCamerawardPosition - first0.xyz;
+					if (
+						bdptFiniteVec3( firstCamerawardEdge ) &&
+						vitrumFiniteNonZeroVec3( firstCamerawardEdge )
+					) {
+						vec3 firstCamerawardDirection =
+							vitrumNormalizeVec3(
+								firstCamerawardEdge, vec3( 0.0 )
+							);
+						infiniteEyeEscapePdf = bsdfPdfResult(
+							firstCamerawardDirection,
+							infiniteSourceDirection,
+							firstSurface,
+							eyeState.wavelength,
+							infiniteEyeEscapeDelta
+						);
+					}
                                 }
                         }
                         float misW = bdptMISWeightFull(

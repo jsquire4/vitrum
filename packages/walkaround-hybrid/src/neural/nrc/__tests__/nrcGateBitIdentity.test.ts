@@ -1,6 +1,7 @@
 // NRC is a construction-time pipeline/resource choice. The former per-frame
-// UBO mirror was never read by WGSL; these tests pin the retired slot as an
-// explicit zero ABI pad and ensure later live controls remain aligned.
+// UBO mirror was never read by WGSL; its word is now the independent ReSTIR
+// reservoir scale. These tests pin the live replacement and ensure later
+// controls remain aligned.
 
 import { describe, it, expect } from 'vitest';
 import {
@@ -48,7 +49,7 @@ function baseInputs(): PipelineFrameInputs {
     },
     gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
     filter: {
-      triIntersectEpsilon: 1e-5, glassMixScale: 0.7,
+      triIntersectEpsilon: 1e-5, rayOriginBias: 1e-3, glassMixScale: 0.7,
       indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
@@ -58,19 +59,19 @@ function baseInputs(): PipelineFrameInputs {
   };
 }
 
-const NRC_ABI_PAD_U32_INDEX = 91; // offset 364 / 4
+const RESTIR_RESERVOIR_SCALE_U32_INDEX = 91; // offset 364 / 4
 
 describe('NRC construction-time gate — no dead UBO mirror', () => {
-  it('names retired fields as explicit ABI pads in WGSL', () => {
+  it('keeps only genuinely retired fields as explicit ABI pads in WGSL', () => {
     expect(WALKAROUND_UBO_WGSL).toContain('_abiPadEmitterPower:');
-    expect(WALKAROUND_UBO_WGSL).toContain('_abiPadNrcGate:');
-    expect(WALKAROUND_UBO_WGSL).toContain('_abiPadRetiredGrisToggle:');
+    expect(WALKAROUND_UBO_WGSL).toContain('restirReservoirScale:');
+    expect(WALKAROUND_UBO_WGSL).toContain('rayOriginBias:');
     expect(WALKAROUND_UBO_WGSL).not.toMatch(/\n\s+nrcEnabled\s*:/);
     expect(WALKAROUND_UBO_WGSL).not.toMatch(/\n\s+grisReuse\s*:/);
     expect(WALKAROUND_UBO_WGSL).not.toMatch(/\n\s+totalEmPower\s*:/);
   });
 
-  it('writes all retired slots as zero without disturbing the live tail', () => {
+  it('writes the default reservoir scale, live ray bias, and retired emitter slot', () => {
     const capture = makeCapturingDevice();
     updateUBO(capture.device, {} as GPUBuffer, baseInputs());
     const bytes = capture.captured();
@@ -78,8 +79,8 @@ describe('NRC construction-time gate — no dead UBO mirror', () => {
     const u32 = new Uint32Array(bytes.buffer.slice(0));
     const f32 = new Float32Array(bytes.buffer.slice(0));
     expect(f32[55]).toBe(0);
-    expect(u32[NRC_ABI_PAD_U32_INDEX]).toBe(0);
-    expect(u32[103]).toBe(0);
+    expect(u32[RESTIR_RESERVOIR_SCALE_U32_INDEX]).toBe(1);
+    expect(f32[103]).toBeCloseTo(1e-3);
     expect(f32[104]).toBeCloseTo(WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS);
   });
 });

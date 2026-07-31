@@ -122,4 +122,16 @@ describe('GTAO projected-normal slice geometry', () => {
       'exp(-depthDelta / (2.0 * sigma * sigma))',
     );
   });
+
+  it('keeps the low-resolution domain valid for a one-pixel axis', () => {
+    expect(GTAO_WGSL).toContain(
+      'let lowDims = max(vec2u(1u), fullDims / ds);',
+    );
+    expect(GTAO_WGSL).toContain(
+      'min(gid.xy * ds + ds / 2u, fullDims - vec2u(1u))',
+    );
+    expect(GTAO_UPSAMPLE_WGSL).toContain(
+      'let halfDims = max(vec2u(1u), fullDims / ds);',
+    );
+  });
 });

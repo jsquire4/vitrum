@@ -284,6 +284,9 @@ function makeCtx(encoder: GPUCommandEncoder): PassDispatchContext {
     wgX: 8, wgY: 8,
     wgX16: 4, wgY16: 4,
     halfWgX: 2, halfWgY: 2,
+    restirReservoirScale: 1,
+    restirDiWgX: 8, restirDiWgY: 8,
+    restirGiWgX: 2, restirGiWgY: 2,
     // 64×64 ⇒ ceil(ceil(64/2)/8)=4 X workgroups, ceil(64/8)=8 Y — the shared
     // checkerboard compaction the RIS/Shade/SpatialReservoir passes now read.
     checkerboardWgX: 4, checkerboardWgY: 8,
@@ -382,6 +385,30 @@ describe('Theme-E dispatch equivalence — GI scene-bind routing (#3)', () => {
     expect(records[0]!.dims).toEqual([2, 2, 1]);
     // The 1-pass branch copies spatial → current (current.size = 512).
     expect(copies).toEqual([{ kind: 'buffer', size: 512 }]);
+  });
+
+  it('dispatches every GI producer/reuse pass over an independently scaled grid', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = {
+      ...makeCtx(encoder),
+      restirReservoirScale: 3,
+      restirGiWgX: 5,
+      restirGiWgY: 3,
+    } as PassDispatchContext;
+
+    new RISGIPass(stubPipeline('giRis')).dispatch(ctx);
+    new TemporalGIReservoirPass(stubPipeline('giTemporal')).dispatch(ctx);
+    new SpatialGIReservoirPass(stubPipeline('giSpatial'), 2).dispatch(ctx);
+
+    expect(records.map((record) => record.label)).toEqual([
+      'gi-ris',
+      'gi-temporal',
+      'gi-spatial-1',
+      'gi-spatial-2',
+    ]);
+    expect(records.every((record) =>
+      record.dims.join() === '5,3,1',
+    )).toBe(true);
   });
 
 });
@@ -831,6 +858,35 @@ describe('ShadePass + SpatialReservoirPass — checkerboard compacted dispatch',
     expect(records[0]!.dims).toEqual([4, 8, 1]);
     // Strictly fewer X workgroups than the OFF full-res count.
     expect(records[0]!.dims[0]).toBeLessThan(ctx.wgX);
+  });
+
+  it('dispatches every DI producer/reuse pass over the scaled grid and bypasses checkerboard compaction', () => {
+    const { encoder, records } = makeRecordingEncoder();
+    const ctx = {
+      ...makeCtx(encoder),
+      checkerboardOn: true,
+      restirReservoirScale: 3,
+      restirDiWgX: 3,
+      restirDiWgY: 2,
+    } as PassDispatchContext;
+
+    new RISPass(stubPipeline('ris')).dispatch(ctx);
+    new TemporalReservoirPass(stubPipeline('temporal')).dispatch(ctx);
+    new SpatialReservoirPass(
+      stubPipeline('spatial-1'),
+      stubPipeline('spatial-2'),
+      2,
+    ).dispatch(ctx);
+
+    expect(records.map((record) => record.label)).toEqual([
+      'ris',
+      'temporal',
+      'spatial-1',
+      'spatial-2',
+    ]);
+    expect(records.every((record) =>
+      record.dims.join() === '3,2,1',
+    )).toBe(true);
   });
 
   // Parity-decode invariant (mirrors the shade.wgsl decode + the resolve.wgsl

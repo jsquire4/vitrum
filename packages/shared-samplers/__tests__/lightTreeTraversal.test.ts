@@ -285,10 +285,8 @@ describe('B8 orientation cones — oriented emitters culled from behind', () => 
     expect(trianglePdf + lightTreePdfCPU(nodes, litPoint, FLOOR, 1)).toBeCloseTo(1, 6);
   });
 
-  it('keeps the CPU/WGSL centre guard in the same distance units for a tiny point node', () => {
-    const distance = 1e-8;
-    expect(distance).toBeGreaterThan(1e-12);
-    expect(distance).toBeLessThan(1e-6);
+  it('keeps the CPU/WGSL centre guard scale-invariant for a tiny point node', () => {
+    const distance = 1e-20;
     const { nodes } = buildLightTree({
       powers: [1, 1],
       centroids: [[0, 0, 0], [1, 0, 0]],
@@ -304,19 +302,14 @@ describe('B8 orientation cones — oriented emitters culled from behind', () => 
     const pointLeaf = nodes.find((node) => node.emitterIndex === 0);
     expect(pointLeaf).toBeDefined();
 
-    // The point is outside the CPU's 1e-12 distance guard and behind the
-    // zero-radius emitter, so its cone importance is genuinely zero.
+    // Every non-zero displacement from a zero-radius emitter is outside it.
     expect(nodeImportance(pointLeaf!, -distance, 0, 0, FLOOR)).toBe(0);
 
-    // WGSL receives squared distance. 1e-24 is the squared CPU floor; the old
-    // 1e-12 literal accidentally widened this guard to 1e-6 world units.
+    // The WGSL compares the dimensionless radius/distance ratio, avoiding an
+    // absolute world-unit floor and squared-distance underflow.
     const wgsl = lightTreeWgsl({ group: 0, binding: 1 });
-    expect(wgsl).toContain(
-      'dl2 <= max(radius * radius, 1e-24)',
-    );
-    expect(wgsl).not.toContain(
-      'dl2 <= max(radius * radius, 1e-12)',
-    );
+    expect(wgsl).toContain('radiusOverDistance >= 1.0');
+    expect(wgsl).not.toContain('radius * radius, 1e-');
   });
 
   it('full-sphere cones (no orientation) reproduce the spatial-only partition exactly', () => {
@@ -371,7 +364,9 @@ describe('lightTreeWgsl RNG-state specialization', () => {
     expect(defaultWgsl).toContain(
       'rng: ptr<function, u32>',
     );
-    expect(defaultWgsl).toContain('let sinThetaU = clamp(radius / dl, 0.0, 1.0);');
+    expect(defaultWgsl).toContain(
+      'let sinThetaU = clamp(radiusOverDistance, 0.0, 1.0);',
+    );
     expect(defaultWgsl).not.toContain('acos(');
     expect(defaultWgsl).not.toContain('asin(');
     const specialized = lightTreeWgsl({

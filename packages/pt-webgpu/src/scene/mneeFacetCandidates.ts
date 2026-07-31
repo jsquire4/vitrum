@@ -206,11 +206,22 @@ function firstNonGeometricNormalTriangle(primitive: MneeMeshPrimitive): number |
     const e1x = cx - ax;
     const e1y = cy - ay;
     const e1z = cz - az;
-    const fx = e0y * e1z - e0z * e1y;
-    const fy = e0z * e1x - e0x * e1z;
-    const fz = e0x * e1y - e0y * e1x;
+    const edgeScale = Math.max(
+      Math.abs(e0x), Math.abs(e0y), Math.abs(e0z),
+      Math.abs(e1x), Math.abs(e1y), Math.abs(e1z),
+    );
+    if (!(edgeScale > 0) || !Number.isFinite(edgeScale)) continue;
+    const se0x = e0x / edgeScale;
+    const se0y = e0y / edgeScale;
+    const se0z = e0z / edgeScale;
+    const se1x = e1x / edgeScale;
+    const se1y = e1y / edgeScale;
+    const se1z = e1z / edgeScale;
+    const fx = se0y * se1z - se0z * se1y;
+    const fy = se0z * se1x - se0x * se1z;
+    const fz = se0x * se1y - se0y * se1x;
     const faceLength = Math.hypot(fx, fy, fz);
-    if (!(faceLength > 1e-20)) continue;
+    if (!(faceLength > 0) || !Number.isFinite(faceLength)) continue;
     const faceX = fx / faceLength;
     const faceY = fy / faceLength;
     const faceZ = fz / faceLength;
@@ -219,10 +230,14 @@ function firstNonGeometricNormalTriangle(primitive: MneeMeshPrimitive): number |
       const ny = primitive.normals[vertexIndex * 3 + 1];
       const nz = primitive.normals[vertexIndex * 3 + 2];
       if (nx == null || ny == null || nz == null) return triangle;
-      const normalLength = Math.hypot(nx, ny, nz);
-      if (!(normalLength > 1e-20)) return triangle;
+      const normalScale = Math.max(Math.abs(nx), Math.abs(ny), Math.abs(nz));
+      if (!(normalScale > 0) || !Number.isFinite(normalScale)) return triangle;
+      const snx = nx / normalScale;
+      const sny = ny / normalScale;
+      const snz = nz / normalScale;
+      const normalLength = Math.hypot(snx, sny, snz);
       const alignment =
-        (nx * faceX + ny * faceY + nz * faceZ) / normalLength;
+        (snx * faceX + sny * faceY + snz * faceZ) / normalLength;
       if (alignment < 1 - 1e-4) return triangle;
     }
   }

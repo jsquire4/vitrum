@@ -48,8 +48,12 @@ import {
   clearTemporalReservoirHistory,
   sceneMutationRequiresTemporalReset,
 } from './temporalHistoryReset.js';
-import { BvhBufferHost } from './BvhBufferHost.js';
 import {
+  BvhBufferHost,
+  type DirectionalEnvironmentBindings,
+} from './BvhBufferHost.js';
+import {
+  commitSceneMutations,
   prepareSceneMutations,
   rethrowWithSceneMutationCleanup,
   runSceneMutationCleanups,
@@ -62,6 +66,8 @@ import {
 } from './gpuMemoryEstimate.js';
 import type { GpuMemoryBreakdown } from '@vitrum/core';
 import {
+  DEFAULT_FRAME_RESOURCE_BUDGET_BYTES,
+  assertFrameResourceReservoirScale,
   createFrameResources,
   destroyFrameResources,
   type FrameResources,
@@ -70,6 +76,8 @@ import type { BGLCache } from './bindGroupLayouts.js';
 import type { UboRef, PassOwnedUboRef } from './bindGroupBuilders.js';
 import { buildLightTreeBindGroup } from './bindGroupBuilders.js';
 import { FrameCaptureHelper } from './frameCapture.js';
+import { readDenoiserTrainingInputsWalkaround } from '../util/gpuReadback.js';
+import type { HybridDenoiserTrainingCapture } from '../HybridEnginePublic.js';
 import {
   buildCompositePresentBindGroup,
   buildPerFrameBindGroups,
@@ -228,6 +236,7 @@ import {
   finishSubmitAndPublishFrame,
   type FramePublication,
 } from './FramePublication.js';
+import { assertHybridSwapChainFormat } from '../presentationTarget.js';
 
 export function resolvePpgDispatchInterval(interval: number): number {
   if (!Number.isFinite(interval)
@@ -700,6 +709,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   private _gtaoDownscale: 2 | 4 = 2;
   private _diSpatialPasses: 1 | 2 = 2;
   private _giSpatialPasses: 1 | 2 = 2;
+  /** Steady-state frame-graph ceiling resolved by HybridEngine before init. */
+  private _maxPersistentFrameResourceBytes =
+    DEFAULT_FRAME_RESOURCE_BUDGET_BYTES;
+  /** Integer DI/GI reservoir-grid scale selected before frame allocation. */
+  private _reservoirScale = 1;
   /** Checkerboard half-res shading (HybridEngineOptions.checkerboardRendering).
    *  OFF by default ⇒ the RIS pass, the two DI spatial passes, and shade.wgsl all
    *  run full-res + ResolvePass passes through (byte-identity); ON ⇒ RIS, both
@@ -909,8 +923,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       return null;
     }
     const r = this._res.restirGI;
-    const halfW = Math.max(1, Math.floor(this._width / 2));
-    const halfH = Math.max(1, Math.floor(this._height / 2));
+    const halfW = Math.max(
+      1,
+      Math.floor(this._width / (2 * this._reservoirScale)),
+    );
+    const halfH = Math.max(
+      1,
+      Math.floor(this._height / (2 * this._reservoirScale)),
+    );
     const [current, previous, spatial] = await Promise.all([
       this.#readbackReservoir(device, r.reservoirGiCurrentBuffer),
       this.#readbackReservoir(device, r.reservoirGiPreviousBuffer),
@@ -940,8 +960,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       return false;
     }
     const r = this._res.restirGI;
-    const halfW = Math.max(1, Math.floor(this._width / 2));
-    const halfH = Math.max(1, Math.floor(this._height / 2));
+    const halfW = Math.max(
+      1,
+      Math.floor(this._width / (2 * this._reservoirScale)),
+    );
+    const halfH = Math.max(
+      1,
+      Math.floor(this._height / (2 * this._reservoirScale)),
+    );
     if (
       !(snap.current instanceof Uint32Array) ||
       !(snap.previous instanceof Uint32Array) ||
@@ -1035,8 +1061,14 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       !this._initialized ||
       !Number.isSafeInteger(halfW) ||
       !Number.isSafeInteger(halfH) ||
-      halfW !== Math.max(1, Math.floor(this._width / 2)) ||
-      halfH !== Math.max(1, Math.floor(this._height / 2))
+      halfW !== Math.max(
+        1,
+        Math.floor(this._width / (2 * this._reservoirScale)),
+      ) ||
+      halfH !== Math.max(
+        1,
+        Math.floor(this._height / (2 * this._reservoirScale)),
+      )
     ) {
       return null;
     }
@@ -1327,8 +1359,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this.#readbackReservoir(device, r.reservoirSpatialBuffer),
     ]);
     return {
-      width: this._width,
-      height: this._height,
+      width: Math.max(1, Math.floor(this._width / this._reservoirScale)),
+      height: Math.max(1, Math.floor(this._height / this._reservoirScale)),
       strideU32: RESERVOIR_DI_STRIDE_U32,
       current,
       previous,
@@ -1341,8 +1373,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     if (
       !this._initialized ||
       !isValidRestirDISnapshot(snap) ||
-      snap.width !== this._width ||
-      snap.height !== this._height ||
+      snap.width !== Math.max(1, Math.floor(this._width / this._reservoirScale)) ||
+      snap.height !== Math.max(1, Math.floor(this._height / this._reservoirScale)) ||
       snap.strideU32 !== RESERVOIR_DI_STRIDE_U32
     ) {
       return false;
@@ -1543,9 +1575,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *                   w = signed linear depth.
    *   albedo        — rgba16float, demodulated visible-point diffuse albedo
    *                   (Schied 2017 §4.1) — lighting × albedo = final colour.
-   *   variance      — rgba32float, freshest full-resolution Welford state
+   *   variance      — rg32float, freshest full-resolution Welford state
    *                   (r = mean luminance, g = M2).
-   *   motionVectors — rgba32float, (dx, dy) screen-space pixels in .xy.
+   *   motionVectors — rg32float, (dx, dy) screen-space pixels.
    * Descriptor-free views are cached while resources are stable; owned by the
    * pipeline — callers MUST NOT destroy them, and the handles are invalidated on
    * the next setScene / resize / dispose. Null before initialize() resolves.
@@ -1591,6 +1623,28 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   getProgressiveSeedTexture(): GPUTexture | null {
     if (!this._initialized) return null;
     return this._res.common.resolvedTexture;
+  }
+
+  /**
+   * Read the exact live textures presented to the neural-denoiser input packer.
+   * This intentionally bypasses the post-denoise/temporal `resolvedTexture`:
+   * training data must reproduce the runtime input distribution, not the final
+   * display image. The helper snapshots all three COPY_SRC textures in one
+   * queue submission and owns every temporary staging buffer transactionally.
+   */
+  captureDenoiserTrainingInputs(): Promise<HybridDenoiserTrainingCapture | null> {
+    if (!this._initialized) return Promise.resolve(null);
+    const common = this._res.common;
+    return readDenoiserTrainingInputsWalkaround(
+      this._device,
+      {
+        radiance: common.hdrColorTexture,
+        albedo: common.albedoTexture,
+        normalDepth: common.gNormalDepthTexture,
+      },
+      this._width,
+      this._height,
+    );
   }
 
   /**
@@ -1748,6 +1802,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  depth/normal-aware bilateral machinery (the downscale factor is a
        *  UBO field consumed by both gtao + gtaoUpsample shaders). */
       gtaoMode?: 'on' | 'quarter' | 'off';
+      /** Exact steady-state ceiling already used to resolve `width`/`height`. */
+      maxPersistentFrameResourceBytes?: number;
+      /** Integer ReSTIR reservoir-grid scale already selected by the resolver. */
+      reservoirScale?: number;
       /** Phase-0 — ReSTIR-DI spatial ping-pong pass count (1 or 2). Default 2. */
       diSpatialPasses?: 1 | 2;
       /** Phase-0 — ReSTIR-GI spatial ping-pong pass count (1 or 2). Default 2. */
@@ -1789,6 +1847,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       regirConfig?: Partial<ReGIRConfig>;
     },
   ): Promise<void> {
+    assertHybridSwapChainFormat(
+      swapChainFormat,
+      'WalkaroundGPUPipeline.initialize.swapChainFormat',
+    );
+    assertFrameResourceReservoirScale(options?.reservoirScale ?? 1);
     // Adopt the graph before the first allocation/compilation step. If any
     // later initialization phase rejects, dispose() still owns and releases
     // every graph buffer rather than leaving the lifecycle-local graph orphaned.
@@ -1883,6 +1946,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const gtaoMode = options?.gtaoMode ?? 'on';
     this._gtaoEnabled = gtaoMode !== 'off';
     this._gtaoDownscale = gtaoMode === 'quarter' ? 4 : 2;
+    this._maxPersistentFrameResourceBytes =
+      options?.maxPersistentFrameResourceBytes
+      ?? DEFAULT_FRAME_RESOURCE_BUDGET_BYTES;
+    this._reservoirScale = options?.reservoirScale ?? 1;
 
     // Resolve the active denoiser mode BEFORE allocating frame resources so the
     // SVGF-real ~80-90 MB @1080p persistent-texture fleet is only allocated when
@@ -1893,10 +1960,13 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // ── Per-frame GPU resources ───────────────────────────────────────────
     this._res = createFrameResources(d, W, H, {
       gtaoDownscale: this._gtaoDownscale,
+      gtaoEnabled: this._gtaoEnabled,
       svgfEnabled: this._denoiserMode === 'svgf-real',
       welfordPingPong: true,
       atrousVarianceEstimate: this._denoiserMode === 'atrous-variance',
       checkerboard: options?.checkerboard === true,
+      reservoirScale: this._reservoirScale,
+      maxPersistentBytes: this._maxPersistentFrameResourceBytes,
     });
 
     // ── Resolve the checkerboard half-res-shading flag ─────────────────────
@@ -2264,8 +2334,49 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     intensity: number,
   ): void {
     if (!this._bvhHost.initialized) return;
-    this._bvhHost.updateEnvironment(this._device, data, rotationY, intensity);
+    this._bvhHost.updateEnvironment(
+      this._device,
+      data,
+      rotationY,
+      intensity,
+    );
     this.requestAccumReset();
+  }
+
+  /**
+   * Prepare an environment replacement without mutating the live scene group.
+   * `envBindings` references the candidate and is therefore suitable for DDGI
+   * preparation before the provider pointer swap. It is null for a clear so
+   * DDGI allocates its own no-environment placeholder while the old provider
+   * resources are still alive.
+   */
+  prepareDirectionalEnvironment(
+    data: import('../environment/equirectDirectional.js').DirectionalEnvData | null,
+    rotationY: number,
+    intensity: number,
+  ): PreparedSceneMutation & {
+    readonly envBindings: DirectionalEnvironmentBindings | null;
+  } {
+    if (!this._bvhHost.initialized) {
+      return {
+        envBindings: null,
+        commit: () => undefined,
+        rollback: () => undefined,
+        finalize: () => undefined,
+      };
+    }
+    const prepared = this._bvhHost.prepareEnvironmentReplacement(
+      this._device,
+      data,
+      rotationY,
+      intensity,
+    );
+    return {
+      envBindings: data == null ? null : prepared.bindings,
+      commit: () => prepared.commit(),
+      rollback: () => prepared.rollback(),
+      finalize: () => prepared.finalize(),
+    };
   }
 
   /**
@@ -2296,6 +2407,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     mutation: CollectedBvhMutation,
     nextBvh: SceneBVHBuffers,
     prefixCommandBuffers: readonly GPUCommandBuffer[] = [],
+    resizeTarget?: {
+      readonly frameResources: FrameResources;
+      readonly width: number;
+      readonly height: number;
+    },
   ): PreparedSceneMutation {
     if (!this._initialized) {
       return { commit: () => undefined, rollback: () => undefined, finalize: () => undefined };
@@ -2308,6 +2424,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       mutation.normals != null ||
       mutation.tlas != null ||
       mutation.replacement != null;
+    const sceneFrameResources =
+      resizeTarget?.frameResources ?? this._res;
+    const sceneWidth = resizeTarget?.width ?? this._width;
+    const sceneHeight = resizeTarget?.height ?? this._height;
     // A scene mutation is never safe for camera-only temporal correspondence:
     // until previous object/skinned positions are authored, every geometry,
     // transform, skinning, material, texture, or emitter edit invalidates all
@@ -2398,9 +2518,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       factories.push(
         () => this._ppg.prepareResetForSceneBvh(
           nextBvh,
-          this._res,
-          this._width,
-          this._height,
+          sceneFrameResources,
+          sceneWidth,
+          sceneHeight,
           encoder,
         ),
       );
@@ -2470,6 +2590,93 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       },
     };
   }
+
+  /**
+   * Prepare one atomic scene mutation whose policy transition also replaces
+   * the frame graph. The resize publishes only reversible handles/state; the
+   * scene mutation then performs the transaction's sole queue submission as
+   * its final operation. A preparation or submission failure restores both
+   * generations, including PPG/denoiser state.
+   */
+  prepareSceneMutationAndResize(
+    mutation: CollectedBvhMutation,
+    nextBvh: SceneBVHBuffers,
+    prefixCommandBuffers: readonly GPUCommandBuffer[],
+    width: number,
+    height: number,
+    reservoirScale: number,
+  ): PreparedSceneMutation {
+    const resize = this.prepareResize(width, height, reservoirScale);
+    const candidate = resize.candidateFrameResources;
+    if (candidate == null) {
+      resize.rollback();
+      throw new Error(
+        'A scene/resource policy transition requires an initialized pipeline.',
+      );
+    }
+
+    let sceneMutation: PreparedSceneMutation;
+    try {
+      sceneMutation = this.prepareSceneMutation(
+        mutation,
+        nextBvh,
+        prefixCommandBuffers,
+        { frameResources: candidate, width, height },
+      );
+    } catch (error) {
+      rethrowWithSceneMutationCleanup(
+        error,
+        [() => resize.rollback()],
+        'scene/resource policy preparation failed and resize rollback also failed',
+      );
+    }
+
+    let published = false;
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed || published) return;
+        try {
+          resize.commit();
+          // This accepted submit is deliberately the final publication step.
+          sceneMutation.commit();
+          published = true;
+        } catch (error) {
+          closed = true;
+          rethrowWithSceneMutationCleanup(
+            error,
+            [
+              () => sceneMutation.rollback(),
+              () => resize.rollback(),
+            ],
+            'scene/resource policy publication failed and rollback also failed',
+          );
+        }
+      },
+      rollback: () => {
+        if (closed) return;
+        closed = true;
+        runSceneMutationCleanups(
+          [
+            () => sceneMutation.rollback(),
+            () => resize.rollback(),
+          ],
+          'scene/resource policy rollback failed',
+        );
+      },
+      finalize: () => {
+        if (closed || !published) return;
+        closed = true;
+        runSceneMutationCleanups(
+          [
+            () => sceneMutation.finalize(),
+            () => resize.finalize(),
+          ],
+          'scene/resource policy retirement failed',
+        );
+      },
+    };
+  }
   refreshBvhRefit(
     bvhNodesBytes: ArrayBuffer,
     positionsSlice: { byteOffset: number; data: ArrayBuffer },
@@ -2534,13 +2741,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  after init (a 1×1 black placeholder backs it until updateEnvironment
    *  is called with a real HDRI). Forward both to `RCSubsystem.dispatchFrame`
    *  so the last-cascade env sample reads the scene environment. */
-  getEnvBindings(): {
-    textureView: GPUTextureView;
-    sampler: GPUSampler;
-    rotationY: number;
-    intensity: number;
-    hasDirectionalEnvironment: boolean;
-  } | null {
+  getEnvBindings(): DirectionalEnvironmentBindings | null {
     return this._initialized ? this._bvhHost.envBindings() : null;
   }
 
@@ -2652,47 +2853,195 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *
    * No-op when called before `initialize()`.
    */
-  resize(width: number, height: number): void {
+  prepareResize(
+    width: number,
+    height: number,
+    reservoirScale = this._reservoirScale,
+  ): PreparedSceneMutation & {
+    readonly candidateFrameResources: FrameResources | null;
+  } {
+    assertFrameResourceReservoirScale(reservoirScale);
     if (!this._initialized) {
-      // Update stored size so a later initialize() picks up the new value.
-      this._width = width;
-      this._height = height;
-      return;
+      const previousWidth = this._width;
+      const previousHeight = this._height;
+      const previousScale = this._reservoirScale;
+      let committed = false;
+      return {
+        candidateFrameResources: null,
+        commit: () => {
+          if (committed) return;
+          // A later initialize() reads the transactionally published values.
+          this._width = width;
+          this._height = height;
+          this._reservoirScale = reservoirScale;
+          committed = true;
+        },
+        rollback: () => {
+          if (!committed) return;
+          this._width = previousWidth;
+          this._height = previousHeight;
+          this._reservoirScale = previousScale;
+          committed = false;
+        },
+        finalize: () => undefined,
+      };
     }
-    if (width === this._width && height === this._height) return;
+    if (
+      width === this._width
+      && height === this._height
+      && reservoirScale === this._reservoirScale
+    ) {
+      return {
+        candidateFrameResources: this._res,
+        commit: () => undefined,
+        rollback: () => undefined,
+        finalize: () => undefined,
+      };
+    }
     // Stage the complete replacement—including optional PPG and denoiser
     // resources—before publishing dimensions or destroying the live frame set.
     const replacement = createFrameResources(this._device, width, height, {
       gtaoDownscale: this._gtaoDownscale,
+      gtaoEnabled: this._gtaoEnabled,
       svgfEnabled: this._denoiserMode === 'svgf-real',
       welfordPingPong: true,
       atrousVarianceEstimate: this._denoiserMode === 'atrous-variance',
       checkerboard: this._checkerboard,
+      reservoirScale,
+      maxPersistentBytes: this._maxPersistentFrameResourceBytes,
     });
+    let ppgResize: PreparedSceneMutation | null = null;
+    let denoiserResize: PreparedSceneMutation | null = null;
     try {
-      this._ppg.onResize(replacement, width, height, this._frameCount);
-      this._activeDenoiser?.resize(width, height);
+      ppgResize = this._ppg.prepareResize(
+        replacement,
+        width,
+        height,
+        this._frameCount,
+      );
+      denoiserResize = this._activeDenoiser?.prepareResize(width, height) ?? {
+        commit: () => undefined,
+        rollback: () => undefined,
+        finalize: () => undefined,
+      };
     } catch (error) {
-      destroyFrameResources(replacement);
-      throw error;
+      rethrowWithSceneMutationCleanup(
+        error,
+        [
+          () => denoiserResize?.rollback(),
+          () => ppgResize?.rollback(),
+          () => destroyFrameResources(replacement),
+        ],
+        'frame-resource resize failed and candidate cleanup also failed',
+      );
     }
 
     const previous = this._res;
-    this._res = replacement;
-    this._width = width;
-    this._height = height;
-    this._resourceCache.clear();
+    const previousWidth = this._width;
+    const previousHeight = this._height;
+    const previousScale = this._reservoirScale;
+    const previousAccumPingPong = this._accumPingPongIndex;
+    const previousAccumFrame = this._accumFrameIndex;
+    const previousGrisEpoch = this._grisHistoryEpoch;
+    const previousTemporalClearPending = this._temporalHistoryClearPending;
+    const previousTemporalFullRatePending =
+      this._temporalHistoryFullRatePending;
+    const previousIndirectAccumPingPong =
+      this._indirectAccumPingPongRef.value;
+    const previousVarianceTrackerPingPong =
+      this._varianceTrackerPingPongRef.value;
+    const previousLastCameraPos = [...this._lastCameraPos] as [
+      number,
+      number,
+      number,
+    ];
+    let stateCommitted = false;
+    let candidateOwned = true;
+    let finalized = false;
 
-    // The new textures are blank, so every temporal index restarts only after
-    // the resource transaction has committed.
-    this._accumPingPongIndex = 0;
-    this._accumFrameIndex = 0;
-    this._invalidateTemporalHistory();
-    this._indirectAccumPingPongRef.value = 0;
-    this._varianceTrackerPingPongRef.value = 0;
-    this._lastCameraPos = [0, 0, 0];
+    return {
+      candidateFrameResources: replacement,
+      commit: () => {
+        if (stateCommitted) return;
+        ppgResize.commit();
+        denoiserResize.commit();
+        this._res = replacement;
+        this._width = width;
+        this._height = height;
+        this._reservoirScale = reservoirScale;
 
-    destroyFrameResources(previous);
+        // The new textures are blank, so temporal state resets only at the
+        // publication boundary, after every candidate allocation succeeded.
+        this._accumPingPongIndex = 0;
+        this._accumFrameIndex = 0;
+        this._invalidateTemporalHistory();
+        this._indirectAccumPingPongRef.value = 0;
+        this._varianceTrackerPingPongRef.value = 0;
+        this._lastCameraPos = [0, 0, 0];
+        stateCommitted = true;
+      },
+      rollback: () => {
+        if (finalized) return;
+        const cleanups: SceneMutationCleanup[] = [];
+        if (stateCommitted) {
+          this._res = previous;
+          this._width = previousWidth;
+          this._height = previousHeight;
+          this._reservoirScale = previousScale;
+          this._accumPingPongIndex = previousAccumPingPong;
+          this._accumFrameIndex = previousAccumFrame;
+          this._grisHistoryEpoch = previousGrisEpoch;
+          this._temporalHistoryClearPending =
+            previousTemporalClearPending;
+          this._temporalHistoryFullRatePending =
+            previousTemporalFullRatePending;
+          this._indirectAccumPingPongRef.value =
+            previousIndirectAccumPingPong;
+          this._varianceTrackerPingPongRef.value =
+            previousVarianceTrackerPingPong;
+          this._lastCameraPos = previousLastCameraPos;
+          stateCommitted = false;
+        }
+        cleanups.push(
+          () => denoiserResize.rollback(),
+          () => ppgResize.rollback(),
+        );
+        if (candidateOwned) {
+          cleanups.push(() => {
+            destroyFrameResources(replacement);
+            candidateOwned = false;
+          });
+        }
+        runSceneMutationCleanups(
+          cleanups,
+          'frame-resource resize rollback failed',
+        );
+      },
+      finalize: () => {
+        if (!stateCommitted || finalized) return;
+        finalized = true;
+        candidateOwned = false;
+        runSceneMutationCleanups(
+          [
+            () => this._resourceCache.clear(),
+            () => denoiserResize.finalize(),
+            () => ppgResize.finalize(),
+            () => destroyFrameResources(previous),
+          ],
+          'frame-resource resize committed, but old-generation retirement failed',
+        );
+      },
+    };
+  }
+
+  resize(
+    width: number,
+    height: number,
+    reservoirScale = this._reservoirScale,
+  ): void {
+    commitSceneMutations([
+      this.prepareResize(width, height, reservoirScale),
+    ]);
   }
 
   /** Dev A/B — when false, {@link DenoiserAdapterPass} is gated off (raw HDR). */
@@ -2735,9 +3084,19 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * swap-chain textures would never be written and would present as cleared
    * black, producing visible dark flashes.
    */
-  presentLastFrame(swapChainView: GPUTextureView): void {
+  presentLastFrame(
+    swapChainView: GPUTextureView,
+    swapChainFormat: GPUTextureFormat,
+    composite: PipelineFrameInputs['composite'],
+  ): void {
+    assertHybridSwapChainFormat(
+      swapChainFormat,
+      'WalkaroundGPUPipeline.presentLastFrame.swapChainFormat',
+    );
     if (!this._initialized) return;
     const d = this._device;
+    const compositePass = this.#ensureCompositePipeline(swapChainFormat);
+    if (!compositePass.writeUniforms(d, composite)) return;
     const compositeUbo = this._compositeUboRef.buf;
     if (compositeUbo == null) return;
     const bgComposite = buildCompositePresentBindGroup(
@@ -2747,8 +3106,6 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       compositeUbo,
       this._resourceCache,
     );
-    const compositePass = this._compositePass;
-    if (compositePass == null) return;
     const encoder = d.createCommandEncoder({ label: 'composite-only' });
     const pass = encoder.beginRenderPass({
       label: 'composite-only',
@@ -2792,28 +3149,42 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   }
 
   /**
+   * Return a composite pipeline specialized for the exact target format.
+   * Creation is transactional: the previous pipeline/format pair remains live
+   * if validation or pipeline creation throws.
+   */
+  #ensureCompositePipeline(
+    swapChainFormat: GPUTextureFormat,
+  ): CompositePass {
+    assertHybridSwapChainFormat(
+      swapChainFormat,
+      'WalkaroundGPUPipeline composite target format',
+    );
+    const compositePass = this._compositePass;
+    if (compositePass == null) {
+      throw new Error(
+        'WalkaroundGPUPipeline: composite pass is unavailable for swap-chain format rebuild.',
+      );
+    }
+    if (swapChainFormat === this._swapChainFormat) return compositePass;
+
+    const replacement = createCompositePipeline(
+      this._device,
+      this._bglCache,
+      swapChainFormat,
+    );
+    compositePass.setPipeline(replacement);
+    this._swapChainFormat = swapChainFormat;
+    return compositePass;
+  }
+
+  /**
    * Run one frame of the ReSTIR compute pipeline + composite render pass.
    * Returns true on success, false if pipeline not ready.
    */
   renderFrame(inputs: PipelineFrameInputs): boolean {
     if (!this._initialized) return false;
-    if (inputs.screen.swapChainFormat !== this._swapChainFormat) {
-      const compositePass = this._compositePass;
-      if (compositePass == null) {
-        throw new Error(
-          'WalkaroundGPUPipeline: composite pass is unavailable for swap-chain format rebuild.',
-        );
-      }
-      // Create first, publish second: a validation/OOM failure leaves the
-      // previous format-specialized pipeline and format marker untouched.
-      const replacement = createCompositePipeline(
-        this._device,
-        this._bglCache,
-        inputs.screen.swapChainFormat,
-      );
-      compositePass.setPipeline(replacement);
-      this._swapChainFormat = inputs.screen.swapChainFormat;
-    }
+    this.#ensureCompositePipeline(inputs.screen.swapChainFormat);
     const publication = new FramePublicationTransaction();
 
     try {
@@ -2933,6 +3304,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
         frameParity: checkerboardState.parity,
       },
       this._grisHistoryEpoch,
+      this._reservoirScale,
     );
 
     // H26 — update the NRC camera pdf every frame so the a0 primary footprint
@@ -2992,6 +3364,20 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const wgY16 = Math.ceil(H / 16);
     const halfWgX = Math.ceil(Math.floor(W / 2) / 8);
     const halfWgY = Math.ceil(Math.floor(H / 2) / 8);
+    const restirDiWidth = Math.max(1, Math.floor(W / this._reservoirScale));
+    const restirDiHeight = Math.max(1, Math.floor(H / this._reservoirScale));
+    const restirGiWidth = Math.max(
+      1,
+      Math.floor(W / (2 * this._reservoirScale)),
+    );
+    const restirGiHeight = Math.max(
+      1,
+      Math.floor(H / (2 * this._reservoirScale)),
+    );
+    const restirDiWgX = Math.ceil(restirDiWidth / 8);
+    const restirDiWgY = Math.ceil(restirDiHeight / 8);
+    const restirGiWgX = Math.ceil(restirGiWidth / 8);
+    const restirGiWgY = Math.ceil(restirGiHeight / 8);
     // Checkerboard sparse-dispatch workgroup counts (ceil-based, NOT the
     // floor-based half-res `halfWgX/halfWgY`): each row has at most ceil(W/2)
     // active-parity pixels compacted into 8-wide workgroups; Y stays full-res
@@ -3092,6 +3478,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       wgY16,
       halfWgX,
       halfWgY,
+      restirReservoirScale: this._reservoirScale,
+      restirDiWgX,
+      restirDiWgY,
+      restirGiWgX,
+      restirGiWgY,
       checkerboardWgX,
       checkerboardWgY,
       // Checkerboard sparse dispatch state. When ON, ShadePass + SpatialReservoirPass

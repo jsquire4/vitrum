@@ -5,7 +5,12 @@
 // dependency, so the engine keeps the GPU-touching fast-path orchestration in
 // `updatePrimitive`/`updateEmitter` and delegates the eligibility decisions
 // here.
-import { sparseArrayOwnIndices, type ScenePrimitive } from '@vitrum/core';
+import {
+  sparseArrayOwnIndices,
+  type MaterialSpecPatch,
+  type ScenePrimitive,
+  type ScenePrimitivePatch,
+} from '@vitrum/core';
 import type { Scene } from '@vitrum/core';
 import type { UploadedSceneBuffers } from './uploadSceneBuffers.js';
 
@@ -151,7 +156,7 @@ function collectLayerDescriptorPatchFields(
 }
 
 export function materialPatchRepackFields(
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): MaterialPatchRepackFields {
   const mat = patch.material as unknown as Record<string, unknown> | undefined;
   if (mat == null) {
@@ -196,8 +201,8 @@ function hasMaterialPatchRepackFields(fields: MaterialPatchRepackFields): boolea
  * can change shape.
  */
 export function canFastPathMaterialPatch(
-  patch: Partial<ScenePrimitive>,
-): patch is Partial<ScenePrimitive> & { material: ScenePrimitive['material'] } {
+  patch: ScenePrimitivePatch,
+): patch is ScenePrimitivePatch & { material: MaterialSpecPatch } {
   if (patch.material == null) return false;
   for (const key of Object.keys(patch)) {
     if (key !== 'material' && key !== 'id' && key !== 'kind') return false;
@@ -215,7 +220,7 @@ export function canFastPathMaterialPatch(
  */
 export function canFastPathGeometryPatch(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): boolean {
   if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') {
     return false;
@@ -324,7 +329,7 @@ export function canFastPathGeometryPatch(
  */
 export function canFastPathTopologyResizePatch(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): boolean {
   if (primitive.kind !== 'mesh' && primitive.kind !== 'skinned-mesh') {
     return false;
@@ -347,7 +352,7 @@ export function canFastPathTopologyResizePatch(
   const curTriCount = Math.floor((curIndices?.length ?? primitive.positions.length / 3) / 3);
   let nextTriCount = curTriCount;
   if ('indices' in patch) {
-    const nextIndices = patch.indices as Uint32Array | Uint16Array | undefined;
+    const nextIndices = patch.indices;
     nextTriCount = Math.floor((nextIndices?.length ?? nextPositions.length / 3) / 3);
   } else if ('positions' in patch && curIndices == null) {
     // No explicit indices: triangle count tracks vertex count.
@@ -363,7 +368,7 @@ export function canFastPathTopologyResizePatch(
  */
 export function canFastPathTransformPatch(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): boolean {
   const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');
   if (primitive.kind === 'instanced-mesh') {
@@ -390,7 +395,7 @@ export function canFastPathTransformPatch(
  */
 export function canFastPathInstancedTopologyPatch(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): boolean {
   if (primitive.kind !== 'instanced-mesh') return false;
   const keys = Object.keys(patch).filter((k) => k !== 'id' && k !== 'kind');

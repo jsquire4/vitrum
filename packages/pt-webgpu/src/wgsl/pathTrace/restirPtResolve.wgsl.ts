@@ -127,14 +127,14 @@ fn restirPtResolve(@builtin(global_invocation_id) gid: vec3u) {
 
   // Reconstruct the reconnection edge xv → xs.
   let toS = r.xs - r.xv;
-  let dist2 = dot(toS, toS);
-  if (!rptFinitePositive(dist2) || dist2 < 1e-8) {
+  let distance = rptScaledLength(toS);
+  if (!rptFinitePositive(distance)) {
     rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
     return;
   }
-  let wiRecon = toS * inverseSqrt(dist2);
+  let wiRecon = safe_normalize(toS);
   let cosTheta = max(0.0, dot(r.nv, wiRecon));
-  if (!rptFinitePositive(cosTheta) || cosTheta <= 1e-6) {
+  if (!rptFinitePositive(cosTheta)) {
     rpt_result[pixelIdx] = vec4f(0.0, 0.0, 0.0, 0.0);
     return;
   }

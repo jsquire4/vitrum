@@ -47,12 +47,9 @@ import { createWalkaroundEngine_Hybrid } from "@vitrum/walkaround-hybrid";
 import { asMat4 } from "@vitrum/core";
 // Shared WH GPU harness scaffolding (camera/device) — D17-5. The scene
 // builders below stay local (they carry harness-specific ior/attenuation params).
-import {
-  makePerspectiveMatrix,
-  makeLookAtMatrix,
-  acquireWhDevice,
-} from "../lib/whHarness.mjs";
+import { makePerspectiveMatrix, makeLookAtMatrix, acquireWhDevice } from "../lib/whHarness.mjs";
 import { readRgba16fWalkaround } from "../../packages/walkaround-hybrid/src/util/gpuReadback.ts";
+import { regionLuminance, resolveReferencePoint, resolveWalkaroundRegions, validateWalkaroundPixelBuffer } from "./walkaroundRegions.mjs";
 
 // ── Resolution + frame count ──────────────────────────────────────────────────
 // 128×128 gives more stable per-region statistics than 64×64 at modest cost.
@@ -66,63 +63,115 @@ const W = parsePositiveIntEnv("VITRUM_WALKAROUND_AB_WIDTH", 128);
 const H = parsePositiveIntEnv("VITRUM_WALKAROUND_AB_HEIGHT", 128);
 const SPP = parsePositiveIntEnv("VITRUM_WALKAROUND_AB_SPP", 16); // accumulation frames per variant
 const QUALITY_PROFILE = Deno.env.get("VITRUM_WALKAROUND_AB_PROFILE") ?? (SPP === 16 && W === 128 && H === 128 ? "baseline" : "custom");
+const REGIONS = resolveWalkaroundRegions(W, H);
 
 // ── Camera ────────────────────────────────────────────────────────────────────
 // makePerspectiveMatrix / makeLookAtMatrix imported from ../lib/whHarness.mjs.
 
-const EYE    = [0, 0, 2.5];
+const EYE = [0, 0, 2.5];
 const CENTER = [0, 0, 0];
-const proj   = asMat4(makePerspectiveMatrix(60, W / H, 0.1, 50));
-const view   = asMat4(makeLookAtMatrix(EYE, CENTER, [0,1,0]));
+const proj = asMat4(makePerspectiveMatrix(60, W / H, 0.1, 50));
+const view = asMat4(makeLookAtMatrix(EYE, CENTER, [0, 1, 0]));
 
 // ── Scene builders ────────────────────────────────────────────────────────────
 function makeQuad(id, verts, normal, color, roughness = 1.0, metallic = 0.0, materialExtras = {}) {
   return {
-    kind: "mesh", id,
+    kind: "mesh",
+    id,
     positions: new Float32Array(verts.flat()),
-    normals:   new Float32Array([...normal, ...normal, ...normal, ...normal]),
-    uvs:       new Float32Array(8),
-    indices:   new Uint32Array([0, 2, 1, 2, 0, 3]),
-    material:  { baseColor: color, roughness, metallic, ...materialExtras },
+    normals: new Float32Array([...normal, ...normal, ...normal, ...normal]),
+    uvs: new Float32Array(8),
+    indices: new Uint32Array([0, 2, 1, 2, 0, 3]),
+    material: { baseColor: color, roughness, metallic, ...materialExtras },
   };
 }
 
 /** Standard Cornell box with area emitter on the ceiling. */
 function makeCornellScene(opts = {}) {
   const floorRoughness = opts.floorRoughness ?? 1.0;
-  const floorMetallic  = opts.floorMetallic  ?? 0.0;
-  const floorColor     = opts.floorColor     ?? [0.8, 0.8, 0.8];
+  const floorMetallic = opts.floorMetallic ?? 0.0;
+  const floorColor = opts.floorColor ?? [0.8, 0.8, 0.8];
   const backWallRoughness = opts.backWallRoughness ?? 1.0;
-  const backWallMetallic  = opts.backWallMetallic  ?? 0.0;
-  const backWallColor     = opts.backWallColor     ?? [0.8, 0.8, 0.8];
+  const backWallMetallic = opts.backWallMetallic ?? 0.0;
+  const backWallColor = opts.backWallColor ?? [0.8, 0.8, 0.8];
   const glassHalfSize = opts.glassHalfSize ?? 0.2;
   const glassAttenuationColor = opts.glassAttenuationColor ?? [1.0, 1.0, 1.0];
   const glassAttenuationDistance = opts.glassAttenuationDistance ?? Infinity;
   const glassThickness = opts.glassThickness ?? 0.0;
 
   const primitives = [
-    makeQuad("floor",      [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0],  floorColor, floorRoughness, floorMetallic),
-    makeQuad("ceiling",    [[-1,1,-1],[-1,1,1],[1,1,1],[1,1,-1]],     [0,-1,0], [0.8,0.8,0.8]),
-    makeQuad("back-wall",  [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], backWallColor, backWallRoughness, backWallMetallic),
-    makeQuad("left-wall",  [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1]),
-    makeQuad("right-wall", [[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1]),
+    makeQuad(
+      "floor",
+      [
+        [-1, -1, -1],
+        [1, -1, -1],
+        [1, -1, 1],
+        [-1, -1, 1],
+      ],
+      [0, 1, 0],
+      floorColor,
+      floorRoughness,
+      floorMetallic,
+    ),
+    makeQuad(
+      "ceiling",
+      [
+        [-1, 1, -1],
+        [-1, 1, 1],
+        [1, 1, 1],
+        [1, 1, -1],
+      ],
+      [0, -1, 0],
+      [0.8, 0.8, 0.8],
+    ),
+    makeQuad(
+      "back-wall",
+      [
+        [-1, -1, 1],
+        [1, -1, 1],
+        [1, 1, 1],
+        [-1, 1, 1],
+      ],
+      [0, 0, -1],
+      backWallColor,
+      backWallRoughness,
+      backWallMetallic,
+    ),
+    makeQuad(
+      "left-wall",
+      [
+        [-1, -1, -1],
+        [-1, -1, 1],
+        [-1, 1, 1],
+        [-1, 1, -1],
+      ],
+      [1, 0, 0],
+      [0.75, 0.1, 0.1],
+    ),
+    makeQuad(
+      "right-wall",
+      [
+        [1, -1, 1],
+        [1, -1, -1],
+        [1, 1, -1],
+        [1, 1, 1],
+      ],
+      [-1, 0, 0],
+      [0.1, 0.6, 0.1],
+    ),
   ];
 
   if (opts.glass) {
     // Glass pane between camera and the visible back wall.
     primitives.push({
-      kind: "mesh", id: "glass-pane",
-      positions: new Float32Array([
-        -glassHalfSize,-glassHalfSize,1.5,
-         glassHalfSize,-glassHalfSize,1.5,
-         glassHalfSize, glassHalfSize,1.5,
-        -glassHalfSize, glassHalfSize,1.5,
-      ]),
-      normals:   new Float32Array([0,0,-1, 0,0,-1, 0,0,-1, 0,0,-1]),
-      uvs:       new Float32Array(8),
-      indices:   new Uint32Array([0,2,1, 2,0,3]),
-      material:  {
-        baseColor: [1.0,1.0,1.0],
+      kind: "mesh",
+      id: "glass-pane",
+      positions: new Float32Array([-glassHalfSize, -glassHalfSize, 1.5, glassHalfSize, -glassHalfSize, 1.5, glassHalfSize, glassHalfSize, 1.5, -glassHalfSize, glassHalfSize, 1.5]),
+      normals: new Float32Array([0, 0, -1, 0, 0, -1, 0, 0, -1, 0, 0, -1]),
+      uvs: new Float32Array(8),
+      indices: new Uint32Array([0, 2, 1, 2, 0, 3]),
+      material: {
+        baseColor: [1.0, 1.0, 1.0],
         roughness: 0.05,
         metallic: 0.0,
         transmission: 1.0,
@@ -134,12 +183,19 @@ function makeCornellScene(opts = {}) {
     });
   }
 
-  const emitters = opts.noEmitter ? [] : [{
-    kind: "rect-area", id: "ceiling-light",
-    position: [0, 0.95, 0],
-    uAxis: [0, 0, 0.2], vAxis: [0.2, 0, 0],
-    color: [1,1,1], intensity: 12.0,
-  }];
+  const emitters = opts.noEmitter
+    ? []
+    : [
+        {
+          kind: "rect-area",
+          id: "ceiling-light",
+          position: [0, 0.95, 0],
+          uAxis: [0, 0, 0.2],
+          vAxis: [0.2, 0, 0],
+          color: [1, 1, 1],
+          intensity: 12.0,
+        },
+      ];
 
   return { primitives, emitters, environment: { kind: "none" } };
 }
@@ -150,20 +206,74 @@ function makeDirOnlyScene() {
   return {
     primitives: [
       // Large diffuse floor — the analytic check region
-      makeQuad("floor",     [[-1,-1,-1],[1,-1,-1],[1,-1,1],[-1,-1,1]], [0,1,0], [0.8,0.8,0.8], 1.0, 0.0, diffuseOnly),
+      makeQuad(
+        "floor",
+        [
+          [-1, -1, -1],
+          [1, -1, -1],
+          [1, -1, 1],
+          [-1, -1, 1],
+        ],
+        [0, 1, 0],
+        [0.8, 0.8, 0.8],
+        1.0,
+        0.0,
+        diffuseOnly,
+      ),
       // Back wall (in shadow from camera's angle)
-      makeQuad("back-wall", [[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],     [0,0,-1], [0.8,0.8,0.8], 1.0, 0.0, diffuseOnly),
-      makeQuad("left-wall", [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [1,0,0],  [0.75,0.1,0.1], 1.0, 0.0, diffuseOnly),
-      makeQuad("right-wall",[[1,-1,1],[1,-1,-1],[1,1,-1],[1,1,1]],      [-1,0,0], [0.1,0.6,0.1], 1.0, 0.0, diffuseOnly),
+      makeQuad(
+        "back-wall",
+        [
+          [-1, -1, 1],
+          [1, -1, 1],
+          [1, 1, 1],
+          [-1, 1, 1],
+        ],
+        [0, 0, -1],
+        [0.8, 0.8, 0.8],
+        1.0,
+        0.0,
+        diffuseOnly,
+      ),
+      makeQuad(
+        "left-wall",
+        [
+          [-1, -1, -1],
+          [-1, -1, 1],
+          [-1, 1, 1],
+          [-1, 1, -1],
+        ],
+        [1, 0, 0],
+        [0.75, 0.1, 0.1],
+        1.0,
+        0.0,
+        diffuseOnly,
+      ),
+      makeQuad(
+        "right-wall",
+        [
+          [1, -1, 1],
+          [1, -1, -1],
+          [1, 1, -1],
+          [1, 1, 1],
+        ],
+        [-1, 0, 0],
+        [0.1, 0.6, 0.1],
+        1.0,
+        0.0,
+        diffuseOnly,
+      ),
     ],
-    emitters:    [{
-      kind: "directional",
-      id: "sun-proof-light",
-      direction: SUN_TO_LIGHT_DIRECTION,
-      color: [1, 1, 1],
-      intensity: 0.3,
-      castShadow: false,
-    }],
+    emitters: [
+      {
+        kind: "directional",
+        id: "sun-proof-light",
+        direction: SUN_TO_LIGHT_DIRECTION,
+        color: [1, 1, 1],
+        intensity: 0.3,
+        castShadow: false,
+      },
+    ],
     environment: { kind: "none" },
   };
 }
@@ -176,7 +286,7 @@ async function waitForReady(engine, label, timeoutMs = 90_000) {
   while (true) {
     if (engine.state === "ready") return;
     if (engine.state === "error") throw new Error(`${label}: engine.state === 'error'`);
-    await new Promise(r => setTimeout(r, 50));
+    await new Promise((r) => setTimeout(r, 50));
     if (engine.state === "ready") return;
     if (engine.state === "error") throw new Error(`${label}: engine.state === 'error'`);
     if (Date.now() > deadline) {
@@ -190,25 +300,9 @@ function meanLuminance(pixels) {
   let sum = 0;
   const n = pixels.length / 4;
   for (let i = 0; i < pixels.length; i += 4) {
-    sum += 0.2126 * pixels[i] + 0.7152 * pixels[i+1] + 0.0722 * pixels[i+2];
+    sum += 0.2126 * pixels[i] + 0.7152 * pixels[i + 1] + 0.0722 * pixels[i + 2];
   }
   return sum / n;
-}
-
-/**
- * Mean luminance of a screen region [x0,x1) × [y0,y1) (pixel coords).
- * y=0 is top of image (captureFrame contract row order).
- */
-function regionLuminance(pixels, texW, x0, y0, x1, y1) {
-  let sum = 0, count = 0;
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const i = (y * texW + x) * 4;
-      sum += 0.2126 * pixels[i] + 0.7152 * pixels[i+1] + 0.0722 * pixels[i+2];
-      count++;
-    }
-  }
-  return count > 0 ? sum / count : 0;
 }
 
 function absDelta(a, b) {
@@ -218,27 +312,31 @@ function absDelta(a, b) {
 // ── Engine runner ─────────────────────────────────────────────────────────────
 async function runVariant(label, engineOpts, sceneFactory) {
   let device;
-  try { device = await acquireWhDevice(); }
-  catch (e) { return { label, error: e.message, pixels: null, lum: 0 }; }
+  try {
+    device = await acquireWhDevice();
+  } catch (e) {
+    return { label, error: e.message, pixels: null, lum: 0 };
+  }
 
-  let engine  = null;
+  let engine = null;
   let swapTex = null;
-  let pixels  = null;
+  let pixels = null;
   let debugLuminance = null;
-  let error   = null;
+  let error = null;
 
   try {
     engine = await createWalkaroundEngine_Hybrid({
       device,
-      width:  W, height: H,
-      primaryLightDir:       [0.3, -0.8, 0.5],
+      width: W,
+      height: H,
+      primaryLightDir: [0.3, -0.8, 0.5],
       primaryLightIntensity: 0.6,
-      skyTint:               [0.5, 0.7, 1.0],
-      skyIrradiance:         0.15,
-      verbose:               false,
-      ppgEnabled:            false,
-      rcEnabled:             false,
-      denoiser:              "atrous-variance",
+      skyTint: [0.5, 0.7, 1.0],
+      skyIrradiance: 0.15,
+      verbose: false,
+      ppgEnabled: false,
+      rcEnabled: false,
+      denoiser: "atrous-variance",
       ...engineOpts,
     });
 
@@ -249,21 +347,21 @@ async function runVariant(label, engineOpts, sceneFactory) {
 
     swapTex = device.createTexture({
       label: `swap-${label}`,
-      size:  [W, H, 1],
+      size: [W, H, 1],
       format: "bgra8unorm",
-      usage:  GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
     });
     const swapView = swapTex.createView();
 
     for (let fi = 0; fi < SPP; fi++) {
       engine.renderFrame({
-        viewMatrix:      view,
-        projMatrix:      proj,
-        cameraPosition:  EYE,
-        viewport:        { width: W, height: H, devicePixelRatio: 1 },
-        frameIndex:      fi,
-        frameSeed:       fi * 1664525 + 1013904223,
-        swapChainView:   swapView,
+        viewMatrix: view,
+        projMatrix: proj,
+        cameraPosition: EYE,
+        viewport: { width: W, height: H, devicePixelRatio: 1 },
+        frameIndex: fi,
+        frameSeed: fi * 1664525 + 1013904223,
+        swapChainView: swapView,
         swapChainFormat: "bgra8unorm",
       });
       await device.queue.onSubmittedWorkDone();
@@ -275,34 +373,48 @@ async function runVariant(label, engineOpts, sceneFactory) {
       throw new Error(`captureFrame size mismatch: got ${captured.width}x${captured.height}, expected ${W}x${H}`);
     }
     pixels = captured.rgba;
+    validateWalkaroundPixelBuffer(pixels, W, H, `${label} capture`);
 
     if (Deno.env.get("VITRUM_WALKAROUND_AB_DEBUG_TEXTURES") === "1") {
       const textures = engine.debug?.giSignalTextures?.() ?? null;
-      const directPixels = textures?.direct
-        ? await readRgba16fWalkaround(device, textures.direct, W, H)
-        : null;
-      const indirectPixels = textures?.indirect
-        ? await readRgba16fWalkaround(device, textures.indirect, W, H)
-        : null;
-      const aoPixels = textures?.ao
-        ? await readRgba16fWalkaround(device, textures.ao, W, H)
-        : null;
+      const directPixels = textures?.direct ? await readRgba16fWalkaround(device, textures.direct, W, H) : null;
+      const indirectPixels = textures?.indirect ? await readRgba16fWalkaround(device, textures.indirect, W, H) : null;
+      const aoPixels = textures?.ao ? await readRgba16fWalkaround(device, textures.ao, W, H) : null;
+      if (directPixels) {
+        validateWalkaroundPixelBuffer(directPixels, W, H, `${label} direct debug texture`);
+      }
+      if (indirectPixels) {
+        validateWalkaroundPixelBuffer(indirectPixels, W, H, `${label} indirect debug texture`);
+      }
+      if (aoPixels) {
+        validateWalkaroundPixelBuffer(aoPixels, W, H, `${label} AO debug texture`);
+      }
       debugLuminance = {
         direct: directPixels ? meanLuminance(directPixels) : null,
         indirect: indirectPixels ? meanLuminance(indirectPixels) : null,
         ao: aoPixels ? meanLuminance(aoPixels) : null,
-        picks: {
-          floorRegion: engine.debug?.pickPrimitive?.(64, 100) ?? null,
-          leftRegion: engine.debug?.pickPrimitive?.(8, 56) ?? null,
-          center: engine.debug?.pickPrimitive?.(64, 64) ?? null,
-        },
+        picks: Object.fromEntries(
+          [
+            ["floorRegion", resolveReferencePoint(64, 100, W, H)],
+            ["leftRegion", resolveReferencePoint(8, 56, W, H)],
+            ["center", resolveReferencePoint(64, 64, W, H)],
+          ].map(([name, point]) => [name, engine.debug?.pickPrimitive?.(point.x, point.y) ?? null]),
+        ),
       };
     }
   } catch (e) {
     error = e.message;
   } finally {
-    try { swapTex?.destroy(); } catch { /* best-effort */ }
-    try { engine?.dispose();  } catch { /* best-effort */ }
+    try {
+      swapTex?.destroy();
+    } catch {
+      /* best-effort */
+    }
+    try {
+      engine?.dispose();
+    } catch {
+      /* best-effort */
+    }
     device.destroy();
   }
 
@@ -324,8 +436,8 @@ async function runA8() {
   console.log("\n── A8: GRIS bias quantification (restirPtReuse:false vs true) ──");
   const t0 = Date.now();
 
-  const biasedResult  = await runVariant("a8-biased",  { restirPtReuse: false }, () => makeCornellScene());
-  const unbiasedResult = await runVariant("a8-unbiased", { restirPtReuse: true  }, () => makeCornellScene());
+  const biasedResult = await runVariant("a8-biased", { restirPtReuse: false }, () => makeCornellScene());
+  const unbiasedResult = await runVariant("a8-unbiased", { restirPtReuse: true }, () => makeCornellScene());
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
 
@@ -340,34 +452,31 @@ async function runA8() {
   const { pixels: pB } = biasedResult;
   const { pixels: pU } = unbiasedResult;
 
-  // Region windows (128×128 output, camera at z=2.5 looking at origin with fov=60°)
-  // Floor visible at bottom of frame; ceiling at top; left wall at left stripe.
-  const floorB   = regionLuminance(pB, W,  10, 85,  118, 127);
-  const ceilB    = regionLuminance(pB, W,  10, 0,   118, 20);
-  const leftWB   = regionLuminance(pB, W,  0,  20,  20,  108);
-  const rightWB  = regionLuminance(pB, W,  108, 20, 128, 108);
+  // Reference windows are normalized from the original 128×128 framing and
+  // resolved against the dimensions of this capture.
+  const floorB = regionLuminance(pB, W, H, REGIONS.a8Floor);
+  const ceilB = regionLuminance(pB, W, H, REGIONS.a8Ceiling);
+  const leftWB = regionLuminance(pB, W, H, REGIONS.a8LeftWall);
+  const rightWB = regionLuminance(pB, W, H, REGIONS.a8RightWall);
 
-  const floorU   = regionLuminance(pU, W,  10, 85,  118, 127);
-  const ceilU    = regionLuminance(pU, W,  10, 0,   118, 20);
-  const leftWU   = regionLuminance(pU, W,  0,  20,  20,  108);
-  const rightWU  = regionLuminance(pU, W,  108, 20, 128, 108);
+  const floorU = regionLuminance(pU, W, H, REGIONS.a8Floor);
+  const ceilU = regionLuminance(pU, W, H, REGIONS.a8Ceiling);
+  const leftWU = regionLuminance(pU, W, H, REGIONS.a8LeftWall);
+  const rightWU = regionLuminance(pU, W, H, REGIONS.a8RightWall);
 
   const deltaFloor = floorU - floorB;
-  const deltaCeil  = ceilU  - ceilB;
-  const deltaLeft  = leftWU - leftWB;
+  const deltaCeil = ceilU - ceilB;
+  const deltaLeft = leftWU - leftWB;
   const deltaRight = rightWU - rightWB;
 
-  const overallBiased   = biasedResult.lum;
+  const overallBiased = biasedResult.lum;
   const overallUnbiased = unbiasedResult.lum;
-  const overallDelta    = overallUnbiased - overallBiased;
+  const overallDelta = overallUnbiased - overallBiased;
 
   // Verdict: if overall delta is within ±0.03 the bias is small and bounded.
   // If it exceeds ±0.05 the bias is significant for the converged path.
   const absDelta = Math.abs(overallDelta);
-  const verdict  = absDelta < 0.005 ? "NEGLIGIBLE"
-                 : absDelta < 0.03  ? "SMALL"
-                 : absDelta < 0.06  ? "MODERATE"
-                 : "SIGNIFICANT";
+  const verdict = absDelta < 0.005 ? "NEGLIGIBLE" : absDelta < 0.03 ? "SMALL" : absDelta < 0.06 ? "MODERATE" : "SIGNIFICANT";
 
   console.log(`  biased   (off): overall=${overallBiased.toFixed(4)}  floor=${floorB.toFixed(4)}  ceil=${ceilB.toFixed(4)}  lWall=${leftWB.toFixed(4)}  rWall=${rightWB.toFixed(4)}`);
   console.log(`  unbiased (on):  overall=${overallUnbiased.toFixed(4)}  floor=${floorU.toFixed(4)}  ceil=${ceilU.toFixed(4)}  lWall=${leftWU.toFixed(4)}  rWall=${rightWU.toFixed(4)}`);
@@ -379,35 +488,42 @@ async function runA8() {
     description: "GRIS bias quantification: restirPtReuse:false vs true",
     spp: SPP,
     resolution: `${W}x${H}`,
+    regions: {
+      floor: REGIONS.a8Floor,
+      ceiling: REGIONS.a8Ceiling,
+      leftWall: REGIONS.a8LeftWall,
+      rightWall: REGIONS.a8RightWall,
+    },
     biased: {
       overall: overallBiased,
-      floor: floorB, ceiling: ceilB, leftWall: leftWB, rightWall: rightWB,
+      floor: floorB,
+      ceiling: ceilB,
+      leftWall: leftWB,
+      rightWall: rightWB,
     },
     unbiased: {
       overall: overallUnbiased,
-      floor: floorU, ceiling: ceilU, leftWall: leftWU, rightWall: rightWU,
+      floor: floorU,
+      ceiling: ceilU,
+      leftWall: leftWU,
+      rightWall: rightWU,
     },
     delta: {
       overall: overallDelta,
-      floor: deltaFloor, ceiling: deltaCeil, leftWall: deltaLeft, rightWall: deltaRight,
+      floor: deltaFloor,
+      ceiling: deltaCeil,
+      leftWall: deltaLeft,
+      rightWall: deltaRight,
     },
     renderTimeSec: parseFloat(dt),
     verdict,
-    notes: [
-      "Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.",
-      "Delta is (unbiased - biased). Positive = biased underestimates; negative = biased overestimates.",
-      `Native WebGPU host — MC variance note recorded at SPP=${SPP}.`,
-    ],
+    notes: ["Bias sources B1-B4 documented in HybridEngineOptions.restirPtReuse JSDoc.", "Delta is (unbiased - biased). Positive = biased underestimates; negative = biased overestimates.", `Native WebGPU host — MC variance note recorded at SPP=${SPP}.`],
   };
 }
 
 const SUN_TRAVEL_DIRECTION = [0, 0, -1];
 const SUN_TRAVEL_LENGTH = Math.hypot(...SUN_TRAVEL_DIRECTION);
-const SUN_TO_LIGHT_DIRECTION = [
-  -SUN_TRAVEL_DIRECTION[0] / SUN_TRAVEL_LENGTH,
-  -SUN_TRAVEL_DIRECTION[1] / SUN_TRAVEL_LENGTH,
-  -SUN_TRAVEL_DIRECTION[2] / SUN_TRAVEL_LENGTH,
-];
+const SUN_TO_LIGHT_DIRECTION = [-SUN_TRAVEL_DIRECTION[0] / SUN_TRAVEL_LENGTH, -SUN_TRAVEL_DIRECTION[1] / SUN_TRAVEL_LENGTH, -SUN_TRAVEL_DIRECTION[2] / SUN_TRAVEL_LENGTH];
 
 // ── SUN: Sun-NEE analytic validation ─────────────────────────────────────────
 //
@@ -442,14 +558,18 @@ async function runSun() {
   const t0 = Date.now();
 
   // Use intensity 0.3 so the direct-light analytic signal stays in a stable range.
-  const sunResult = await runVariant("sun", {
-    primaryLightDir:       SUN_TO_LIGHT_DIRECTION,
-    primaryLightIntensity: 0.3,
-    skyTint:               [0, 0, 0],
-    skyIrradiance:         0.0,
-    denoiser:              "none",
-    gtaoMode:              "off",
-  }, () => makeDirOnlyScene());
+  const sunResult = await runVariant(
+    "sun",
+    {
+      primaryLightDir: SUN_TO_LIGHT_DIRECTION,
+      primaryLightIntensity: 0.3,
+      skyTint: [0, 0, 0],
+      skyIrradiance: 0.0,
+      denoiser: "none",
+      gtaoMode: "off",
+    },
+    () => makeDirOnlyScene(),
+  );
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
 
@@ -461,8 +581,8 @@ async function runSun() {
 
   // With the shared camera at [0,0,2.5] looking at origin, the visible receiver
   // in this proof scene is the back-wall plane. Use a conservative center strip.
-  const receiverLum = regionLuminance(pixels, W, 30, 42, 98, 86);
-  const sideLum     = regionLuminance(pixels, W,  0, 30, 15, 98); // diagnostic only
+  const receiverLum = regionLuminance(pixels, W, H, REGIONS.sunReceiver);
+  const sideLum = regionLuminance(pixels, W, H, REGIONS.sunSideDiagnostic); // diagnostic only
   const overallLum = sunResult.lum;
 
   // Analytic: directional Li × Lambertian BRDF × NdotL.
@@ -470,18 +590,17 @@ async function runSun() {
   const toSun = SUN_TO_LIGHT_DIRECTION;
   const cosTheta = Math.max(0, toSun[2]); // dot(face-forwarded [0,0,1], toSun)
   const intensity = 0.3;
-  const albedo    = 0.8; // receiver baseColor luminance (0.8,0.8,0.8 → Y≈0.8)
+  const albedo = 0.8; // receiver baseColor luminance (0.8,0.8,0.8 → Y≈0.8)
   // Analytic rendered luminance for a diffuse-only directional receiver.
-  const analyticReceiver = intensity * cosTheta * albedo / Math.PI;
+  const analyticReceiver = (intensity * cosTheta * albedo) / Math.PI;
 
   // Tolerance: this is still the full walkaround render/capture path on lavapipe
   // with temporal accumulation and finite pixel windows, so keep a broad band.
   const tol = 0.5;
   const receiverRatioToAnalytic = analyticReceiver > 0 ? receiverLum / analyticReceiver : 0;
-  const analyticPasses = receiverRatioToAnalytic >= (1 - tol) && receiverRatioToAnalytic <= (1 + tol);
+  const analyticPasses = receiverRatioToAnalytic >= 1 - tol && receiverRatioToAnalytic <= 1 + tol;
 
-  const verdict = (receiverLum > 0.01 && analyticPasses)
-    ? "PASS" : (receiverLum > 0.01) ? "PASS-PARTIAL" : "FAIL";
+  const verdict = receiverLum > 0.01 && analyticPasses ? "PASS" : receiverLum > 0.01 ? "PASS-PARTIAL" : "FAIL";
 
   console.log(`  receiver:    ${receiverLum.toFixed(4)}  (analytic: ${analyticReceiver.toFixed(4)}, ratio: ${receiverRatioToAnalytic.toFixed(3)})`);
   console.log(`  side window: ${sideLum.toFixed(4)}  (diagnostic only; same visible receiver may cover this window)`);
@@ -499,11 +618,15 @@ async function runSun() {
     description: "Sun-NEE analytic validation: directional-lit diffuse visible receiver vs analytic Lo=I·cosθ·albedo/π",
     spp: SPP,
     resolution: `${W}x${H}`,
+    regions: {
+      receiver: REGIONS.sunReceiver,
+      sideDiagnostic: REGIONS.sunSideDiagnostic,
+    },
     sunTravelDirection: SUN_TRAVEL_DIRECTION,
     primaryLightDir: SUN_TO_LIGHT_DIRECTION,
     sunIntensity: intensity,
     receiverAlbedo: albedo,
-    floorAlbedo:  albedo,
+    floorAlbedo: albedo,
     diffuseOnly: true,
     cosTheta,
     analyticExpectedReceiverLum: analyticReceiver,
@@ -513,7 +636,7 @@ async function runSun() {
       sideDiagnosticLum: sideLum,
       floorLum: receiverLum,
       leftWallLum: sideLum,
-      overall:     overallLum,
+      overall: overallLum,
     },
     receiverRatioToAnalytic,
     floorRatioToAnalytic: receiverRatioToAnalytic,
@@ -522,13 +645,7 @@ async function runSun() {
     debugLuminance: sunResult.debugLuminance ?? undefined,
     renderTimeSec: parseFloat(dt),
     verdict,
-    notes: [
-      "analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.",
-      "primaryLightDir is the surface-to-light vector; the recorded travel direction is included only to document the physical sun ray direction.",
-      "Sun proof disables sky, GTAO, denoising, and sun shadow rays; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.",
-      "The old left-wall shadow assertion was removed because the shared camera windows hit the visible back-wall receiver, not a shadow-only wall.",
-      `Native WebGPU host — SPP=${SPP}.`,
-    ],
+    notes: ["analytic = I × cosθ × albedo / π for a delta/directional light and diffuse-only receiver.", "primaryLightDir is the surface-to-light vector; the recorded travel direction is included only to document the physical sun ray direction.", "Sun proof disables sky, GTAO, denoising, and sun shadow rays; ±50% tolerance covers temporal accumulation and finite region windows on lavapipe.", "The old left-wall shadow assertion was removed because the shared camera windows hit the visible back-wall receiver, not a shadow-only wall.", `Native WebGPU host — SPP=${SPP}.`],
   };
 }
 
@@ -556,13 +673,15 @@ async function runGlass() {
   console.log("\n── GLASS: Glass-GI validation ──");
   const t0 = Date.now();
 
-  const glassResult   = await runVariant("glass", { denoiser: "none" }, () => makeCornellScene({
-    glass: true,
-    glassHalfSize: 0.2,
-    glassAttenuationColor: [1.0, 0.55, 0.55],
-    glassAttenuationDistance: 0.5,
-    glassThickness: 0.5,
-  }));
+  const glassResult = await runVariant("glass", { denoiser: "none" }, () =>
+    makeCornellScene({
+      glass: true,
+      glassHalfSize: 0.2,
+      glassAttenuationColor: [1.0, 0.55, 0.55],
+      glassAttenuationDistance: 0.5,
+      glassThickness: 0.5,
+    }),
+  );
   const noGlassResult = await runVariant("no-glass", { denoiser: "none" }, () => makeCornellScene({ glass: false }));
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
@@ -574,13 +693,11 @@ async function runGlass() {
   const { pixels: pG } = glassResult;
   const { pixels: pN } = noGlassResult;
 
-  // Centre region: the glass pane projects to approximately centre of image.
-  // Use a 32×32 centre crop (indices 48..80 in x and y for a 128×128 image).
-  const cx0 = 48, cx1 = 80, cy0 = 48, cy1 = 80;
-  const glassCenter   = regionLuminance(pG, W, cx0, cy0, cx1, cy1);
-  const noGlassCenter = regionLuminance(pN, W, cx0, cy0, cx1, cy1);
+  // The original 32×32 center crop is stored as normalized bounds.
+  const glassCenter = regionLuminance(pG, W, H, REGIONS.glassCenter);
+  const noGlassCenter = regionLuminance(pN, W, H, REGIONS.glassCenter);
 
-  const overallGlass   = glassResult.lum;
+  const overallGlass = glassResult.lum;
   const overallNoGlass = noGlassResult.lum;
 
   // Ratio: glass / no-glass. A ratio of 0.0 means the glass region is black
@@ -600,17 +717,11 @@ async function runGlass() {
   const EXPECTED_MAX_CENTRE_RATIO = 4.0;
   const EXPECTED_MAX_OVERALL_RATIO = 8.0;
   const MIN_SIGNAL_DELTA = 1e-4;
-  const notBlack  = glassCenter > 0.01;
+  const notBlack = glassCenter > 0.01;
   const ratioPass = centerRatio >= EXPECTED_MIN_RATIO;
-  const ratioWithinPromotionBounds =
-    centerRatio <= EXPECTED_MAX_CENTRE_RATIO &&
-    overallRatio <= EXPECTED_MAX_OVERALL_RATIO;
-  const materialEffectObserved =
-    Math.max(absDelta(glassCenter, noGlassCenter), absDelta(overallGlass, overallNoGlass)) >= MIN_SIGNAL_DELTA;
-  const verdict   = notBlack && ratioPass && materialEffectObserved && ratioWithinPromotionBounds ? "PASS"
-                  : notBlack && ratioPass && materialEffectObserved ? "FINDING"
-                  : notBlack ? "SMOKE"
-                  : "FAIL";
+  const ratioWithinPromotionBounds = centerRatio <= EXPECTED_MAX_CENTRE_RATIO && overallRatio <= EXPECTED_MAX_OVERALL_RATIO;
+  const materialEffectObserved = Math.max(absDelta(glassCenter, noGlassCenter), absDelta(overallGlass, overallNoGlass)) >= MIN_SIGNAL_DELTA;
+  const verdict = notBlack && ratioPass && materialEffectObserved && ratioWithinPromotionBounds ? "PASS" : notBlack && ratioPass && materialEffectObserved ? "FINDING" : notBlack ? "SMOKE" : "FAIL";
 
   console.log(`  glass centre:   ${glassCenter.toFixed(4)}  overall=${overallGlass.toFixed(4)}`);
   console.log(`  no-glass centre:${noGlassCenter.toFixed(4)}  overall=${overallNoGlass.toFixed(4)}`);
@@ -624,19 +735,20 @@ async function runGlass() {
     description: "Glass-GI: Cornell+glass vs Cornell-no-glass, centre-region luminance ratio",
     spp: SPP,
     resolution: `${W}x${H}`,
+    regions: { center: REGIONS.glassCenter },
     fresnelT_normal_incidence_n1p5: 0.92,
     expectedMinCentreRatio: EXPECTED_MIN_RATIO,
     expectedMaxCentreRatio: EXPECTED_MAX_CENTRE_RATIO,
     expectedMaxOverallRatio: EXPECTED_MAX_OVERALL_RATIO,
     glass: {
       centreRegionLum: glassCenter,
-      overall:         overallGlass,
+      overall: overallGlass,
     },
     noGlass: {
       centreRegionLum: noGlassCenter,
-      overall:         overallNoGlass,
+      overall: overallNoGlass,
     },
-    centreRatio:  centerRatio,
+    centreRatio: centerRatio,
     overallRatio: overallRatio,
     delta: {
       centreRegionLum: centreDelta,
@@ -645,23 +757,18 @@ async function runGlass() {
     minSignalDelta: MIN_SIGNAL_DELTA,
     materialEffectObserved,
     ratioWithinPromotionBounds,
-    ...(verdict === "FINDING" ? {
-      promotion: {
-        defaultReady: false,
-        blocker: "glass-transport-radiance-blowout",
-        requiredEvidence: "case-specific-reference-ab-and-browser-real-adapter-recapture",
-      },
-    } : {}),
+    ...(verdict === "FINDING"
+      ? {
+          promotion: {
+            defaultReady: false,
+            blocker: "glass-transport-radiance-blowout",
+            requiredEvidence: "case-specific-reference-ab-and-browser-real-adapter-recapture",
+          },
+        }
+      : {}),
     renderTimeSec: parseFloat(dt),
     verdict,
-    notes: [
-      "Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.",
-      "Expected centreRatio is bounded below by 0.50 and above by 4.0; overallRatio is bounded above by 8.0 for promotion-quality sanity.",
-      "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.",
-      "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).",
-      "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.",
-      "FINDING means glass transport is live but the committed A/B ratio is outside bounded radiometric sanity, so this is not promotion evidence.",
-    ],
+    notes: ["Glass Fresnel-T ≈ 0.92 at normal incidence (n=1.5, two surfaces). Beer tint uses attenuationColor=[1,0.55,0.55] with thickness/attenuationDistance=1.", "Expected centreRatio is bounded below by 0.50 and above by 4.0; overallRatio is bounded above by 8.0 for promotion-quality sanity.", "The glass pane is camera-side of the z=1 back wall (z=1.5), so the centre crop actually traverses it.", "Walkaround isGlass gate: matColor.a > 0.3 (transmission=1.0 → packed alpha≈255 → isGlass=true).", "SMOKE means the through-glass region is non-black but the glass/no-glass captures are statistically indistinguishable at this SPP; do not promote material transport from that alone.", "FINDING means glass transport is live but the committed A/B ratio is outside bounded radiometric sanity, so this is not promotion evidence."],
   };
 }
 
@@ -681,12 +788,20 @@ async function runGlossy() {
   console.log("\n── GLOSSY: Metallic probe check (B2) ──");
   const t0 = Date.now();
 
-  const metalResult   = await runVariant("metal",   { denoiser: "none" }, () => makeCornellScene({
-    backWallRoughness: 0.05, backWallMetallic: 1.0, backWallColor: [0.9, 0.9, 0.9],
-  }));
-  const diffuseResult = await runVariant("diffuse", { denoiser: "none" }, () => makeCornellScene({
-    backWallRoughness: 1.0,  backWallMetallic: 0.0, backWallColor: [0.9, 0.9, 0.9],
-  }));
+  const metalResult = await runVariant("metal", { denoiser: "none" }, () =>
+    makeCornellScene({
+      backWallRoughness: 0.05,
+      backWallMetallic: 1.0,
+      backWallColor: [0.9, 0.9, 0.9],
+    }),
+  );
+  const diffuseResult = await runVariant("diffuse", { denoiser: "none" }, () =>
+    makeCornellScene({
+      backWallRoughness: 1.0,
+      backWallMetallic: 0.0,
+      backWallColor: [0.9, 0.9, 0.9],
+    }),
+  );
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
 
@@ -694,13 +809,13 @@ async function runGlossy() {
     return { id: "GLOSSY", error: metalResult.error ?? diffuseResult.error, verdict: "ERROR" };
   }
 
-  const overallMetal  = metalResult.lum;
+  const overallMetal = metalResult.lum;
   const overallDiffuse = diffuseResult.lum;
 
   // Back-wall region — broad center crop, visible behind the glass-control pane.
   const sampleRegion = "visible-back-wall-center-crop";
-  const sampleMetal   = regionLuminance(metalResult.pixels,   W, 32, 32, 96, 96);
-  const sampleDiffuse = regionLuminance(diffuseResult.pixels, W, 32, 32, 96, 96);
+  const sampleMetal = regionLuminance(metalResult.pixels, W, H, REGIONS.glossyBackWall);
+  const sampleDiffuse = regionLuminance(diffuseResult.pixels, W, H, REGIONS.glossyBackWall);
   const sampleDelta = sampleMetal - sampleDiffuse;
   const overallDelta = overallMetal - overallDiffuse;
 
@@ -710,18 +825,14 @@ async function runGlossy() {
   // integrates the ceiling emitter. Such a result is still a promotion finding,
   // not a harness failure.
   const sampleRatio = sampleDiffuse > 0.01 ? sampleMetal / sampleDiffuse : 0;
-  const notBlack   = sampleMetal > 1e-4 || overallMetal > 1e-3;
+  const notBlack = sampleMetal > 1e-4 || overallMetal > 1e-3;
   const MIN_SIGNAL_DELTA = 1e-4;
-  const materialEffectObserved =
-    Math.max(absDelta(sampleMetal, sampleDiffuse), absDelta(overallMetal, overallDiffuse)) >= MIN_SIGNAL_DELTA;
+  const materialEffectObserved = Math.max(absDelta(sampleMetal, sampleDiffuse), absDelta(overallMetal, overallDiffuse)) >= MIN_SIGNAL_DELTA;
   // Structural assertion: a bright/equal metal arm is a strong pass; a dark but
   // nonzero, materially different arm is a recorded finding that blocks promotion.
-  const plausible  = sampleRatio >= 0.8;
+  const plausible = sampleRatio >= 0.8;
 
-  const verdict = notBlack && plausible && materialEffectObserved ? "PASS"
-                : notBlack && materialEffectObserved ? "FINDING"
-                : notBlack ? "PASS-WEAK"
-                : "FAIL";
+  const verdict = notBlack && plausible && materialEffectObserved ? "PASS" : notBlack && materialEffectObserved ? "FINDING" : notBlack ? "PASS-WEAK" : "FAIL";
 
   console.log(`  metallic  sample: ${sampleMetal.toFixed(4)}  overall=${overallMetal.toFixed(4)}`);
   console.log(`  diffuse   sample: ${sampleDiffuse.toFixed(4)}  overall=${overallDiffuse.toFixed(4)}`);
@@ -735,17 +846,18 @@ async function runGlossy() {
     spp: SPP,
     resolution: `${W}x${H}`,
     sampleRegion,
+    regions: { sample: REGIONS.glossyBackWall },
     metal: {
       sampleRegionLum: sampleMetal,
       // Legacy key retained for older proof readers; this is the visible
       // back-wall center crop, not the geometric floor.
       floorLum: sampleMetal,
-      overall:  overallMetal,
+      overall: overallMetal,
     },
     diffuse: {
       sampleRegionLum: sampleDiffuse,
       floorLum: sampleDiffuse,
-      overall:  overallDiffuse,
+      overall: overallDiffuse,
     },
     sampleRatio,
     floorRatio: sampleRatio,
@@ -765,14 +877,7 @@ async function runGlossy() {
     },
     renderTimeSec: parseFloat(dt),
     verdict,
-    notes: [
-      "lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).",
-      "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the probe field; brightness vs Lambertian is scene-direction dependent.",
-      "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.",
-      "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).",
-      `Native WebGPU host SPP=${SPP}; metallic-mirror captures can legitimately reflect a darker direction than the diffuse control.`,
-      "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result.",
-    ],
+    notes: ["lo_indirectSpecular fires when metal>0 OR rough<0.6 (SPEC_GI_ROUGH_MAX=0.6).", "Metal visible wall (n=1.0, rough=0.05): GGX specular lobe reflects the probe field; brightness vs Lambertian is scene-direction dependent.", "The diffuse control keeps the same baseColor as the metal arm; the measured delta isolates metallic/roughness behavior.", "Approximation: DDGI atlas stores cosine-weighted irradiance, not GGX-filtered radiance (documented in-code).", `Native WebGPU host SPP=${SPP}; metallic-mirror captures can legitimately reflect a darker direction than the diffuse control.`, "FINDING means the material path is live and visibly changes the render, but this capture is a do-not-promote rich-material GI result."],
   };
 }
 
@@ -786,7 +891,10 @@ const CASE_RUNNERS = {
 
 function parseSelectedCases(raw) {
   if (raw == null || raw.trim() === "") return Object.keys(CASE_RUNNERS);
-  const requested = raw.split(",").map((part) => part.trim().toLowerCase()).filter(Boolean);
+  const requested = raw
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
   const unknown = requested.filter((name) => !(name in CASE_RUNNERS));
   if (unknown.length > 0) {
     throw new Error(`Unknown VITRUM_WALKAROUND_AB_CASES value(s): ${unknown.join(", ")}`);
@@ -802,8 +910,7 @@ console.log(`Quality profile: ${QUALITY_PROFILE}`);
 const selectedCases = parseSelectedCases(Deno.env.get("VITRUM_WALKAROUND_AB_CASES"));
 console.log(`Cases: ${selectedCases.join(", ")}`);
 
-const outPath = Deno.env.get("VITRUM_WALKAROUND_AB_OUTPUT_PATH")
-  ?? new URL("./walkaround-ab-results.json", import.meta.url).pathname;
+const outPath = Deno.env.get("VITRUM_WALKAROUND_AB_OUTPUT_PATH") ?? new URL("./walkaround-ab-results.json", import.meta.url).pathname;
 let results = {};
 if (selectedCases.length !== Object.keys(CASE_RUNNERS).length) {
   try {
@@ -837,5 +944,5 @@ for (const caseName of Object.keys(CASE_RUNNERS)) {
 await Deno.writeTextFile(outPath, JSON.stringify(results, null, 2));
 console.log(`\nResults written to: ${outPath}`);
 
-const anyFail = selectedResults.some(r => r.verdict === "FAIL" || r.verdict === "ERROR");
+const anyFail = selectedResults.some((r) => r.verdict === "FAIL" || r.verdict === "ERROR");
 Deno.exit(anyFail ? 1 : 0);

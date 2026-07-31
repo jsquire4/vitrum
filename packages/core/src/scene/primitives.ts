@@ -3,7 +3,7 @@
 // Primitives — geometry that occupies space.
 
 import type { Mat4, SceneNodeId } from './math.js';
-import type { MaterialSpec } from './material.js';
+import type { MaterialSpec, MaterialSpecPatch } from './material.js';
 
 /**
  * Scalable UV-set storage. Array index is `TextureRef.texCoord`; sparse entries
@@ -382,3 +382,56 @@ export type ScenePrimitive =
   | InstancedMeshPrimitive
   | AnalyticPrimitive
   | SkinnedMeshPrimitive;
+
+/**
+ * Keys whose properties are optional on `T`.
+ *
+ * This local helper lets primitive patches express an explicit clear only for
+ * fields that are optional on the complete primitive contract.
+ */
+type OptionalPrimitivePropertyKeys<T extends object> = {
+  [K in keyof T]-?: Pick<T, K> extends Required<Pick<T, K>> ? never : K;
+}[keyof T];
+
+type ExactPrimitivePatch<T extends object> = {
+  readonly [K in keyof T]?: K extends OptionalPrimitivePropertyKeys<T>
+    ? T[K] | undefined
+    : T[K];
+};
+
+type PrimitivePatchMember<T extends ScenePrimitive> = ExactPrimitivePatch<
+  Omit<T, 'id' | 'kind' | 'material'>
+> & {
+  /** Identity is selected by the `updatePrimitive(id, ...)` argument. */
+  readonly id?: never;
+  /** Changing a discriminated-union member requires a new scene snapshot. */
+  readonly kind?: never;
+  readonly material?: MaterialSpecPatch;
+};
+
+type PrimitivePatchMembers =
+  | PrimitivePatchMember<MeshPrimitive>
+  | PrimitivePatchMember<InstancedMeshPrimitive>
+  | PrimitivePatchMember<AnalyticPrimitive>
+  | PrimitivePatchMember<SkinnedMeshPrimitive>;
+
+type UnionKeys<T> = T extends T ? keyof T : never;
+type StrictUnionMember<T, TAll> = T extends T
+  ? T & Partial<Record<Exclude<UnionKeys<TAll>, keyof T>, never>>
+  : never;
+
+/**
+ * Strict incremental primitive patch.
+ *
+ * Each union member exposes only fields belonging to that primitive kind, so
+ * incompatible combinations such as `{ instances, transform }` or
+ * `{ positions, shape }` are rejected. `id` and `kind` are intentionally
+ * unassignable: identity/kind changes require `setScene`.
+ *
+ * Optional primitive fields may be cleared with an own `undefined`; omission
+ * preserves the current value. Material updates use {@link MaterialSpecPatch}.
+ */
+export type ScenePrimitivePatch = StrictUnionMember<
+  PrimitivePatchMembers,
+  PrimitivePatchMembers
+>;

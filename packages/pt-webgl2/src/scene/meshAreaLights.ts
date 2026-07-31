@@ -46,26 +46,35 @@
 //   s2 = (v1.xyz, 0)
 //   s3 = (v2.xyz, triArea)          — geometric area |(v1-v0)×(v2-v0)|/2
 //   s4 = (selectionPower, 0, 0, 0)  — luminance(radiance) * triArea
-//   s5 = (0, castShadowDisabled, 0, 0) — s5.g mirrors analytic light slots
+//   s5 = (faceIdLo16, castShadowDisabled, twoSided, faceIdHi16)
+//        — exact BVH/index-texture target identity plus shadow/material-sidedness.
+//          The two 16-bit words are individually exact in RGBA32F; combining the
+//          id into one float would lose integer identity above 2^24.
 
 import type { MaterialSpec, Scene, SceneNodeId, Vec3 } from '@vitrum/core';
 import {
   forEachEmissiveMapTexelSubTriangle,
   isTextureRefCpuReadable,
   materialSpecEmissiveLe,
-  materialSpecSkipEmitter,
   type EmissiveMapTexelRadianceResolver,
   type BarycentricWeights,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
-import { luminance, vecCross as cross, vecLength as length } from '@vitrum/shared-samplers';
+import { luminance } from '@vitrum/shared-samplers';
+import { classifyTriangleAreaF32 } from './areaEmitterGeometry.js';
 import { quantizeFiniteFloat16 } from './halfFloat.js';
 import { buildUvAttributeLayout } from './uvAttributeLayout.js';
+import {
+  materialEmissionExcludedFromMeshNee,
+  materialWithExplicitMeshEmitterAuthority,
+} from './meshEmitterPolicy.js';
 
 /** Triangle-light type id — must match the GLSL `#define TRI_AREA_LIGHT_TYPE`. */
 export const TRI_AREA_LIGHT_TYPE = 5;
 /** Texels per triangle light (same 6-slot stride as the analytic lights texture). */
 export const TRI_LIGHT_PIXELS = 6;
+const UINT32_MAX = 0xffff_ffff;
+const UINT16_BASE = 0x1_0000;
 
 export interface MeshAreaLightsData {
   /** RGBA32F square grid (dim×dim) packing `triLightCount` triangle lights, or null
@@ -77,6 +86,80 @@ export interface MeshAreaLightsData {
   readonly totalEmissiveArea: number;
   /** Σ luminance(radiance)·area — energy-weighted selection mass for mesh NEE. */
   readonly totalEmissivePower: number;
+}
+
+function addMeshSelectionPowerF32(
+  sum: number,
+  power: number,
+  context: string,
+): number {
+  const next = Math.fround(sum + power);
+  if (!Number.isFinite(next)) {
+    throw new RangeError(
+      '@vitrum/pt-webgl2: mesh-emitter selection-power sum overflows float32.',
+    );
+  }
+  if (power > 0 && next === sum) {
+    throw new RangeError(
+      `${context} loses proposal support in the cumulative float32 distribution.`,
+    );
+  }
+  return next;
+}
+
+/**
+ * Invert the producer's BVH-face -> merged-face permutation. Triangle lights are
+ * enumerated in deterministic merged order, while WebGL2 intersection reports
+ * the BVH/index-texture slot in `SurfaceHit.faceIndices.w`; visibility therefore
+ * has to carry the inverse-mapped id.
+ */
+function buildBvhFaceByMergedFace(merged: WorldSpaceMergeResult): Uint32Array {
+  const triangleCount = merged.triangleCount;
+  if (
+    !Number.isSafeInteger(triangleCount) ||
+    triangleCount < 0 ||
+    triangleCount > UINT32_MAX
+  ) {
+    throw new RangeError(
+      '@vitrum/pt-webgl2: mesh-emitter triangle count is outside uint32 range.',
+    );
+  }
+  if (merged.bvhTriToMergedTri.length !== triangleCount) {
+    throw new RangeError(
+      '@vitrum/pt-webgl2: mesh-emitter BVH-to-merged face mapping is incomplete.',
+    );
+  }
+
+  const bvhFaceByMergedFace = new Uint32Array(triangleCount);
+  const seenMergedFaces = new Uint8Array(triangleCount);
+  for (let bvhFaceIndex = 0; bvhFaceIndex < triangleCount; bvhFaceIndex += 1) {
+    if (bvhFaceIndex > UINT32_MAX) {
+      throw new RangeError(
+        '@vitrum/pt-webgl2: mesh-emitter BVH face id is outside uint32 range.',
+      );
+    }
+    const mergedFaceIndex = merged.bvhTriToMergedTri[bvhFaceIndex]!;
+    if (mergedFaceIndex >= triangleCount) {
+      throw new RangeError(
+        '@vitrum/pt-webgl2: mesh-emitter BVH-to-merged face mapping references an out-of-range face.',
+      );
+    }
+    if (seenMergedFaces[mergedFaceIndex] !== 0) {
+      throw new RangeError(
+        '@vitrum/pt-webgl2: mesh-emitter BVH-to-merged face mapping is non-bijective.',
+      );
+    }
+    seenMergedFaces[mergedFaceIndex] = 1;
+    bvhFaceByMergedFace[mergedFaceIndex] = bvhFaceIndex;
+  }
+  for (let mergedFaceIndex = 0; mergedFaceIndex < triangleCount; mergedFaceIndex += 1) {
+    if (seenMergedFaces[mergedFaceIndex] === 0) {
+      throw new RangeError(
+        '@vitrum/pt-webgl2: mesh-emitter BVH-to-merged face mapping is incomplete.',
+      );
+    }
+  }
+  return bvhFaceByMergedFace;
 }
 
 function v3(p: Float32Array, vi: number, stride: number): Vec3 {
@@ -98,15 +181,8 @@ function baryVec3(a: Vec3, b: Vec3, c: Vec3, w: BarycentricWeights): Vec3 {
   ];
 }
 
-function sub(a: Vec3, b: Vec3): Vec3 {
-  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-}
-
-// `cross`, `length`, and `luminanceRgb` are single-sourced in
-// `@vitrum/shared-samplers` (`vecCross`/`vecLength`/`luminance`, imported above
-// under the local aliases `cross`/`length`). `luminanceRgb` is a thin tuple
-// wrapper over the shared Rec.709 `luminance(r,g,b)` so the emitted-power field
-// stays byte-for-byte identical.
+// `luminanceRgb` is a thin tuple wrapper over the shared Rec.709
+// `luminance(r,g,b)` so the emitted-power field stays byte-for-byte identical.
 function luminanceRgb(rgb: Vec3): number {
   return luminance(rgb[0], rgb[1], rgb[2]);
 }
@@ -270,12 +346,15 @@ export function assertSceneEmissiveMapsCpuReadable(scene: Scene): void {
     if (radiance == null || !(luminanceRgb(radiance) > 0)) continue;
     const primitive = scene.primitives.find((p) => String(p.id) === String(emitter.meshId));
     if (primitive != null && isMeshLikePrimitive(primitive)) {
-      assertEmissiveMapCpuReadable(primitive.material, String(primitive.id));
+      const material = materialWithExplicitMeshEmitterAuthority(primitive.material);
+      if (!materialEmissionExcludedFromMeshNee(material)) {
+        assertEmissiveMapCpuReadable(material, String(primitive.id));
+      }
     }
   }
   for (const primitive of scene.primitives) {
     if (!isMeshLikePrimitive(primitive) || explicitMeshIds.has(String(primitive.id))) continue;
-    if (materialSpecSkipEmitter(primitive.material)) continue;
+    if (materialEmissionExcludedFromMeshNee(primitive.material)) continue;
     if (
       storedMaterialEmissiveScalar(
         primitive.material.emissive,
@@ -297,13 +376,25 @@ function isMeshLikePrimitive(primitive: Scene['primitives'][number]): primitive 
 
 function collectMeshAreaSources(
   scene: Scene,
-): Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number; implicitMaterial?: MaterialSpec }> {
+): Map<SceneNodeId, {
+  radiance: Vec3;
+  castShadowDisabled: number;
+  twoSided: number;
+  implicitMaterial?: MaterialSpec;
+}> {
   assertSceneEmissiveMapsCpuReadable(scene);
-  const emitterByMesh = new Map<SceneNodeId, { radiance: Vec3; castShadowDisabled: number; implicitMaterial?: MaterialSpec }>();
+  const emitterByMesh = new Map<SceneNodeId, {
+    radiance: Vec3;
+    castShadowDisabled: number;
+    twoSided: number;
+    implicitMaterial?: MaterialSpec;
+  }>();
   for (const e of scene.emitters) {
     if (e.kind !== 'mesh-area') continue;
     const primitive = scene.primitives.find((p) => String(p.id) === String(e.meshId));
-    const material = primitive != null && isMeshLikePrimitive(primitive) ? primitive.material : undefined;
+    const material = primitive != null && isMeshLikePrimitive(primitive)
+      ? materialWithExplicitMeshEmitterAuthority(primitive.material)
+      : undefined;
     const radiance = storedMaterialEmissiveScalar(
       e.color,
       e.intensity,
@@ -311,9 +402,11 @@ function collectMeshAreaSources(
     );
     if (radiance == null || !(luminanceRgb(radiance) > 0)) continue;
     assertRadianceSurvivesF32(radiance, `mesh-area emitter ${String(e.id)}`);
+    if (material != null && materialEmissionExcludedFromMeshNee(material)) continue;
     emitterByMesh.set(e.meshId, {
       radiance,
       castShadowDisabled: e.castShadow === false ? 1 : 0,
+      twoSided: material?.doubleSided === true ? 1 : 0,
       ...(material?.emissiveMap != null
         ? {
             implicitMaterial: {
@@ -329,13 +422,14 @@ function collectMeshAreaSources(
   for (const primitive of scene.primitives) {
     if (!isMeshLikePrimitive(primitive)) continue;
     if (emitterByMesh.has(primitive.id)) continue;
-    if (materialSpecSkipEmitter(primitive.material)) continue;
+    if (materialEmissionExcludedFromMeshNee(primitive.material)) continue;
     const radiance = emissiveRadianceForMaterial(primitive.material, String(primitive.id));
     if (!(luminanceRgb(radiance) > 0)) continue;
     assertRadianceSurvivesF32(radiance, `implicit emitter primitive ${String(primitive.id)}`);
     emitterByMesh.set(primitive.id, {
       radiance,
       castShadowDisabled: primitive.castShadow === false ? 1 : 0,
+      twoSided: primitive.material.doubleSided === true ? 1 : 0,
       implicitMaterial: primitive.material,
     });
   }
@@ -346,6 +440,16 @@ function collectMeshAreaSources(
 export function hasMeshAreaLightForPrimitive(scene: Scene, primitiveId: string): boolean {
   for (const e of scene.emitters) {
     if (e.kind === 'mesh-area' && String(e.meshId) === primitiveId) {
+      const primitive = scene.primitives.find((p) => String(p.id) === primitiveId);
+      if (
+        primitive != null &&
+        isMeshLikePrimitive(primitive) &&
+        materialEmissionExcludedFromMeshNee(
+          materialWithExplicitMeshEmitterAuthority(primitive.material),
+        )
+      ) {
+        return false;
+      }
       return (
         storedMaterialEmissiveScalar(
           e.color,
@@ -357,7 +461,7 @@ export function hasMeshAreaLightForPrimitive(scene: Scene, primitiveId: string):
   }
   const primitive = scene.primitives.find((p) => String(p.id) === primitiveId);
   if (primitive == null || !isMeshLikePrimitive(primitive)) return false;
-  if (materialSpecSkipEmitter(primitive.material)) return false;
+  if (materialEmissionExcludedFromMeshNee(primitive.material)) return false;
   if (
     storedMaterialEmissiveScalar(
       primitive.material.emissive,
@@ -391,6 +495,7 @@ export function packMeshAreaLights(
   const stride = merged.positionStrideFloats;
   const idx = merged.mergedIndices;
   const pos = merged.positions;
+  const bvhFaceByMergedFace = buildBvhFaceByMergedFace(merged);
   const uvStreams = mergedUvByTexCoord ??
     buildUvAttributeLayout(scene, merged, merged.materials).mergedByTexCoord;
 
@@ -403,6 +508,8 @@ export function packMeshAreaLights(
     area: number;
     power: number;
     castShadowDisabled: number;
+    twoSided: number;
+    targetFaceIndex: number;
   }[] = [];
   let totalEmissiveArea = 0;
   let totalEmissivePower = 0;
@@ -411,14 +518,26 @@ export function packMeshAreaLights(
     if (emitter == null) continue;
     for (let t = 0; t < range.triCount; t += 1) {
       const tri = range.triStart + t;
+      if (tri >= bvhFaceByMergedFace.length) {
+        throw new RangeError(
+          `@vitrum/pt-webgl2: emissive triangle ${range.name}:${t} has no BVH face identity.`,
+        );
+      }
+      const targetFaceIndex = bvhFaceByMergedFace[tri]!;
       const i0 = idx[tri * 3] ?? 0;
       const i1 = idx[tri * 3 + 1] ?? 0;
       const i2 = idx[tri * 3 + 2] ?? 0;
       const v0 = v3(pos, i0, stride);
       const v1 = v3(pos, i1, stride);
       const v2 = v3(pos, i2, stride);
-      const area = 0.5 * length(cross(sub(v1, v0), sub(v2, v0)));
-      if (area <= 0) continue; // degenerate triangle — contributes no light
+      const sourceAreaMeasure = classifyTriangleAreaF32(v0, v1, v2);
+      if (!sourceAreaMeasure.valid) {
+        if (sourceAreaMeasure.reason === 'degenerate') continue;
+        throw new RangeError(
+          `@vitrum/pt-webgl2: emissive triangle ${range.name}:${t} has ` +
+          `${sourceAreaMeasure.reason.replaceAll('-', ' ')} geometry.`,
+        );
+      }
       const authoredTexCoord = emitter.implicitMaterial?.emissiveMap?.texCoord ?? 0;
       const selectedUvs = uvStreams.get(authoredTexCoord);
       const uvA = uvAt(selectedUvs, i0);
@@ -440,15 +559,31 @@ export function packMeshAreaLights(
         tv2: Vec3,
         radianceOverride?: readonly [number, number, number],
       ): void => {
-        const triArea = 0.5 * length(cross(sub(tv1, tv0), sub(tv2, tv0)));
-        if (triArea <= 0) return;
+        const areaMeasure = classifyTriangleAreaF32(tv0, tv1, tv2);
+        if (!areaMeasure.valid) {
+          if (areaMeasure.reason === 'degenerate') return;
+          throw new RangeError(
+            `@vitrum/pt-webgl2: emissive triangle ${range.name}:${t} has ` +
+            `${areaMeasure.reason.replaceAll('-', ' ')} sub-triangle geometry.`,
+          );
+        }
+        const triArea = areaMeasure.area;
         const rad = radianceOverride ?? emitter.radiance;
         assertRadianceSurvivesF32(rad, `emissive triangle ${range.name}:${t}`);
         const emittedLuminance = luminanceRgb(rad);
         if (!(emittedLuminance > 0)) return;
         assertPositiveValueSurvivesF32(triArea, `emissive triangle ${range.name}:${t} area`);
-        const power = emittedLuminance * triArea;
-        assertPositiveValueSurvivesF32(power, `emissive triangle ${range.name}:${t} selection power`);
+        const exactPower = emittedLuminance * triArea;
+        assertPositiveValueSurvivesF32(
+          exactPower,
+          `emissive triangle ${range.name}:${t} selection power`,
+        );
+        const power = Math.fround(exactPower);
+        const nextTotalEmissivePower = addMeshSelectionPowerF32(
+          totalEmissivePower,
+          power,
+          `@vitrum/pt-webgl2: emissive triangle ${range.name}:${t}`,
+        );
         tris.push({
           v0: tv0,
           v1: tv1,
@@ -457,9 +592,11 @@ export function packMeshAreaLights(
           area: triArea,
           power,
           castShadowDisabled: emitter.castShadowDisabled,
+          twoSided: emitter.twoSided,
+          targetFaceIndex,
         });
         totalEmissiveArea += triArea;
-        totalEmissivePower += power;
+        totalEmissivePower = nextTotalEmissivePower;
       };
 
       if (samplingMaterial?.emissiveMap == null) {
@@ -499,12 +636,30 @@ export function packMeshAreaLights(
   if (tris.length === 0) {
     return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0 };
   }
+  for (const tri of tris) {
+    if (!(Math.fround(tri.power / totalEmissivePower) > 0)) {
+      throw new RangeError(
+        '@vitrum/pt-webgl2: a positive mesh-emitter selection probability ' +
+          'collapses to zero in float32.',
+      );
+    }
+  }
 
   const pixelCount = tris.length * TRI_LIGHT_PIXELS;
   const dim = Math.ceil(Math.sqrt(pixelCount));
   const data = new Float32Array(dim * dim * 4);
   for (let i = 0; i < tris.length; i += 1) {
-    const { v0, v1, v2, rad, area, power, castShadowDisabled } = tris[i]!;
+    const {
+      v0,
+      v1,
+      v2,
+      rad,
+      area,
+      power,
+      castShadowDisabled,
+      twoSided,
+      targetFaceIndex,
+    } = tris[i]!;
     const base = i * TRI_LIGHT_PIXELS * 4;
     // s0: v0 / type
     data[base + 0] = v0[0];
@@ -528,8 +683,11 @@ export function packMeshAreaLights(
     data[base + 15] = area;
     // s4.r: selection power (luminance(radiance) * area) for energy-weighted NEE.
     data[base + 16] = power;
-    // s5.g: castShadowDisabled (other s4/s5 channels remain zero).
+    // s5.r/a: exact uint32 BVH face id as individually exact 16-bit words.
+    data[base + 20] = targetFaceIndex % UINT16_BASE;
     data[base + 21] = castShadowDisabled;
+    data[base + 22] = twoSided;
+    data[base + 23] = Math.floor(targetFaceIndex / UINT16_BASE);
   }
 
   return { data, dim, triLightCount: tris.length, totalEmissiveArea, totalEmissivePower };

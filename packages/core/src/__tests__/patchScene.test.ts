@@ -154,7 +154,7 @@ describe('patchScene helpers', () => {
           normalMap: undefined,
         },
       },
-    } as never);
+    });
 
     const patched = next.primitives[0];
     if (patched == null) throw new Error('missing patched primitive');
@@ -180,6 +180,34 @@ describe('patchScene helpers', () => {
     expect(next.primitives).toBe(scene.primitives);
   });
 
+  it('rejects emitter and material patches whose positive radiance is not representable in Float32', () => {
+    const scene = makeScene();
+    const maxFloat32 = Math.fround(3.4028234663852886e38);
+    const minFloat32 = Math.fround(1.401298464324817e-45);
+
+    expect(() => patchEmitterInScene(scene, 'sun', {
+      color: [maxFloat32, 0, 0],
+      intensity: 2,
+    })).toThrow(/color.*intensity.*finite.*Float32/);
+    expect(() => patchEmitterInScene(scene, 'sun', {
+      color: [minFloat32, 0, 0],
+      intensity: 0.5,
+    })).toThrow(/color.*intensity.*underflow.*Float32/);
+
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      material: {
+        emissive: [maxFloat32, 0, 0],
+        emissiveIntensity: 2,
+      },
+    })).toThrow(/emissive.*emissiveIntensity.*finite.*Float32/);
+    expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
+      material: {
+        emissive: [minFloat32, 0, 0],
+        emissiveIntensity: 0.5,
+      },
+    })).toThrow(/emissive.*emissiveIntensity.*underflow.*Float32/);
+  });
+
   it('throws when the primitive id is missing (with the unified updatePrimitive: prefix)', () => {
     const scene = makeScene();
     expect(() => patchPrimitiveInScene(scene, 'missing', {})).toThrow(
@@ -197,7 +225,7 @@ describe('patchScene helpers', () => {
   it('throws when a primitive patch tries to change the id', () => {
     const scene = makeScene();
     expect(() =>
-      patchPrimitiveInScene(scene, 'mesh-a', { id: 'mesh-b' }),
+      patchPrimitiveInScene(scene, 'mesh-a', { id: 'mesh-b' } as never),
     ).toThrow(/id cannot be changed/);
   });
 
@@ -213,6 +241,26 @@ describe('patchScene helpers', () => {
     expect(() =>
       patchPrimitiveInScene(scene, 'mesh-a', { kind: 'analytic' } as never),
     ).toThrow(/kind cannot change/);
+  });
+
+  it('rejects every own primitive id/kind field, even unchanged or undefined', () => {
+    const scene = makeScene();
+    for (const patch of [
+      { id: 'mesh-a' },
+      { id: undefined },
+    ]) {
+      expect(() =>
+        patchPrimitiveInScene(scene, 'mesh-a', patch as never),
+      ).toThrow(/id cannot be changed or supplied/);
+    }
+    for (const patch of [
+      { kind: 'mesh' },
+      { kind: undefined },
+    ]) {
+      expect(() =>
+        patchPrimitiveInScene(scene, 'mesh-a', patch as never),
+      ).toThrow(/kind cannot change or be supplied/);
+    }
   });
 
   it('throws when an emitter patch tries to change the kind', () => {
@@ -306,6 +354,120 @@ describe('patchScene helpers', () => {
     expect(scene.primitives[0]).toBe(retainedPrimitive);
   });
 
+  it('rejects non-enumerable, symbol, and accessor primitive patch fields without invoking accessors', () => {
+    const scene = makeScene();
+
+    const nonEnumerable = {};
+    Object.defineProperty(nonEnumerable, 'material', {
+      enumerable: false,
+      value: { roughness: 0.1 },
+    });
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', nonEnumerable),
+    ).toThrow(/material.*enumerable/);
+
+    const symbolPatch = {};
+    Object.defineProperty(symbolPatch, Symbol('hidden-mutation'), {
+      enumerable: false,
+      value: true,
+    });
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', symbolPatch),
+    ).toThrow(/symbol field.*not allowed/);
+
+    let getterReads = 0;
+    const accessorPatch = {};
+    Object.defineProperty(accessorPatch, 'material', {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return { roughness: 0.1 };
+      },
+    });
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', accessorPatch),
+    ).toThrow(/material.*own data property/);
+    expect(getterReads).toBe(0);
+  });
+
+  it('rejects inherited primitive patch fields without invoking prototype accessors', () => {
+    const scene = makeScene();
+    let getterReads = 0;
+    const prototype = {};
+    Object.defineProperty(prototype, 'material', {
+      enumerable: true,
+      get() {
+        getterReads += 1;
+        return { roughness: 0.1 };
+      },
+    });
+    const inheritedPatch = Object.create(prototype);
+
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', inheritedPatch),
+    ).toThrow(/patch must be a plain data object/);
+    expect(getterReads).toBe(0);
+  });
+
+  it('rejects nested material and layer accessors without invoking them', () => {
+    const scene = makeScene();
+    let materialGetterReads = 0;
+    const materialPatch = {};
+    Object.defineProperty(materialPatch, 'roughness', {
+      enumerable: true,
+      get() {
+        materialGetterReads += 1;
+        return 0.1;
+      },
+    });
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', { material: materialPatch }),
+    ).toThrow(/patch material field "roughness" must be an own data property/);
+    expect(materialGetterReads).toBe(0);
+
+    let layerGetterReads = 0;
+    const frontLayerPatch = {
+      transmission: [0.8, 0.7, 0.6],
+    };
+    Object.defineProperty(frontLayerPatch, 'roughness', {
+      enumerable: true,
+      get() {
+        layerGetterReads += 1;
+        return 0.2;
+      },
+    });
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', {
+        material: { frontLayer: frontLayerPatch },
+      } as never),
+    ).toThrow(/patch material\.frontLayer field "roughness" must be an own data property/);
+    expect(layerGetterReads).toBe(0);
+  });
+
+  it('rejects non-object and array primitive patches at the runtime boundary', () => {
+    const scene = makeScene();
+    for (const patch of [null, undefined, 1, 'material', [], new Float32Array()]) {
+      expect(() =>
+        patchPrimitiveInScene(scene, 'mesh-a', patch as never),
+      ).toThrow(/patch must be a non-array object/);
+    }
+  });
+
+  it('rejects cross-kind fields beyond the analytic/mesh split', () => {
+    const scene = makeScene();
+    expect(() =>
+      patchPrimitiveInScene(scene, 'mesh-a', {
+        instances: [],
+        transform: undefined,
+      } as never),
+    ).toThrow(/instances.*known contract field/);
+    expect(() =>
+      patchPrimitiveInScene(scene, 'sphere-a', {
+        positions: new Float32Array([0, 0, 0]),
+      }),
+    ).toThrow(/positions.*known contract field/);
+  });
+
   it('rejects unknown and cross-kind emitter patch fields without mutating the source', () => {
     const scene = makeScene();
     const retainedEmitter = scene.emitters[0];
@@ -333,12 +495,12 @@ describe('patchScene helpers', () => {
       primitives: [accepted.primitives[0]!, malformedUntouched],
     };
     const next = patchPrimitiveInScene(scene, 'mesh-a', {
-      material: { roughness: 0.25 } as never,
+      material: { roughness: 0.25 },
     });
     expect(next.primitives[0]!.material.roughness).toBe(0.25);
     expect(next.primitives[1]).toBe(malformedUntouched);
     expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
-      material: { roughness: Number.NaN } as never,
+      material: { roughness: Number.NaN },
     })).toThrow(/roughness.*finite/);
   });
 
@@ -373,13 +535,13 @@ describe('patchScene helpers', () => {
     };
 
     const next = patchPrimitiveInScene(scene, 'mesh-a', {
-      material: { roughness: 0.125 } as never,
+      material: { roughness: 0.125 },
     });
 
     expect(next.primitives[0]!.material.roughness).toBe(0.125);
     expect(reads).toEqual([]);
     expect(() => patchPrimitiveInScene(scene, 'mesh-a', {
-      material: { roughness: Number.NaN } as never,
+      material: { roughness: Number.NaN },
     })).toThrow(/roughness.*finite/);
     expect(reads).toEqual([]);
   });
@@ -392,7 +554,7 @@ describe('patchScene helpers', () => {
           handle: { id: 'base-color' },
           texCoord: 7,
         },
-      } as never,
+      },
     })).toThrow(/baseColorMap\.texCoord.*does not provide that UV stream/);
   });
 

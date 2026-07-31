@@ -10,29 +10,32 @@
 // updateEnvironment + the 6 first-eligible-wins fast paths).
 import type {
   EngineWarning,
+  MaterialSpecPatch,
   PrimitiveColorSets,
   PrimitiveUvSets,
   Scene,
   SceneEmitter,
   ScenePrimitive,
+  ScenePrimitivePatch,
 } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import {
   BVH_NODE_FLOATS,
-  fingerprintTlasBuffers,
   materialSpecSkipEmitter,
   rebuildPrimitiveBlas,
   rebuildTlasReuseBlas,
 } from '@vitrum/shared-bvh';
 import { invertMat4 } from './math/mat4.js';
 import {
+  applyAnalyticRenderFallbacks,
   packFoldedMaterialEntry,
   packLightTreeForScene,
   applySolveSkinToScene,
   prepareSceneBufferMutation,
   rebuildTlasForSceneTransforms,
-  sceneHasMappedAnalytic,
+  sceneCenterRadiusForPackedGeometry,
+  sceneHasAnalyticRenderFallback,
   scenePackGeometryMutationPatch,
   scenePackTlasMutationPatch,
   type PreparedSceneBufferMutation,
@@ -65,16 +68,10 @@ import {
   type PackedEmitterArrays,
 } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
-import {
-  collectUnsupportedMaterialFieldsForTraceTier,
-} from './supportDetails.js';
+import { collectUnsupportedMaterialFieldsForTraceTier } from './supportDetails.js';
+import { assertPtWebgpuEnvironmentMaterialEnvelopeF32 } from './environmentRadianceScale.js';
 
-const IDENTITY_MAT4 = asMat4(new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-]));
+const IDENTITY_MAT4 = asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
 
 function warnHost(
   host: MutationHost,
@@ -135,15 +132,15 @@ export interface MutationHost {
   setGeoPack(pack: ScenePackResult): void;
   /** Refresh derived scene bounds after a geometry-pack publication. Returns a
    * rollback closure because reset/submission can still fail transactionally. */
-  refreshSceneGeometryStats?(): (() => void);
+  refreshSceneGeometryStats?(): () => void;
   invalidateBindGroups(): void;
   supportedAnalyticShapes(): ReadonlySet<string>;
   /** Whether camera-visible emitters (emissive fold) is enabled for this engine instance. */
   cameraVisibleEmitters(): boolean;
+  /** Whether environment radiance executes the hero-wavelength D65 stage. */
+  spectralEnabled?(): boolean;
   /** Stage lite textures from a candidate scene-buffer preview without publication. */
-  stageLiteTextures?(
-    sceneBuffers: UploadedSceneBuffers,
-  ): PreparedMutationSideEffect | null;
+  stageLiteTextures?(sceneBuffers: UploadedSceneBuffers): PreparedMutationSideEffect | null;
   /** True when the engine selected the single-group lite shader tier. */
   isLiteTier?(): boolean;
   /**
@@ -200,9 +197,9 @@ export function sceneGeometryStatsNeedRefresh(
 }
 
 const MATERIAL_DESCRIPTOR_SCALAR_OFFSETS = [
-  4,  // alphaMode
-  5,  // alphaCutoff
-  6,  // opacity
+  4, // alphaMode
+  5, // alphaCutoff
+  6, // opacity
   16, // aoMapIntensity
   17, // lightMapIntensity
   18, // bumpScale
@@ -213,11 +210,11 @@ const MATERIAL_DESCRIPTOR_SCALAR_OFFSETS = [
   MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4 + 1, // clearcoatNormalScale
 ] as const;
 
-function isMaterialOnlyPatch(patch: Partial<ScenePrimitive>): patch is Partial<ScenePrimitive> & {
-  material: ScenePrimitive['material'];
+function isMaterialOnlyPatch(patch: ScenePrimitivePatch): patch is ScenePrimitivePatch & {
+  material: MaterialSpecPatch;
 } {
   if (patch.material == null) return false;
-  return Object.keys(patch).every((key) => key === 'material' || key === 'id' || key === 'kind');
+  return Object.keys(patch).every((key) => key === 'material');
 }
 
 function materialSpecsForScene(
@@ -241,6 +238,25 @@ function materialSpecsForScene(
     }
   }
   return materials;
+}
+
+function assertSceneEnvironmentMaterialEnvelope(
+  scene: Scene,
+  supportedAnalyticShapes: ReadonlySet<string>,
+  spectralEnabled: boolean,
+  environment: {
+    readonly environmentMapTexels: Float32Array;
+    readonly environmentHdriIntensity: number;
+  },
+): void {
+  assertPtWebgpuEnvironmentMaterialEnvelopeF32(
+    environment.environmentMapTexels,
+    environment.environmentHdriIntensity,
+    materialSpecsForScene(scene, supportedAnalyticShapes).map(
+      (material) => material.envMapIntensity ?? 1,
+    ),
+    spectralEnabled,
+  );
 }
 
 function materialDescriptorScalarReplacement(
@@ -268,9 +284,7 @@ function materialDescriptorScalarReplacement(
   );
   for (const relativeOffset of MATERIAL_DESCRIPTOR_SCALAR_OFFSETS) {
     const targetOffset = descriptorOffset + relativeOffset;
-    descriptorData[targetOffset] = nextSlice[relativeOffset]
-      ?? descriptorData[targetOffset]
-      ?? 0;
+    descriptorData[targetOffset] = nextSlice[relativeOffset] ?? descriptorData[targetOffset] ?? 0;
   }
   return descriptorData;
 }
@@ -306,43 +320,45 @@ function emitterAndLightTreeMutationPatch(
   };
 }
 
-function environmentSummaryFromSceneBuffers(
-  sceneBuffers: UploadedSceneBuffers,
-): EnvSummaryForTree {
+function environmentSummaryFromSceneBuffers(sceneBuffers: UploadedSceneBuffers): EnvSummaryForTree {
   return {
     hasHdri: sceneBuffers.hasEnvironmentMap,
     lightTreePower: sceneBuffers.environmentLightTreePower,
   };
 }
 
-function cameraVisibleEmitterMaterials(
+function meshAreaEmitterOwnerIds(scene: Scene): Set<string> {
+  return new Set(
+    scene.emitters.flatMap((emitter) =>
+      emitter.kind === 'mesh-area' ? [String(emitter.meshId)] : [],
+    ),
+  );
+}
+
+function emitterOwnerMaterials(
   scene: Scene,
   sceneBuffers: UploadedSceneBuffers,
   supportedAnalyticShapes: ReadonlySet<string>,
+  ownerIds: ReadonlySet<string>,
+  cameraVisibleEmitters: boolean,
 ): Float32Array {
   const materials = new Float32Array(sceneBuffers.materials);
   for (const primitive of scene.primitives) {
-    const materialIndex = materialIndexForPrimitive(
-      scene,
-      primitive.id,
-      supportedAnalyticShapes,
-    );
+    if (!ownerIds.has(String(primitive.id))) continue;
+    const materialIndex = materialIndexForPrimitive(scene, primitive.id, supportedAnalyticShapes);
     if (materialIndex == null) continue;
-    const folded = packFoldedMaterialEntry(primitive, scene, true);
+    const folded = packFoldedMaterialEntry(primitive, scene, cameraVisibleEmitters);
     if (folded.length !== MATERIAL_FLOAT_STRIDE) continue;
     // RGB thin-film LUT records live in a sparse tail. Emitter folding changes
     // only the fixed emissive lanes, so retain the absolute tail pointer.
-    folded[28 * 4 + 2] = sceneBuffers.materials[
-      materialIndex * MATERIAL_FLOAT_STRIDE + 28 * 4 + 2
-    ] ?? 0;
+    folded[28 * 4 + 2] =
+      sceneBuffers.materials[materialIndex * MATERIAL_FLOAT_STRIDE + 28 * 4 + 2] ?? 0;
     materials.set(folded, materialIndex * MATERIAL_FLOAT_STRIDE);
   }
   return materials;
 }
 
-function solvedSkinGeometryPatch(
-  primitive: Extract<ScenePrimitive, { kind: 'skinned-mesh' }>,
-): {
+function solvedSkinGeometryPatch(primitive: Extract<ScenePrimitive, { kind: 'skinned-mesh' }>): {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
   readonly tangents?: Float32Array;
@@ -431,22 +447,50 @@ export class SceneMutationRouter {
       host.reset();
     } catch (error) {
       // Publication is reversible because old resources remain live until finalize.
-      try { host.setSceneState(previousScene); } catch { /* preserve mutation failure */ }
-      try { rollbackSceneGeometryStats?.(); } catch { /* preserve mutation failure */ }
-      if (nextGeoPack != null && previousGeoPack != null) {
-        try { host.setGeoPack(previousGeoPack); } catch { /* preserve mutation failure */ }
+      try {
+        host.setSceneState(previousScene);
+      } catch {
+        /* preserve mutation failure */
       }
-      try { liteMutation?.rollback(); } catch { /* preserve mutation failure */ }
-      try { bufferMutation.rollback(); } catch { /* preserve mutation failure */ }
+      try {
+        rollbackSceneGeometryStats?.();
+      } catch {
+        /* preserve mutation failure */
+      }
+      if (nextGeoPack != null && previousGeoPack != null) {
+        try {
+          host.setGeoPack(previousGeoPack);
+        } catch {
+          /* preserve mutation failure */
+        }
+      }
+      try {
+        liteMutation?.rollback();
+      } catch {
+        /* preserve mutation failure */
+      }
+      try {
+        bufferMutation.rollback();
+      } catch {
+        /* preserve mutation failure */
+      }
       if (bufferMutation.replacesBufferHandles) {
-        try { host.invalidateBindGroups(); } catch { /* restored handles bind next frame */ }
+        try {
+          host.invalidateBindGroups();
+        } catch {
+          /* restored handles bind next frame */
+        }
       }
       throw error;
     }
 
     // Irreversible retirement and outward warning side effects happen only after
     // the scene, resource mirrors, bind groups, and temporal reset all succeeded.
-    try { liteMutation?.finalize(); } catch { /* the candidate remains live */ }
+    try {
+      liteMutation?.finalize();
+    } catch {
+      /* the candidate remains live */
+    }
     bufferMutation.finalize();
     for (const deferred of commitWarnings) {
       warnHost(host, deferred.warning, ...(deferred.consoleArgs ?? []));
@@ -485,9 +529,7 @@ export class SceneMutationRouter {
     const currentScene = this.#host.getScene()!;
     const nextPrimitives = currentScene.primitives.filter((p) => p.id !== id);
     if (nextPrimitives.length === currentScene.primitives.length) {
-      throw new Error(
-        `removePrimitive: no primitive with id "${id}" in the live scene.`,
-      );
+      throw new Error(`removePrimitive: no primitive with id "${id}" in the live scene.`);
     }
     const nextScene: Scene = {
       ...currentScene,
@@ -496,39 +538,42 @@ export class SceneMutationRouter {
     this.#host.repackScene(nextScene, { warnOnEmpty: false });
   }
 
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+  updatePrimitive(id: string, patch: ScenePrimitivePatch): void {
     this.#host.assertLive('updatePrimitive');
     const host = this.#host;
     const currentScene = host.getScene()!;
-    const currentPrimitive = currentScene.primitives.find((primitive) => primitive.id === id) ?? null;
+    const currentPrimitive =
+      currentScene.primitives.find((primitive) => primitive.id === id) ?? null;
     const deferredWarnings: DeferredWarning[] = [];
     if (currentPrimitive == null) {
       throw new Error(`updatePrimitive: primitive "${id}" not found in current scene`);
     }
-    if ('kind' in patch && patch.kind !== undefined && patch.kind !== currentPrimitive.kind) {
-      throw new Error(
-        `updatePrimitive: primitive "${currentPrimitive.id}" kind cannot change from ` +
-          `"${currentPrimitive.kind}" to "${patch.kind}"`,
-      );
-    }
-    if ('id' in patch && patch.id !== undefined && patch.id !== currentPrimitive.id) {
-      throw new Error(`updatePrimitive: primitive "${currentPrimitive.id}" id cannot be changed`);
-    }
-    const payloadKeys = Object.keys(patch).filter((key) => key !== 'id' && key !== 'kind');
+    // Cross the canonical core boundary before reading any patch field. Besides
+    // applying the strict per-kind union, this rejects id/kind even when their
+    // runtime value is unchanged/undefined and rejects accessors without
+    // invoking host code.
+    const authoredNextScene = patchPrimitiveInScene(currentScene, id, patch);
+    const payloadKeys = Object.keys(patch);
     if (payloadKeys.length === 0) {
-      // A validated empty/identity-only patch is an actual no-op: preserve the
-      // scene snapshot, GPU generation, temporal history, and warning surface.
+      // A validated empty patch is an actual no-op: preserve the scene
+      // snapshot, GPU generation, temporal history, and warning surface.
       return;
     }
     // Keep the host-authored/rest-pose scene separate from the transient posed
     // geometry used for BLAS/emitter packing. Storing solved vertices in #scene
     // makes the next bone update skin the previous pose and compounds motion.
-    const authoredNextScene = patchPrimitiveInScene(currentScene, id, patch);
     host.validatePrimitiveCandidate(authoredNextScene, id);
+    const liveEnvironment = host.getSceneBuffers();
+    if (liveEnvironment != null) {
+      assertSceneEnvironmentMaterialEnvelope(
+        authoredNextScene,
+        host.supportedAnalyticShapes(),
+        host.spectralEnabled?.() === true,
+        liveEnvironment,
+      );
+    }
     const validatedAuthoredNextScene = this.#validatedCandidate(authoredNextScene);
-    const patchedMaterial = (
-      patch as unknown as { material?: Record<string, unknown> }
-    ).material;
+    const patchedMaterial = (patch as unknown as { material?: Record<string, unknown> }).material;
     if (patchedMaterial != null) {
       const unsupportedMaterialFields = collectUnsupportedMaterialFieldsForTraceTier(
         patchedMaterial,
@@ -542,15 +587,16 @@ export class SceneMutationRouter {
         );
       }
     }
-    // Mapped analytics are represented by their fallback meshes in the packed
-    // scene. Their BLAS/TLAS and material classification therefore differs from
-    // the authored analytic snapshot. Conservatively use the canonical full
-    // repack for every primitive mutation while either snapshot contains one;
-    // this also handles adding/removing a map without letting an analytic fast
-    // path write against a fallback-mesh buffer layout.
+    // Some analytics are represented by generated/authored fallback meshes in
+    // the packed scene (mapped surfaces and every analytic emitter). Their
+    // BLAS/TLAS and material classification differ from the authored analytic
+    // snapshot. Conservatively use the canonical full repack for every primitive
+    // mutation while either snapshot contains one; this also handles crossing
+    // the emissive/non-emissive boundary without writing analytic offsets into a
+    // fallback-mesh layout.
     if (
-      sceneHasMappedAnalytic(currentScene) ||
-      sceneHasMappedAnalytic(authoredNextScene)
+      sceneHasAnalyticRenderFallback(currentScene) ||
+      sceneHasAnalyticRenderFallback(authoredNextScene)
     ) {
       host.repackScene(authoredNextScene, { warnOnEmpty: false });
       return;
@@ -562,11 +608,10 @@ export class SceneMutationRouter {
     const authoredNextPrimitive =
       authoredNextScene.primitives.find((primitive) => primitive.id === id) ?? null;
     let renderNextScene = authoredNextScene;
-    let fastPathPatch: Partial<ScenePrimitive> = patch;
+    let fastPathPatch: ScenePrimitivePatch = patch;
     const skinGeometryMutationPatch =
       currentPrimitive.kind === 'skinned-mesh' &&
-      (
-        'bones' in patch ||
+      ('bones' in patch ||
         'skinIndices' in patch ||
         'skinWeights' in patch ||
         'skinInfluencesPerVertex' in patch ||
@@ -591,9 +636,9 @@ export class SceneMutationRouter {
         'positions' in patch ||
         'normals' in patch ||
         'tangents' in patch ||
-        'indices' in patch
-      );
-    const materialChangesEmissive = patchedMaterial != null &&
+        'indices' in patch);
+    const materialChangesEmissive =
+      patchedMaterial != null &&
       ('emissive' in patchedMaterial || 'emissiveIntensity' in patchedMaterial);
     const emitterSuppressionChanged =
       authoredNextPrimitive != null &&
@@ -603,10 +648,8 @@ export class SceneMutationRouter {
       materialChangesEmissive || emitterSuppressionChanged;
     const meshAreaEmitterNeedsSolvedGeometry =
       ('transform' in patch || materialChangesEmitterClassification) &&
-      (
-        hasMeshAreaEmitterForPrimitive(currentScene, id) ||
-        hasMeshAreaEmitterForPrimitive(authoredNextScene, id)
-      );
+      (hasMeshAreaEmitterForPrimitive(currentScene, id) ||
+        hasMeshAreaEmitterForPrimitive(authoredNextScene, id));
     const requiresSolvedSkinGeometry =
       currentPrimitive.kind === 'skinned-mesh' &&
       (skinGeometryMutationPatch || meshAreaEmitterNeedsSolvedGeometry);
@@ -627,9 +670,7 @@ export class SceneMutationRouter {
         renderNextScene = {
           ...authoredNextScene,
           primitives: authoredNextScene.primitives.map((primitive) =>
-            primitive.id === id
-              ? { ...primitive, ...solvedPatch }
-              : primitive,
+            primitive.id === id ? { ...primitive, ...solvedPatch } : primitive,
           ),
         };
         if (skinGeometryMutationPatch) {
@@ -657,30 +698,18 @@ export class SceneMutationRouter {
             normals: _normals,
             tangents: _tangents,
             ...nonSkinPatch
-          } = patch as Partial<ScenePrimitive> & Record<string, unknown>;
+          } = patch;
           fastPathPatch = {
             ...nonSkinPatch,
             positions: solvedPatch.positions,
             normals: solvedPatch.normals,
-            ...(solvedPatch.tangents != null
-              ? { tangents: solvedPatch.tangents }
-              : {}),
-            ...(solvedPatch.uvs != null
-              ? { uvs: solvedPatch.uvs }
-              : {}),
-            ...(solvedPatch.uv1 != null
-              ? { uv1: solvedPatch.uv1 }
-              : {}),
-            ...(solvedPatch.uvSets != null
-              ? { uvSets: solvedPatch.uvSets }
-              : {}),
-            ...(solvedPatch.colors != null
-              ? { colors: solvedPatch.colors }
-              : {}),
-            ...(solvedPatch.colorSets != null
-              ? { colorSets: solvedPatch.colorSets }
-              : {}),
-          };
+            ...(solvedPatch.tangents != null ? { tangents: solvedPatch.tangents } : {}),
+            ...(solvedPatch.uvs != null ? { uvs: solvedPatch.uvs } : {}),
+            ...(solvedPatch.uv1 != null ? { uv1: solvedPatch.uv1 } : {}),
+            ...(solvedPatch.uvSets != null ? { uvSets: solvedPatch.uvSets } : {}),
+            ...(solvedPatch.colors != null ? { colors: solvedPatch.colors } : {}),
+            ...(solvedPatch.colorSets != null ? { colorSets: solvedPatch.colorSets } : {}),
+          } as ScenePrimitivePatch;
         }
       } catch (error) {
         skinSolveFailed = true;
@@ -781,20 +810,6 @@ export class SceneMutationRouter {
             ) ?? 0,
         });
         if (!rebuilt.ok) return null;
-        const previousTlasFingerprint = fingerprintTlasBuffers({
-          tlasNodes: sceneBuffers.tlasNodes,
-          tlasInstanceIndices: sceneBuffers.tlasInstanceIndices,
-          tlasBlasRoots: sceneBuffers.tlasBlasRoots,
-          tlasInstanceWorldToLocal: sceneBuffers.tlasInstanceWorldToLocal,
-          tlasInstanceLocalToWorld: sceneBuffers.tlasInstanceLocalToWorld,
-        });
-        const nextTlasFingerprint = fingerprintTlasBuffers({
-          tlasNodes: rebuilt.pack.tlasNodes,
-          tlasInstanceIndices: rebuilt.pack.tlasInstanceIndices,
-          tlasBlasRoots: rebuilt.pack.tlasBlasRoots,
-          tlasInstanceWorldToLocal: rebuilt.pack.tlasInstanceWorldToLocal,
-          tlasInstanceLocalToWorld: rebuilt.pack.tlasInstanceLocalToWorld,
-        });
         const nextGpuUvs = packGpuUvSets(
           renderNextScene,
           rebuilt.pack.uvs,
@@ -805,7 +820,10 @@ export class SceneMutationRouter {
           bufferPatch: scenePackGeometryMutationPatch(
             sceneBuffers,
             rebuilt.pack,
-            previousTlasFingerprint !== nextTlasFingerprint,
+            // Geometry edits can change instance bounds without changing TLAS
+            // byte lengths. Always publish the rebuilt TLAS; sampled or
+            // ordinary hash equality is not a correctness proof.
+            true,
             nextGpuUvs,
           ),
           geoPack: rebuilt.pack,
@@ -843,12 +861,7 @@ export class SceneMutationRouter {
           sceneBuffers.uvSetTexCoords,
         );
         return {
-          bufferPatch: scenePackGeometryMutationPatch(
-            sceneBuffers,
-            rebuilt.pack,
-            true,
-            nextGpuUvs,
-          ),
+          bufferPatch: scenePackGeometryMutationPatch(sceneBuffers, rebuilt.pack, true, nextGpuUvs),
           geoPack: rebuilt.pack,
           warnings: rebuilt.currentWarnings,
           reshapedWorldPositions: true,
@@ -871,11 +884,7 @@ export class SceneMutationRouter {
           host.supportedAnalyticShapes(),
         );
         const nextPrimitive = authoredNextScene.primitives.find((primitive) => primitive.id === id);
-        if (
-          analyticIndex == null ||
-          nextPrimitive == null ||
-          nextPrimitive.kind !== 'analytic'
-        ) {
+        if (analyticIndex == null || nextPrimitive == null || nextPrimitive.kind !== 'analytic') {
           return null;
         }
         const localToWorld = asMat4(nextPrimitive.transform ?? IDENTITY_MAT4);
@@ -885,6 +894,13 @@ export class SceneMutationRouter {
         const nextWorldToLocal = new Float32Array(sceneBuffers.analyticWorldToLocal);
         nextLocalToWorld.set(localToWorld, analyticIndex * 16);
         nextWorldToLocal.set(worldToLocal, analyticIndex * 16);
+        const nextBounds = sceneCenterRadiusForPackedGeometry({
+          bvhNodes: sceneBuffers.bvhNodes,
+          tlasNodes: sceneBuffers.tlasNodes,
+          analyticHeaders: sceneBuffers.analyticHeaders,
+          analyticParams: sceneBuffers.analyticParams,
+          analyticLocalToWorld: nextLocalToWorld,
+        });
         if (maybeWorldToLocal == null) {
           deferredWarnings.push({
             warning: {
@@ -903,6 +919,8 @@ export class SceneMutationRouter {
           bufferPatch: {
             analyticLocalToWorld: nextLocalToWorld,
             analyticWorldToLocal: nextWorldToLocal,
+            sceneCenter: nextBounds.center,
+            sceneRadius: nextBounds.radius,
           },
           warnings: [],
         };
@@ -976,10 +994,7 @@ export class SceneMutationRouter {
         ) {
           return null;
         }
-        if (
-          repackFields.descriptorScalarFields.length > 0 &&
-          host.isLiteTier?.() === true
-        ) {
+        if (repackFields.descriptorScalarFields.length > 0 && host.isLiteTier?.() === true) {
           return null;
         }
         const materialIndex = materialIndexForPrimitive(
@@ -995,7 +1010,8 @@ export class SceneMutationRouter {
         if (
           currentPrimitive?.material.thinFilmStack != null ||
           primitive.material.thinFilmStack != null
-        ) return null;
+        )
+          return null;
         const packed = packFoldedMaterialEntry(
           primitive,
           authoredNextScene,
@@ -1023,6 +1039,7 @@ export class SceneMutationRouter {
           changedEmitterClassification:
             'emissive' in material ||
             'emissiveIntensity' in material ||
+            'doubleSided' in material ||
             emitterSuppressionChanged,
         };
       },
@@ -1035,14 +1052,9 @@ export class SceneMutationRouter {
       if (sceneBuffers == null) break;
       const combinedPatch: SceneBufferMutationPatch = { ...commit.bufferPatch };
       if (
-        (
-          commit.reshapedWorldPositions ||
-          commit.changedEmitterClassification
-        ) &&
-        (
-          hasMeshAreaEmitterForPrimitive(currentScene, id) ||
-          hasMeshAreaEmitterForPrimitive(renderNextScene, id)
-        )
+        (commit.reshapedWorldPositions || commit.changedEmitterClassification) &&
+        (hasMeshAreaEmitterForPrimitive(currentScene, id) ||
+          hasMeshAreaEmitterForPrimitive(renderNextScene, id))
       ) {
         // Emitter arrays and their light tree are global derived state. Solving
         // only the patched skin would silently move every other posed skinned
@@ -1129,9 +1141,8 @@ export class SceneMutationRouter {
     const host = this.#host;
     host.assertLive('updateEmitter');
     const currentScene = host.getScene()!;
-    const currentEmitter = currentScene.emitters.find(
-      (emitter) => String(emitter.id) === id,
-    ) ?? null;
+    const currentEmitter =
+      currentScene.emitters.find((emitter) => String(emitter.id) === id) ?? null;
     if (currentEmitter == null) {
       throw new Error(`updateEmitter: emitter "${id}" not found in current scene`);
     }
@@ -1152,6 +1163,14 @@ export class SceneMutationRouter {
     const nextScene = patchEmitterInScene(currentScene, id, patch);
     host.validateEmitterCandidate(nextScene, id);
     const validatedNextScene = this.#validatedCandidate(nextScene);
+    // Emitter packing must consume the same generated geometry as the live
+    // render snapshot. If either scene contains an analytic fallback, use the
+    // canonical full pack rather than rebuilding emitters from authored
+    // analytic records that do not exist in the live BLAS.
+    if (sceneHasAnalyticRenderFallback(currentScene) || sceneHasAnalyticRenderFallback(nextScene)) {
+      host.repackScene(nextScene, { warnOnEmpty: false });
+      return;
+    }
     const renderNextScene = applySolveSkinToScene(nextScene);
     const sceneBuffers = host.getSceneBuffers();
     if (sceneBuffers == null) {
@@ -1166,35 +1185,21 @@ export class SceneMutationRouter {
       environmentSummaryFromSceneBuffers(sceneBuffers),
     );
 
-    // Camera-visible mesh emitters fold their radiance into the backing
-    // primitive's material slot. Include that slot in the same candidate swap
-    // as the emitter and light-tree arrays so neither side can become stale.
-    if (host.cameraVisibleEmitters()) {
-      const updatedEmitter = nextScene.emitters.find((emitter) => emitter.id === id);
-      if (updatedEmitter?.kind === 'mesh-area') {
-        const backedPrimitive = nextScene.primitives.find(
-          (primitive) => primitive.id === updatedEmitter.meshId,
-        );
-        if (backedPrimitive != null && backedPrimitive.kind !== 'analytic') {
-          const materialIndex = materialIndexForPrimitive(
-            nextScene,
-            backedPrimitive.id,
-            host.supportedAnalyticShapes(),
-          );
-          if (materialIndex != null) {
-            const folded = packFoldedMaterialEntry(backedPrimitive, nextScene, true);
-            if (folded.length === MATERIAL_FLOAT_STRIDE) {
-              // Preserve the sparse RGB thin-film LUT absolute offset; emitter
-              // folding only changes emissive fields in the fixed record.
-              folded[28 * 4 + 2] = sceneBuffers.materials[
-                materialIndex * MATERIAL_FLOAT_STRIDE + 28 * 4 + 2] ?? 0;
-              const materials = new Float32Array(sceneBuffers.materials);
-              materials.set(folded, materialIndex * MATERIAL_FLOAT_STRIDE);
-              bufferPatch.materials = materials;
-            }
-          }
-        }
-      }
+    // Reconcile both sides of mesh-area ownership. Moving an emitter A→B must
+    // restore A's authored surface material and apply B's visible fold (or
+    // camera-invisible suppression) in the same candidate transaction.
+    const ownerIds = meshAreaEmitterOwnerIds(currentScene);
+    for (const ownerId of meshAreaEmitterOwnerIds(nextScene)) {
+      ownerIds.add(ownerId);
+    }
+    if (ownerIds.size > 0) {
+      bufferPatch.materials = emitterOwnerMaterials(
+        nextScene,
+        sceneBuffers,
+        host.supportedAnalyticShapes(),
+        ownerIds,
+        host.cameraVisibleEmitters(),
+      );
     }
 
     const deferredWarnings: DeferredWarning[] = packed.warnings.map((warning) => ({
@@ -1224,7 +1229,6 @@ export class SceneMutationRouter {
       ...currentScene,
       environment: env ?? { kind: 'none' },
     };
-    const renderNextScene = applySolveSkinToScene(nextScene);
     // Reject malformed environment payloads before any derived packing or GPU
     // candidate allocation. The returned private token is the commit proof, so
     // the same complete snapshot is not traversed a second time at publication.
@@ -1236,7 +1240,17 @@ export class SceneMutationRouter {
       return;
     }
 
+    const renderNextScene = applySolveSkinToScene(applyAnalyticRenderFallbacks(nextScene, []));
     const packed = environmentParams(nextScene);
+    assertSceneEnvironmentMaterialEnvelope(
+      nextScene,
+      host.supportedAnalyticShapes(),
+      host.spectralEnabled?.() === true,
+      {
+        environmentMapTexels: packed.hdriTexels,
+        environmentHdriIntensity: packed.hdriIntensity,
+      },
+    );
     const envSummaryForTree: EnvSummaryForTree = {
       hasHdri: packed.hasHdri,
       lightTreePower: packed.lightTreePower,
@@ -1293,10 +1307,10 @@ export class SceneMutationRouter {
     }
     const deferredWarnings: DeferredWarning[] = [];
 
-    const hasEmitters = Object.prototype.hasOwnProperty.call(opts, 'emitters') &&
-      opts.emitters !== undefined;
-    const hasEnvironment = Object.prototype.hasOwnProperty.call(opts, 'environment') &&
-      opts.environment !== undefined;
+    const hasEmitters =
+      Object.prototype.hasOwnProperty.call(opts, 'emitters') && opts.emitters !== undefined;
+    const hasEnvironment =
+      Object.prototype.hasOwnProperty.call(opts, 'environment') && opts.environment !== undefined;
     if (hasEmitters && !Array.isArray(opts.emitters)) {
       throw new TypeError('updateLighting: emitters must be an array when supplied');
     }
@@ -1314,17 +1328,15 @@ export class SceneMutationRouter {
     const currentScene = host.getScene()!;
     const nextScene: Scene = {
       ...currentScene,
-      ...(hasEmitters
-        ? { emitters: [...(opts.emitters as readonly SceneEmitter[])] }
-        : {}),
+      ...(hasEmitters ? { emitters: [...(opts.emitters as readonly SceneEmitter[])] } : {}),
       ...(hasEnvironment
         ? {
-            environment: (opts.environment as Scene['environment'] | null) ??
-              { kind: 'none' as const },
+            environment: (opts.environment as Scene['environment'] | null) ?? {
+              kind: 'none' as const,
+            },
           }
         : {}),
     };
-    const renderNextScene = applySolveSkinToScene(nextScene);
     // Validate the complete candidate before deriving emitter/environment
     // buffers. Shape-only checks above provide actionable method errors; core
     // scene validation enforces every emitter/environment numeric invariant.
@@ -1335,6 +1347,17 @@ export class SceneMutationRouter {
       host.validateEnvironmentCandidate(nextScene.environment);
     }
     const validatedNextScene = this.#validatedCandidate(nextScene);
+    // Preserve generated analytic geometry when replacing the emitter list;
+    // the emitter-only path otherwise sees the authored analytic records
+    // rather than the mesh records in the live BLAS.
+    if (
+      hasEmitters &&
+      (sceneHasAnalyticRenderFallback(currentScene) || sceneHasAnalyticRenderFallback(nextScene))
+    ) {
+      host.repackScene(nextScene, { warnOnEmpty: false });
+      return;
+    }
+    const renderNextScene = applySolveSkinToScene(applyAnalyticRenderFallbacks(nextScene, []));
     const sceneBuffers = host.getSceneBuffers();
     if (sceneBuffers == null) {
       host.setScene(nextScene);
@@ -1343,12 +1366,24 @@ export class SceneMutationRouter {
 
     const packedEmitters = packEmitterArrays(renderNextScene);
     const packedEnvironment = hasEnvironment ? environmentParams(renderNextScene) : null;
-    const envSummary: EnvSummaryForTree = packedEnvironment == null
-      ? environmentSummaryFromSceneBuffers(sceneBuffers)
-      : {
-          hasHdri: packedEnvironment.hasHdri,
-          lightTreePower: packedEnvironment.lightTreePower,
-        };
+    assertSceneEnvironmentMaterialEnvelope(
+      nextScene,
+      host.supportedAnalyticShapes(),
+      host.spectralEnabled?.() === true,
+      packedEnvironment == null
+        ? sceneBuffers
+        : {
+            environmentMapTexels: packedEnvironment.hdriTexels,
+            environmentHdriIntensity: packedEnvironment.hdriIntensity,
+          },
+    );
+    const envSummary: EnvSummaryForTree =
+      packedEnvironment == null
+        ? environmentSummaryFromSceneBuffers(sceneBuffers)
+        : {
+            hasHdri: packedEnvironment.hasHdri,
+            lightTreePower: packedEnvironment.lightTreePower,
+          };
     const bufferPatch = emitterAndLightTreeMutationPatch(
       renderNextScene,
       packedEmitters,
@@ -1367,12 +1402,20 @@ export class SceneMutationRouter {
         hasEnvironmentMap: packedEnvironment.hasHdri,
       } satisfies SceneBufferMutationPatch);
     }
-    if (hasEmitters && host.cameraVisibleEmitters()) {
-      bufferPatch.materials = cameraVisibleEmitterMaterials(
-        nextScene,
-        sceneBuffers,
-        host.supportedAnalyticShapes(),
-      );
+    if (hasEmitters) {
+      const ownerIds = meshAreaEmitterOwnerIds(currentScene);
+      for (const ownerId of meshAreaEmitterOwnerIds(nextScene)) {
+        ownerIds.add(ownerId);
+      }
+      if (ownerIds.size > 0) {
+        bufferPatch.materials = emitterOwnerMaterials(
+          nextScene,
+          sceneBuffers,
+          host.supportedAnalyticShapes(),
+          ownerIds,
+          host.cameraVisibleEmitters(),
+        );
+      }
     }
 
     for (const warning of packedEmitters.warnings) {

@@ -12,6 +12,11 @@ function makeStubDenoiser(id: Denoiser['id']): Denoiser {
     state: () => DENOISER_READY_STATE,
     initialize: async () => {},
     dispatch: () => null,
+    prepareResize: () => ({
+      commit: () => undefined,
+      rollback: () => undefined,
+      finalize: () => undefined,
+    }),
     resize: () => {},
     dispose: () => {},
   };

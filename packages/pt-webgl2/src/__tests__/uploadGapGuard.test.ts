@@ -115,6 +115,7 @@ const EXPLICITLY_NON_UPLOADED_UNIFORMS = new Map<string, string>([
   ['materialRadianceTextures', 'sampler uniform; bound via SCENE_TEXTURE_BINDINGS'],
   ['sobolTexture', 'sampler uniform; bound to a real Sobol table when sampling=sobol'],
   ['uBdptLightPathTex', 'sampler uniform; BDPT path binds it when FEATURE_BDPT is active'],
+  ['uAccumHistory', 'sampler uniform; GlResources binds the prior progressive history'],
   // Compile-gated non-default feature uniforms; focused tests below cover accepted
   // host-controllable variants where applicable.
   ['physicalCamera', 'FEATURE_DOF struct root; physicalCamera.* members are uploaded'],

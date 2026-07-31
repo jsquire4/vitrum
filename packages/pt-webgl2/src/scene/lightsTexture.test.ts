@@ -148,11 +148,11 @@ describe('packLightsTexture — float32 area-geometry boundary', () => {
       vAxis: [1, 1 + 1e-8, 0],
     };
     expect(() => packLightsTexture([rect])).toThrow(
-      /@vitrum\/pt-webgl2: rect-area emitter "f32-collinear".*collapse to zero area/,
+      /@vitrum\/pt-webgl2: rect-area emitter "f32-collinear".*\(degenerate\)/,
     );
   });
 
-  it('rejects rect axes that overflow storage or GLSL squared-length denominators', () => {
+  it('rejects rect axes that overflow storage but accepts finite area after a raw squared-length overflow', () => {
     const storageOverflow: RectAreaEmitter = {
       ...rectBase,
       id: 'axis-storage-overflow',
@@ -160,7 +160,7 @@ describe('packLightsTexture — float32 area-geometry boundary', () => {
       vAxis: [0, 1, 0],
     };
     expect(() => packLightsTexture([storageOverflow])).toThrow(
-      /rect-area emitter "axis-storage-overflow".*not representable as finite float32 values/,
+      /rect-area emitter "axis-storage-overflow".*\(non-finite-input\)/,
     );
 
     const denominatorOverflow: RectAreaEmitter = {
@@ -169,12 +169,11 @@ describe('packLightsTexture — float32 area-geometry boundary', () => {
       uAxis: [1e20, 0, 0],
       vAxis: [0, 1, 0],
     };
-    expect(() => packLightsTexture([denominatorOverflow])).toThrow(
-      /rect-area emitter "axis-denominator-overflow".*squared lengths.*finite and strictly positive/,
-    );
+    const packed = packLightsTexture([denominatorOverflow]);
+    expect(texel(packed.data, 0, 3, 3) / 4e20).toBeCloseTo(1, 5);
   });
 
-  it('rejects disc diameters that overflow storage or GLSL squared-length denominators', () => {
+  it('rejects disc diameters that overflow storage or produce unrepresentable area', () => {
     const discBase: Omit<DiscAreaEmitter, 'id' | 'radius'> = {
       kind: 'disc-area',
       color: [1, 1, 1],
@@ -187,15 +186,125 @@ describe('packLightsTexture — float32 area-geometry boundary', () => {
       id: 'disc-storage-overflow',
       radius: 2e38,
     }])).toThrow(
-      /disc-area emitter "disc-storage-overflow".*not representable as finite float32 values/,
+      /disc-area emitter "disc-storage-overflow".*\(non-finite-input\)/,
     );
     expect(() => packLightsTexture([{
       ...discBase,
       id: 'disc-denominator-overflow',
       radius: 1e20,
     }])).toThrow(
-      /disc-area emitter "disc-denominator-overflow".*squared lengths.*finite and strictly positive/,
+      /disc-area emitter "disc-denominator-overflow".*\(unrepresentable-area\)/,
     );
+  });
+
+  it('rejects selection powers and cumulative selection mass that do not survive float32', () => {
+    expect(() => packLightsTexture([{
+      ...rectBase,
+      id: 'power-overflow',
+      intensity: 2e38,
+      uAxis: [1, 0, 0],
+      vAxis: [0, 1, 0],
+    }])).toThrow(/selection power must survive finite positive RGBA32F storage/);
+
+    const directional = (id: string) => ({
+      kind: 'directional' as const,
+      id,
+      color: [1, 1, 1] as [number, number, number],
+      intensity: 2e38,
+      direction: [0, 1, 0] as [number, number, number],
+    });
+    expect(() =>
+      packLightsTexture([directional('sum-a'), directional('sum-b')]),
+    ).toThrow(/selection-power sum overflows float32/);
+
+    expect(() =>
+      packLightsTexture([
+        { ...directional('dominant'), intensity: 1e30 },
+        { ...directional('flattened'), intensity: 1e-30 },
+      ]),
+    ).toThrow(/loses proposal support in the cumulative float32 distribution/);
+
+    expect(() =>
+      packLightsTexture([
+        { ...directional('pdf-collapse'), intensity: 1e-30 },
+        { ...directional('dominant-last'), intensity: 1e30 },
+      ]),
+    ).toThrow(/selection probability collapses to zero in float32/);
+  });
+
+  it('rejects every analytic-light operand that would become non-finite RGBA32F', () => {
+    const pointBase: PointEmitter = {
+      kind: 'point',
+      id: 'base',
+      color: [1, 1, 1],
+      intensity: 1,
+      position: [0, 1, 0],
+    };
+    expect(() => packLightsTexture([{
+      ...pointBase,
+      id: 'position-overflow',
+      position: [1e39, 0, 0],
+    }])).toThrow(/position-overflow.*position\[0\] overflows WebGL float32 storage/);
+    expect(() => packLightsTexture([{
+      ...pointBase,
+      id: 'intensity-overflow',
+      color: [1e-39, 0, 0],
+      intensity: 1e39,
+    }])).toThrow(/intensity-overflow.*intensity overflows WebGL float32 storage/);
+    expect(() => packLightsTexture([{
+      ...pointBase,
+      id: 'decay-overflow',
+      decay: 1e39,
+    }])).toThrow(/decay-overflow.*decay overflows WebGL float32 storage/);
+    expect(() => packLightsTexture([{
+      ...pointBase,
+      id: 'distance-overflow',
+      distance: 1e39,
+    }])).toThrow(/distance-overflow.*distance overflows WebGL float32 storage/);
+  });
+
+  it('rejects f32 source-radiance multiplication overflow and underflow', () => {
+    const pointBase: PointEmitter = {
+      kind: 'point',
+      id: 'base',
+      color: [1, 0, 0],
+      intensity: 1,
+      position: [0, 1, 0],
+    };
+    expect(() => packLightsTexture([{
+      ...pointBase,
+      id: 'radiance-overflow',
+      color: [2, 0, 0],
+      intensity: 2e38,
+    }])).toThrow(
+      /radiance-overflow.*color\[0\] \* intensity overflows shader float32 multiplication/,
+    );
+    expect(() => packLightsTexture([{
+      ...pointBase,
+      id: 'radiance-underflow',
+      color: [2 ** -149, 0, 0],
+      intensity: 0.25,
+    }])).toThrow(
+      /radiance-underflow.*color\[0\] \* intensity underflows shader float32 multiplication/,
+    );
+  });
+
+  it('derives selection power from the exact stored color-times-intensity result', () => {
+    const tiny = 2 ** -149;
+    const huge = 2 ** 120;
+    const packed = packLightsTexture([{
+      kind: 'point',
+      id: 'ordered-radiance',
+      color: [tiny, 0, 0],
+      intensity: huge,
+      position: [0, 1, 0],
+    }]);
+    const storedRadiance = Math.fround(Math.fround(tiny) * Math.fround(huge));
+    const expectedPower = Math.fround(luminance(storedRadiance, 0, 0));
+    expect(storedRadiance).toBeGreaterThan(0);
+    expect(texel(packed.data, 0, 1, 0)).toBe(Math.fround(tiny));
+    expect(texel(packed.data, 0, 1, 3)).toBe(Math.fround(huge));
+    expect(texel(packed.data, 0, 2, 3)).toBe(expectedPower);
   });
 });
 
@@ -322,6 +431,41 @@ describe('packLightsTexture — punctual spot orientation', () => {
     expect(texel(packed.data, 0, 3, 3)).toBe(0);
     expect(texel(packed.data, 0, 4, 0)).toBe(0);
   });
+
+  it('preserves intentional hard edges and rejects positive f32-collapsed cone support', () => {
+    const base: SpotEmitter = {
+      id: 'spot-boundary',
+      kind: 'spot',
+      color: [1, 1, 1],
+      intensity: 1,
+      position: [0, 1, 0],
+      direction: [0, -1, 0],
+      angle: 0.5,
+    };
+    const hard = packLightsTexture([{ ...base, penumbra: 0 }]);
+    expect(texel(hard.data, 0, 4, 3)).toBe(texel(hard.data, 0, 5, 0));
+
+    const soft = packLightsTexture([{ ...base, penumbra: 0.25 }]);
+    expect(texel(soft.data, 0, 5, 0)).toBeGreaterThan(
+      texel(soft.data, 0, 4, 3),
+    );
+
+    expect(() =>
+      packLightsTexture([{
+        ...base,
+        id: 'collapsed-positive-cone',
+        angle: 1e-4,
+      }]),
+    ).toThrow(/positive angle collapses to a zero-width cone/);
+
+    expect(() =>
+      packLightsTexture([{
+        ...base,
+        id: 'collapsed-positive-penumbra',
+        penumbra: 1e-8,
+      }]),
+    ).toThrow(/positive penumbra collapses to the hard-cone edge/);
+  });
 });
 
 // ── D10.10: assertSlotCursor dev-only guard tests ─────────────────────────────
@@ -413,6 +557,40 @@ describe('assertSlotCursor — packing cursor is correct for each light kind', (
     const packed = packLightsTexture([dir]);
     expect(texel(packed.data, 0, 5, 1)).toBe(1);
     expect(texel(packed.data, 0, 5, 2)).toBeCloseTo(0.011, 6);
+  });
+
+  it('directional: accepts world-visible narrow cones and rejects collapsed positive cones', () => {
+    const dir: DirectionalEmitter = {
+      id: 'narrow-sun',
+      kind: 'directional',
+      color: [1, 1, 1],
+      intensity: 1,
+      direction: [0, 1, 0],
+      angularDiameter: 4e-6,
+    };
+    const packed = packLightsTexture([dir]);
+    expect(texel(packed.data, 0, 5, 2)).toBe(Math.fround(4e-6));
+
+    expect(() => packLightsTexture([{
+      ...dir,
+      id: 'world-basis-collapsed-cone',
+      angularDiameter: 1e-6,
+    }])).toThrow(
+      /world-basis-collapsed-cone.*too small to survive world-basis float32 addition/,
+    );
+
+    expect(() => packLightsTexture([{
+      ...dir,
+      id: 'unrepresentable-cone',
+      angularDiameter: 1e-20,
+    }])).toThrow(
+      /unrepresentable-cone.*too small to retain a finite-cone solid angle and PDF/,
+    );
+    expect(() => packLightsTexture([{
+      ...dir,
+      id: 'out-of-range-cone',
+      angularDiameter: Math.PI + 0.1,
+    }])).toThrow(/angularDiameter must be finite and in \[0, PI\]/);
   });
 });
 

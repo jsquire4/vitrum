@@ -56,7 +56,7 @@ struct PrimarySurface {
 
 // ============================================================
 // ReSTIR-GI / GRIS reservoir. The Sprint-16/17 fields occupy u32 [0..19]
-// (UNCHANGED — byte-identical to the old ReservoirGI). Generalized reuse fields
+// (UNCHANGED word offsets versus the old ReservoirGI). Generalized reuse fields
 // are always appended at u32 [20..27]. ReservoirGI is kept as a type alias so the existing pass call
 // sites (risGi/temporalGi/spatialGi/shade) compile unchanged.
 // ============================================================
@@ -78,9 +78,13 @@ fn reservoirGiSaturatingAddU32(a: u32, b: u32) -> u32 {
 }
 
 struct ReservoirPT {
-  // ── Sprint-16/17 reconnection sample (u32 [0..19], byte-identical) ──
+  // ── Sprint-16/17 reconnection sample (u32 [0..19], layout-compatible) ──
   xv:      vec3f,   // visible point (primary hit)        idx 0..2
-  _pad0:   f32,     //                                    idx 3
+  // Former padding word. Scaled reservoirs use it to reject material/primitive
+  // domain changes before shifting a representative sample to a full-res
+  // receiver. Scale 1 deliberately ignores this key for cold-snapshot
+  // compatibility with the historical zero-filled word.
+  receiverMaterialKey: u32, // receiver-domain identity   idx 3
   nv:      vec3f,   // normal at xv                       idx 4..6
   W:       f32,     // RIS contribution weight    idx 7
   xs:      vec3f,   // sample point (reconnection vertex)  idx 8..10
@@ -108,7 +112,7 @@ fn emptyReservoirGI() -> ReservoirPT {
   r.xv = vec3f(0.0); r.nv = vec3f(0,1,0);
   r.xs = vec3f(0.0); r.ns = vec3f(0,1,0);
   r.Lo = vec3f(0.0); r.W = 0.0; r.w_sum = 0.0; r.M = 0u;
-  r.lightId = 0u; r._pad0 = 0.0;
+  r.lightId = 0u; r.receiverMaterialKey = 0u;
   // Generalized-reuse metadata is zero-initialised when gi-ris produces no
   // reconnectable vertex. The canonical temporal and spatial passes consume it.
   r.wi_recon = vec3f(0.0);
@@ -119,7 +123,7 @@ fn emptyReservoirGI() -> ReservoirPT {
 }
 
 // Sprint 16 / GRIS — ReservoirPT byte layout:
-//   [0..2]   xv.xyz       [3]    _pad0
+//   [0..2]   xv.xyz       [3]    receiverMaterialKey
 //   [4..6]   nv.xyz       [7]    W
 //   [8..10]  xs.xyz       [11]   w_sum
 //   [12..14] ns.xyz       [15]   M
@@ -129,14 +133,14 @@ fn emptyReservoirGI() -> ReservoirPT {
 //   [24]     prefixVertexCount
 //   [25]     sampleKind   [26]   nativePHat   [27] historyEpoch
 // Strided storage in array<u32> (4-byte elements): the live stride is 28 u32.
-// NOTE: indices [0..19] are byte-identical to the pre-GRIS ReservoirGI layout,
-// which permits explicit cold-history migration from old snapshots.
+// NOTE: indices [0..19] preserve the pre-GRIS ReservoirGI word layout. Old
+// snapshots migrate with receiverMaterialKey=0 because word 3 was padding.
 const RESERVOIR_GI_STRIDE: u32 = ${strideU32}u;
 
 fn unpackReservoirGI(words: array<u32, ${strideU32}>) -> ReservoirPT {
   var r: ReservoirPT;
   r.xv      = vec3f(bitcast<f32>(words[0u]), bitcast<f32>(words[1u]), bitcast<f32>(words[2u]));
-  r._pad0   = bitcast<f32>(words[3u]);
+  r.receiverMaterialKey = words[3u];
   r.nv      = vec3f(bitcast<f32>(words[4u]), bitcast<f32>(words[5u]), bitcast<f32>(words[6u]));
   r.W       = bitcast<f32>(words[7u]);
   r.xs      = vec3f(bitcast<f32>(words[8u]), bitcast<f32>(words[9u]), bitcast<f32>(words[10u]));
@@ -160,7 +164,7 @@ fn packReservoirGI(r: ReservoirPT) -> array<u32, ${strideU32}> {
   words[0u]  = bitcast<u32>(r.xv.x);
   words[1u]  = bitcast<u32>(r.xv.y);
   words[2u]  = bitcast<u32>(r.xv.z);
-  words[3u]  = bitcast<u32>(r._pad0);
+  words[3u]  = r.receiverMaterialKey;
   words[4u]  = bitcast<u32>(r.nv.x);
   words[5u]  = bitcast<u32>(r.nv.y);
   words[6u]  = bitcast<u32>(r.nv.z);
@@ -238,7 +242,7 @@ fn updateReservoirGIWithMetadata(
 // the final sample is chosen (risGi / risGiNrc producers).  Populates wi_recon,
 // sampleVisibility, and prefixVertexCount from the chosen base path edge xv → xs.
 // Leaves the direction zeroed and prefixVertexCount = 0
-// when the reservoir is empty (M == 0) or degenerate (‖xv − xs‖ ≤ 1e-6).
+// when the reservoir is empty (M == 0) or exactly degenerate (xv == xs).
 // Call after the final visibility test and W update.
 fn refreshGrisMetadata(r: ptr<function, ReservoirPT>) {
   if ((*r).M == 0u) {
@@ -252,10 +256,9 @@ fn refreshGrisMetadata(r: ptr<function, ReservoirPT>) {
     return;
   }
   let toRecon = (*r).xs - (*r).xv;
-  let dRecon = length(toRecon);
-  if (dRecon > 1e-6) {
-    let wiR = toRecon / dRecon;
-    (*r).wi_recon = wiR;
+  let reconScale = max(abs(toRecon.x), max(abs(toRecon.y), abs(toRecon.z)));
+  if (reconScale > 0.0 && reconScale <= 3.402823466e38) {
+    (*r).wi_recon = safe_normalize(toRecon);
   } else {
     (*r).wi_recon = vec3f(0.0);
     (*r).prefixVertexCount = GI_PREFIX_INVALID;

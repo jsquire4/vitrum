@@ -1,4 +1,5 @@
 import type { MaterialSpec } from '@vitrum/core';
+import { packRadianceRgbScaleF32 } from '@vitrum/shared-bvh';
 import {
   rgbToSpectralCoefficients,
   resolveEmissiveIntensity,
@@ -114,6 +115,11 @@ export function materialToPackedVec4s(
   const base = material.baseColor;
   const emissive = material.emissive ?? [0, 0, 0];
   const emissiveIntensity = resolveEmissiveIntensity(material.emissiveIntensity);
+  const packedEmissive = packRadianceRgbScaleF32(
+    emissive,
+    emissiveIntensity,
+    '@vitrum/pt-webgpu material emissive',
+  ).scaled;
   const roughness = material.roughness ?? 0.5;
   const metallic = material.metallic ?? 0;
   const transmission = material.transmission ?? 0;
@@ -169,9 +175,9 @@ export function materialToPackedVec4s(
     base[1],
     base[2],
     roughness,
-    emissive[0] * emissiveIntensity,
-    emissive[1] * emissiveIntensity,
-    emissive[2] * emissiveIntensity,
+    packedEmissive[0],
+    packedEmissive[1],
+    packedEmissive[2],
     metallic,
     transmission,
     ior,

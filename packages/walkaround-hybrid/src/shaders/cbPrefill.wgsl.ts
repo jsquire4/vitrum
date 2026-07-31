@@ -13,7 +13,7 @@
  * Binding layout (5 bindings, own `cb-prefill` BGL):
  *   0  CbPrefillUniforms UBO   (screenW/H, frameParity — 12 bytes, padded to 16)
  *   1  readAccum in            (rgba16float sampled — previous-frame radiance)
- *   2  motionVectorTexture in  (rgba32float sampled; xy stores motion)
+ *   2  motionVectorTexture in  (rg32float sampled)
  *   3  current shaded snapshot (rgba16float sampled; immutable copy)
  *   4  hdrColorTexture out     (rgba16float storage write — gap pixels filled)
  *

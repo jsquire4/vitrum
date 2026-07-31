@@ -57,6 +57,7 @@ export function uploadFrameUniforms(
   // alpha-aware running-mean compositor. Never uploading this uniform used to
   // default it to zero, so sky/HDRI pixels never accumulated.
   prog.setFloat('backgroundAlpha', frame.backgroundAlpha);
+  prog.setFloat('uRayOriginBias', frame.rayOriginBias);
   prog.setMat4('environmentRotation', frame.environmentRotation);
   prog.setInt('uSpectralRendering', frame.spectralEnabled ? 1 : 0);
   if (frame.spectralEnabled) {

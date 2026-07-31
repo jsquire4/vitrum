@@ -79,7 +79,13 @@ describe('bounded hybrid dielectric transport closure', () => {
       expect(source).not.toContain('no secondary refraction');
     }
     expect(RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL).toContain(
-      'walkHit.dist / mediumThickness[top]',
+      'segmentDistance / mediumThickness[top]',
+    );
+    expect(RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL).toContain(
+      'let entering = walkHit.side >= 0.0;',
+    );
+    expect(RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL).toContain(
+      'mediumInstance[top] != walkHit.instanceIndex',
     );
     expect(RIS_GI_GLASS_RESERVOIR_LOOP_WGSL).toContain(
       'Lo_g = Lo_g * glassPathThroughput;',
@@ -130,6 +136,12 @@ describe('bounded hybrid dielectric transport closure', () => {
     );
     expect(REFRACTIVE_CAUSTICS_WGSL).toContain('ggxSampleDielectricTransmission(');
     expect(REFRACTIVE_CAUSTICS_WGSL).toContain('faceLayerTransmission(layerControls)');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain(
+      'let entering = hit.side >= 0.0;',
+    );
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain(
+      'mediumMaterialWord[top] != materialWord',
+    );
     expect(REFRACTIVE_CAUSTICS_WGSL).not.toContain('materialRm.x > 0.0001');
   });
 

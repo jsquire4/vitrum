@@ -117,6 +117,38 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 13, 3)]).toBe(1);
   });
 
+  it('realizes every supported envMapIntensity at the RGBA32F boundary', () => {
+    const minSubnormal = 2 ** -149;
+    const maxFinite = Math.fround(3.402823466e38);
+    const values = [0, 1 / 3, minSubnormal, maxFinite];
+    const materials = values.map((envMapIntensity): MaterialSpec => ({
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      envMapIntensity,
+    }));
+    const data = packMaterialsTexture(materials).data;
+
+    for (let i = 0; i < values.length; i += 1) {
+      expect(data[texel(i, 85, 3)]).toBe(Math.fround(values[i]!));
+    }
+  });
+
+  it.each([
+    ['negative', -1, /must be finite and non-negative/],
+    ['non-finite', Number.POSITIVE_INFINITY, /must be finite and non-negative/],
+    ['overflowing', Number.MAX_VALUE, /overflows WebGL float32 storage/],
+    ['positive-underflowing', Number.MIN_VALUE, /underflows WebGL float32 storage/],
+  ])('rejects a %s envMapIntensity before packing', (_label, envMapIntensity, message) => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      envMapIntensity,
+    };
+    expect(() => packMaterialsTexture([material])).toThrow(message);
+  });
+
   it('glass (finite attenuationDistance + transmission>0) gets side==0', () => {
     const glass: MaterialSpec = {
       baseColor: [0.95, 0.97, 1.0],
@@ -166,6 +198,11 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 13, 3)]).toBe(1);
     expect(d[texel(1, 13, 3)]).toBe(0);
     expect(d[texel(2, 13, 3)]).toBe(0);
+    expect(Number(d[texel(0, 14, 3)]) & 0x02).toBe(0);
+    expect(Number(d[texel(1, 14, 3)]) & 0x02).toBe(0x02);
+    // Traversability is not emissive sidedness: closed single-sided glass keeps
+    // the back interface hittable without acquiring the double-sided flag.
+    expect(Number(d[texel(2, 14, 3)]) & 0x02).toBe(0);
   });
 
   it('packs primitive-derived castShadow in s14.g, defaulting to true', () => {
@@ -194,6 +231,41 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     const d = packMaterialsTexture([ordinary, foldedShadowless]).data;
     expect(d[texel(0, 14, 3)]).toBe(0);
     expect(d[texel(1, 14, 3)]).toBe(64);
+  });
+
+  it('packs forward-only mesh emission in s14.a bit 7 for NEE-excluded materials', () => {
+    const exactNearest: MaterialSpec = {
+      baseColor: [0, 0, 0],
+      roughness: 1,
+      metallic: 0,
+      emissive: [1, 1, 1],
+      emissiveMap: { handle: {} },
+    };
+    const filtered: MaterialSpec = {
+      ...exactNearest,
+      emissiveMap: { handle: {}, minFilter: 'linear' },
+    };
+    const mipmapped: MaterialSpec = {
+      ...exactNearest,
+      emissiveMap: { handle: {}, mipFilter: 'nearest' },
+    };
+    const explicitlySkipped: MaterialSpec = {
+      baseColor: [0, 0, 0],
+      roughness: 1,
+      metallic: 0,
+      emissive: [1, 1, 1],
+      extensions: { skipEmitter: true },
+    };
+    const d = packMaterialsTexture([
+      exactNearest,
+      filtered,
+      mipmapped,
+      explicitlySkipped,
+    ]).data;
+    expect(d[texel(0, 14, 3)]).toBe(0);
+    expect(d[texel(1, 14, 3)]).toBe(128);
+    expect(d[texel(2, 14, 3)]).toBe(128);
+    expect(d[texel(3, 14, 3)]).toBe(128);
   });
 
   it('packs the vertex-color enable flag in s14.b for materials used by colored primitives', () => {

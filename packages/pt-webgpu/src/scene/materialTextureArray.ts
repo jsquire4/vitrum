@@ -23,6 +23,11 @@
 
 import type { MaterialTextureLayerInfo, MaterialTextureLayerUse } from './materialTextures.js';
 import {
+  halfToFloat,
+  packRadianceRgbProductF32,
+  type RadianceRgb,
+} from '@vitrum/shared-bvh';
+import {
   isPtWebgpuTextureSource,
   type PtWebgpuTextureSource,
 } from '../materialTextureSource.js';
@@ -58,6 +63,23 @@ export interface MaterialTextureArray {
   readonly layerUvScales: readonly MaterialTextureLayerUvScale[];
   readonly warnings: readonly string[];
   readonly structuredWarnings: readonly MaterialTextureArrayWarning[];
+}
+
+export type MaterialTextureRadianceFactorsByMaterial = ReadonlyArray<
+  readonly RadianceRgb[] | undefined
+>;
+
+/**
+ * Exact shader operands for material maps that publish outgoing radiance.
+ *
+ * A material can have more than one emissive factor: camera-hit shading reads
+ * the packed material record, while an explicit mesh-area emitter can publish a
+ * distinct base Le for NEE. Every factor that can multiply a layer is therefore
+ * retained and checked independently against every exact CPU-readable texel.
+ */
+export interface MaterialTextureRadianceEnvelope {
+  readonly emissiveMap?: MaterialTextureRadianceFactorsByMaterial;
+  readonly lightMap?: MaterialTextureRadianceFactorsByMaterial;
 }
 
 interface ImagePayload {
@@ -200,6 +222,167 @@ function float32ToFloat16(value: number): number {
   return sign | (exp << 10) | (mant & 0x03ff);
 }
 
+function radianceFactorsForUse(
+  envelope: MaterialTextureRadianceEnvelope,
+  use: MaterialTextureLayerUse,
+): readonly RadianceRgb[] {
+  if (use.field === 'emissiveMap') {
+    return envelope.emissiveMap?.[use.materialIndex] ?? [];
+  }
+  if (use.field === 'lightMap') {
+    return envelope.lightMap?.[use.materialIndex] ?? [];
+  }
+  return [];
+}
+
+function exactNormalizedUploadRgb(
+  upload: NormalizedRgba8Upload | NormalizedFloatUpload,
+  format: GPUTextureFormat,
+  texel: number,
+): [number, number, number] {
+  const base = texel * 4;
+  if (format === 'rgba16float') {
+    const data = upload.data as Uint16Array;
+    return [
+      halfToFloat(data[base] ?? 0),
+      halfToFloat(data[base + 1] ?? 0),
+      halfToFloat(data[base + 2] ?? 0),
+    ];
+  }
+  const data = upload.data as Uint8Array;
+  return [
+    (data[base] ?? 0) / 255,
+    (data[base + 1] ?? 0) / 255,
+    (data[base + 2] ?? 0) / 255,
+  ];
+}
+
+function decodedMirrorChannel(
+  source: PtWebgpuTextureSource,
+  channel: number,
+  texel: number,
+): number {
+  const mirror = source.cpuMirror!;
+  if (channel === 3 && mirror.channels < 4) return 1;
+  if (channel === 2 && mirror.channels === 2) return 0;
+  const sourceChannel = channel < mirror.channels
+    ? channel
+    : channel === 1
+      ? 0
+      : Math.min(channel, mirror.channels - 1);
+  const raw = Number(mirror.data[texel * mirror.channels + sourceChannel] ?? 0);
+  let value = mirror.dataType === 'uint8'
+    ? raw / 255
+    : mirror.dataType === 'uint16'
+      ? raw / 65535
+      : mirror.dataType === 'float16' || mirror.dataType === 'half-float'
+        ? halfToFloat(raw)
+        : raw;
+  if (channel < 3 && mirror.colorSpace === 'srgb') {
+    value = srgbToLinear(value);
+  }
+  return value;
+}
+
+function normalizeGpuMirrorFloatUpload(
+  source: PtWebgpuTextureSource,
+): NormalizedFloatUpload {
+  const mirror = source.cpuMirror!;
+  const pixelCount = mirror.width * mirror.height;
+  const out = new Uint16Array(pixelCount * 4);
+  for (let texel = 0; texel < pixelCount; texel += 1) {
+    const base = texel * 4;
+    for (let channel = 0; channel < 4; channel += 1) {
+      const value = decodedMirrorChannel(source, channel, texel);
+      if (!Number.isFinite(value) || Math.abs(value) > 65504) {
+        throw new RangeError(
+          `[materialTextureArray] GPU source cpuMirror texel ${texel} channel ` +
+          `${channel} exceeds finite rgba16float range: ${String(value)}.`,
+        );
+      }
+      out[base + channel] = float32ToFloat16(value);
+    }
+  }
+  return {
+    data: out,
+    bytesPerRow: mirror.width * 8,
+    rowsPerImage: mirror.height,
+  };
+}
+
+function quantizeRadianceTargetChannel(
+  value: number,
+  format: GPUTextureFormat,
+): number {
+  if (format === 'rgba16float') {
+    return halfToFloat(float32ToFloat16(value));
+  }
+  return Math.round(Math.min(1, Math.max(0, value)) * 255) / 255;
+}
+
+function exactGpuMirrorRgb(
+  source: PtWebgpuTextureSource,
+  format: GPUTextureFormat,
+  texel: number,
+): [number, number, number] {
+  return [
+    quantizeRadianceTargetChannel(decodedMirrorChannel(source, 0, texel), format),
+    quantizeRadianceTargetChannel(decodedMirrorChannel(source, 1, texel), format),
+    quantizeRadianceTargetChannel(decodedMirrorChannel(source, 2, texel), format),
+  ];
+}
+
+function validateMaterialTextureRadianceEnvelope(
+  payloads: readonly (ImagePayload | null)[],
+  normalizedUploads: readonly (
+    NormalizedRgba8Upload | NormalizedFloatUpload | null
+  )[],
+  format: GPUTextureFormat,
+  layerInfos: ReadonlyArray<MaterialTextureLayerInfo> | undefined,
+  envelope: MaterialTextureRadianceEnvelope | undefined,
+): void {
+  if (envelope == null) return;
+  for (let layer = 0; layer < payloads.length; layer += 1) {
+    const factorUses = layerUses(layerInfos, layer).flatMap((use) =>
+      radianceFactorsForUse(envelope, use).map((factor) => ({ use, factor }))
+    );
+    if (factorUses.length === 0) continue;
+    const payload = payloads[layer];
+    if (payload == null) {
+      // An unreadable layer is deterministically black and cannot overflow.
+      continue;
+    }
+    const normalized = normalizedUploads[layer];
+    const mirror = payload.gpuSource?.cpuMirror;
+    if (normalized == null && mirror == null) {
+      if (factorUses.some(({ use }) => use.field === 'emissiveMap')) {
+        throw new TypeError(
+          `[materialTextureArray] emissive source ${layer} has no exact CPU-readable ` +
+          'texels for radiance-envelope validation.',
+        );
+      }
+      // Opaque light maps remain supported. Their shader multiplication uses
+      // the deterministic finite product guard because WebGPU cannot read them
+      // synchronously during setScene.
+      continue;
+    }
+    const texelCount = payload.width * payload.height;
+    for (let texel = 0; texel < texelCount; texel += 1) {
+      const rgb = normalized != null
+        ? exactNormalizedUploadRgb(normalized, format, texel)
+        : exactGpuMirrorRgb(payload.gpuSource!, format, texel);
+      for (const { use, factor } of factorUses) {
+        packRadianceRgbProductF32(
+          factor,
+          rgb,
+          `@vitrum/pt-webgpu material ${use.materialIndex} ${use.field} ` +
+            `layer ${layer} texel ${texel} radiance`,
+        );
+      }
+    }
+  }
+}
+
 function byteViewOf(data: ArrayBufferView): Uint8Array<ArrayBuffer> | null {
   if (!(data instanceof Uint8Array) && !(data instanceof Uint8ClampedArray)) {
     return null;
@@ -243,7 +426,7 @@ function normalizeRawRgba8(
     const dst = i * 4;
     const r = bytes[src] ?? 0;
     const g = channels >= 2 ? bytes[src + 1] ?? 0 : r;
-    const b = channels >= 3 ? bytes[src + 2] ?? 0 : r;
+    const b = channels >= 3 ? bytes[src + 2] ?? 0 : channels === 1 ? r : 0;
     const a = channels >= 4 ? bytes[src + 3] ?? 255 : 255;
     rgba[dst] = r;
     rgba[dst + 1] = g;
@@ -284,7 +467,7 @@ function normalizeRawNumericRgba8(
     const dst = i * 4;
     const r = numericChannelAt(data, src);
     const g = channels >= 2 ? numericChannelAt(data, src + 1) : r;
-    const b = channels >= 3 ? numericChannelAt(data, src + 2) : r;
+    const b = channels >= 3 ? numericChannelAt(data, src + 2) : channels === 1 ? r : 0;
     const a = channels >= 4 ? numericChannelAt(data, src + 3) : maxValue;
     rgba[dst] = normalizedNumberToByte(r, maxValue);
     rgba[dst + 1] = normalizedNumberToByte(g, maxValue);
@@ -341,7 +524,11 @@ function normalizeRawTextureUploadFloat(
       const dst = i * 4;
       const r = (bytes[src] ?? 0) / 255;
       const g = channels >= 2 ? (bytes[src + 1] ?? 0) / 255 : r;
-      const b = channels >= 3 ? (bytes[src + 2] ?? 0) / 255 : r;
+      const b = channels >= 3
+        ? (bytes[src + 2] ?? 0) / 255
+        : channels === 1
+          ? r
+          : 0;
       const a = channels >= 4 ? (bytes[src + 3] ?? 255) / 255 : 1;
       out[dst] = float32ToFloat16(srgbToLinear(r));
       out[dst + 1] = float32ToFloat16(srgbToLinear(g));
@@ -382,7 +569,7 @@ function normalizeRawTextureUploadFloat(
     const dst = i * 4;
     const r = numericChannelAt(data, src);
     const g = channels >= 2 ? numericChannelAt(data, src + 1) : r;
-    const b = channels >= 3 ? numericChannelAt(data, src + 2) : r;
+    const b = channels >= 3 ? numericChannelAt(data, src + 2) : channels === 1 ? r : 0;
     const a = channels >= 4 ? numericChannelAt(data, src + 3) : maxValue;
     out[dst] = float32ToFloat16(encodeRgb(r));
     out[dst + 1] = float32ToFloat16(encodeRgb(g));
@@ -465,6 +652,7 @@ const GPU_MATERIAL_SOURCE_FORMATS: ReadonlySet<string> = new Set([
 
 export const MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL = /* wgsl */ `
 override decodeSrgb: f32 = 0.0;
+override sourceChannels: f32 = 4.0;
 
 struct VsOut {
   @builtin(position) position: vec4f,
@@ -495,6 +683,17 @@ fn fsMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   let sourceSize = textureDimensions(sourceTexture);
   let coord = min(vec2u(position.xy), sourceSize - vec2u(1u));
   var value = textureLoad(sourceTexture, vec2i(coord), 0);
+  // Match the public raw-data and shared CPU-readable texture convention: one
+  // channel expands to RGB; two channels expand to R,G,0; three channels get
+  // opaque alpha. WebGPU textureLoad otherwise supplies zero for absent G/B,
+  // which made a cpuMirror-backed emissive source disagree with forward hits.
+  if (sourceChannels < 1.5) {
+    value = vec4f(value.rrr, 1.0);
+  } else if (sourceChannels < 2.5) {
+    value = vec4f(value.r, value.g, 0.0, 1.0);
+  } else if (sourceChannels < 3.5) {
+    value = vec4f(value.rgb, 1.0);
+  }
   if (decodeSrgb > 0.5) {
     value = vec4f(
       srgbChannelToLinear(value.r),
@@ -506,6 +705,19 @@ fn fsMain(@builtin(position) position: vec4f) -> @location(0) vec4f {
   return value;
 }
 `;
+
+function gpuMaterialSourceChannelCount(format: GPUTextureFormat): 1 | 2 | 3 | 4 {
+  if (
+    format.startsWith('rgba') ||
+    format.startsWith('bgra') ||
+    format === 'rgb10a2unorm'
+  ) {
+    return 4;
+  }
+  if (format.startsWith('rgb') || format === 'rg11b10ufloat') return 3;
+  if (format.startsWith('rg')) return 2;
+  return 1;
+}
 
 function validateGpuMaterialSources(
   device: GPUDevice,
@@ -576,6 +788,7 @@ function blitGpuMaterialSourceLayer(
       entryPoint: 'fsMain',
       constants: {
         decodeSrgb: source.colorSpace === 'srgb' && !source.format.endsWith('-srgb') ? 1 : 0,
+        sourceChannels: gpuMaterialSourceChannelCount(source.format),
       },
       targets: [{ format: targetFormat }],
     },
@@ -951,6 +1164,12 @@ function preflightMaterialTextureArray(
           ? 4
           : 2;
       retainedMirrorBytes += mirror.data.length * bytesPerElement;
+      if (isFloatArray) {
+        largestDecodedBytes = Math.max(
+          largestDecodedBytes,
+          pixelCount * 8,
+        );
+      }
     }
   }
   const estimatedPeakBytes =
@@ -995,6 +1214,7 @@ export function createMaterialTextureArray(
   format: GPUTextureFormat = 'rgba8unorm-srgb',
   layerInfos?: ReadonlyArray<MaterialTextureLayerInfo>,
   forbiddenResources: ReadonlySet<object> = new Set(),
+  radianceEnvelope?: MaterialTextureRadianceEnvelope,
 ): MaterialTextureArray {
   const preflight = preflightMaterialTextureArray(
     device, sources, format, forbiddenResources,
@@ -1015,7 +1235,17 @@ export function createMaterialTextureArray(
   // synchronously and cannot leave a partially black material layer behind.
   const normalizedUploads = payloads.map((p, layer) => {
     if (p == null) return null;
-    if (p.data == null) return null;
+    if (p.data == null) {
+      // Emissive GPU sources already require an immutable exact cpuMirror for
+      // NEE. Upload that same snapshot into the rgba16float array so CPU
+      // preflight and shader sampling share the identical CPU sRGB conversion
+      // and half quantization. This removes native-sRGB/WGSL-pow rounding drift
+      // at extreme scalar×texel envelopes.
+      if (isFloatArray && p.gpuSource?.cpuMirror != null) {
+        return normalizeGpuMirrorFloatUpload(p.gpuSource);
+      }
+      return null;
+    }
     const upload = isFloatArray
       ? normalizeRawTextureUploadFloat(
           p.data,
@@ -1035,6 +1265,13 @@ export function createMaterialTextureArray(
     }
     return upload;
   });
+  validateMaterialTextureRadianceEnvelope(
+    payloads,
+    normalizedUploads,
+    format,
+    layerInfos,
+    radianceEnvelope,
+  );
 
   const texture = device.createTexture({
     label: ARRAY_LABEL,
@@ -1090,7 +1327,21 @@ export function createMaterialTextureArray(
       );
     }
     try {
-      if (p.gpuSource != null) {
+      const normalizedUpload = normalizedUploads[layer];
+      if (
+        normalizedUpload != null &&
+        (p.data != null || (isFloatArray && p.gpuSource?.cpuMirror != null))
+      ) {
+        device.queue.writeTexture(
+          { texture: nativeTexture, origin: { x: 0, y: 0, z: 0 } },
+          normalizedUpload.data,
+          {
+            bytesPerRow: normalizedUpload.bytesPerRow,
+            rowsPerImage: normalizedUpload.rowsPerImage,
+          },
+          { width: copyW, height: copyH },
+        );
+      } else if (p.gpuSource != null) {
         blitGpuMaterialSourceLayer(
           device, p.gpuSource, nativeTexture, format, 0, copyW, copyH,
         );
@@ -1112,14 +1363,6 @@ export function createMaterialTextureArray(
             { width: copyW, height: copyH },
           );
         }
-      } else if (p.data != null) {
-        const upload = normalizedUploads[layer]!;
-        device.queue.writeTexture(
-          { texture: nativeTexture, origin: { x: 0, y: 0, z: 0 } },
-          upload.data,
-          { bytesPerRow: upload.bytesPerRow, rowsPerImage: upload.rowsPerImage },
-          { width: copyW, height: copyH },
-        );
       }
       generateTextureMips(device, nativeTexture, format, nativeMipLevelCount);
       const copyEncoder = device.createCommandEncoder({

@@ -63,4 +63,26 @@ describe('CWBVH tMin/comparator parity (firstHit vs anyHit)', () => {
     expect(first.didHit).toBe(false);
     expect(any).toBe(false);
   });
+
+  it('uses an explicit local tMin rather than the legacy default-distance option', () => {
+    const { cwbvh, positions } = buildSingleTriangleAt(0.5);
+    const options = { triEps: 1, tMin: 0.1, tMax: 2 };
+
+    const first = intersectCompressedWideBvhFirstHit(
+      cwbvh,
+      positions,
+      rayAlongZ,
+      options,
+    );
+    const any = intersectCompressedWideBvhAnyHit(
+      cwbvh,
+      positions,
+      rayAlongZ,
+      options,
+    );
+
+    expect(first.didHit).toBe(true);
+    expect(first.dist).toBeCloseTo(0.5, 6);
+    expect(any).toBe(true);
+  });
 });

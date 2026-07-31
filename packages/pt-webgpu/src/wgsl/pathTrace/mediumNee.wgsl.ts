@@ -55,21 +55,53 @@ fn distantDirectEmitterGlobalIndex(localIndex: u32) -> u32 {
 }
 
 fn distantDirectEnvironmentPower() -> f32 {
-  let dims = environmentDimensions();
-  let count = dims.x * dims.y;
-  if (count > 0u && arrayLength(&environmentMapCdf) >= count + 1u) {
-    return max(environmentMapCdf[count], 0.0);
+  return max(params.environmentDistantPower, 0.0);
+}
+
+fn distantDirectDirectionalPower(localIndex: u32) -> f32 {
+  let irradiance = max(
+    directionalLights[localIndex * 2u + 1u].rgb,
+    vec3f(0.0),
+  );
+  let componentScale = max(irradiance.r, max(irradiance.g, irradiance.b));
+  if (!(componentScale > 0.0) || componentScale > 3.402823466e38) {
+    return 0.0;
   }
-  return 0.0;
+  // Scaling before the Rec.709 dot keeps three individually finite HDR
+  // components from overflowing their luminance sum.
+  let normalizedLuminance = clamp(
+    luminance(irradiance / componentScale),
+    0.0,
+    1.0,
+  );
+  return componentScale * normalizedLuminance;
 }
 
 fn distantDirectEmitterPower(localIndex: u32) -> f32 {
-  let diskArea = PI * params.sceneRadius * params.sceneRadius;
   if (localIndex < params.directionalLightCount) {
-    let irradiance = directionalLights[localIndex * 2u + 1u].rgb;
-    return diskArea * max(luminance(irradiance), 0.0);
+    return distantDirectDirectionalPower(localIndex);
   }
-  return diskArea * distantDirectEnvironmentPower();
+  return distantDirectEnvironmentPower();
+}
+
+fn distantDirectPowerScale(count: u32) -> f32 {
+  var powerScale = 0.0;
+  for (var i = 0u; i < count; i = i + 1u) {
+    powerScale = max(powerScale, distantDirectEmitterPower(i));
+  }
+  return powerScale;
+}
+
+fn distantDirectNormalizedPowerSum(count: u32, powerScale: f32) -> f32 {
+  if (!(powerScale > 0.0) || powerScale > 3.402823466e38) {
+    return 0.0;
+  }
+  var normalizedTotal = 0.0;
+  for (var i = 0u; i < count; i = i + 1u) {
+    normalizedTotal =
+      normalizedTotal + distantDirectEmitterPower(i) / powerScale;
+  }
+  return normalizedTotal;
 }
 
 fn distantDirectSelectionPdf(globalIndex: u32) -> f32 {
@@ -87,12 +119,12 @@ fn distantDirectSelectionPdf(globalIndex: u32) -> f32 {
   ) {
     return 0.0;
   }
-  var totalPower = 0.0;
-  for (var i = 0u; i < count; i = i + 1u) {
-    totalPower = totalPower + distantDirectEmitterPower(i);
-  }
-  if (!(totalPower > 0.0)) { return 0.0; }
-  return distantDirectEmitterPower(localIndex) / totalPower;
+  let powerScale = distantDirectPowerScale(count);
+  let normalizedTotal = distantDirectNormalizedPowerSum(count, powerScale);
+  if (!(normalizedTotal > 0.0)) { return 0.0; }
+  return
+    (distantDirectEmitterPower(localIndex) / powerScale) /
+    normalizedTotal;
 }
 
 fn sampleDistantDirectLight(
@@ -101,23 +133,36 @@ fn sampleDistantDirectLight(
 ) -> DirectLightSelection {
   let count = distantDirectEmitterCount();
   if (count == 0u || sumAll) { return DirectLightSelection(0u, 1.0); }
-  var totalPower = 0.0;
-  for (var i = 0u; i < count; i = i + 1u) {
-    totalPower = totalPower + distantDirectEmitterPower(i);
-  }
-  if (!(totalPower > 0.0)) {
+  let powerScale = distantDirectPowerScale(count);
+  let normalizedTotal = distantDirectNormalizedPowerSum(count, powerScale);
+  if (!(normalizedTotal > 0.0)) {
     return DirectLightSelection(0xffffffffu, 0.0);
   }
-  let pickTarget = rand_f32(rng) * totalPower;
+  let pickTarget = rand_f32(rng) * normalizedTotal;
   var cumulative = 0.0;
+  var lastPositiveIndex = 0xffffffffu;
+  var lastPositivePower = 0.0;
   for (var i = 0u; i < count; i = i + 1u) {
-    let power = distantDirectEmitterPower(i);
-    cumulative = cumulative + power;
-    if (power > 0.0 && pickTarget < cumulative) {
+    let normalizedPower = distantDirectEmitterPower(i) / powerScale;
+    if (normalizedPower > 0.0) {
+      lastPositiveIndex = i;
+      lastPositivePower = normalizedPower;
+    }
+    cumulative = cumulative + normalizedPower;
+    if (normalizedPower > 0.0 && pickTarget < cumulative) {
       return DirectLightSelection(
-        distantDirectEmitterGlobalIndex(i), totalPower / power,
+        distantDirectEmitterGlobalIndex(i),
+        normalizedTotal / normalizedPower,
       );
     }
+  }
+  // Rounding the cumulative sum below normalizedTotal must not turn a valid
+  // draw into an invalid emitter. Fall back to the last positive interval.
+  if (lastPositiveIndex != 0xffffffffu) {
+    return DirectLightSelection(
+      distantDirectEmitterGlobalIndex(lastPositiveIndex),
+      normalizedTotal / lastPositivePower,
+    );
   }
   return DirectLightSelection(0xffffffffu, 0.0);
 }
@@ -203,12 +248,12 @@ fn traceMediumVisibility(
 
   loop {
     let remaining = max(maxDistance - travelled, 0.0);
-    if (remaining <= 1e-5) {
+    if (!(remaining > ptRayTMin())) {
       result.visible = true;
       return result;
     }
     let shadowRay = Ray(rayOrigin, direction);
-    let hit = traceClosest(shadowRay, 1e-4, remaining);
+    let hit = traceClosest(shadowRay, ptRayTMin(), remaining);
     let segment = select(remaining, hit.dist, hit.didHit);
     if (depth > 0u) {
       let top = depth - 1u;
@@ -234,7 +279,7 @@ fn traceMediumVisibility(
     if (alphaTestPassThrough(
       matId, hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
     )) {
-      let advance = hit.dist + 1e-4;
+      let advance = hit.dist + ptRayTMin();
       rayOrigin = rayOrigin + direction * advance;
       travelled = travelled + advance;
       continue;
@@ -249,7 +294,7 @@ fn traceMediumVisibility(
     );
     if (!mat.isTranslucent || transmission <= 0.0) {
       if (!ignoreOpaque) { return result; }
-      let advance = hit.dist + 1e-4;
+      let advance = hit.dist + ptRayTMin();
       rayOrigin = rayOrigin + direction * advance;
       travelled = travelled + advance;
       continue;
@@ -287,7 +332,7 @@ fn traceMediumVisibility(
       depth = depth - 1u;
     }
 
-    let advance = hit.dist + 1e-4;
+    let advance = hit.dist + ptRayTMin();
     rayOrigin = rayOrigin + direction * advance;
     travelled = travelled + advance;
   }
@@ -328,13 +373,8 @@ fn sampleMediumEmitter(
       let wi = sampleDirectionalCone(
         rng, safe_normalize(dirRecord.xyz), diameter,
       );
-      let directionIsDelta = diameter <= 0.0;
-      var directionPdf = 1.0;
-      if (!directionIsDelta) {
-        let coneQuarterSin = sin(diameter * 0.25);
-        directionPdf =
-          1.0 / (4.0 * PI * coneQuarterSin * coneQuarterSin);
-      }
+      let directionIsDelta = ptDirectionalConeIsDelta(diameter);
+      let directionPdf = ptDirectionalConePdf(diameter);
       return MediumEmitterSample(
         wi, irradiance.rgb * select(1.0, directionPdf, !directionIsDelta),
         INFINITY, directionPdf,
@@ -348,9 +388,9 @@ fn sampleMediumEmitter(
     if (current == flat) {
       let base = pi * 3u;
       let toLight = pointLights[base].xyz - position;
-      let distance = length(toLight);
+      let distance = safe_length(toLight);
       let extra = pointLights[base + 2u];
-      if (distance <= 1e-5 || (extra.x > 0.0 && distance > extra.x)) {
+      if (!(distance > 0.0) || (extra.x > 0.0 && distance > extra.x)) {
         return invalidMediumEmitterSample();
       }
       let attenuation =
@@ -367,11 +407,11 @@ fn sampleMediumEmitter(
     if (current == flat) {
       let base = si * 4u;
       let toLight = spotLights[base].xyz - position;
-      let distance = length(toLight);
+      let distance = safe_length(toLight);
       let axisOuter = spotLights[base + 1u];
       let radianceInner = spotLights[base + 2u];
       let extra = spotLights[base + 3u];
-      if (distance <= 1e-5 || (extra.x > 0.0 && distance > extra.x)) {
+      if (!(distance > 0.0) || (extra.x > 0.0 && distance > extra.x)) {
         return invalidMediumEmitterSample();
       }
       let wi = toLight / distance;
@@ -398,31 +438,33 @@ fn sampleMediumEmitter(
       let vAxis = rectAreaLights[base + 2u].xyz;
       let shape = rectAreaLights[base + 3u];
       let disc = abs(shape.w - 1.0) < 0.5;
+      let areaMeasure = measureAreaVector(
+        uAxis, vAxis, select(4.0, PI, disc),
+      );
       let xi = vec2f(rand_f32(rng), rand_f32(rng));
       var lightPosition: vec3f;
-      var area: f32;
       if (disc) {
         let uv = concentricDiscSample(xi * 2.0 - vec2f(1.0));
         lightPosition = center + uAxis * uv.x + vAxis * uv.y;
-        area = PI * length(cross(uAxis, vAxis));
       } else {
         lightPosition =
           center + uAxis * (xi.x * 2.0 - 1.0) +
           vAxis * (xi.y * 2.0 - 1.0);
-        area = 4.0 * length(cross(uAxis, vAxis));
       }
       let toLight = lightPosition - position;
-      let distance2 = dot(toLight, toLight);
-      if (distance2 <= 0.0 || area <= 0.0) {
+      let distance = safe_length(toLight);
+      if (!(distance > 0.0) || areaMeasure.valid == 0u) {
         return invalidMediumEmitterSample();
       }
-      let distance = sqrt(distance2);
-      let wi = toLight / distance;
-      let normal = safe_normalize(cross(uAxis, vAxis));
+      let wi = safe_normalize(toLight);
+      let normal = areaMeasure.normal;
       let cosLight = max(dot(normal, -wi), 0.0);
       if (cosLight <= 0.0) { return invalidMediumEmitterSample(); }
+      let lightPdf =
+        ptAreaToSolidAnglePdf(distance, cosLight, areaMeasure);
+      if (!(lightPdf > 0.0)) { return invalidMediumEmitterSample(); }
       return MediumEmitterSample(
-        wi, shape.rgb, distance, distance2 / (cosLight * area),
+        wi, shape.rgb, distance, lightPdf,
         false, rectAreaLights[base].w > 0.5, true,
       );
     }
@@ -445,19 +487,22 @@ fn sampleMediumEmitter(
         mi, vec3f(1.0 - su, r2 * su, (1.0 - r2) * su), lightPosition,
       );
       let toLight = lightPosition - position;
-      let distance2 = dot(toLight, toLight);
-      let crossEdges = cross(b - a, c - a);
-      let area = 0.5 * length(crossEdges);
-      if (distance2 <= 0.0 || area <= 0.0) {
+      let distance = safe_length(toLight);
+      let areaMeasure = measureAreaVector(b - a, c - a, 0.5);
+      if (!(distance > 0.0) || areaMeasure.valid == 0u) {
         return invalidMediumEmitterSample();
       }
-      let distance = sqrt(distance2);
-      let wi = toLight / distance;
-      let cosLight = max(dot(safe_normalize(crossEdges), -wi), 0.0);
+      let wi = safe_normalize(toLight);
+      let cosLight = meshAreaLightCosineTowardReceiver(
+        mi, areaMeasure.normal, -wi,
+      );
       if (cosLight <= 0.0) { return invalidMediumEmitterSample(); }
+      let lightPdf =
+        ptAreaToSolidAnglePdf(distance, cosLight, areaMeasure);
+      if (!(lightPdf > 0.0)) { return invalidMediumEmitterSample(); }
       return MediumEmitterSample(
         wi, emissionRadiance, distance,
-        distance2 / (cosLight * area),
+        lightPdf,
         false, emission.w > 0.5, true,
       );
     }
@@ -500,7 +545,11 @@ fn mediumNeeForEmitter(
   let phasePdf = hgPhase(dot(travelDirection, light.wi), layer.g);
   let visibility = traceMediumVisibility(
     position, light.wi,
-    select(light.distance, max(light.distance - 2e-3, 1e-4), light.distance < INFINITY * 0.5),
+    select(
+      light.distance,
+      ptFiniteSegmentTMax(light.distance),
+      light.distance < INFINITY * 0.5,
+    ),
     layer, mediumStack, mediumDepth, heroLambda,
     light.ignoreOpaque, rng,
   );
@@ -609,7 +658,7 @@ fn mediumPhaseEmitterConnection(
 
   if (bestPdf > 0.0) {
     let visibility = traceMediumVisibility(
-      position, sampledDirection, max(bestDistance - 2e-3, 1e-4),
+      position, sampledDirection, ptFiniteSegmentTMax(bestDistance),
       layer, mediumStack, mediumDepth, heroLambda,
       bestIgnoreOpaque, rng,
     );

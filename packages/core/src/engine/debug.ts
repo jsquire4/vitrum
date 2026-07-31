@@ -75,6 +75,30 @@ export interface EngineDebugSurface {
    * a one-shot budget audit.
    */
   estimatedGpuMemoryBytes?(): GpuMemoryBreakdown | null;
+
+  /**
+   * Effective resolution and bounded frame-resource policy for backends that
+   * render below the presentation surface. ReSTIR dimensions are included
+   * because their storage footprint is often the dominant scaling term.
+   */
+  frameResourceResolution?(): {
+    readonly presentationWidth: number;
+    readonly presentationHeight: number;
+    readonly requestedInternalWidth: number;
+    readonly requestedInternalHeight: number;
+    readonly effectiveInternalWidth: number;
+    readonly effectiveInternalHeight: number;
+    readonly resolutionDownscale: number;
+    readonly restirDiWidth: number;
+    readonly restirDiHeight: number;
+    readonly restirGiWidth: number;
+    readonly restirGiHeight: number;
+    readonly restirReservoirScale: number;
+    readonly persistentBytes: number;
+    readonly maxPersistentBytes: number;
+    readonly resizePeakBytes: number;
+    readonly policy: 'auto' | 'native';
+  } | null;
 }
 
 /**

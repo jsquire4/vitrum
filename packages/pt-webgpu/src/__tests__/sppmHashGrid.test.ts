@@ -8,7 +8,7 @@
  *  2. Progressive radius schedule through the live SPPM parameter update,
  *     α = 2/3, frames 0/1/10/100.
  *  3. Scale-aware initial radius (TS): sppmInitialRadius — Cornell, large scene,
- *     floor clamp at 1e-3.
+ *     homogeneous behavior for tiny and large scenes.
  *  4. Structural WGSL assertions:
  *     - SPPM_GROUP3_BINDINGS_WGSL contains sppmGatherProgressive, sppmInsertPhoton,
  *       the @group(3) @binding(6/7/8) declarations.
@@ -49,11 +49,17 @@ import {
 // JavaScript lacks unsigned 32-bit integer bitcast, but Math.imul + >>> 0
 // gives the same wrapping arithmetic on 32 bits.
 
-function sppmCellIndexTS(posX: number, posY: number, posZ: number, radius: number): number {
-  const r = Math.max(radius, 1e-6);
-  const ix = Math.floor(posX / r) | 0;
-  const iy = Math.floor(posY / r) | 0;
-  const iz = Math.floor(posZ / r) | 0;
+function sppmCellIndexTS(
+  posX: number,
+  posY: number,
+  posZ: number,
+  radius: number,
+  center: readonly [number, number, number] = [0, 0, 0],
+): number {
+  if (!(radius > 0) || !Number.isFinite(radius)) return 0;
+  const ix = Math.floor((posX - center[0]) / radius) | 0;
+  const iy = Math.floor((posY - center[1]) / radius) | 0;
+  const iz = Math.floor((posZ - center[2]) / radius) | 0;
   const ux = ix >>> 0; // reinterpret as u32 (two's complement)
   const uy = iy >>> 0;
   const uz = iz >>> 0;
@@ -119,6 +125,21 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
     expect(cell1).toBe(cell2);
   });
 
+  it('is translation-invariant because hashing is relative to the scene center', () => {
+    const local: [number, number, number] = [4.25, -2.5, 8.75];
+    const center: [number, number, number] = [1e12, -2e12, 3e12];
+    const atOrigin = sppmCellIndexTS(...local, 0.25);
+    const translated = sppmCellIndexTS(
+      center[0] + local[0],
+      center[1] + local[1],
+      center[2] + local[2],
+      0.25,
+      center,
+    );
+    expect(translated).toBe(atOrigin);
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let centered = pos - sceneCenter');
+  });
+
   it('positions within the same cell-voxel hash to the same cell', () => {
     const r = 0.1;
     // Both 0.01 and 0.09 are in the same cell [0..0.1) along x.
@@ -158,7 +179,7 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
       shrunkGatherRadius,
     );
     // Fixed path: query the same r0 grid used by insertion, while the later
-    // dist2 <= R^2 filter still enforces the physical progressive gather disk.
+    // scale-free radius test still enforces the physical progressive gather disk.
     const fixedInsertionGridCells = sppmNeighbourhoodCellsTS(
       receiver.x,
       receiver.y,
@@ -266,7 +287,7 @@ describe('SPPM hash-grid cell math (TS mirror of sppmCellIndex WGSL)', () => {
 
 // ── 3. Scale-aware initial radius ─────────────────────────────────────────────
 //
-// r₀ = max(diagonal / 100, 1e-3)
+// r₀ = diagonal / 100 for every non-degenerate scene.
 
 describe('SPPM scale-aware initial radius (sppmInitialRadius)', () => {
   it('Cornell box: diagonal ~1.73 m → r₀ ≈ 0.0173 (well above 1e-3)', () => {
@@ -285,10 +306,20 @@ describe('SPPM scale-aware initial radius (sppmInitialRadius)', () => {
     expect(r0).toBeCloseTo(expected, 4);
   });
 
-  it('micro scene: floor clamp at 1e-3', () => {
-    // A 0.001 m box has diagonal ≈ 1.73e-3 m; diagonal/100 ≈ 1.73e-5 < 1e-3.
+  it('micro scene: preserves diagonal/100 without a world-unit floor', () => {
     const r0 = sppmInitialRadius([0, 0, 0], [0.001, 0.001, 0.001]);
-    expect(r0).toBeCloseTo(1e-3, 10);
+    expect(r0).toBeCloseTo(Math.sqrt(3) * 1e-5, 12);
+  });
+
+  it('is homogeneous across thirty orders of magnitude', () => {
+    const ordinary = sppmInitialRadius([0, 0, 0], [1, 2, 3]);
+    for (const scale of [1e-30, 1e30]) {
+      const scaled = sppmInitialRadius(
+        [0, 0, 0],
+        [scale, 2 * scale, 3 * scale],
+      );
+      expect((scaled / ordinary) / scale).toBeCloseTo(1, 12);
+    }
   });
 
   it('degenerate: single-axis box uses that axis', () => {
@@ -329,7 +360,11 @@ describe('SPPM WGSL structural assertions (A4)', () => {
   });
 
   it('progressive update queries the stable insertion grid, not the shrunk gather radius', () => {
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let gridRadius = max(sppmStats.currentRadius, 1e-6);');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('let gridRadius = sppmStats.currentRadius;');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain(
+      'if (!(gridRadius > 0.0) || gridRadius > 3.402823466e38)',
+    );
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('max(sppmStats.currentRadius, 1e-6)');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('* gridRadius');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmCellIndex(probe, gridRadius)');
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('sppmCellIndex(probe, r)');
@@ -381,9 +416,12 @@ describe('SPPM WGSL structural assertions (A4)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let spotAxis = safe_normalize(saxisVec.xyz)');
   });
 
-  it('spmmGather uses the π r² density estimator (no hardcoded fudge)', () => {
-    // The gather must divide by PI * r² — standard SPPM estimator.
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('PI * pxStats.radius2');
+  it('sppm gather uses the π r² density estimator in log space (no hardcoded fudge)', () => {
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain(
+      'log(PI) + 2.0 * log(pxStats.radius)',
+    );
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('fn sppmDensityChannel(');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('radius <= 1e-24');
     // No hardcoded scale factor: not ×1.25 or similar.
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toMatch(/\*\s*1\.25/);
     expect(SPPM_GROUP3_BINDINGS_WGSL).not.toMatch(/\*\s*1\.5/);
@@ -514,11 +552,7 @@ describe('A4-progressive SPPM recurrence (TS mirror vs closed form)', () => {
     expect(result.tau[2]).toBeCloseTo(tau[2], 15);
   });
 
-  it('first-frame initialization: radius2=0 → seeds from r0² (reset behavior)', () => {
-    // When the buffer is GPU-cleared (zero-initialised), radius2 == 0.
-    // The WGSL uses: let r2 = select(pxStats.radius2, r0*r0, isFirstFrame)
-    // which produces r0² when radius2 ≤ 0.  After one frame with M>0 the
-    // radius must be strictly < r0² (it shrunk).
+  it('first-frame initialization keeps a linear radius in GPU state', () => {
     const r0 = 0.1;
     const r0sq = r0 * r0;
     const M = 5.0;
@@ -529,6 +563,10 @@ describe('A4-progressive SPPM recurrence (TS mirror vs closed form)', () => {
     expect(result.radius2).toBeGreaterThan(0);
     // N after first frame = 0 + α·M
     expect(result.N).toBeCloseTo(SPPM_ALPHA * M, 10);
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain(
+      'let r = select(pxStats.radius, r0, isFirstFrame)',
+    );
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('r0 * r0');
   });
 
   it('normalizes photon power once and evaluates the receiver BRDF once', () => {
@@ -567,10 +605,10 @@ describe('A4-progressive WGSL structural assertions (binding 9 + progressive fn)
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('array<SppmPixelStats>');
   });
 
-  it('SPPM_GROUP3_BINDINGS_WGSL declares the SppmPixelStats struct with tau/radius2/N fields', () => {
+  it('SPPM_GROUP3_BINDINGS_WGSL declares the SppmPixelStats struct with tau/radius/N fields', () => {
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('struct SppmPixelStats');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('tau     : vec3f');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('radius2 : f32');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('radius  : f32');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('N       : f32');
   });
 
@@ -580,9 +618,9 @@ describe('A4-progressive WGSL structural assertions (binding 9 + progressive fn)
   });
 
   it('progressive update writes all three per-pixel stats fields back', () => {
-    // The update rule must persist tau', radius2', and N' after each frame.
+    // The update rule must persist tau', radius', and N' after each frame.
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[statsIndex].tau');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[statsIndex].radius2');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[statsIndex].radius');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('sppmPixelStats[statsIndex].N');
   });
 

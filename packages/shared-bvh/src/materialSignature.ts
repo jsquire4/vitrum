@@ -41,14 +41,34 @@ const TEXTURE_MAP_FIELDS: readonly TextureMapField[] = [
   'lightMap',
 ];
 
-function finiteSig(value: number | undefined, fallback: number): string {
-  const v = Number.isFinite(value) ? (value as number) : fallback;
-  return String(Math.fround(v));
+const FLOAT32_TOKEN_VIEW = new DataView(new ArrayBuffer(4));
+
+/**
+ * Canonical token for the exact float32 value a GPU payload would receive.
+ *
+ * Finite values are rounded once with `Math.fround` and encoded as their
+ * big-endian IEEE-754 bits. This preserves the otherwise-string-colliding
+ * `+0`/`-0` pair and every adjacent representable float32 value. All NaN
+ * payloads share one deterministic token because JavaScript arithmetic does
+ * not preserve a portable NaN payload; signed infinities remain distinct.
+ * A finite number that overflows float32 intentionally receives the matching
+ * signed-infinity token.
+ */
+function float32Token(value: number): string {
+  const rounded = Math.fround(value);
+  if (Number.isNaN(rounded)) return 'f32:nan';
+  if (rounded === Number.POSITIVE_INFINITY) return 'f32:+inf';
+  if (rounded === Number.NEGATIVE_INFINITY) return 'f32:-inf';
+  FLOAT32_TOKEN_VIEW.setFloat32(0, rounded, false);
+  return `f32:${FLOAT32_TOKEN_VIEW.getUint32(0, false).toString(16).padStart(8, '0')}`;
 }
 
-function rawNumberSig(value: number | undefined, fallback: number): string {
-  if (value === undefined) return finiteSig(undefined, fallback);
-  return Number.isFinite(value) ? String(Math.fround(value)) : String(value);
+/**
+ * Apply a field default only when the value is omitted. Explicit NaN and
+ * infinities are signed rather than silently collapsing to the default.
+ */
+function numberSig(value: number | undefined, fallback: number): string {
+  return float32Token(value === undefined ? fallback : value);
 }
 
 function vecSig(
@@ -58,19 +78,7 @@ function vecSig(
 ): string {
   const parts: string[] = [];
   for (let i = 0; i < count; i += 1) {
-    parts.push(finiteSig(value?.[i], fallback[i] ?? 0));
-  }
-  return parts.join(',');
-}
-
-function rawVecSig(
-  value: readonly number[] | undefined,
-  fallback: readonly number[],
-  count: 2,
-): string {
-  const parts: string[] = [];
-  for (let i = 0; i < count; i += 1) {
-    parts.push(rawNumberSig(value?.[i], fallback[i] ?? 0));
+    parts.push(numberSig(value?.[i], fallback[i] ?? 0));
   }
   return parts.join(',');
 }
@@ -84,7 +92,7 @@ function textureRefLike(value: unknown): TextureRef | undefined {
 function textureTexCoordSig(texCoord: number | undefined): string {
   const uv = texCoord ?? 0;
   if (uv === 0 || uv === 1) return `uv${uv}`;
-  return `uvUnsupported=${rawNumberSig(uv, 0)}`;
+  return `uvUnsupported=${numberSig(uv, 0)}`;
 }
 
 function textureRefSig(value: unknown): string {
@@ -94,9 +102,9 @@ function textureRefSig(value: unknown): string {
   return [
     handleId(ref.handle),
     textureTexCoordSig(ref.texCoord),
-    `off=${rawVecSig(transform?.offset, [0, 0], 2)}`,
-    `scale=${rawVecSig(transform?.scale, [1, 1], 2)}`,
-    `rot=${rawNumberSig(transform?.rotation, 0)}`,
+    `off=${vecSig(transform?.offset, [0, 0], 2)}`,
+    `scale=${vecSig(transform?.scale, [1, 1], 2)}`,
+    `rot=${numberSig(transform?.rotation, 0)}`,
     `wrap=${ref.wrapS ?? 'repeat'},${ref.wrapT ?? 'repeat'}`,
     `filter=${ref.magFilter ?? ''},${ref.minFilter ?? ''},${ref.mipFilter ?? ''}`,
   ].join(';');
@@ -108,9 +116,33 @@ function textureMapSig(m: MaterialSpec): string {
     .join('|');
 }
 
+function surfaceLayerSig(
+  layer: MaterialSpec['frontLayer'],
+): string {
+  if (layer == null) return '';
+  return [
+    `tx=${vecSig(layer.transmission, [1, 1, 1], 3)}`,
+    `rough=${layer.roughness === undefined ? 'absent' : numberSig(layer.roughness, 0)}`,
+    `normal=${textureRefSig(layer.normalMap)}`,
+    `normalScale=${numberSig(layer.normalScale, 1)}`,
+  ].join(';');
+}
+
+function materialExtensionSig(m: MaterialSpec): string {
+  const skipEmitter = m.extensions?.['skipEmitter'] === true ? '1' : '0';
+  const rawSurfaceTextureId = m.extensions?.['surfaceTextureId'];
+  const surfaceTextureId =
+    Number.isSafeInteger(rawSurfaceTextureId) &&
+    (rawSurfaceTextureId as number) >= 0 &&
+    (rawSurfaceTextureId as number) <= 7
+      ? rawSurfaceTextureId as number
+      : 0;
+  return `skipEmitter=${skipEmitter};surfaceTextureId=${surfaceTextureId}`;
+}
+
 function stableJsonSig(value: unknown): string {
   if (value == null) return '';
-  if (typeof value === 'number') return Number.isFinite(value) ? value.toFixed(4) : String(value);
+  if (typeof value === 'number') return float32Token(value);
   if (typeof value === 'string' || typeof value === 'boolean') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableJsonSig).join(',')}]`;
   if (typeof value === 'object') {
@@ -132,51 +164,48 @@ function stableJsonSig(value: unknown): string {
  * lobe-extension scalars, Beer-Lambert fields, all packed texture-map refs
  * including handle identity + UV transform/sampler metadata, and pt-webgl2's
  * folded mesh-emitter shadow flag. Numeric tokens use the same Float32 precision
- * as the GPU payloads, so atlas/material metadata differences that survive upload
- * cannot be rounded away by the dedup key. Map identity uses the opaque
- * `TextureRef.handle` (the core analogue of THREE's `texture.uuid`).
+ * as the GPU payloads and serialize canonical IEEE-754 bits, so adjacent values
+ * and signed zero cannot be rounded or stringified together. Omitted values use
+ * the documented field default; explicit NaN/+Infinity/-Infinity remain
+ * deterministic, distinct tokens. Map identity uses the opaque `TextureRef.handle`
+ * (the core analogue of THREE's `texture.uuid`).
  *
  * Beer-Lambert fields (`attenuationColor`, `attenuationDistance`, `thickness`) are
- * included to match `materialSetHashFloats` in `sceneBvh.ts`. Infinity
- * `attenuationDistance` is normalised to the token `'Inf'` so the signature remains
- * a stable string (JSON.stringify of Infinity produces `null`).
+ * `attenuationDistance` is the one infinite-default field: omission and explicit
+ * +Infinity therefore share `f32:+inf`; NaN and -Infinity remain distinct.
  */
 export function materialSig(m: MaterialSpec): string {
   const colS = vecSig(m.baseColor, [0, 0, 0], 3);
   const emS = vecSig(m.emissive, [0, 0, 0], 3);
-  // Beer-Lambert fields — must match materialSetHashFloats in sceneBvh.ts.
   const acS = vecSig(m.attenuationColor, [1, 1, 1], 3);
-  const adRaw = m.attenuationDistance;
-  const adS = adRaw == null
-    ? 'Inf'
-    : !isFinite(adRaw)
-      ? 'Inf'
-      : adRaw.toFixed(4);
+  const adS = numberSig(m.attenuationDistance, Number.POSITIVE_INFINITY);
   const meshEmitterShadow = (m as MaterialSpec & {
     meshEmitterCastShadowDisabled?: boolean;
   }).meshEmitterCastShadowDisabled === true ? '1' : '0';
   return [
     `base=${colS}`,
     `em=${emS}`,
-    `emI=${finiteSig(m.emissiveIntensity, 1)}`,
-    `rough=${finiteSig(m.roughness, 0.5)}`,
-    `metal=${finiteSig(m.metallic, 0)}`,
+    `emI=${numberSig(m.emissiveIntensity, 1)}`,
+    `rough=${numberSig(m.roughness, 0.5)}`,
+    `metal=${numberSig(m.metallic, 0)}`,
     `shade=${m.shadingModel ?? 'pbr'}`,
-    `alpha=${m.alphaMode ?? 'opaque'},${finiteSig(m.alphaCutoff, 0.5)},${finiteSig(m.opacity, 1)}`,
-    `trans=${finiteSig(m.transmission, 0)}`,
-    `ior=${finiteSig(m.ior, 1.5)}`,
-    `beer=${acS},${adS},${finiteSig(m.thickness, 0)}`,
-    `mapScalar=${finiteSig(m.normalScale, 1)},${finiteSig(m.clearcoatNormalScale, 1)},${finiteSig(m.aoMapIntensity, 1)},${finiteSig(m.bumpScale, 1)},${finiteSig(m.lightMapIntensity, 1)},${finiteSig(m.envMapIntensity, 1)}`,
-    `spec=${vecSig(m.specularColor, [1, 1, 1], 3)},${finiteSig(m.specularIntensity, 1)}`,
-    `coatSheen=${finiteSig(m.clearcoat, 0)},${finiteSig(m.clearcoatRoughness, 0)},${finiteSig(m.sheen, 0)},${vecSig(m.sheenColor, [0, 0, 0], 3)},${finiteSig(m.sheenRoughness, 0)}`,
-    `aniso=${finiteSig(m.anisotropy, 0)},${finiteSig(m.anisotropyRotation, 0)}`,
-    `iridescence=${finiteSig(m.iridescence, 0)},${finiteSig(m.iridescenceIor, 1.3)},${vecSig(m.iridescenceThicknessRange, [100, 400], 2)}`,
-    `reservedDisp=${textureRefSig(m.displacementMap)},${finiteSig(m.displacementScale, 1)},${finiteSig(m.displacementBias, 0)},${finiteSig(m.displacementSubdivisions, 0)}`,
-    `volume=${finiteSig(m.scatteringCoefficient, 0)},${finiteSig(m.scatteringAnisotropy, 0)},${vecSig(m.scatteringCoefficientRGB, [0, 0, 0], 3)}`,
-    `spectral=${stableJsonSig(m.spectralAttenuation)},${finiteSig(m.dispersionAbbeNumber, 0)}`,
-    `layers=${stableJsonSig(m.frontLayer)},${stableJsonSig(m.backLayer)},${stableJsonSig(m.thinFilmStack)}`,
+    `alpha=${m.alphaMode ?? 'opaque'},${numberSig(m.alphaCutoff, 0.5)},${numberSig(m.opacity, 1)}`,
+    `side=${m.doubleSided === true ? '1' : '0'}`,
+    `trans=${numberSig(m.transmission, 0)}`,
+    `ior=${numberSig(m.ior, 1.5)}`,
+    `beer=${acS},${adS},${numberSig(m.thickness, 0)}`,
+    `mapScalar=${numberSig(m.normalScale, 1)},${numberSig(m.clearcoatNormalScale, 1)},${numberSig(m.aoMapIntensity, 1)},${numberSig(m.bumpScale, 1)},${numberSig(m.lightMapIntensity, 1)},${numberSig(m.envMapIntensity, 1)}`,
+    `spec=${vecSig(m.specularColor, [1, 1, 1], 3)},${numberSig(m.specularIntensity, 1)}`,
+    `coatSheen=${numberSig(m.clearcoat, 0)},${numberSig(m.clearcoatRoughness, 0)},${numberSig(m.sheen, 0)},${vecSig(m.sheenColor, [0, 0, 0], 3)},${numberSig(m.sheenRoughness, 0)}`,
+    `aniso=${numberSig(m.anisotropy, 0)},${numberSig(m.anisotropyRotation, 0)}`,
+    `iridescence=${numberSig(m.iridescence, 0)},${numberSig(m.iridescenceIor, 1.3)},${vecSig(m.iridescenceThicknessRange, [100, 400], 2)}`,
+    `reservedDisp=${textureRefSig(m.displacementMap)},${numberSig(m.displacementScale, 1)},${numberSig(m.displacementBias, 0)},${numberSig(m.displacementSubdivisions, 0)}`,
+    `volume=${numberSig(m.scatteringCoefficient, 0)},${numberSig(m.scatteringAnisotropy, 0)},${vecSig(m.scatteringCoefficientRGB, [0, 0, 0], 3)}`,
+    `spectral=${stableJsonSig(m.spectralAttenuation)},${numberSig(m.dispersionAbbeNumber, 0)}`,
+    `layers=${surfaceLayerSig(m.frontLayer)},${surfaceLayerSig(m.backLayer)},${stableJsonSig(m.thinFilmStack)}`,
     `maps=${textureMapSig(m)}`,
     `meshEmitterShadow=${meshEmitterShadow}`,
+    `extensions=${materialExtensionSig(m)}`,
   ].join('|');
 }
 
@@ -194,6 +223,7 @@ export function materialSig(m: MaterialSpec): string {
  */
 export const HandleIdRegistry = {
   _ids: new WeakMap<object, string>(),
+  _symbolIds: new Map<symbol, string>(),
   _seq: 0,
   /** Return the stable id for `handle`. Assigns a new one on first encounter. */
   get(handle: object): string {
@@ -204,6 +234,15 @@ export const HandleIdRegistry = {
     }
     return id;
   },
+  /** Return a stable identity token for a symbol-valued opaque handle. */
+  getSymbol(handle: symbol): string {
+    let id = this._symbolIds.get(handle);
+    if (id === undefined) {
+      id = `s${this._seq++}`;
+      this._symbolIds.set(handle, id);
+    }
+    return id;
+  },
   /**
    * Reset the registry — for TEST USE ONLY.
    * Clears all assigned ids and resets the sequence counter.
@@ -211,6 +250,7 @@ export const HandleIdRegistry = {
    */
   reset(): void {
     this._ids = new WeakMap();
+    this._symbolIds = new Map();
     this._seq = 0;
   },
 };
@@ -221,8 +261,27 @@ export const HandleIdRegistry = {
 function handleId(handle: unknown): string {
   if (handle == null) return '';
   if (typeof handle === 'object' || typeof handle === 'function') {
-    return HandleIdRegistry.get(handle);
+    return `object:${HandleIdRegistry.get(handle)}`;
   }
-  // eslint-disable-next-line @typescript-eslint/no-base-to-string -- at this point handle is a primitive (guarded: not object/function), String() is safe
-  return String(handle);
+  switch (typeof handle) {
+    case 'string':
+      // JSON quoting makes the token injective and delimiter-safe inside the
+      // larger structural material signature.
+      return `string:${JSON.stringify(handle)}`;
+    case 'number':
+      if (Number.isNaN(handle)) return 'number:nan';
+      if (Object.is(handle, -0)) return 'number:-0';
+      if (handle === Number.POSITIVE_INFINITY) return 'number:+inf';
+      if (handle === Number.NEGATIVE_INFINITY) return 'number:-inf';
+      return `number:${handle.toString()}`;
+    case 'boolean':
+      return `boolean:${handle ? '1' : '0'}`;
+    case 'bigint':
+      return `bigint:${handle.toString()}`;
+    case 'symbol':
+      return `symbol:${HandleIdRegistry.getSymbol(handle)}`;
+    case 'undefined':
+      return '';
+  }
+  return '';
 }

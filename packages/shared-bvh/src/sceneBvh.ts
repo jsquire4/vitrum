@@ -6,10 +6,15 @@
  */
 
 import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
-import { fingerprintBuffersExact } from './bufferFingerprint.js';
+import {
+  fingerprintPackedSceneBvhState,
+  packedSceneBvhStateEqual,
+  type PackedSceneBvhFingerprintState,
+} from './bufferFingerprint.js';
 import { clonePlainAabb, type PlainAabb } from './aabb.js';
+import { materialSig } from './materialSignature.js';
 import { mergeWorldSpaceFromCore } from './worldSpaceMerge.js';
-import { MATERIAL_ATTEN_DIST_INFINITE } from './materialEntry.js';
+import { coreMaterialToMaterialEntry, packMaterials } from './materialEntry.js';
 
 export interface SceneBvhBuffers {
   /** Flat BVHNode array: bounds (6 f32) + rightChild/triOffset + splitAxis/triCount. */
@@ -65,6 +70,8 @@ const DDGI_CORE_MESH_FILTER = (p: ScenePrimitive): boolean =>
 export class SceneBvh {
   protected _buffers: SceneBvhBuffers | null = null;
   private _lastCoreFingerprint = -1;
+  private _lastMaterialEntries: Float32Array | null = null;
+  private _lastMaterialSignatures: readonly string[] | null = null;
   /** H34-h — last sceneVersionTag seen; `undefined` means "no tag was supplied". */
   private _lastSceneVersionTag: number | string | undefined = undefined;
 
@@ -128,25 +135,59 @@ export class SceneBvh {
     if (merged.triangleCount === 0) {
       this._buffers = null;
       this._lastCoreFingerprint = -1;
+      this._lastMaterialEntries = null;
+      this._lastMaterialSignatures = null;
       // Record the tag for an empty scene too — next call with the same tag
       // still correctly returns null buffers via the fast path above.
       this._lastSceneVersionTag = sceneVersionTag;
       return;
     }
 
-    const fingerprint = fingerprintBuffersExact(
-      merged.positions.buffer as ArrayBuffer,
-      merged.mergedIndices.buffer as ArrayBuffer,
-      merged.mergedTriMaterialId.buffer as ArrayBuffer,
-      new Float32Array(materialSetHashFloats(merged.materials)).buffer,
+    // Fingerprint the exact buffers SceneBvh would publish and the exact
+    // canonical MaterialEntry bytes the DDGI consumer uploads. In particular,
+    // the material byte stream includes its true-u32 flags lane, so additions
+    // to the shared GPU ABI cannot silently drift out of a parallel field list.
+    const materialEntries = packMaterials(
+      merged.materials.map(coreMaterialToMaterialEntry),
     );
-    if (fingerprint === this._lastCoreFingerprint && this._buffers !== null) {
+    const materialSignatures = merged.materials.map(materialSig);
+    const candidateState: PackedSceneBvhFingerprintState = {
+      bvhNodes: merged.bvhNodes,
+      positions: merged.positions,
+      indices: merged.indices,
+      normals: merged.normals,
+      triMaterialId: merged.triMaterialId,
+      materialEntries,
+      materialSignatures,
+    };
+    const fingerprint = fingerprintPackedSceneBvhState(candidateState);
+    const retainedState =
+      this._buffers !== null &&
+      this._lastMaterialEntries !== null &&
+      this._lastMaterialSignatures !== null
+        ? {
+            bvhNodes: this._buffers.bvhNodes,
+            positions: this._buffers.positions,
+            indices: this._buffers.indices,
+            normals: this._buffers.normals,
+            triMaterialId: this._buffers.triMaterialId,
+            materialEntries: this._lastMaterialEntries,
+            materialSignatures: this._lastMaterialSignatures,
+          } satisfies PackedSceneBvhFingerprintState
+        : null;
+    if (
+      fingerprint === this._lastCoreFingerprint &&
+      retainedState !== null &&
+      packedSceneBvhStateEqual(candidateState, retainedState)
+    ) {
       // Content fingerprint matched — update tag so the fast path fires on the
       // next call even when the caller switches from no-tag to tag mode.
       this._lastSceneVersionTag = sceneVersionTag;
       return;
     }
     this._lastCoreFingerprint = fingerprint;
+    this._lastMaterialEntries = materialEntries;
+    this._lastMaterialSignatures = materialSignatures;
     this._lastSceneVersionTag = sceneVersionTag;
 
     this._buffers = {
@@ -173,40 +214,8 @@ export class SceneBvh {
   dispose(): void {
     this._buffers = null;
     this._lastCoreFingerprint = -1;
+    this._lastMaterialEntries = null;
+    this._lastMaterialSignatures = null;
     this._lastSceneVersionTag = undefined;
   }
-}
-
-/**
- * Compact per-material float signature for the `updateFromCore` dirty
- * fingerprint. It hashes only the fields the DDGI probe pass consumes via the
- * packed `MaterialEntry`.
- */
-function materialSetHashFloats(materials: readonly MaterialSpec[]): number[] {
-  const out: number[] = [];
-  for (const m of materials) {
-    const ei = m.emissiveIntensity ?? 1;
-    const em = m.emissive ?? [0, 0, 0];
-    const bc = m.baseColor ?? [1, 1, 1];
-    const ac = m.attenuationColor ?? [1, 1, 1];
-    const attenuationDistance = m.attenuationDistance;
-    const attenDistF =
-      attenuationDistance === undefined ||
-      !Number.isFinite(attenuationDistance) ||
-      attenuationDistance <= 0
-        ? MATERIAL_ATTEN_DIST_INFINITE
-        : attenuationDistance;
-    out.push(
-      bc[0], bc[1], bc[2],
-      em[0] * ei, em[1] * ei, em[2] * ei,
-      m.roughness ?? 1,
-      m.metallic ?? 0,
-      m.transmission ?? 0,
-      m.ior ?? 1.5,
-      ac[0], ac[1], ac[2],
-      attenDistF,
-      m.thickness ?? 0,
-    );
-  }
-  return out;
 }

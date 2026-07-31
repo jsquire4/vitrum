@@ -50,16 +50,31 @@ export function makeRotationYMat4(radians: number): Float32Array {
   const s = Math.sin(radians);
   // Column-major: [col0 | col1 | col2 | col3]
   return new Float32Array([
-    c, 0, -s, 0,   // col0
-    0, 1,  0, 0,   // col1
-    s, 0,  c, 0,   // col2
-    0, 0,  0, 1,   // col3
+    c,
+    0,
+    -s,
+    0, // col0
+    0,
+    1,
+    0,
+    0, // col1
+    s,
+    0,
+    c,
+    0, // col2
+    0,
+    0,
+    0,
+    1, // col3
   ]);
 }
 
 /**
- * Invert a column-major 4×4 matrix via cofactor expansion. Returns `null` when
- * the determinant is ~0 (singular). Column-major in, column-major out.
+ * Invert a column-major 4×4 matrix via cofactor expansion. Returns `null` for a
+ * singular/non-finite matrix or when its inverse cannot remain reciprocal after
+ * Float32 packing. Determinant magnitude is not compared to an absolute
+ * epsilon because valid scene/camera matrices may use very small authored
+ * units. Column-major in, column-major out.
  *
  * Reference: the standard adjugate/determinant inverse (e.g. gl-matrix
  * `mat4.invert`, MESA `__gluInvertMatrixd`).
@@ -81,6 +96,13 @@ export function invertMat4(m: ArrayLike<number>): Float32Array | null {
     a31 = m[13] ?? 0,
     a32 = m[14] ?? 0,
     a33 = m[15] ?? 0;
+  if (
+    ![a00, a01, a02, a03, a10, a11, a12, a13, a20, a21, a22, a23, a30, a31, a32, a33].every(
+      Number.isFinite,
+    )
+  ) {
+    return null;
+  }
 
   const b00 = a00 * a11 - a01 * a10;
   const b01 = a00 * a12 - a02 * a10;
@@ -95,9 +117,8 @@ export function invertMat4(m: ArrayLike<number>): Float32Array | null {
   const b10 = a21 * a33 - a23 * a31;
   const b11 = a22 * a33 - a23 * a32;
 
-  const det =
-    b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
-  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) {
+  const det = b00 * b11 - b01 * b10 + b02 * b09 + b03 * b08 - b04 * b07 + b05 * b06;
+  if (!Number.isFinite(det) || det === 0) {
     return null;
   }
   const invDet = 1.0 / det;
@@ -119,5 +140,27 @@ export function invertMat4(m: ArrayLike<number>): Float32Array | null {
   out[13] = (a00 * b09 - a01 * b07 + a02 * b06) * invDet;
   out[14] = (a31 * b01 - a30 * b03 - a32 * b00) * invDet;
   out[15] = (a20 * b03 - a21 * b01 + a22 * b00) * invDet;
+  if (!Array.from(out).every(Number.isFinite)) return null;
+  for (const [left, right] of [
+    [m, out],
+    [out, m],
+  ] as const) {
+    for (let column = 0; column < 4; column += 1) {
+      for (let row = 0; row < 4; row += 1) {
+        let product = 0;
+        let absoluteTermSum = 0;
+        for (let inner = 0; inner < 4; inner += 1) {
+          const term = (left[inner * 4 + row] ?? 0) * (right[column * 4 + inner] ?? 0);
+          product += term;
+          absoluteTermSum += Math.abs(term);
+        }
+        const expected = row === column ? 1 : 0;
+        const tolerance = 1e-5 * Math.max(1, absoluteTermSum);
+        if (!Number.isFinite(product) || Math.abs(product - expected) > tolerance) {
+          return null;
+        }
+      }
+    }
+  }
   return out;
 }

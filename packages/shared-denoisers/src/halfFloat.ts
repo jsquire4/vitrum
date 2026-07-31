@@ -6,6 +6,9 @@
 const FLOAT32_SCRATCH = new Float32Array(1);
 const UINT32_SCRATCH = new Uint32Array(FLOAT32_SCRATCH.buffer);
 
+/** Largest finite IEEE-754 binary16 value. */
+export const FLOAT16_MAX_FINITE = 65504 as const;
+
 /**
  * Pack a JavaScript number into IEEE-754 binary16 bits.
  *

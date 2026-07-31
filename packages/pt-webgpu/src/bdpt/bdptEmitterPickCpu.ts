@@ -6,6 +6,12 @@
 import { luminance as luminance709 } from '@vitrum/shared-samplers';
 
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
+import { resolvePtWebgpuSceneRadius } from '../scene/sceneScalePolicy.js';
+import { scalePtWebgpuEnvironmentRadianceF32 } from '../environmentRadianceScale.js';
+import {
+  classifyAreaVectorF32,
+  classifyTriangleAreaF32,
+} from '../scene/areaEmitterGeometry.js';
 import {
   discArea,
   meshTriangleArea,
@@ -30,11 +36,12 @@ function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
 function bdptEnvironmentPower(sb: UploadedSceneBuffers): number {
-  if (sb.hasEnvironmentMap && sb.environmentMapWidth > 0 && sb.environmentMapHeight > 0) {
-    const count = sb.environmentMapWidth * sb.environmentMapHeight;
-    if (sb.environmentMapCdf.length >= count + 1) {
-      return Math.max(sb.environmentMapCdf[count]!, 0);
-    }
+  if (
+    sb.hasEnvironmentMap &&
+    sb.environmentMapWidth > 0 &&
+    sb.environmentMapHeight > 0
+  ) {
+    return Math.max(sb.environmentLightTreePower, 0);
   }
   return 0;
 }
@@ -44,6 +51,26 @@ function exactPositiveEmitterMeasure(value: number, label: string): number {
     throw new RangeError(`${label} must be finite and positive; received ${String(value)}`);
   }
   return value;
+}
+
+function distantLaunchDiskMeasure(
+  sb: UploadedSceneBuffers,
+): { readonly radius: number; readonly area: number } {
+  const radius = Math.fround(resolvePtWebgpuSceneRadius(
+    sb.sceneCenter,
+    sb.sceneRadius,
+  ));
+  const measure = classifyAreaVectorF32(
+    [radius, 0, 0],
+    [0, radius, 0],
+    PI,
+  );
+  if (!measure.valid) {
+    throw new RangeError(
+      `BDPT distant-emitter launch disk is ${measure.reason} after Float32 publication`,
+    );
+  }
+  return { radius, area: measure.area };
 }
 
 function directionalRecord(
@@ -82,16 +109,12 @@ export function distantDirectEmitterPower(
   sb: UploadedSceneBuffers,
   localIndex: number,
 ): number {
-  const diskArea = exactPositiveEmitterMeasure(
-    PI * sb.sceneRadius * sb.sceneRadius,
-    'BDPT distant-emitter launch area',
-  );
   if (localIndex < sb.directionalLightCount) {
     const record = directionalRecord(sb, localIndex);
-    return diskArea * (record ? bdptLightLuminance(record.irradiance) : 0);
+    return record ? bdptLightLuminance(record.irradiance) : 0;
   }
   if (localIndex === sb.directionalLightCount && bdptHasEnvironmentEmitter(sb)) {
-    return diskArea * bdptEnvironmentPower(sb);
+    return bdptEnvironmentPower(sb);
   }
   return 0;
 }
@@ -127,12 +150,18 @@ export function distantDirectSelectionPdf(
   ) {
     return 0;
   }
-  let totalPower = 0;
+  let powerScale = 0;
   for (let i = 0; i < count; i += 1) {
-    totalPower += distantDirectEmitterPower(sb, i);
+    powerScale = Math.max(powerScale, distantDirectEmitterPower(sb, i));
   }
-  return totalPower > 0
-    ? distantDirectEmitterPower(sb, localIndex) / totalPower
+  if (!(powerScale > 0) || !Number.isFinite(powerScale)) return 0;
+  let normalizedTotal = 0;
+  for (let i = 0; i < count; i += 1) {
+    normalizedTotal += distantDirectEmitterPower(sb, i) / powerScale;
+  }
+  return normalizedTotal > 0
+    ? (distantDirectEmitterPower(sb, localIndex) / powerScale) /
+        normalizedTotal
     : 0;
 }
 
@@ -198,14 +227,25 @@ function buildOnb(axis: readonly [number, number, number]): {
 }
 
 export function bdptDirectionalConePdf(angularDiameter: number): number {
-  if (!(angularDiameter > 0)) return 1;
+  if (bdptDirectionalConeIsDelta(angularDiameter)) return 1;
   const sinQuarter = Math.sin(angularDiameter * 0.25);
-  const solidAngle = 4 * PI * sinQuarter * sinQuarter;
-  return solidAngle > 0 ? 1 / solidAngle : 1;
+  return Math.exp(-Math.log(4 * PI) - 2 * Math.log(sinQuarter));
+}
+
+const DIRECTIONAL_CONE_MIN_SIN_QUARTER = 7.666467e-20;
+
+export function bdptDirectionalConeIsDelta(
+  angularDiameter: number,
+): boolean {
+  return !(angularDiameter > 0) ||
+    Math.sin(angularDiameter * 0.25) <
+      DIRECTIONAL_CONE_MIN_SIN_QUARTER;
 }
 
 export function bdptDirectionalSourceDirectionWeight(angularDiameter: number): number {
-  return angularDiameter > 0 ? bdptDirectionalConePdf(angularDiameter) : 1;
+  return bdptDirectionalConeIsDelta(angularDiameter)
+    ? 1
+    : bdptDirectionalConePdf(angularDiameter);
 }
 
 function sampleCone(
@@ -215,10 +255,11 @@ function sampleCone(
   u1: number,
 ): [number, number, number] {
   const normal = normalize3(axis);
-  if (!(angularDiameter > 0)) return normal;
+  if (bdptDirectionalConeIsDelta(angularDiameter)) return normal;
   const oneMinusCosHalf = 2 * Math.sin(angularDiameter * 0.25) ** 2;
-  const cosTheta = 1 - clamp01(u0) * oneMinusCosHalf;
-  const sinTheta = Math.sqrt(Math.max(0, 1 - cosTheta * cosTheta));
+  const q = (1 - clamp01(u0)) * oneMinusCosHalf;
+  const sinTheta = Math.sqrt(Math.max(q * (2 - q), 0));
+  const cosTheta = Math.sqrt(Math.max(1 - sinTheta * sinTheta, 0));
   const phi = 2 * PI * clamp01(u1);
   const { tangent, bitangent } = buildOnb(normal);
   return normalize3([
@@ -240,7 +281,8 @@ function sampleInfiniteDisk(
   positionPdf: number;
 } {
   const towardSource = normalize3(towardSourceIn);
-  const radius = Math.max(sb.sceneRadius, 1e-3);
+  const launchDisk = distantLaunchDiskMeasure(sb);
+  const radius = launchDisk.radius;
   const center: [number, number, number] = [
     sb.sceneCenter[0] + towardSource[0] * radius,
     sb.sceneCenter[1] + towardSource[1] * radius,
@@ -256,7 +298,7 @@ function sampleInfiniteDisk(
     ],
     towardSource,
     travelDirection: [-towardSource[0], -towardSource[1], -towardSource[2]],
-    positionPdf: 1 / (PI * radius * radius),
+    positionPdf: 1 / launchDisk.area,
   };
 }
 
@@ -325,7 +367,7 @@ export function sampleBdptBounce0Cpu(
       directionPdf,
       sourceDirectionWeight,
       neePdf: distantDirectSelectionPdf(sb, globalFlat) * directionPdf,
-      directionIsDelta: angularDiameter <= 0,
+      directionIsDelta: bdptDirectionalConeIsDelta(angularDiameter),
       nonConnectableEndpoint: true,
       lvMatId: -8,
     };
@@ -375,7 +417,17 @@ export function sampleBdptBounce0Cpu(
               rectQuadArea(ru, rv), 'BDPT sampled rect emitter area',
             );
           }
-          const emitNormal = normalize3(cross3(ru, rv));
+          const areaMeasure = classifyAreaVectorF32(
+            ru,
+            rv,
+            isDisc ? PI : 4,
+          );
+          if (!areaMeasure.valid) {
+            throw new RangeError(
+              `BDPT sampled area emitter is ${areaMeasure.reason} after Float32 publication`,
+            );
+          }
+          const emitNormal = [...areaMeasure.normal] as [number, number, number];
           return finishEndpoint(
             emitPos, emitNormal, emitNormal, e.radiance, discretePdf / area, -2,
           );
@@ -395,14 +447,14 @@ export function sampleBdptBounce0Cpu(
             a[1] * uu + b[1] * vv + c[1] * ww,
             a[2] * uu + b[2] * vv + c[2] * ww,
           ];
-          const e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-          const e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-          const n = cross3([e1[0]!, e1[1]!, e1[2]!], [e2[0]!, e2[1]!, e2[2]!]);
-          const len = Math.hypot(n[0], n[1], n[2]);
-          if (len < 1e-8) {
-            return null;
+          const areaMeasure = classifyTriangleAreaF32(a, b, c);
+          if (!areaMeasure.valid) {
+            if (areaMeasure.reason === 'degenerate') return null;
+            throw new RangeError(
+              `BDPT sampled mesh emitter is ${areaMeasure.reason} after Float32 publication`,
+            );
           }
-          const emitNormal: [number, number, number] = [n[0] / len, n[1] / len, n[2] / len];
+          const emitNormal = [...areaMeasure.normal] as [number, number, number];
           const area = exactPositiveEmitterMeasure(
             meshTriangleArea(a, b, c), 'BDPT sampled mesh emitter area',
           );
@@ -440,11 +492,14 @@ export function sampleBdptBounce0Cpu(
     ]);
     const texel = idx * 4;
     const intensity = sb.environmentHdriIntensity ?? 1;
-    const radiance: [number, number, number] = [
-      (sb.environmentMapTexels[texel] ?? 0) * intensity,
-      (sb.environmentMapTexels[texel + 1] ?? 0) * intensity,
-      (sb.environmentMapTexels[texel + 2] ?? 0) * intensity,
-    ];
+    const radiance = scalePtWebgpuEnvironmentRadianceF32(
+      [
+        sb.environmentMapTexels[texel] ?? 0,
+        sb.environmentMapTexels[texel + 1] ?? 0,
+        sb.environmentMapTexels[texel + 2] ?? 0,
+      ],
+      intensity,
+    );
     const directionPdf = sb.environmentMapTexels[texel + 3] ?? 0;
     if (!(directionPdf > 0) || !Number.isFinite(directionPdf)) return null;
     const launch = sampleInfiniteDisk(sb, towardSource, 1 - u0, u1);
@@ -453,7 +508,10 @@ export function sampleBdptBounce0Cpu(
       emitPos: launch.position,
       emitNormal: launch.towardSource,
       endpointData: launch.travelDirection,
-      emitRad: radiance.map((channel) => channel / pdfJoint) as [number, number, number],
+      emitRad: scalePtWebgpuEnvironmentRadianceF32(
+        radiance,
+        1 / pdfJoint,
+      ),
       pdfJoint,
       pdfHemi: directionPdf,
       selectionPdf: discretePdf,

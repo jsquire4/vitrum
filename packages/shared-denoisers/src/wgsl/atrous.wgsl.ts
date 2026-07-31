@@ -82,7 +82,14 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // Edge-stopping weights (Dammertz et al. 2010).
       let dn = max(0.0, dot(nCenter, nP));
       let wn = pow(max(0.0, dn), ubo.sigmaN);
-      let wz = exp(-abs(zP - zCenter) / (ubo.sigmaZ + 1e-6));
+      let depthDelta = abs(zP - zCenter);
+      var wz = 1.0;
+      if (depthDelta > 0.0) {
+        wz = 0.0;
+        if (ubo.sigmaZ > 0.0) {
+          wz = exp(-depthDelta / ubo.sigmaZ);
+        }
+      }
       // Chromaticity-based color edge-stop. Compare normalized colors
       // (color direction), NOT raw HDR magnitudes. Plain Euclidean
       // distance on HDR linear values fires hard on bright warm caustics
@@ -95,10 +102,25 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
       // luminance() is the canonical Rec.709 helper. The walkaround composer
       // declares the focused luminance dependency for this image-space pass;
       // no scene-traversal code is pulled into the denoiser shader.
-      let lumP = max(1e-3, luminance(cP));
-      let lumC = max(1e-3, luminance(cCenter));
-      let dc = length(cP / lumP - cCenter / lumC);
-      let wc = exp(-dc * dc / (ubo.sigmaC * ubo.sigmaC + 1e-6));
+      let lumP = luminance(cP);
+      let lumC = luminance(cCenter);
+      var chromaP = vec3f(0.0);
+      var chromaC = vec3f(0.0);
+      if (lumP > 0.0) {
+        chromaP = cP / lumP;
+      }
+      if (lumC > 0.0) {
+        chromaC = cCenter / lumC;
+      }
+      let dc = length(chromaP - chromaC);
+      var wc = 1.0;
+      if (dc > 0.0) {
+        wc = 0.0;
+        let colorDenominator = ubo.sigmaC * ubo.sigmaC;
+        if (colorDenominator > 0.0) {
+          wc = exp(-dc * dc / colorDenominator);
+        }
+      }
 
       let w  = h * wn * wz * wc;
       sumColor  += cP * w;
@@ -106,7 +128,10 @@ fn atrousMain(@builtin(global_invocation_id) gid: vec3u) {
     }
   }
 
-  let result = select(cCenter, sumColor / sumWeight, sumWeight > 1e-6);
+  var result = cCenter;
+  if (sumWeight > 0.0) {
+    result = sumColor / sumWeight;
+  }
   textureStore(outputColor, gid.xy, vec4f(result, 1.0));
 }
 `;

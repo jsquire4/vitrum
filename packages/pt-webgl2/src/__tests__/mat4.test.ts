@@ -100,8 +100,8 @@ describe('makeRotationYMat4', () => {
     // Test: rotationY = π/2 (90° CCW env), world dir = (1,0,0):
     //   unrotated lookup dir = RY(-π/2) * (1,0,0) = (0,0,1)  [+Z in unrotated map]
     const rotationY = Math.PI / 2;
-    const m = makeRotationYMat4(-rotationY);           // what the packer sends
-    const lookupDir = applyMat4Vec3(m, [1, 0, 0]);     // GLSL: envRotation3x3 * worldDir
+    const m = makeRotationYMat4(-rotationY); // what the packer sends
+    const lookupDir = applyMat4Vec3(m, [1, 0, 0]); // GLSL: envRotation3x3 * worldDir
     // RY(-π/2) * (1,0,0) = (cos(-π/2), 0, -sin(-π/2)) = (0, 0, 1)
     expect(close(lookupDir[0], 0)).toBe(true);
     expect(close(lookupDir[1], 0)).toBe(true);
@@ -138,5 +138,19 @@ describe('invertMat4 (pre-existing)', () => {
     for (let i = 0; i < 16; i++) {
       expect(inv[i]).toBeCloseTo(IDENTITY_MAT4[i]!, 10);
     }
+  });
+
+  it('inverts a valid tiny scale without an absolute determinant cutoff', () => {
+    const scale = 1e-4;
+    const matrix = new Float32Array([scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, 2, -3, 4, 1]);
+    const inverse = invertMat4(matrix);
+
+    expect(inverse).not.toBeNull();
+    expect(inverse![0]).toBeCloseTo(1 / scale, 2);
+    expect(inverse![5]).toBeCloseTo(1 / scale, 2);
+    expect(inverse![10]).toBeCloseTo(1 / scale, 2);
+    expect(inverse![12]).toBeCloseTo(-2 / scale, 0);
+    expect(inverse![13]).toBeCloseTo(3 / scale, 0);
+    expect(inverse![14]).toBeCloseTo(-4 / scale, 0);
   });
 });

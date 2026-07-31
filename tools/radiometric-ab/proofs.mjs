@@ -2,6 +2,11 @@
 // Metadata for committed radiometric A/B result snapshots.
 
 import { PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS } from "./resultProvenance.mjs";
+import {
+  RESTIR_PT_RESULT_AB,
+  RESTIR_PT_RESULT_SCHEMA,
+  RESTIR_PT_WEIGHT_MODE,
+} from "./restirPtResultContract.mjs";
 
 export const RADIOMETRIC_AB_PROOFS = [
   {
@@ -36,8 +41,8 @@ export const RADIOMETRIC_AB_PROOFS = [
   },
   {
     id: "restir-pt",
-    schema: "vitrum.radiometric-ab.result.v1",
-    ab: "restir-pt-reuse-on-vs-off",
+    schema: RESTIR_PT_RESULT_SCHEMA,
+    ab: RESTIR_PT_RESULT_AB,
     scriptPath: "tools/radiometric-ab/ab-restir-pt.mjs",
     resultPath: "tools/radiometric-ab/results-restir-pt.json",
     sourceRoots: PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS,
@@ -75,9 +80,8 @@ export const RADIOMETRIC_AB_PROOFS = [
           "u32((run * framesPerRun + frame) * multiplier + increment + run * runStride)",
       },
     },
-    clampControls: [10, 100],
+    weightMode: RESTIR_PT_WEIGHT_MODE,
     diagnosticClamp: 10,
-    professionalDefaultWeightCeiling: 3.4028234663852886e38,
   },
   {
     id: "sobol",

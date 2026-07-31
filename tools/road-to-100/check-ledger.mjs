@@ -12,6 +12,7 @@ import { access, readFile, readdir } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { computeRoadSourceManifest } from './source-manifest.mjs';
 
 export const PROVISIONAL_TERM_RE = /experimental/i;
 
@@ -150,21 +151,94 @@ async function checkPackageScripts() {
   }
 }
 
+export const ROAD_ROW_STATUSES = Object.freeze(['Open', 'In flight', 'Closed']);
+const ROAD_ROW_STATUS_SET = new Set(ROAD_ROW_STATUSES);
+
+/** @param {string} road */
+export function roadQueueRows(road) {
+  const start = road.indexOf('## Current code-gap queue');
+  if (start < 0) fail('plan/road-to-100.md is missing the current code-gap queue');
+  const remainder = road.slice(start);
+  const nextHeading = remainder.slice(1).search(/\r?\n##\s/);
+  const section = nextHeading < 0 ? remainder : remainder.slice(0, nextHeading + 1);
+  const rows = [];
+  const ids = new Set();
+  for (const line of section.split(/\r?\n/)) {
+    const candidate = line.trim();
+    if (!candidate.startsWith('|')) continue;
+    if (/^\|\s*ID\s*\|/.test(candidate) || /^\|\s*:?-+/.test(candidate)) continue;
+    if (!candidate.endsWith('|')) {
+      fail(`malformed Road queue row (missing trailing pipe): ${candidate}`);
+    }
+    const fields = candidate.slice(1, -1).split('|').map((field) => field.trim());
+    if (fields.length !== 4) {
+      fail(`malformed Road queue row (expected four fields): ${candidate}`);
+    }
+    const [id, , , status] = fields;
+    if (!/^[A-Z][A-Z0-9]*$/.test(id)) {
+      fail(`malformed Road queue row identifier: ${id || '<blank>'}`);
+    }
+    if (ids.has(id)) fail(`duplicate Road queue row identifier: ${id}`);
+    ids.add(id);
+    if (!ROAD_ROW_STATUS_SET.has(status)) {
+      fail(
+        `Road queue row ${id} has unknown status ${JSON.stringify(status)}; ` +
+        `expected one of ${ROAD_ROW_STATUSES.join(', ')}`,
+      );
+    }
+    rows.push(Object.freeze({ id, status, line: candidate }));
+  }
+  if (rows.length === 0) fail('plan/road-to-100.md contains no queue rows');
+  return Object.freeze(rows);
+}
+
+/** @param {string} road */
+export function roadOpenRows(road) {
+  return roadQueueRows(road)
+    .filter((row) => row.status !== 'Closed')
+    .map((row) => row.line);
+}
+
 async function checkRoadContract() {
   const road = await text('plan/road-to-100.md');
   for (const needle of [
     '**Authority:** current production source under `packages/*/src`',
     '## Current code-gap queue',
-    'There are no open implementation rows.',
     '## Closed implementation programs',
     '`npm run build`',
     '## Reopen rule',
     'Do not create proof-only, host-only,',
+    '**Final source manifest:**',
   ]) {
     if (!road.includes(needle)) fail(`plan/road-to-100.md is missing contract text: ${needle}`);
   }
-  if (/\|\s*(?:Open|In flight)\s*\|/i.test(road)) {
-    fail('plan/road-to-100.md contains an open implementation row');
+  const openRows = roadOpenRows(road);
+  const claimsNoOpenRows = road.includes('There are no open implementation rows.');
+  if (openRows.length > 0 && claimsNoOpenRows) {
+    fail('plan/road-to-100.md contradicts its open rows with the no-open sentinel');
+  }
+  if (openRows.length === 0 && !claimsNoOpenRows) {
+    fail('plan/road-to-100.md has no open rows but is missing the no-open sentinel');
+  }
+  if (openRows.length > 0) {
+    fail(`plan/road-to-100.md contains ${openRows.length} open implementation rows`);
+  }
+
+  const manifestMatch = road.match(
+    /\*\*Final source manifest:\*\*\s+([\d,]+) files;\s+SHA-256\s+`([a-f0-9]{64})`;/,
+  );
+  if (manifestMatch == null) {
+    fail('plan/road-to-100.md has no parseable final source manifest');
+  }
+  const declaredFiles = Number(manifestMatch[1].replaceAll(',', ''));
+  const declaredSha256 = manifestMatch[2];
+  const actual = await computeRoadSourceManifest(REPO_ROOT);
+  if (declaredFiles !== actual.files || declaredSha256 !== actual.sha256) {
+    fail(
+      'plan/road-to-100.md final source manifest is stale: ' +
+      `declared ${declaredFiles} files/${declaredSha256}, ` +
+      `actual ${actual.files} files/${actual.sha256}`,
+    );
   }
 }
 

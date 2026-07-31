@@ -19,6 +19,12 @@ const BASE: MaterialSpec = {
   ior: 1.5,
 };
 
+function f32FromBits(bits: number): number {
+  const view = new DataView(new ArrayBuffer(4));
+  view.setUint32(0, bits >>> 0, false);
+  return view.getFloat32(0, false);
+}
+
 describe('materialSig — Beer-Lambert fields (H33)', () => {
   it('two materials differing only in attenuationColor produce different signatures', () => {
     const a: MaterialSpec = { ...BASE, attenuationColor: [1, 0, 0] };
@@ -67,10 +73,117 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     expect(materialSig(sigFinite)).not.toBe(sigInf);
   });
 
+  it('distinguishes adjacent float32 attenuation distances exactly', () => {
+    const lower = f32FromBits(0x3f80_0000);
+    const upper = f32FromBits(0x3f80_0001);
+    expect(upper).toBeGreaterThan(lower);
+    expect(materialSig({ ...BASE, attenuationDistance: lower }))
+      .not.toBe(materialSig({ ...BASE, attenuationDistance: upper }));
+  });
+
+  it('uses exact float32 tokens inside nested layer and spectral records', () => {
+    const lower = f32FromBits(0x3f00_0000);
+    const upper = f32FromBits(0x3f00_0001);
+    const layerA: MaterialSpec = {
+      ...BASE,
+      frontLayer: { transmission: [lower, 1, 1] },
+    };
+    const layerB: MaterialSpec = {
+      ...BASE,
+      frontLayer: { transmission: [upper, 1, 1] },
+    };
+    const spectralA: MaterialSpec = {
+      ...BASE,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 700,
+        values: new Float32Array([lower, 1, 2]),
+      },
+    };
+    const spectralB: MaterialSpec = {
+      ...BASE,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 700,
+        values: new Float32Array([upper, 1, 2]),
+      },
+    };
+    expect(materialSig(layerA)).not.toBe(materialSig(layerB));
+    expect(materialSig(spectralA)).not.toBe(materialSig(spectralB));
+  });
+
+  it('preserves signed-zero bit identity for packed numeric fields', () => {
+    const positiveZero: MaterialSpec = { ...BASE, anisotropyRotation: 0 };
+    const negativeZero: MaterialSpec = { ...BASE, anisotropyRotation: -0 };
+    expect(Object.is(positiveZero.anisotropyRotation, negativeZero.anisotropyRotation)).toBe(false);
+    expect(materialSig(positiveZero)).not.toBe(materialSig(negativeZero));
+  });
+
+  it('canonicalises NaN and keeps every non-finite class distinct from defaults', () => {
+    const withRotation = (anisotropyRotation: number): MaterialSpec => ({
+      ...BASE,
+      anisotropyRotation,
+    });
+    expect(materialSig(withRotation(Number.NaN)))
+      .toBe(materialSig(withRotation(Number.NaN)));
+    expect(new Set([
+      materialSig(BASE),
+      materialSig(withRotation(Number.NaN)),
+      materialSig(withRotation(Number.POSITIVE_INFINITY)),
+      materialSig(withRotation(Number.NEGATIVE_INFINITY)),
+    ]).size).toBe(4);
+  });
+
   it('attenuationColor absent defaults to 1,1,1 token (same as explicit [1,1,1])', () => {
     const implicit: MaterialSpec = { ...BASE };
     const explicit: MaterialSpec = { ...BASE, attenuationColor: [1, 1, 1] };
     expect(materialSig(implicit)).toBe(materialSig(explicit));
+  });
+
+  it('makes omitted optional fields equivalent to their explicit contract defaults', () => {
+    const explicitDefaults: MaterialSpec = {
+      ...BASE,
+      emissive: [0, 0, 0],
+      emissiveIntensity: 1,
+      shadingModel: 'pbr',
+      alphaMode: 'opaque',
+      alphaCutoff: 0.5,
+      opacity: 1,
+      doubleSided: false,
+      attenuationColor: [1, 1, 1],
+      attenuationDistance: Number.POSITIVE_INFINITY,
+      thickness: 0,
+      normalScale: 1,
+      clearcoatNormalScale: 1,
+      aoMapIntensity: 1,
+      bumpScale: 1,
+      lightMapIntensity: 1,
+      envMapIntensity: 1,
+      specularColor: [1, 1, 1],
+      specularIntensity: 1,
+      clearcoat: 0,
+      clearcoatRoughness: 0,
+      sheen: 0,
+      sheenColor: [0, 0, 0],
+      sheenRoughness: 0,
+      anisotropy: 0,
+      anisotropyRotation: 0,
+      iridescence: 0,
+      iridescenceIor: 1.3,
+      iridescenceThicknessRange: [100, 400],
+      displacementScale: 1,
+      displacementBias: 0,
+      displacementSubdivisions: 0,
+      scatteringCoefficient: 0,
+      scatteringAnisotropy: 0,
+      scatteringCoefficientRGB: [0, 0, 0],
+      dispersionAbbeNumber: 0,
+    };
+    expect(materialSig(BASE)).toBe(materialSig(explicitDefaults));
+  });
+
+  it('includes doubleSided because it is a canonical MaterialEntry flag', () => {
+    expect(materialSig(BASE)).not.toBe(materialSig({ ...BASE, doubleSided: true }));
   });
 
   it('includes the folded mesh-emitter shadow flag in the material signature', () => {
@@ -100,6 +213,62 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     const a: MaterialSpec = { ...BASE, alphaMap: { handle: handleA } };
     const b: MaterialSpec = { ...BASE, alphaMap: { handle: handleB } };
     expect(materialSig(a)).not.toBe(materialSig(b));
+  });
+
+  it('includes face-layer normal-map handle and sampler identity', () => {
+    const sharedTransmission = [0.8, 0.9, 1] as const;
+    const a: MaterialSpec = {
+      ...BASE,
+      frontLayer: {
+        transmission: sharedTransmission,
+        normalMap: {
+          handle: { name: 'front-a' },
+          wrapS: 'repeat',
+        },
+      },
+    };
+    const b: MaterialSpec = {
+      ...BASE,
+      frontLayer: {
+        transmission: sharedTransmission,
+        normalMap: {
+          handle: { name: 'front-b' },
+          wrapS: 'clamp-to-edge',
+        },
+      },
+    };
+    expect(materialSig(a)).not.toBe(materialSig(b));
+  });
+
+  it('includes the behavior-affecting material extension lanes', () => {
+    expect(materialSig(BASE)).not.toBe(materialSig({
+      ...BASE,
+      extensions: { skipEmitter: true },
+    }));
+    expect(materialSig(BASE)).not.toBe(materialSig({
+      ...BASE,
+      extensions: { surfaceTextureId: 7 },
+    }));
+    // Invalid/absent surface ids have the same effective smooth-surface lane.
+    expect(materialSig(BASE)).toBe(materialSig({
+      ...BASE,
+      extensions: { surfaceTextureId: 99 },
+    }));
+  });
+
+  it('keeps primitive opaque handles type-safe, delimiter-safe, and symbol-identity-safe', () => {
+    const withHandle = (handle: unknown): MaterialSpec => ({
+      ...BASE,
+      alphaMap: { handle },
+    });
+    expect(materialSig(withHandle(1))).not.toBe(materialSig(withHandle('1')));
+    expect(materialSig(withHandle(true))).not.toBe(materialSig(withHandle('true')));
+    expect(materialSig(withHandle('a;uv0|maps=x')))
+      .not.toBe(materialSig(withHandle('a')));
+    const symbolA = Symbol('same-description');
+    const symbolB = Symbol('same-description');
+    expect(materialSig(withHandle(symbolA))).toBe(materialSig(withHandle(symbolA)));
+    expect(materialSig(withHandle(symbolA))).not.toBe(materialSig(withHandle(symbolB)));
   });
 
   it('includes texture UV channel, transform, wrap, and filter metadata', () => {

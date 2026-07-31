@@ -220,14 +220,20 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       'sampledDelta = bsPrev.sampledIsDelta;',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'var newThroughput = prevThroughput * surfaceThroughputMul * segmentWeight;',
+      'var incomingPathThroughput = prevThroughput;',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'incomingPathThroughput = ptScaleEnvironmentRadiance(',
+    );
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
+      'incomingPathThroughput * surfaceThroughputMul * segmentWeight;',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).not.toContain(
       'if (mat.transmission > 0.5 && mat.roughness < 0.05)',
     );
   });
 
-  it('marks the vertex that sampled a delta event and prevents strategy shifts across it', () => {
+  it('marks delta connection techniques invalid while continuing the ratio sweep', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'vec4f(oldPrevKind.xyz, BDPT_KIND_DELTA);',
     );
@@ -235,9 +241,36 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       'v.spec = l0.w == BDPT_KIND_DELTA;',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'if (flip.spec || neighborSpec) { break; }',
+      'let connectionIsDelta = flip.spec || neighborSpec;',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'let connectionIsDelta = flip.spec || nb.spec;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'validPdfs[s - 1u] = !connectionIsDelta;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'validPdfs[s + 1u] = !connectionIsDelta;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'knownPdfs[s - 1u] = true;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'knownPdfs[s + 1u] = true;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'n >= 3u && knownPdfs[2u] &&',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'validPdfs[1u] = !firstReceiver.spec;',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'fn bdptRemappedLogDensitySAtoArea(',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain(
+      'if (flip.spec || neighborSpec) { break; }',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain(
       'if (flip.spec || nb.spec) { break; }',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(

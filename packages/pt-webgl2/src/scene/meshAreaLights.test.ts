@@ -68,6 +68,11 @@ function luminance(rgb: readonly [number, number, number]): number {
   return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
 }
 
+function packedTargetFace(data: Float32Array, lightIndex: number): number {
+  const base = lightIndex * TRI_LIGHT_PIXELS * 4;
+  return data[base + 20]! + data[base + 23]! * 0x1_0000;
+}
+
 function srgbToLinearForTest(value: number): number {
   return value <= 0.04045
     ? value / 12.92
@@ -129,6 +134,79 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.totalEmissivePower).toBeCloseTo(luminance([2, 4, 8]), 6);
   });
 
+  it('rejects a cumulative mesh-emitter selection mass that overflows float32', () => {
+    const repeatedIndices = new Uint32Array([
+      0, 1, 2,
+      0, 2, 3,
+      0, 1, 2,
+      0, 2, 3,
+    ]);
+    const merged = fakeMerged({
+      indices: repeatedIndices,
+      mergedIndices: repeatedIndices,
+      triMaterialId: new Uint32Array(4),
+      mergedTriMaterialId: new Uint32Array(4),
+      bvhTriToMergedTri: new Uint32Array([0, 1, 2, 3]),
+      triangleCount: 4,
+      meshVertexRanges: [
+        {
+          name: 'panel',
+          vertexStart: 0,
+          vertexCount: 4,
+          triStart: 0,
+          triCount: 4,
+        },
+      ],
+    });
+    expect(() =>
+      packMeshAreaLights(
+        sceneWith([{
+          kind: 'mesh-area',
+          id: 'overflowing-panel',
+          meshId: 'panel',
+          color: [1, 1, 1],
+          intensity: 2e38,
+        }]),
+        merged,
+      ),
+    ).toThrow(/mesh-emitter selection-power sum overflows float32/);
+  });
+
+  it('rejects positive mesh-emitter proposal mass lost by float32 accumulation or division', () => {
+    const twoSources = fakeMerged({
+      meshVertexRanges: [
+        { name: 'bright', vertexStart: 0, vertexCount: 3, triStart: 0, triCount: 1 },
+        { name: 'dim', vertexStart: 0, vertexCount: 3, triStart: 1, triCount: 1 },
+      ],
+    });
+    const emitter = (id: string, meshId: string, intensity: number) => ({
+      kind: 'mesh-area' as const,
+      id,
+      meshId,
+      color: [1, 1, 1] as [number, number, number],
+      intensity,
+    });
+    expect(() =>
+      packMeshAreaLights(
+        sceneWith([
+          emitter('dominant', 'bright', 1e30),
+          emitter('flattened', 'dim', 1e-30),
+        ]),
+        twoSources,
+      ),
+    ).toThrow(/loses proposal support in the cumulative float32 distribution/);
+
+    expect(() =>
+      packMeshAreaLights(
+        sceneWith([
+          emitter('pdf-collapse', 'bright', 1e-30),
+          emitter('dominant-last', 'dim', 1e30),
+        ]),
+        twoSources,
+      ),
+    ).toThrow(/selection probability collapses to zero in float32/);
+  });
+
   it('skips meshes with no matching emitter (only emissive meshes contribute)', () => {
     const merged = fakeMerged({
       meshVertexRanges: [
@@ -152,6 +230,63 @@ describe('packMeshAreaLights (B4)', () => {
     // 2 lights × 6 texels = 12 texels → square dim ≥ ceil(sqrt(12)) = 4.
     expect(out.dim).toBeGreaterThanOrEqual(4);
     expect(out.data!.length).toBe(out.dim * out.dim * 4);
+  });
+
+  it('packs the inverse-mapped BVH target face losslessly as low/high 16-bit words', () => {
+    const scene = sceneWith([
+      { kind: 'mesh-area', id: 'm', meshId: 'panel', color: [1, 1, 1], intensity: 1 },
+    ]);
+    const permuted = packMeshAreaLights(
+      scene,
+      fakeMerged({ bvhTriToMergedTri: new Uint32Array([1, 0]) }),
+    );
+    expect(packedTargetFace(permuted.data!, 0)).toBe(1);
+    expect(packedTargetFace(permuted.data!, 1)).toBe(0);
+
+    const triangleCount = 0x1_0001;
+    const highWordPermutation = Uint32Array.from(
+      { length: triangleCount },
+      (_, index) => index,
+    );
+    highWordPermutation[0] = 0x1_0000;
+    highWordPermutation[0x1_0000] = 0;
+    const highWord = packMeshAreaLights(
+      scene,
+      fakeMerged({
+        triangleCount,
+        bvhTriToMergedTri: highWordPermutation,
+        meshVertexRanges: [
+          { name: 'panel', vertexStart: 0, vertexCount: 4, triStart: 0, triCount: 1 },
+        ],
+      }),
+    );
+    expect(highWord.data![20]).toBe(0);
+    expect(highWord.data![23]).toBe(1);
+    expect(packedTargetFace(highWord.data!, 0)).toBe(0x1_0000);
+  });
+
+  it('rejects incomplete, out-of-range, and non-bijective BVH face mappings', () => {
+    const scene = sceneWith([
+      { kind: 'mesh-area', id: 'm', meshId: 'panel', color: [1, 1, 1], intensity: 1 },
+    ]);
+    expect(() =>
+      packMeshAreaLights(
+        scene,
+        fakeMerged({ bvhTriToMergedTri: new Uint32Array([0]) }),
+      ),
+    ).toThrow(/mapping is incomplete/);
+    expect(() =>
+      packMeshAreaLights(
+        scene,
+        fakeMerged({ bvhTriToMergedTri: new Uint32Array([0, 2]) }),
+      ),
+    ).toThrow(/out-of-range face/);
+    expect(() =>
+      packMeshAreaLights(
+        scene,
+        fakeMerged({ bvhTriToMergedTri: new Uint32Array([0, 0]) }),
+      ),
+    ).toThrow(/mapping is non-bijective/);
   });
 
   it('packs mesh-area emitter castShadow:false into the shared s5.g shadow-disable lane', () => {
@@ -179,6 +314,24 @@ describe('packMeshAreaLights (B4)', () => {
     );
     expect(defaultOut.data![21]).toBe(0);
     expect(defaultOut.data![TRI_LIGHT_PIXELS * 4 + 21]).toBe(0);
+  });
+
+  it('packs the backing material doubleSided contract into s5.b for every triangle', () => {
+    const oneSided = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({ emissive: [1, 1, 1] }))),
+      fakeMerged(),
+    );
+    const twoSided = packMeshAreaLights(
+      sceneWithPrimitive(panelPrimitive(material({
+        emissive: [1, 1, 1],
+        doubleSided: true,
+      }))),
+      fakeMerged(),
+    );
+
+    expect(oneSided.data![22]).toBe(0);
+    expect(twoSided.data![22]).toBe(1);
+    expect(twoSided.data![TRI_LIGHT_PIXELS * 4 + 22]).toBe(1);
   });
 
   it('synthesizes triangle-light NEE for emissive mesh materials without explicit emitters', () => {
@@ -504,6 +657,9 @@ describe('packMeshAreaLights (B4)', () => {
       return [out.data![base + 4], out.data![base + 5], out.data![base + 6]].join(',');
     });
     expect(radianceRecords).toContain('0,2,0');
+    expect(
+      Array.from({ length: out.triLightCount }, (_, i) => packedTargetFace(out.data!, i)),
+    ).toEqual([0, 0, 0]);
   });
 
   it('subdivides explicit mesh-area triangle lights through the referenced material emissiveMap', () => {
@@ -627,9 +783,8 @@ describe('packMeshAreaLights (B4)', () => {
     ['linear minification', { minFilter: 'linear' as const }],
     ['linear magnification', { magFilter: 'linear' as const }],
     ['mip filtering', { mipFilter: 'nearest' as const }],
-  ])('rejects %s for mapped-emitter NEE instead of using quadrature', (_label, sampler) => {
-    expect(() => packMeshAreaLights(
-      sceneWithPrimitive(panelPrimitive(material({
+  ])('keeps %s mapped emission valid through forward hits while excluding it from NEE', (_label, sampler) => {
+    const scene = sceneWithPrimitive(panelPrimitive(material({
         emissive: [1, 1, 1],
         emissiveMap: {
           handle: {
@@ -639,9 +794,59 @@ describe('packMeshAreaLights (B4)', () => {
           },
           ...sampler,
         },
-      }))),
-      fakeMerged(),
-    )).toThrow(/cannot be represented by exact texel-cell NEE/);
+      })));
+    expect(() => packMeshAreaLights(scene, fakeMerged())).not.toThrow();
+    expect(packMeshAreaLights(scene, fakeMerged())).toMatchObject({
+      data: null,
+      triLightCount: 0,
+      totalEmissivePower: 0,
+    });
+    expect(hasMeshAreaLightForPrimitive(scene, 'panel')).toBe(false);
+  });
+
+  it.each([
+    ['linear minification', { minFilter: 'linear' as const }],
+    ['linear magnification', { magFilter: 'linear' as const }],
+    ['mip filtering', { mipFilter: 'nearest' as const }],
+  ])('does not require CPU texels for forward-only %s emission', (_label, sampler) => {
+    const scene = sceneWithPrimitive(panelPrimitive(material({
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        handle: { id: 'gpu-only-forward-emission' },
+        ...sampler,
+      },
+    })));
+    expect(() => packMeshAreaLights(scene, fakeMerged())).not.toThrow();
+    expect(packMeshAreaLights(scene, fakeMerged()).triLightCount).toBe(0);
+  });
+
+  it('keeps an explicit filtered mesh-area emitter forward-only as one coherent estimator', () => {
+    const scene = sceneWithPrimitive(
+      panelPrimitive(material({
+        emissiveMap: {
+          handle: {
+            width: 2,
+            height: 1,
+            data: new Uint8Array([255, 255, 255, 255, 128, 128, 128, 255]),
+          },
+          magFilter: 'linear',
+        },
+      })),
+      [{
+        kind: 'mesh-area',
+        id: 'mapped-panel',
+        meshId: 'panel',
+        color: [1, 0.5, 0.25],
+        intensity: 4,
+      }],
+    );
+
+    expect(packMeshAreaLights(scene, fakeMerged())).toMatchObject({
+      data: null,
+      triLightCount: 0,
+      totalEmissivePower: 0,
+    });
+    expect(hasMeshAreaLightForPrimitive(scene, 'panel')).toBe(false);
   });
 
   it('accepts an exact linear cpuMirror for an otherwise opaque handle', () => {

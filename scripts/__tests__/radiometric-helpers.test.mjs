@@ -8,15 +8,34 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const helpersPath = join(repoRoot, 'tools', 'radiometric-ab', 'helpers.mjs');
 const walkaroundHarnessPath = join(repoRoot, 'tools', 'radiometric-ab', 'walkaround-ab.mjs');
 const walkaroundRunnerPath = join(repoRoot, 'tools', 'radiometric-ab', 'run-walkaround-ab.mjs');
-const walkaroundRunValidationPath = join(repoRoot, 'tools', 'radiometric-ab', 'walkaroundRunValidation.mjs');
+const walkaroundRunValidationPath = join(
+  repoRoot,
+  'tools',
+  'radiometric-ab',
+  'walkaroundRunValidation.mjs',
+);
 const ptRunnerPath = join(repoRoot, 'tools', 'radiometric-ab', 'run-pt-ab.mjs');
 const ptBdptHarnessPath = join(repoRoot, 'tools', 'radiometric-ab', 'ab-bdpt.mjs');
 const radiometricProofsPath = join(repoRoot, 'tools', 'radiometric-ab', 'proofs.mjs');
 const radiometricCheckerPath = join(repoRoot, 'tools', 'radiometric-ab', 'check-results.mjs');
 // Bounded multi-vertex BDPT validation lives in ptWebgpuValidation.ts; its
 // estimator loop is composed in the path-trace kernel.
-const ptWebgpuValidationPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'ptWebgpuValidation.ts');
-const ptWebgpuKernelPath = join(repoRoot, 'packages', 'pt-webgpu', 'src', 'wgsl', 'pathTrace', 'kernel.wgsl.ts');
+const ptWebgpuValidationPath = join(
+  repoRoot,
+  'packages',
+  'pt-webgpu',
+  'src',
+  'ptWebgpuValidation.ts',
+);
+const ptWebgpuKernelPath = join(
+  repoRoot,
+  'packages',
+  'pt-webgpu',
+  'src',
+  'wgsl',
+  'pathTrace',
+  'kernel.wgsl.ts',
+);
 
 test('radiometric varianceROI fails closed when capture count is too low', async () => {
   const varianceROI = await loadVarianceROI();
@@ -38,6 +57,55 @@ test('walkaround A/B harness exposes high-quality artifact controls', async () =
   assert.match(harness, /VITRUM_WALKAROUND_AB_OUTPUT_PATH/);
   assert.match(harness, /qualityProfile/);
   assert.match(harness, /renderConfig/);
+});
+
+test('walkaround radiometric regions scale to the actual capture dimensions', async () => {
+  const { regionLuminance, resolveWalkaroundRegions, validateWalkaroundPixelBuffer } =
+    await import('../../tools/radiometric-ab/walkaroundRegions.mjs');
+  const half = resolveWalkaroundRegions(64, 64);
+  assert.deepEqual(half.glassCenter, { x0: 24, y0: 24, x1: 40, y1: 40 });
+  assert.deepEqual(half.glossyBackWall, { x0: 16, y0: 16, x1: 48, y1: 48 });
+
+  const wide = resolveWalkaroundRegions(256, 96);
+  assert.deepEqual(wide.sunReceiver, { x0: 60, y0: 31, x1: 196, y1: 65 });
+  const pixels = new Float32Array(256 * 96 * 4).fill(1);
+  assert.equal(regionLuminance(pixels, 256, 96, wide.sunReceiver), 1);
+  assert.throws(
+    () => regionLuminance(pixels, 128, 96, wide.sunReceiver),
+    /pixel buffer length must be exactly/,
+  );
+  assert.doesNotThrow(() => validateWalkaroundPixelBuffer(pixels, 256, 96));
+});
+
+test('walkaround capture validation rejects wrong lengths and non-finite values outside the ROI', async () => {
+  const { regionLuminance, validateWalkaroundPixelBuffer } =
+    await import('../../tools/radiometric-ab/walkaroundRegions.mjs');
+  const width = 4;
+  const height = 4;
+  const expectedLength = width * height * 4;
+  assert.throws(
+    () => validateWalkaroundPixelBuffer(new Float32Array(expectedLength - 1), width, height),
+    /pixel buffer length must be exactly 64/,
+  );
+
+  const roi = { x0: 1, y0: 1, x1: 4, y1: 4 };
+  for (const [component, invalid] of [
+    ['r', Number.NaN],
+    ['g', Number.POSITIVE_INFINITY],
+    ['b', Number.NEGATIVE_INFINITY],
+    ['a', Number.NaN],
+  ]) {
+    const pixels = new Float32Array(expectedLength).fill(1);
+    const componentIndex = { r: 0, g: 1, b: 2, a: 3 }[component];
+    pixels[componentIndex] = invalid;
+    // The invalid pixel is deliberately outside the selected region. The
+    // complete-frame guard, not local ROI arithmetic, must reject it.
+    assert.equal(regionLuminance(pixels, width, height, roi), 1);
+    assert.throws(
+      () => validateWalkaroundPixelBuffer(pixels, width, height, 'fixture capture'),
+      new RegExp(`non-finite ${component} component at \\(0, 0\\)`),
+    );
+  }
 });
 
 test('walkaround A/B wrapper preserves custom output/status paths', async () => {
@@ -84,7 +152,6 @@ test('walkaround A/B wrapper fails closed on missing or incomplete result artifa
   assert.match(runner, /verdict: 'FAIL'/);
 });
 
-
 test('pt radiometric wrapper fails closed on missing or incomplete result artifacts', async () => {
   const runner = await readFile(ptRunnerPath, 'utf8');
   assert.match(runner, /function resultArtifactProblem/);
@@ -114,10 +181,7 @@ test('pt BDPT regression harness covers the complete bounded multi-vertex mode',
   assert.match(proofs, /bdptEstimatorOwnership\.test\.ts/);
   assert.match(proofs, /bdptDeltaTransport\.test\.ts/);
   assert.match(proofs, /BDPT_DEFAULT_LIGHT_BOUNCES = 2/);
-  assert.match(
-    proofs,
-    /BDPT_MAX_LIGHT_BOUNCES =\\n {2}PT_WEBGPU_BDPT_SUPPORT\.maxLightVertices/,
-  );
+  assert.match(proofs, /BDPT_MAX_LIGHT_BOUNCES =\\n {2}PT_WEBGPU_BDPT_SUPPORT\.maxLightVertices/);
 
   assert.match(checker, /function checkPtSourcePins/);
   assert.match(checker, /named test-source file \$\{path\} has no test declaration/);

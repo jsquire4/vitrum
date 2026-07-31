@@ -51,6 +51,27 @@ describe('solveSkin', () => {
     expect(normals[4]).toBeCloseTo(1);
   });
 
+  it('normalizes finite nonzero normals and tangents after extreme bone scales', () => {
+    const tinyScale = new Float32Array([
+      1e-20, 0, 0, 0,
+      0, 1e-20, 0, 0,
+      0, 0, 1e-20, 0,
+      0, 0, 0, 1,
+    ]);
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([1, 0, 0]),
+        normals: new Float32Array([1, 0, 0]),
+        bonesMatrix: tinyScale,
+      }),
+      tangents: new Float32Array([1, 0, 0, 1]),
+    };
+
+    const solved = solveSkin(prim);
+    expect(Array.from(solved.normals)).toEqual([1, 0, 0]);
+    expect(Array.from(solved.tangents ?? [])).toEqual([1, 0, 0, 1]);
+  });
+
   it('translation bone: positions translate, normals stay', () => {
     // Column-major translate(10, -2, 5).
     const trans = new Float32Array([
@@ -272,6 +293,60 @@ describe('solveSkin', () => {
     expect(tangents![1]).toBeCloseTo(1, 6);
     expect(tangents![2]).toBeCloseTo(0, 6);
     expect(tangents![3]).toBe(-1);
+  });
+
+  it('flips tangent handedness when the skin deformation reflects orientation', () => {
+    const reflectX = new Float32Array([
+      -1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+    const prim: SkinnedMeshPrimitive = {
+      ...singleBonePrim({
+        positions: new Float32Array([0, 0, 0]),
+        normals: new Float32Array([0, 0, 1]),
+        bonesMatrix: reflectX,
+      }),
+      tangents: new Float32Array([1, 0, 0, 1]),
+    };
+
+    const { normals, tangents } = solveSkin(prim);
+
+    expect(tangents).toBeDefined();
+    expect(Array.from(tangents!.subarray(0, 3))).toEqual([-1, 0, 0]);
+    expect(tangents![3]).toBe(-1);
+    // Reconstructing B = cross(N, T) * handedness must agree with reflecting
+    // the authored +Y bitangent through reflectX (which remains +Y).
+    const reconstructedBitangentY =
+      (normals[2]! * tangents![0]! - normals[0]! * tangents![2]!) * tangents![3]!;
+    expect(reconstructedBitangentY).toBe(1);
+  });
+
+  it('derives tangent handedness independently from each vertex skin matrix', () => {
+    const reflectX = new Float32Array([
+      -1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]);
+    const prim: SkinnedMeshPrimitive = {
+      kind: 'skinned-mesh',
+      id: 'mixed-orientation',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+      tangents: new Float32Array([1, 0, 0, -1, 1, 0, 0, 1]),
+      skinIndices: new Uint32Array([0, 0, 0, 0, 1, 0, 0, 0]),
+      skinWeights: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0]),
+      bones: new Float32Array([...IDENT4(), ...reflectX]),
+      boneInverses: new Float32Array([...IDENT4(), ...IDENT4()]),
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    };
+
+    const { tangents } = solveSkin(prim);
+
+    expect(tangents?.[3]).toBe(-1);
+    expect(tangents?.[7]).toBe(-1);
   });
 
   it('applies morphTargetTangents before skinning', () => {

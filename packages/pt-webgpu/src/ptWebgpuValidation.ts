@@ -246,6 +246,27 @@ function assertFiniteNumber(value: unknown, label: string): asserts value is num
   if (!Number.isFinite(value)) throw new RangeError(`renderFrame: ${label} must be finite (got ${value})`);
 }
 
+function assertNonNegativeFloat32(
+  value: unknown,
+  label: string,
+): asserts value is number {
+  assertFiniteNumber(value, label);
+  if (value < 0) {
+    throw new RangeError(`renderFrame: ${label} must be >= 0 (got ${value})`);
+  }
+  const stored = Math.fround(value);
+  if (!Number.isFinite(stored)) {
+    throw new RangeError(
+      `renderFrame: ${label} must be representable as a finite float32 (got ${value})`,
+    );
+  }
+  if (value > 0 && stored === 0) {
+    throw new RangeError(
+      `renderFrame: ${label} underflows float32 storage (got ${value})`,
+    );
+  }
+}
+
 function assertU32(value: unknown, label: string): asserts value is number {
   assertFiniteNumber(value, label);
   if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) {
@@ -325,10 +346,7 @@ export function validatePtWebgpuFrameInput(input: FrameInput): void {
     }
   }
   if (quality.exposure !== undefined) {
-    assertFiniteNumber(quality.exposure, 'quality.exposure');
-    if (quality.exposure < 0) {
-      throw new RangeError(`renderFrame: quality.exposure must be >= 0 (got ${quality.exposure})`);
-    }
+    assertNonNegativeFloat32(quality.exposure, 'quality.exposure');
   }
   if (quality.filteredGlossyFactor !== undefined) {
     assertFiniteNumber(quality.filteredGlossyFactor, 'quality.filteredGlossyFactor');
@@ -347,6 +365,25 @@ export function validatePtWebgpuFrameInput(input: FrameInput): void {
       quality.outputColorSpace !== 'srgb' && quality.outputColorSpace !== 'linear') {
     throw new RangeError(
       `renderFrame: quality.outputColorSpace is unsupported (got ${String(quality.outputColorSpace)})`,
+    );
+  }
+}
+
+/**
+ * The native BDPT t=1 endpoint implements the finite-area perspective-camera
+ * measure. An affine/orthographic projection has a delta directional measure
+ * and cannot silently reuse that estimator.
+ */
+export function assertPtWebgpuBdptFrameCameraSupported(input: FrameInput): void {
+  const projection = input.projMatrix;
+  const affineHomogeneousRow =
+    projection[3] === 0 &&
+    projection[7] === 0 &&
+    projection[11] === 0;
+  if (affineHomogeneousRow) {
+    throw new RangeError(
+      'PTEngineWebGPU.renderFrame: bdpt:true supports perspective camera ' +
+        'projections only; an orthographic/affine projection was supplied.',
     );
   }
 }

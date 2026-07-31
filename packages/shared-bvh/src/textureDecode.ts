@@ -130,6 +130,22 @@ export function resolveReadableTexture(
     return null;
   }
   const decode = makeChannelDecoder(src, hintDataType);
-  const needsSrgbDecode = fieldColorSpace === 'srgb' && hintColorSpace !== 'linear';
+  // Raw floating-point texture payloads are the library's implicit linear-HDR
+  // lane. Both path-tracer atlas uploaders preserve unhinted Float32 RGB above
+  // one instead of treating it as normalized sRGB, so CPU emitter
+  // classification must make the same choice. An explicit color-space hint
+  // always wins; this inference exists only for the otherwise-ambiguous
+  // unhinted Float32 case (including immutable cpuMirror proxies whose
+  // dataType, rather than instanceof, carries the representation).
+  const unhintedFloat32IsLinear =
+    hintColorSpace == null &&
+    (
+      hintDataType === 'float32' ||
+      (hintDataType == null && src instanceof Float32Array)
+    );
+  const needsSrgbDecode =
+    fieldColorSpace === 'srgb' &&
+    hintColorSpace !== 'linear' &&
+    !unhintedFloat32IsLinear;
   return { src, width, height, pixelCount, stride, decode, needsSrgbDecode };
 }

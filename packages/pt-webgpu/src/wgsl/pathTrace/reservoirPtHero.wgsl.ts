@@ -421,27 +421,31 @@ fn rptNormalizeAnalyticSurfaceParam(
     paramOffset + 1u < arrayLength(&analyticParams),
   );
   var center = vec3f(0.0);
-  var extent = vec3f(1.0);
+  var extent = vec3f(0.0);
   if (shapeId == SHAPE_SPHERE) {
     center = p0.xyz;
-    extent = vec3f(max(p0.w, 1e-4));
+    extent = vec3f(p0.w);
   } else if (shapeId == SHAPE_BOX) {
     center = p0.xyz;
-    extent = max(abs(p1.xyz), vec3f(1e-4));
+    extent = abs(p1.xyz);
   } else if (shapeId == SHAPE_CAPSULE) {
-    center = 0.5 * (p0.xyz + p1.xyz);
-    extent = 0.5 * abs(p1.xyz - p0.xyz) + vec3f(max(p1.w, 1e-4));
+    center = 0.5 * p0.xyz + 0.5 * p1.xyz;
+    extent = abs(0.5 * p1.xyz - 0.5 * p0.xyz) + vec3f(p1.w);
   } else if (shapeId == SHAPE_CYLINDER) {
     center = p0.xyz;
-    extent = vec3f(max(p0.w, 1e-4), max(p1.x, 1e-4), max(p0.w, 1e-4));
+    extent = vec3f(p0.w, p1.x, p0.w);
   } else if (shapeId == SHAPE_H_CHANNEL_CAME) {
     extent = vec3f(
-      max(0.5 * p0.x, 1e-4),
-      max(0.5 * p0.z, 1e-4),
-      max(0.5 * p0.y, 1e-4),
+      0.5 * p0.x,
+      0.5 * p0.z,
+      0.5 * p0.y,
     );
   }
-  return clamp((localPoint - center) / extent, vec3f(-1.0), vec3f(1.0));
+  return vec3f(
+    rptRelativeCoordinate(localPoint.x, center.x, extent.x),
+    rptRelativeCoordinate(localPoint.y, center.y, extent.y),
+    rptRelativeCoordinate(localPoint.z, center.z, extent.z),
+  );
 }
 
 fn rptPackOct16(direction: vec3f) -> u32 {
@@ -775,6 +779,57 @@ fn rptFiniteVec3(value: vec3f) -> bool {
       && rptFiniteScalar(value.z);
 }
 
+fn rptMaxAbs3(value: vec3f) -> f32 {
+  return max(abs(value.x), max(abs(value.y), abs(value.z)));
+}
+
+// Finite Euclidean length without squaring world-space magnitudes. A zero
+// return means either an exact zero vector or an unrepresentable/non-finite
+// distance; callers that require a segment fail closed in both cases.
+fn rptScaledLength(value: vec3f) -> f32 {
+  let scale = rptMaxAbs3(value);
+  if (!rptFinitePositive(scale)) { return 0.0; }
+  let result = scale * length(value / scale);
+  return select(0.0, result, rptFinitePositive(result));
+}
+
+// Ray offsets are relative to the f32 magnitudes that must remain
+// distinguishable: the origin coordinates and the segment itself. 2^-18 is 32
+// ulps around unit magnitude; bitcast(1u) is the exact smallest positive f32,
+// used only when the relative product underflows.
+fn rptWorldRayEpsilon(origin: vec3f, segmentLength: f32) -> f32 {
+  let scale = max(rptMaxAbs3(origin), segmentLength);
+  if (!rptFinitePositive(scale)) { return 0.0; }
+  let epsilon = max(scale * 0.000003814697265625, bitcast<f32>(1u));
+  return select(0.0, epsilon, rptFinitePositive(epsilon));
+}
+
+// |dot(delta, normal)| evaluated after equilibrating delta. This avoids both
+// squared-distance overflow and tiny-scene underflow in coplanarity tests.
+fn rptScaledAbsProjection(delta: vec3f, normal: vec3f) -> f32 {
+  let scale = rptMaxAbs3(delta);
+  if (scale == 0.0) { return 0.0; }
+  if (!rptFinitePositive(scale) || !rptFiniteVec3(normal)) {
+    return RPT_MAX_FINITE_F32;
+  }
+  let result = abs(dot(delta / scale, normal)) * scale;
+  return select(RPT_MAX_FINITE_F32, result, rptFiniteScalar(result));
+}
+
+// (value-center)/extent without first subtracting possibly extreme or tiny
+// authored coordinates. Invalid extents fail to the neutral identity value;
+// valid analytic shapes are admitted with strictly positive finite extents.
+fn rptRelativeCoordinate(value: f32, center: f32, extent: f32) -> f32 {
+  let scale = max(abs(value), max(abs(center), abs(extent)));
+  if (!rptFinitePositive(scale) || !rptFinitePositive(extent)) {
+    return 0.0;
+  }
+  let denominator = extent / scale;
+  if (!rptFinitePositive(denominator)) { return 0.0; }
+  let result = (value / scale - center / scale) / denominator;
+  return select(0.0, clamp(result, -1.0, 1.0), rptFiniteScalar(result));
+}
+
 fn rptSaturatingAddU32(a: u32, b: u32) -> u32 {
   let aStored = min(a, RPT_MAX_STORED_M);
   return aStored + min(b, RPT_MAX_STORED_M - aStored);
@@ -930,9 +985,12 @@ fn restirPtTargetAt(
     return 0.0;
   }
   let d = xs - xv;
-  let dist2 = dot(d, d);
-  if (!rptFinitePositive(dist2) || dist2 < 1e-8) { return 0.0; }
-  let wi = d * inverseSqrt(dist2);
+  let edgeScale = rptMaxAbs3(d);
+  if (!rptFinitePositive(edgeScale)) { return 0.0; }
+  let scaledEdge = d / edgeScale;
+  let scaledDist2 = dot(scaledEdge, scaledEdge);
+  if (!rptFinitePositive(scaledDist2)) { return 0.0; }
+  let wi = scaledEdge * inverseSqrt(scaledDist2);
   let cosTheta = max(0.0, dot(nv, wi));
   if (cosTheta <= 0.0) { return 0.0; }
   let f = evaluateBrdfFullWithClearcoatNormal(
@@ -1084,8 +1142,11 @@ fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>) {
 // cross-pass gate.
 fn refreshReconnectionStatePT(r: ptr<function, ReservoirPTHero>) {
   let toRecon = (*r).xs - (*r).xv;
-  let dRecon = length(toRecon);
-  if (!rptFinitePositive(dRecon) || dRecon <= 1e-6
+  let reconScale = max(
+    abs(toRecon.x),
+    max(abs(toRecon.y), abs(toRecon.z)),
+  );
+  if (!rptFinitePositive(reconScale)
    || (*r).M == 0u || !rptFiniteScalar((*r).logW)
    || (*r).logW == RPT_LOG_ZERO
    || (*r).logW == RPT_LOG_NUMERIC_FAILURE) {

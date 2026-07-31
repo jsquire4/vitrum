@@ -69,6 +69,34 @@ describe('DDGI prepared lighting mutation', () => {
     expect(oldBuffer.destroy).not.toHaveBeenCalled();
   });
 
+  it('completes the configured emitter snapshot before allocating a pass candidate', () => {
+    const ddgi = new DDGI();
+    const state = passState(ddgi);
+    const oldBuffer = makeBuffer('old');
+    const createBuffer = vi.fn(() => makeBuffer('candidate', 192));
+    state._gpu = {
+      device: { createBuffer } as unknown as GPUDevice,
+      emitterTrisBuf: oldBuffer,
+      emitterTrisCount: 1,
+    };
+    const tris = new Float32Array(40);
+    Object.defineProperty(tris, 'slice', {
+      value: () => {
+        throw new Error('configured snapshot fault');
+      },
+    });
+
+    expect(() => ddgi.prepareLightingMutation({
+      lights: [],
+      sunIntensityMultiplier: 1,
+      emitterTris: tris,
+      emitterCount: 2,
+    })).toThrow('configured snapshot fault');
+    expect(createBuffer).not.toHaveBeenCalled();
+    expect(state._gpu.emitterTrisBuf).toBe(oldBuffer);
+    expect(oldBuffer.destroy).not.toHaveBeenCalled();
+  });
+
   it('keeps direct emitter CPU/GPU state atomic when candidate population fails', () => {
     const ddgi = new DDGI();
     const state = passState(ddgi);
@@ -319,5 +347,86 @@ describe('DDGI prepared lighting mutation', () => {
     expect(ddgi.warmupFrame).toBe(17);
     expect(ddgi.ready).toBe(true);
     expect(ddgi.pass.captureFullBlendState()).toEqual(priorInvalidation);
+  });
+
+  it('retains the emitter GPU buffer for a runtime-only sun/sky mutation', () => {
+    const ddgi = new DDGI();
+    const state = passState(ddgi);
+    const tris = new Float32Array(20);
+    ddgi.setEmitterTris(tris, 1);
+    const oldBuffer = makeBuffer('old');
+    const createBuffer = vi.fn();
+    state._gpu = {
+      device: { createBuffer } as unknown as GPUDevice,
+      emitterTrisBuf: oldBuffer,
+      emitterTrisCount: 1,
+    };
+
+    const mutation = ddgi.prepareRuntimeLightingMutation({
+      lights: [light('runtime', 3)],
+      sunIntensityMultiplier: 4,
+      skyTint: [0.1, 0.2, 0.3],
+      skyIrradiance: 2,
+    });
+    mutation.commit();
+    mutation.finalize();
+
+    expect(createBuffer).not.toHaveBeenCalled();
+    expect(state._gpu.emitterTrisBuf).toBe(oldBuffer);
+    expect(state._gpu.emitterTrisCount).toBe(1);
+    expect(oldBuffer.destroy).not.toHaveBeenCalled();
+  });
+
+  it('does not let hostile candidate destruction mask rollback', () => {
+    const ddgi = new DDGI();
+    const state = passState(ddgi);
+    const oldBuffer = makeBuffer('old');
+    const candidate = makeBuffer('candidate', 192);
+    candidate.destroy.mockImplementation(() => {
+      throw new Error('hostile candidate destroy');
+    });
+    state._gpu = {
+      device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
+      emitterTrisBuf: oldBuffer,
+      emitterTrisCount: 1,
+    };
+
+    const mutation = ddgi.prepareLightingMutation({
+      lights: [],
+      sunIntensityMultiplier: 1,
+      emitterTris: new Float32Array(40),
+      emitterCount: 2,
+    });
+
+    expect(() => mutation.rollback()).not.toThrow();
+    expect(candidate.destroy).toHaveBeenCalledTimes(1);
+    expect(oldBuffer.destroy).not.toHaveBeenCalled();
+  });
+
+  it('does not report committed publication as failed when old-buffer retirement throws', () => {
+    const ddgi = new DDGI();
+    const state = passState(ddgi);
+    const oldBuffer = makeBuffer('old');
+    oldBuffer.destroy.mockImplementation(() => {
+      throw new Error('hostile old-buffer destroy');
+    });
+    const candidate = makeBuffer('candidate', 192);
+    state._gpu = {
+      device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
+      emitterTrisBuf: oldBuffer,
+      emitterTrisCount: 1,
+    };
+
+    const mutation = ddgi.prepareLightingMutation({
+      lights: [],
+      sunIntensityMultiplier: 1,
+      emitterTris: new Float32Array(40),
+      emitterCount: 2,
+    });
+    mutation.commit();
+
+    expect(() => mutation.finalize()).not.toThrow();
+    expect(state._gpu.emitterTrisBuf).toBe(candidate);
+    expect(oldBuffer.destroy).toHaveBeenCalledTimes(1);
   });
 });

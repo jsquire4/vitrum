@@ -10,6 +10,7 @@
  */
 
 import { SVGF_REPROJ_DEFAULT_UNIFORMS } from './svgfRealBindings.js';
+import { SVGF_REAL_MAX_HISTORY_LENGTH } from './svgfRealConstants.js';
 // Rec.709 luminance hoisted to @vitrum/shared-samplers (no THREE dep, no
 // peer-dep load). Local alias `lumCPU` kept so the dense call-site usage
 // below reads as it always has.
@@ -127,7 +128,7 @@ export function svgfReprojCPU(input: SVGFReprojCPUInput): SVGFReprojCPUOutput {
           // Negative depth is the packed walkaround glass-primary marker.
           // Glass deliberately rejects temporal history, matching WGSL.
           if (zCurr < 0 || zPrev < 0) continue;
-          if (Math.abs(zCurr - zPrev) > sigmaDepth * Math.max(zCurr, zPrev) + 1e-4) continue;
+          if (Math.abs(zCurr - zPrev) > sigmaDepth * Math.max(zCurr, zPrev)) continue;
           const nDot = nCurrX * nPX + nCurrY * nPY + nCurrZ * nPZ;
           if (nDot < sigmaNormal) continue;
           if (oPrev !== objIdCurr) continue;
@@ -159,7 +160,10 @@ export function svgfReprojCPU(input: SVGFReprojCPUInput): SVGFReprojCPUOutput {
         prevB = accB * invW;
         prevM1 = accM1 * invW;
         prevM2 = accM2 * invW;
-        newH = Math.trunc(accH * invW) + 1;
+        newH = Math.min(
+          Math.trunc(accH * invW) + 1,
+          SVGF_REAL_MAX_HISTORY_LENGTH,
+        );
         alpha = Math.max(alphaMin, 1 / newH);
       } else {
         newH = 1;
@@ -269,10 +273,15 @@ export function svgf7x7FallbackCPU(opts: {
             Math.max(0, centerNx * sampleNx + centerNy * sampleNy + centerNz * sampleNz),
           );
           const normalWeight = Math.pow(normalDot, 128);
-          const depthScale = Math.max(1e-3, Math.abs(centerDepth), Math.abs(sampleDepth));
-          const depthWeight = Math.exp(
-            -Math.abs(sampleDepth - centerDepth) / (0.1 * depthScale + 1e-4),
-          );
+          const depthScale = Math.max(Math.abs(centerDepth), Math.abs(sampleDepth));
+          const depthDelta = Math.abs(sampleDepth - centerDepth);
+          const depthDenominator = 0.1 * depthScale;
+          const depthWeight =
+            depthDelta === 0
+              ? 1
+              : depthDenominator > 0
+                ? Math.exp(-depthDelta / depthDenominator)
+                : 0;
           const weight = normalWeight * depthWeight;
           sumL += weight * lum;
           sumL2 += weight * lum * lum;

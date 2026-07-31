@@ -31,7 +31,11 @@ const M_CLAMP_SPATIAL: u32 = 500u;
 // what the spatial filter actually needs.
 
 fn sampleDiscPx(rng: ptr<function, u32>) -> vec2f {
-  let r = ubo.restirGiSpatialRadiusPx * sqrt(rand_f32(rng));
+  var radius = ubo.restirGiSpatialRadiusPx;
+  if (restirReservoirScaleValue() > 1u) {
+    radius = max(1.0, radius / f32(restirReservoirScaleValue()));
+  }
+  let r = radius * sqrt(rand_f32(rng));
   let phi = 6.2831853 * rand_f32(rng);
   return vec2f(r * cos(phi), r * sin(phi));
 }

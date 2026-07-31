@@ -38,10 +38,11 @@ describe('DDGI probe radiometry regressions', () => {
 
   it('addresses the reciprocal glass face layer by triangle material id', () => {
     expect(source).toContain(
-      'let reverseLayer = ddgiSampleFaceLayerControls(hit.indices.w, hit.side < 0.0);',
+      'let reverseLayer = ddgiSampleFaceLayerControls(',
     );
-    expect(source).not.toContain(
-      'ddgiSampleFaceLayerControls(matId, hit.side < 0.0)',
+    expect(source).toContain(
+      'entryHit.indices.w,\n      entryHit.side < 0.0,',
     );
+    expect(source).not.toContain('ddgiSampleFaceLayerControls(materialId,');
   });
 });

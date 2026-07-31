@@ -68,6 +68,17 @@ ${COMPOSITE_VARYINGS_WGSL}
 
 @group(0) @binding(0) var denoisedTex: texture_2d<f32>;
 
+// Render attachments with an -srgb format apply the linear-to-sRGB transfer
+// in output merging. Pipeline creation specializes this override from the exact
+// target format so the fragment shader and attachment perform exactly one OETF.
+override VT_ATTACHMENT_SRGB: u32 = 0u;
+// Final-write ceilings are also specialized from the exact target. This keeps
+// none+linear HDR above the half-float range on rgba32float while preventing
+// +Inf publication on rgba16float and packed rg11b10ufloat attachments.
+override VT_TARGET_MAX_R: f32 = 1.0;
+override VT_TARGET_MAX_G: f32 = 1.0;
+override VT_TARGET_MAX_B: f32 = 1.0;
+
 // CompositeUniforms — per-frame tonemap/exposure/outputColorSpace dials.
 // tonemapMode: 0=aces(default) 1=agx 2=reinhard 3=linear(clamped) 4=none.
 // outputColorSpace: 0=srgb(default, apply OETF) 1=linear(skip OETF).
@@ -112,15 +123,29 @@ fn fragMain(in: CompositeVaryings) -> @location(0) vec4f {
   // @vitrum/shared-samplers (kept in lockstep by shared-samplers tests).
   let tonemapped = vitrumTonemap(max(vec3f(0.0), hdr), compositeParams.tonemapMode, compositeParams.exposure);
 
-  // outputColorSpace: 0=srgb (default) → apply the IEC 61966-2-1 OETF before
-  // writing to the 8-bit swap-chain (bgra8unorm is NOT auto-converted by the
-  // GPU). outputColorSpace: 1=linear → skip the OETF, write raw tonemapped
-  // linear values (useful for HDR/linear pipeline hosts or screenshot capture).
+  // outputColorSpace: 0=srgb (default) → apply the IEC 61966-2-1 OETF in
+  // software only when the attachment is non-sRGB. An -srgb attachment
+  // performs that conversion in hardware, so it receives linear tonemapped
+  // values. outputColorSpace: 1=linear → skip the OETF; the host boundary
+  // rejects that mode with an -srgb attachment because hardware encoding
+  // cannot be disabled.
   // The sRGB OETF (vt_linearToSrgb) is defined in the vitrumTonemap block above.
-  if (compositeParams.outputColorSpace == 0u) {
-    return vec4f(vt_linearToSrgb(tonemapped), 1.0);
+  var presented = tonemapped;
+  if (
+    compositeParams.outputColorSpace == 0u
+    && VT_ATTACHMENT_SRGB == 0u
+  ) {
+    presented = vt_linearToSrgb(tonemapped);
   }
-  return vec4f(tonemapped, 1.0);
+  let targetMaximum = vec3f(
+    VT_TARGET_MAX_R,
+    VT_TARGET_MAX_G,
+    VT_TARGET_MAX_B,
+  );
+  return vec4f(
+    clamp(presented, vec3f(0.0), targetMaximum),
+    1.0,
+  );
 }
 `;
 }

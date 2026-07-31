@@ -58,7 +58,7 @@ export class RISGIPass implements Pass {
       // @group(4) group at slot 4. Half-res dispatch (W/2 × H/2).
       frameBindGroupOverride: ctx.risGiFrameBindGroup,
       useHybridLayers: true,
-      halfRes: true,
+      restirGi: true,
     });
   }
 

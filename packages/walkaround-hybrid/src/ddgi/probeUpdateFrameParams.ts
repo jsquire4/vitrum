@@ -6,10 +6,14 @@ import { DDGI_BLEND_PARAMS_UBO, DDGI_FRAME_PARAMS_UBO } from './probeUpdateUbos.
 import {
   assertDdgiBoolean,
   assertDdgiUnitInterval,
-  assertFiniteDdgiNumber,
   assertFiniteDdgiVec3,
   assertNonNegativeDdgiNumber,
 } from './inputValidation.js';
+import {
+  assertWalkaroundEnvironmentRgbScaleEnvelopeF32,
+  assertWalkaroundEnvironmentScaleF32,
+  packWalkaroundEnvironmentRotationF32,
+} from '../environment/environmentRadianceScale.js';
 export { haltonSO3AxisAngleFromFrameIndex };
 
 export interface ProbeUpdateFrameParamsInput {
@@ -64,16 +68,25 @@ export function packProbeUpdateFrameParams(input: ProbeUpdateFrameParamsInput): 
   if (input.hasEnv !== undefined) {
     assertDdgiBoolean(input.hasEnv, 'DDGI environment hasEnv');
   }
-  const envRotationY = input.envRotationY ?? 0;
-  const envIntensity = input.envIntensity ?? 0;
-  assertFiniteDdgiNumber(envRotationY, 'DDGI environment rotation');
-  assertNonNegativeDdgiNumber(envIntensity, 'DDGI environment intensity');
+  const envRotationY = packWalkaroundEnvironmentRotationF32(
+    input.envRotationY ?? 0,
+    'DDGI environment rotation',
+  );
+  const envIntensity = assertWalkaroundEnvironmentScaleF32(
+    input.envIntensity ?? 0,
+    'DDGI environment intensity',
+  );
+  const packedSky = assertWalkaroundEnvironmentRgbScaleEnvelopeF32(
+    input.skyTint,
+    input.skyIrradiance,
+    'DDGI scalar-sky radiance',
+  );
   const data = new ArrayBuffer(DDGI_FRAME_PARAMS_UBO.sizeBytes);
   DDGI_FRAME_PARAMS_UBO.pack(new DataView(data), 0, {
     randomRotation: haltonSO3AxisAngleFromFrameIndex(input.frameIndex),
     frameIndex: input.frameIndex,
-    skyTint: [input.skyTint[0], input.skyTint[1], input.skyTint[2]] as const,
-    skyIrradiance: input.skyIrradiance,
+    skyTint: packedSky.value,
+    skyIrradiance: packedSky.scale,
     glassMixScale: input.glassMixScale,
     // H46-A — default true (multi-bounce EMA) preserves the historical
     // behaviour byte-for-byte (the old _pad2 wrote 0; here `true` writes 1,

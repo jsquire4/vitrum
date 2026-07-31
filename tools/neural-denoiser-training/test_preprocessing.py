@@ -309,6 +309,20 @@ def test_optional_torch_dependency_contract():
         print('OK  optional PyTorch training runtime is available')
 
 
+def test_patch_size_requires_three_level_spatial_alignment():
+    for value in (8, 16, 64, 256):
+        assert train.parse_patch_size(value) == value
+        assert train.parse_patch_size(str(value)) == value
+    for value in (0, 1, 7, 9, 255, -8, 'nope'):
+        try:
+            train.parse_patch_size(value)
+        except Exception as error:
+            assert 'patch size' in str(error), error
+        else:
+            raise AssertionError(f'incompatible patch size {value!r} must be rejected')
+    print('OK  patch sizes are positive and aligned for all three U-Net levels')
+
+
 
 if __name__ == '__main__':
     test_decode_normal_matches_wgsl()
@@ -316,6 +330,7 @@ if __name__ == '__main__':
     test_scale_clamp_and_nonfinite_contract()
     test_nonfinite_packed_normal_falls_back_to_up()
     test_optional_torch_dependency_contract()
+    test_patch_size_requires_three_level_spatial_alignment()
     test_v2_binary_embeds_deterministic_preprocessing_metadata()
     test_v2_writer_rejects_unsafe_payloads()
     test_f16_certification_export_roundtrip()

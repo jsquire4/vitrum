@@ -11,10 +11,18 @@ import {
   materialSpecEmissiveLe,
   materialSpecScalarEmissiveLe,
   materialSpecSkipEmitter,
+  packNonNegativeRadianceRgbF32,
+  packNonNegativeRadianceScalarF32,
+  packRadianceRgbScaleF32,
   resolveDisplacedGeometry,
 } from '@vitrum/shared-bvh';
 import { luminance, type LightTreeBuildInput } from '@vitrum/shared-samplers';
 import { transformPoint } from '../math/mat4.js';
+import {
+  classifyAreaVectorF32,
+  classifyTriangleAreaF32,
+  normalizeDirectionF32,
+} from './areaEmitterGeometry.js';
 import { environmentParams } from './environmentPacking.js';
 import {
   discArea,
@@ -66,7 +74,8 @@ export const RECT_AREA_LIGHT_FLOAT_STRIDE = 16;
  * Mesh-area record (7 vec4 = 28 floats):
  *   0..2 position vertices; 3 average Le + castShadowDisabled;
  *   4 raw emissive UV A/B; 5 raw UV C + (materialId+1) + source world area;
- *   6 authored base Le. A zero materialId+1 marks an untextured emitter.
+ *   6 authored base Le + twoSided. A zero materialId+1 marks an untextured
+ *   emitter; twoSided mirrors the referenced primitive material.
  */
 export const MESH_AREA_LIGHT_FLOAT_STRIDE = 28;
 
@@ -102,11 +111,11 @@ type PackedMeshAreaTriangle = {
   ];
   readonly mappedMaterialId: number | null;
   readonly sourceWorldArea: number;
-  /** Emitted-power proxy used by the NEE cap and light tree: luminance(Le) · area. */
-  readonly power: number;
   /** SHADOW-01 — true ⟺ source mesh-area emitter set castShadow:false.
    *  Packed as 1.0 into the radiance vec4's .w lane (0.0 default). */
   readonly castShadowDisabled: boolean;
+  /** Material-owned emission sidedness; packed in row 6.w. */
+  readonly twoSided: boolean;
 };
 
 type MeshAreaTrianglePackOptions = {
@@ -168,13 +177,17 @@ function packedFloatData(
 }
 
 function emitterRadiance(
-  e: Pick<DiscAreaEmitter | MeshAreaEmitter, 'color' | 'intensity'>,
+  e: {
+    readonly id: string;
+    readonly color: readonly [number, number, number];
+    readonly intensity: number;
+  },
 ): Vec3 {
-  return [
-    e.color[0] * e.intensity,
-    e.color[1] * e.intensity,
-    e.color[2] * e.intensity,
-  ];
+  return packRadianceRgbScaleF32(
+    e.color,
+    e.intensity,
+    `@vitrum/pt-webgpu emitter "${e.id}"`,
+  ).scaled;
 }
 
 function uvAt(uvs: Float32Array | undefined, vertex: number): [number, number] {
@@ -205,45 +218,6 @@ function emissiveRadianceForMaterial(
 
 function hasPositiveRadiance(radiance: readonly [number, number, number]): boolean {
   return radiance[0] > 0 || radiance[1] > 0 || radiance[2] > 0;
-}
-
-function f32Dot3(x: number, y: number, z: number): number {
-  const xx = Math.fround(Math.fround(x) * Math.fround(x));
-  const yy = Math.fround(Math.fround(y) * Math.fround(y));
-  const zz = Math.fround(Math.fround(z) * Math.fround(z));
-  return Math.fround(Math.fround(xx + yy) + zz);
-}
-
-function f32Cross(
-  a: readonly [number, number, number],
-  b: readonly [number, number, number],
-): Vec3 {
-  const ax = Math.fround(a[0]);
-  const ay = Math.fround(a[1]);
-  const az = Math.fround(a[2]);
-  const bx = Math.fround(b[0]);
-  const by = Math.fround(b[1]);
-  const bz = Math.fround(b[2]);
-  return [
-    Math.fround(Math.fround(ay * bz) - Math.fround(az * by)),
-    Math.fround(Math.fround(az * bx) - Math.fround(ax * bz)),
-    Math.fround(Math.fround(ax * by) - Math.fround(ay * bx)),
-  ];
-}
-
-function f32TriangleHasPositiveArea(a: Vec3, b: Vec3, c: Vec3): boolean {
-  const ab: Vec3 = [
-    Math.fround(Math.fround(b[0]) - Math.fround(a[0])),
-    Math.fround(Math.fround(b[1]) - Math.fround(a[1])),
-    Math.fround(Math.fround(b[2]) - Math.fround(a[2])),
-  ];
-  const ac: Vec3 = [
-    Math.fround(Math.fround(c[0]) - Math.fround(a[0])),
-    Math.fround(Math.fround(c[1]) - Math.fround(a[1])),
-    Math.fround(Math.fround(c[2]) - Math.fround(a[2])),
-  ];
-  const cross = f32Cross(ab, ac);
-  return f32Dot3(cross[0], cross[1], cross[2]) > 0;
 }
 
 function assertUniqueMeshAreaEmitterOwnership(scene: Scene): void {
@@ -285,41 +259,35 @@ function packDiscAsRect(e: DiscAreaEmitter): readonly number[] {
   if (
     !Number.isFinite(e.radius) ||
     !(e.radius > 0) ||
-    !(f32Dot3(e.radius, 0, 0) > 0)
+    !(Math.fround(e.radius) > 0) ||
+    !Number.isFinite(Math.fround(e.radius))
   ) {
     throw new RangeError(
       `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has a non-positive or ` +
         'non-f32-representable radius.',
     );
   }
-  const nx = e.normal[0];
-  const ny = e.normal[1];
-  const nz = e.normal[2];
-  const nLen = Math.hypot(nx, ny, nz);
-  if (!Number.isFinite(nLen) || !(nLen > 0)) {
+  const normalized = normalizeDirectionF32(e.normal);
+  if (normalized == null) {
     throw new RangeError(
       `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has a degenerate normal.`,
     );
   }
   // Build orthonormal tangent basis (tangent, bitangent) for the disc plane.
-  const ux = nx / nLen;
-  const uy = ny / nLen;
-  const uz = nz / nLen;
+  const [ux, uy, uz] = normalized;
   // Choose a helper vector not parallel to the normal.
   let ax = 0, ay = 1, az = 0;
   if (Math.abs(uy) > 0.999) { ax = 1; ay = 0; az = 0; }
   const tx = ay * uz - az * uy;
   const ty = az * ux - ax * uz;
   const tz = ax * uy - ay * ux;
-  const tLen = Math.hypot(tx, ty, tz);
-  if (!Number.isFinite(tLen) || !(tLen > 0)) {
+  const tangent = normalizeDirectionF32([tx, ty, tz]);
+  if (tangent == null) {
     throw new RangeError(
       `@vitrum/pt-webgpu: disc-area emitter "${e.id}" has a degenerate tangent basis.`,
     );
   }
-  const tcx = tx / tLen;
-  const tcy = ty / tLen;
-  const tcz = tz / tLen;
+  const [tcx, tcy, tcz] = tangent;
   // Bitangent = normal × tangent (right-hand rule, unit length because n and t are orthonormal).
   const bx = uy * tcz - uz * tcy;
   const by = uz * tcx - ux * tcz;
@@ -328,15 +296,11 @@ function packDiscAsRect(e: DiscAreaEmitter): readonly number[] {
   const r = e.radius;
   const uAxis: Vec3 = [tcx * r, tcy * r, tcz * r];
   const vAxis: Vec3 = [bx * r, by * r, bz * r];
-  const axisCross = f32Cross(uAxis, vAxis);
-  if (
-    !(f32Dot3(uAxis[0], uAxis[1], uAxis[2]) > 0) ||
-    !(f32Dot3(vAxis[0], vAxis[1], vAxis[2]) > 0) ||
-    !(f32Dot3(axisCross[0], axisCross[1], axisCross[2]) > 0)
-  ) {
+  const areaMeasure = classifyAreaVectorF32(uAxis, vAxis, Math.PI);
+  if (!areaMeasure.valid) {
     throw new RangeError(
       `@vitrum/pt-webgpu: disc-area emitter "${e.id}" does not retain ` +
-        'strictly positive area in f32 shader arithmetic.',
+        `strictly positive finite area in f32 shader arithmetic (${areaMeasure.reason}).`,
     );
   }
   const rad = emitterRadiance(e);
@@ -411,11 +375,7 @@ function packMeshAreaTriangles(
       : undefined);
   const mappedBaseRadiance: Vec3 = implicitMaterial == null
     ? radiance
-    : [
-        (implicitMaterial.emissive?.[0] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
-        (implicitMaterial.emissive?.[1] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
-        (implicitMaterial.emissive?.[2] ?? 0) * (implicitMaterial.emissiveIntensity ?? 1),
-      ];
+    : materialSpecScalarEmissiveLe(implicitMaterial) ?? [0, 0, 0];
   const mappedMaterialId = mappedRadianceMaterial == null
     ? null
     : options.materialIdByPrimitive?.get(primitive.id) ?? (() => {
@@ -470,14 +430,14 @@ function packMeshAreaTriangles(
         b = transformPoint(transform, b);
         c = transformPoint(transform, c);
       }
-      const sourceArea = meshTriangleArea(a, b, c);
-      if (!Number.isFinite(sourceArea)) {
+      const sourceMeasure = classifyTriangleAreaF32(a, b, c);
+      if (!sourceMeasure.valid && sourceMeasure.reason !== 'degenerate') {
         throw new RangeError(
           `@vitrum/pt-webgpu: mesh-area emitter "${emitter.id}" produced ` +
-            'non-finite transformed triangle geometry.',
+            `transformed triangle geometry with ${sourceMeasure.reason.replaceAll('-', ' ')}.`,
         );
       }
-      if (!(sourceArea > 0) || !f32TriangleHasPositiveArea(a, b, c)) {
+      if (!sourceMeasure.valid) {
         degenerateTriangleCount += 1;
         continue;
       }
@@ -512,14 +472,15 @@ function packMeshAreaTriangles(
         rawEmissiveUvB: readonly [number, number],
         rawEmissiveUvC: readonly [number, number],
       ): void => {
-        const area = meshTriangleArea(triA, triB, triC);
-        if (!Number.isFinite(area)) {
+        const areaMeasure = classifyTriangleAreaF32(triA, triB, triC);
+        if (!areaMeasure.valid && areaMeasure.reason !== 'degenerate') {
           throw new RangeError(
             `@vitrum/pt-webgpu: mesh-area emitter "${emitter.id}" produced ` +
-              'non-finite subdivided triangle geometry.',
+              `subdivided triangle geometry with ${areaMeasure.reason.replaceAll('-', ' ')}.`,
           );
         }
-        if (!(area > 0) || !f32TriangleHasPositiveArea(triA, triB, triC)) return;
+        if (!areaMeasure.valid) return;
+        const area = areaMeasure.area;
         // This record's RGB is a strictly-positive proposal proxy whenever the
         // authored base Le can emit. The GPU evaluates the exact mapped Le at
         // the sampled point; using the base Le here guarantees non-zero PMF
@@ -529,7 +490,6 @@ function packMeshAreaTriangles(
           mappedBaseRadiance[1],
           mappedBaseRadiance[2],
         ];
-        const emittedLuminance = luminance(triangleRadiance[0], triangleRadiance[1], triangleRadiance[2]);
         if (!hasPositiveRadiance(triangleRadiance)) {
           return;
         }
@@ -548,8 +508,8 @@ function packMeshAreaTriangles(
           ],
           mappedMaterialId,
           sourceWorldArea: area,
-          power: emittedLuminance * area,
           castShadowDisabled,
+          twoSided: primitive.material.doubleSided === true,
         });
       };
 
@@ -666,11 +626,11 @@ export function packEmitterArrays(
     if (e.castShadow === false) {
       angularDiameter = -1 - angularDiameter;
     }
-    const scale = e.intensity;
-    const irrR = e.color[0] * scale;
-    const irrG = e.color[1] * scale;
-    const irrB = e.color[2] * scale;
-    const meanIrr = (irrR + irrG + irrB) / 3;
+    const [irrR, irrG, irrB] = emitterRadiance(e);
+    const meanIrr = packNonNegativeRadianceScalarF32(
+      (irrR + irrG + irrB) / 3,
+      `@vitrum/pt-webgpu directional emitter "${e.id}" mean irradiance`,
+    );
     // vec4 0: towardLight.xyz, angularDiameter
     directionalLights.push(ndx, ndy, ndz, angularDiameter);
     // vec4 1: irradiance.rgb, mean_irradiance
@@ -688,12 +648,9 @@ export function packEmitterArrays(
   let pointLightCount = 0;
   for (const e of scene.emitters) {
     if (e.kind !== 'point') continue;
+    const radiance = emitterRadiance(e);
     pushVec4(pointLights, [e.position[0], e.position[1], e.position[2]]);
-    pushVec4(pointLights, [
-      e.color[0] * e.intensity,
-      e.color[1] * e.intensity,
-      e.color[2] * e.intensity,
-    ]);
+    pushVec4(pointLights, radiance);
     // H51-D: distance (0 = no cutoff) + decay (0 = no falloff)
     const ptDist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
     const ptDecay = typeof e.decay === 'number' ? e.decay : 2;
@@ -712,6 +669,7 @@ export function packEmitterArrays(
   let spotLightCount = 0;
   for (const e of scene.emitters) {
     if (e.kind !== 'spot') continue;
+    const radiance = emitterRadiance(e);
     const d = e.direction;
     const len = Math.hypot(d[0], d[1], d[2]);
     const dir: readonly [number, number, number] =
@@ -726,11 +684,7 @@ export function packEmitterArrays(
     const cosInner = Math.cos(innerAngle);
     pushVec4(spotLights, [e.position[0], e.position[1], e.position[2]]);
     pushVec4(spotLights, [dir[0], dir[1], dir[2]], cosOuter);
-    pushVec4(spotLights, [
-      e.color[0] * e.intensity,
-      e.color[1] * e.intensity,
-      e.color[2] * e.intensity,
-    ], cosInner);
+    pushVec4(spotLights, radiance, cosInner);
     // H51-D: distance (0 = no cutoff) + decay (0 = no falloff, 2 = physical)
     const spDist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
     const spDecay = typeof e.decay === 'number' ? e.decay : 2;
@@ -750,25 +704,22 @@ export function packEmitterArrays(
   // Rect-area emitters: shape tag = 0.0 (RECT_DISC_SHAPE_RECT).
   for (const e of scene.emitters) {
     if (e.kind !== 'rect-area') continue;
+    const radiance = emitterRadiance(e);
     const uAxis: Vec3 = [Math.fround(e.uAxis[0]), Math.fround(e.uAxis[1]), Math.fround(e.uAxis[2])];
     const vAxis: Vec3 = [Math.fround(e.vAxis[0]), Math.fround(e.vAxis[1]), Math.fround(e.vAxis[2])];
-    const axisCross = f32Cross(uAxis, vAxis);
-    if (
-      !(f32Dot3(uAxis[0], uAxis[1], uAxis[2]) > 0) ||
-      !(f32Dot3(vAxis[0], vAxis[1], vAxis[2]) > 0) ||
-      !(f32Dot3(axisCross[0], axisCross[1], axisCross[2]) > 0)
-    ) {
+    const areaMeasure = classifyAreaVectorF32(uAxis, vAxis, 4);
+    if (!areaMeasure.valid) {
       throw new RangeError(
         `@vitrum/pt-webgpu: rect-area emitter "${e.id}" does not retain ` +
-          'strictly positive area in f32 shader arithmetic.',
+          `strictly positive finite area in f32 shader arithmetic (${areaMeasure.reason}).`,
       );
     }
     rectAreaLights.push(
       // SHADOW-01 — center .w carries castShadowDisabled (0.0 default).
       e.position[0], e.position[1], e.position[2], e.castShadow === false ? 1 : 0,
-      e.uAxis[0], e.uAxis[1], e.uAxis[2], 0,
-      e.vAxis[0], e.vAxis[1], e.vAxis[2], 0,
-      e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity,
+      uAxis[0], uAxis[1], uAxis[2], 0,
+      vAxis[0], vAxis[1], vAxis[2], 0,
+      radiance[0], radiance[1], radiance[2],
       RECT_DISC_SHAPE_RECT,
     );
     rectAreaLightCount += 1;
@@ -841,7 +792,7 @@ export function packEmitterArrays(
       tri.mappedMaterialId == null ? 0 : tri.mappedMaterialId + 1,
       tri.sourceWorldArea,
     );
-    pushVec4(meshAreaLights, tri.baseRadiance);
+    pushVec4(meshAreaLights, tri.baseRadiance, tri.twoSided ? 1 : 0);
   }
   const meshAreaLightCount = cappedTriangles.length;
   const meshAreaLightsData = packedFloatData(
@@ -945,8 +896,36 @@ export function emitterPower(
   radiance: readonly [number, number, number],
   kind: EmitterPowerKind,
 ): number {
-  const lum = Math.max(0, luminance(radiance[0], radiance[1], radiance[2]));
-  return kind.kind === 'area' ? lum * Math.max(0, kind.area) : lum;
+  const packedRadiance = packNonNegativeRadianceRgbF32(
+    radiance,
+    '@vitrum/pt-webgpu emitter power radiance',
+  );
+  const lum = packNonNegativeRadianceScalarF32(
+    Math.max(0, luminance(
+      packedRadiance[0],
+      packedRadiance[1],
+      packedRadiance[2],
+    )),
+    '@vitrum/pt-webgpu emitter luminance power',
+  );
+  if (kind.kind === 'delta') return lum;
+  const area = packNonNegativeRadianceScalarF32(
+    Math.max(0, kind.area),
+    '@vitrum/pt-webgpu emitter area power',
+  );
+  const power = Math.fround(lum * area);
+  if (!Number.isFinite(power)) {
+    throw new RangeError(
+      '@vitrum/pt-webgpu emitter luminance×area power must remain finite in Float32.',
+    );
+  }
+  if (lum > 0 && area > 0 && power === 0) {
+    throw new RangeError(
+      '@vitrum/pt-webgpu positive emitter luminance×area power must not ' +
+        'underflow to zero in Float32.',
+    );
+  }
+  return power === 0 ? 0 : power;
 }
 
 function pointAabb(p: Vec3): { min: Vec3; max: Vec3 } {
@@ -1174,12 +1153,19 @@ export function buildLightTreeInputForScene(
         powers.push(emitterPower(e.radiance, { kind: 'area', area }));
         centroids.push(centroid);
         aabbs.push({ min, max });
-        // B8 — mesh-area triangle emits from one side along (B−A)×(C−A): the WGSL
-        // mesh-area NEE is one-sided (cosLight = max(dot(lightNormal, -wi), 0) >
-        // 0 gate, kernel.wgsl), so a hemisphere lobe along the geometric normal
-        // exactly matches the lit region — culling the dark back side is a pure
-        // unbiased win.
-        cones.push({ axis: norm3(cross3([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]])), thetaO: 0, thetaE: HEMISPHERE });
+        // Material.doubleSided owns mesh-emitter support. Two-sided triangles
+        // use the full-sphere sentinel; one-sided triangles retain the exact
+        // outward-hemisphere orientation cone.
+        cones.push(e.twoSided
+          ? undefined
+          : {
+              axis: norm3(cross3(
+                [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+                [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+              )),
+              thetaO: 0,
+              thetaE: HEMISPHERE,
+            });
         break;
       }
     }

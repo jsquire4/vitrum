@@ -22,7 +22,13 @@ import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
  * interface-budget bound; `glassTransportClosure.test.ts` pins that behavior
  * before this composed-shader identity is updated. The 2026-07-29 audit aligns
  * RC's equirectangular V coordinate with the main renderer's top-to-bottom map
- * convention.
+ * convention. The final completeness pass also pins the absent-layer identity,
+ * the shared emitter flag layout (cast-shadow plus two-sided emission), and
+ * backface emission admission. The transport-closure refresh replaces
+ * unordered tint accumulation with an ordered material/instance-owned medium
+ * walk, uses actual entry/exit distance for Beer attenuation, and treats
+ * partial alpha as expected thin-interface coverage. Environment reads now
+ * share one whole-RGB finite-binary32 fail-closed scaling stage.
  */
 describe('PROBE_RAY_CAST_WGSL byte identity', () => {
   it('retains the C71 specular, IOR, and layered-volume transport semantics', () => {
@@ -54,8 +60,8 @@ describe('PROBE_RAY_CAST_WGSL byte identity', () => {
     const length = PROBE_RAY_CAST_WGSL.length;
     const sha256 = createHash('sha256').update(PROBE_RAY_CAST_WGSL, 'utf8').digest('hex');
     expect({ length, sha256 }).toEqual({
-      length: 141100,
-      sha256: '2a59e369ee48e6a4c5e1c65e300a89524a16ac0419a7344fcc95c13e7dcb289f',
+      length: 153553,
+      sha256: '656bfd0fa3089c88515ab598a74daec0d0cedf970a313447fff2e628464c27d5',
     });
   });
 });

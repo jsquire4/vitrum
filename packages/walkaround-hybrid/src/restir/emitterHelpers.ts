@@ -8,9 +8,16 @@
 
 import type { EngineWarning, Scene, Vec3 } from '@vitrum/core';
 import {
+  packNonNegativeRadianceRgbF32,
+  packRadianceRgbScaleF32,
   type PrimitiveTlasBinding,
 } from '@vitrum/shared-bvh';
 import { buildAliasTable, luminance } from '@vitrum/shared-samplers';
+import {
+  classifyAreaVectorF32,
+  classifyTriangleAreaF32,
+  normalizeDirectionF32,
+} from './areaEmitterGeometry.js';
 
 const IDENTITY_MAT4 = new Float32Array([
   1, 0, 0, 0,
@@ -42,6 +49,8 @@ export interface ExtraEmitterTri {
   area: number;
   Le: [number, number, number];
   castShadow?: boolean;
+  /** Mesh-material emission is visible from both geometric orientations. */
+  twoSided?: boolean;
   sourceTriIndex?: number;
   sourceSubdivLevel?: number;
   sourceSubdivOrdinal?: number;
@@ -57,7 +66,8 @@ export interface ExtraEmitterTri {
  *   [4..6]  vB.xyz + sourceSubdivLevel
  *   [8..10] vC.xyz + sourceSubdivOrdinal
  *   [12..14] normal.xyz + area
- *   [16..18] Le.rgb + castShadowDisabled
+ *   [16..18] Le.rgb + emitterFlags
+ *             bit 0 = castShadowDisabled; bit 1 = twoSided
  *
  * Returns a zero-count dummy (empty Float32Array) when `tris` is empty so
  * callers can safely pass `data` to a placeholder GPU buffer.
@@ -72,13 +82,35 @@ export function packEmitterTrisForDDGI(tris: readonly ExtraEmitterTri[]): {
   const data = new Float32Array(count * STRIDE);
   for (let i = 0; i < count; i++) {
     const t = tris[i]!;
+    const geometry = classifyTriangleAreaF32(t.vA, t.vB, t.vC);
+    if (!geometry.valid) {
+      throw new RangeError(
+        `@vitrum/walkaround-hybrid: emitter triangle ${i} has ${geometry.reason} geometry.`,
+      );
+    }
+    const normal = normalizeDirectionF32(t.normal);
+    const publishedArea = Math.fround(t.area);
+    const area = geometry.area;
+    const le = packNonNegativeRadianceRgbF32(
+      t.Le,
+      `emitter triangle ${i} radiance`,
+    );
+    if (
+      normal == null ||
+      !(publishedArea > 0) || !Number.isFinite(publishedArea)
+    ) {
+      throw new RangeError(
+        `@vitrum/walkaround-hybrid: emitter triangle ${i} has values that cannot be represented as finite Float32 payload data.`,
+      );
+    }
     const base = i * STRIDE;
     const sourceTriIndex = t.sourceTriIndex ?? -1;
     data[base + 0]  = t.vA[0]!; data[base + 1]  = t.vA[1]!; data[base + 2]  = t.vA[2]!; data[base + 3]  = sourceTriIndex;
     data[base + 4]  = t.vB[0]!; data[base + 5]  = t.vB[1]!; data[base + 6]  = t.vB[2]!; data[base + 7]  = sourceTriIndex !== -1 ? t.sourceSubdivLevel ?? 1 : 1;
     data[base + 8]  = t.vC[0]!; data[base + 9]  = t.vC[1]!; data[base + 10] = t.vC[2]!; data[base + 11] = sourceTriIndex !== -1 ? t.sourceSubdivOrdinal ?? 0 : 0;
-    data[base + 12] = t.normal[0]!; data[base + 13] = t.normal[1]!; data[base + 14] = t.normal[2]!; data[base + 15] = t.area;
-    data[base + 16] = t.Le[0]!; data[base + 17] = t.Le[1]!; data[base + 18] = t.Le[2]!; data[base + 19] = t.castShadow === false ? 1 : 0;
+    data[base + 12] = normal[0]; data[base + 13] = normal[1]; data[base + 14] = normal[2]; data[base + 15] = area;
+    data[base + 16] = le[0]; data[base + 17] = le[1]; data[base + 18] = le[2];
+    data[base + 19] = (t.castShadow === false ? 1 : 0) | (t.twoSided === true ? 2 : 0);
   }
   return { data, count };
 }
@@ -94,7 +126,11 @@ const DISC_AREA_TRIANGLE_COUNT = 32;
 const TAU = Math.PI * 2;
 
 function emitterLe(color: Vec3, intensity: number): [number, number, number] {
-  return [color[0] * intensity, color[1] * intensity, color[2] * intensity];
+  return packRadianceRgbScaleF32(
+    color,
+    intensity,
+    'scene area emitter',
+  ).scaled;
 }
 
 function warnCollectMeshAreaEmitter(
@@ -113,13 +149,7 @@ function warnCollectMeshAreaEmitter(
 }
 
 function normalizeVec3(v: Vec3): [number, number, number] | null {
-  const x = v[0];
-  const y = v[1];
-  const z = v[2];
-  const lenSq = x * x + y * y + z * z;
-  if (lenSq < 1e-12 || !Number.isFinite(lenSq)) return null;
-  const invLen = 1 / Math.sqrt(lenSq);
-  return [x * invLen, y * invLen, z * invLen];
+  return normalizeDirectionF32(v);
 }
 
 function discTangentBasis(n: [number, number, number]): {
@@ -130,12 +160,13 @@ function discTangentBasis(n: [number, number, number]): {
   let tx = up[1] * n[2] - up[2] * n[1];
   let ty = up[2] * n[0] - up[0] * n[2];
   let tz = up[0] * n[1] - up[1] * n[0];
-  const tLen = Math.sqrt(tx * tx + ty * ty + tz * tz);
-  if (tLen > 1e-8) {
-    tx /= tLen;
-    ty /= tLen;
-    tz /= tLen;
+  const tangent = normalizeDirectionF32([tx, ty, tz]);
+  if (tangent == null) {
+    throw new RangeError(
+      '@vitrum/walkaround-hybrid: disc emitter tangent basis is degenerate.',
+    );
   }
+  [tx, ty, tz] = tangent;
   const bx = n[1] * tz - n[2] * ty;
   const by = n[2] * tx - n[0] * tz;
   const bz = n[0] * ty - n[1] * tx;
@@ -174,30 +205,34 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
   const out: ExtraEmitterTri[] = [];
   for (const e of scene.emitters) {
     if (e.kind === 'disc-area') {
-      if (e.radius <= 0 || !Number.isFinite(e.radius)) continue;
+      const radius = Math.fround(e.radius);
+      if (!(radius > 0) || !Number.isFinite(radius)) continue;
       const n = normalizeVec3(e.normal);
       if (n == null) continue;
 
       const { tangent, bitangent } = discTangentBasis(n);
       const segmentAngle = TAU / DISC_AREA_TRIANGLE_COUNT;
-      const areaPreservingRadius = e.radius * Math.sqrt(segmentAngle / Math.sin(segmentAngle));
-      const triArea = Math.PI * e.radius * e.radius / DISC_AREA_TRIANGLE_COUNT;
-      // The core disc normal is the one-sided emitting-face normal. Keep that
-      // orientation in EmitterTri: every ReSTIR/DDGI/RC consumer accepts the
-      // front face with dot(e.normal, directionFromLight) > 0.
-      const N: [number, number, number] = [n[0], n[1], n[2]];
+      const areaPreservingRadius = radius * Math.sqrt(segmentAngle / Math.sin(segmentAngle));
       const Le = emitterLe(e.color, e.intensity);
 
       for (let i = 0; i < DISC_AREA_TRIANGLE_COUNT; i += 1) {
         const curr = discPoint(e.position, tangent, bitangent, areaPreservingRadius, i * segmentAngle);
         const next = discPoint(e.position, tangent, bitangent, areaPreservingRadius, (i + 1) * segmentAngle);
+        const vA: [number, number, number] = [e.position[0], e.position[1], e.position[2]];
+        const measure = classifyTriangleAreaF32(vA, curr, next);
+        if (!measure.valid) {
+          if (measure.reason === 'degenerate') continue;
+          throw new RangeError(
+            `@vitrum/walkaround-hybrid: disc emitter "${String(e.id)}" has ${measure.reason} triangle geometry.`,
+          );
+        }
         out.push({
-          vA: [e.position[0], e.position[1], e.position[2]],
+          vA,
           // Preserve winding agreement with the authored +normal.
           vB: curr,
           vC: next,
-          normal: N,
-          area: triArea,
+          normal: measure.normal,
+          area: measure.area,
           Le,
           ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
         });
@@ -210,16 +245,13 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
     const u = e.uAxis;
     const v = e.vAxis;
 
-    // Z = uAxis × vAxis (un-normalized) — its length gates the degenerate basis.
-    const zx = u[1] * v[2] - u[2] * v[1];
-    const zy = u[2] * v[0] - u[0] * v[2];
-    const zz = u[0] * v[1] - u[1] * v[0];
-    const zLenSq = zx * zx + zy * zy + zz * zz;
-    if (zLenSq < 1e-12) continue;
-    const zLen = Math.sqrt(zLenSq);
-    // The core rect contract defines uAxis × vAxis as the one-sided
-    // emitting-face normal. The triangle winding below has that orientation.
-    const N: [number, number, number] = [zx / zLen, zy / zLen, zz / zLen];
+    const rectMeasure = classifyAreaVectorF32(u, v, 4);
+    if (!rectMeasure.valid) {
+      if (rectMeasure.reason === 'degenerate') continue;
+      throw new RangeError(
+        `@vitrum/walkaround-hybrid: rect emitter "${String(e.id)}" has ${rectMeasure.reason} basis geometry.`,
+      );
+    }
 
     // Four world corners = position ± uAxis ± vAxis.
     const ll: [number, number, number] = [p[0] - u[0] - v[0], p[1] - u[1] - v[1], p[2] - u[2] - v[2]];
@@ -227,24 +259,29 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
     const ur: [number, number, number] = [p[0] + u[0] + v[0], p[1] + u[1] + v[1], p[2] + u[2] + v[2]];
     const ul: [number, number, number] = [p[0] - u[0] + v[0], p[1] - u[1] + v[1], p[2] - u[2] + v[2]];
 
-    const abx = lr[0] - ll[0], aby = lr[1] - ll[1], abz = lr[2] - ll[2];
-    const acx = ur[0] - ll[0], acy = ur[1] - ll[1], acz = ur[2] - ll[2];
-    const cx = aby * acz - abz * acy;
-    const cy = abz * acx - abx * acz;
-    const cz = abx * acy - aby * acx;
-    const crossLen = Math.sqrt(cx * cx + cy * cy + cz * cz);
-    if (crossLen < 1e-8) continue;
-    const triArea = crossLen * 0.5;
-
     const Le = emitterLe(e.color, e.intensity);
+    const firstMeasure = classifyTriangleAreaF32(ll, lr, ur);
+    const secondMeasure = classifyTriangleAreaF32(ll, ur, ul);
+    if (!firstMeasure.valid) {
+      if (firstMeasure.reason === 'degenerate') continue;
+      throw new RangeError(
+        `@vitrum/walkaround-hybrid: rect emitter "${String(e.id)}" has ${firstMeasure.reason} published triangle geometry.`,
+      );
+    }
+    if (!secondMeasure.valid) {
+      if (secondMeasure.reason === 'degenerate') continue;
+      throw new RangeError(
+        `@vitrum/walkaround-hybrid: rect emitter "${String(e.id)}" has ${secondMeasure.reason} published triangle geometry.`,
+      );
+    }
 
     // Two tris (LL,LR,UR) + (LL,UR,UL) — identical winding to the THREE path.
     out.push({
       vA: ll,
       vB: lr,
       vC: ur,
-      normal: N,
-      area: triArea,
+      normal: firstMeasure.normal,
+      area: firstMeasure.area,
       Le,
       ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
     });
@@ -252,8 +289,8 @@ export function collectRectAreaEmitterTrisFromCore(scene: Scene): ExtraEmitterTr
       vA: ll,
       vB: ur,
       vC: ul,
-      normal: N,
-      area: triArea,
+      normal: secondMeasure.normal,
+      area: secondMeasure.area,
       Le,
       ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
     });
@@ -359,35 +396,33 @@ export function collectMeshAreaEmitterTrisFromCore(
         const vA = transformPoint(m, positions[i0 * 3]!, positions[i0 * 3 + 1]!, positions[i0 * 3 + 2]!);
         const vB = transformPoint(m, positions[i1 * 3]!, positions[i1 * 3 + 1]!, positions[i1 * 3 + 2]!);
         const vC = transformPoint(m, positions[i2 * 3]!, positions[i2 * 3 + 1]!, positions[i2 * 3 + 2]!);
-        const abx = vB[0] - vA[0], aby = vB[1] - vA[1], abz = vB[2] - vA[2];
-        const acx = vC[0] - vA[0], acy = vC[1] - vA[1], acz = vC[2] - vA[2];
-        const nx = aby * acz - abz * acy;
-        const ny = abz * acx - abx * acz;
-        const nz = abx * acy - aby * acx;
-        const crossLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
-        if (crossLen < 1e-8) continue;
-        const invLen = 1 / crossLen;
-        const normal: [number, number, number] = [nx * invLen, ny * invLen, nz * invLen];
+        const sourceMeasure = classifyTriangleAreaF32(vA, vB, vC);
+        if (!sourceMeasure.valid) {
+          if (sourceMeasure.reason === 'degenerate') continue;
+          throw new RangeError(
+            `@vitrum/walkaround-hybrid: mesh-area emitter "${String(e.id)}" has ${sourceMeasure.reason} transformed triangle geometry.`,
+          );
+        }
         const sourceTriIndex = sourceTriIndexFor?.(String(prim.id), ti, m);
         // A world-space sub-triangle plus optional provenance/override metadata.
         const pushTri = (sub: SubTriangle): void => {
           const [triA, triB, triC] = sub.pos;
-          const sx = triB[0] - triA[0], sy = triB[1] - triA[1], sz = triB[2] - triA[2];
-          const tx = triC[0] - triA[0], ty = triC[1] - triA[1], tz = triC[2] - triA[2];
-          const triArea = 0.5 * Math.sqrt(
-            (sy * tz - sz * ty) ** 2 +
-            (sz * tx - sx * tz) ** 2 +
-            (sx * ty - sy * tx) ** 2,
-          );
-          if (triArea < 1e-12) return;
+          const measure = classifyTriangleAreaF32(triA, triB, triC);
+          if (!measure.valid) {
+            if (measure.reason === 'degenerate') return;
+            throw new RangeError(
+              `@vitrum/walkaround-hybrid: mesh-area emitter "${String(e.id)}" has ${measure.reason} sub-triangle geometry.`,
+            );
+          }
           out.push({
             vA: triA,
             vB: triB,
             vC: triC,
-            normal,
-            area: triArea,
+            normal: measure.normal,
+            area: measure.area,
             Le: [Le[0], Le[1], Le[2]],
             ...(e.castShadow !== undefined ? { castShadow: e.castShadow } : {}),
+            ...(prim.material.doubleSided === true ? { twoSided: true } : {}),
             ...(sourceTriIndex != null ? { sourceTriIndex } : {}),
           });
         };
@@ -411,7 +446,23 @@ function determinantSignOfLinear(m: ArrayLike<number> | undefined): number {
   const g = m?.[2] ?? 0;
   const h = m?.[6] ?? 0;
   const i = m?.[10] ?? 1;
-  const det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+  const scale0 = Math.max(Math.abs(a), Math.abs(d), Math.abs(g));
+  const scale1 = Math.max(Math.abs(b), Math.abs(e), Math.abs(h));
+  const scale2 = Math.max(Math.abs(c), Math.abs(f), Math.abs(i));
+  if (
+    !(scale0 > 0) || !Number.isFinite(scale0) ||
+    !(scale1 > 0) || !Number.isFinite(scale1) ||
+    !(scale2 > 0) || !Number.isFinite(scale2)
+  ) {
+    return 1;
+  }
+  const na = a / scale0, nd = d / scale0, ng = g / scale0;
+  const nb = b / scale1, ne = e / scale1, nh = h / scale1;
+  const nc = c / scale2, nf = f / scale2, ni = i / scale2;
+  const det =
+    na * (ne * ni - nf * nh) -
+    nb * (nd * ni - nf * ng) +
+    nc * (nd * nh - ne * ng);
   return det < 0 ? -1 : 1;
 }
 

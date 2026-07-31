@@ -13,6 +13,7 @@ import { writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync } from 'no
 import { dirname, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { readOptionalNonEmptyFlagValue } from './selectorValidation.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
@@ -22,6 +23,7 @@ const requestedStatusPath = process.env.VITRUM_BEHAVIORAL_GATE_STATUS_PATH
   : '';
 
 const gateArgs = process.argv.slice(2);
+const filter = readOptionalNonEmptyFlagValue(gateArgs, '--filter');
 // Ask gate.mjs to emit a machine-readable results sidecar so we parse structured
 // JSON instead of regex-scraping its human log (D17-9). The sidecar lives under
 // tools/reference-renders (already in gate.mjs's --allow-write scope). We fall
@@ -60,7 +62,6 @@ if (result.error) {
 }
 if (requestedStatusPath) {
   const passed = result.status === 0;
-  const filter = readFlagValue(gateArgs, '--filter');
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'behavioral-gate',
@@ -85,7 +86,6 @@ const knownDenoWgpuPanic =
   combined.includes('wgpu-hal-28.0.0/src/gles/command.rs:771:21');
 
 if (knownDenoWgpuPanic) {
-  const filter = readFlagValue(gateArgs, '--filter');
   const status = {
     generatedAt: new Date().toISOString(),
     harness: 'behavioral-gate',
@@ -113,13 +113,6 @@ if (knownDenoWgpuPanic) {
 }
 
 process.exit(result.status ?? 1);
-
-function readFlagValue(args, name) {
-  const eq = args.find((a) => a.startsWith(`${name}=`));
-  if (eq) return eq.slice(name.length + 1);
-  const i = args.indexOf(name);
-  return i >= 0 ? (args[i + 1] ?? '') : '';
-}
 
 function readSidecar(path) {
   if (!existsSync(path)) return null;

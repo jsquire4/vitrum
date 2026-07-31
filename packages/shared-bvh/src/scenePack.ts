@@ -69,7 +69,12 @@ export interface PrimitiveTlasBinding {
 }
 
 export interface ScenePackOptions {
-  /** Build per-primitive local BLAS + TLAS. If false, TLAS buffers are empty. */
+  /**
+   * Build per-primitive local BLAS + TLAS. `false` omits TLAS only when the
+   * scene is exactly representable by zero geometry or one identity-space BLAS;
+   * otherwise the packer deterministically upgrades and reports a warning.
+   * Geometry with no invertible placement is omitted in either mode.
+   */
   readonly tlas?: boolean;
   /** Material id resolver: (primitiveId) → u32 mat slot */
   readonly resolveMaterialId: (primitiveId: string) => number;
@@ -252,6 +257,42 @@ function isMeshLike(primitive: ScenePrimitive): primitive is Extract<
   return primitive.kind === 'mesh'
     || primitive.kind === 'skinned-mesh'
     || primitive.kind === 'instanced-mesh';
+}
+
+function isIdentityTransform(transform: ArrayLike<number> | undefined): boolean {
+  if (transform == null) return true;
+  for (let lane = 0; lane < MAT4_STRIDE_F32; lane += 1) {
+    if (transform[lane] !== IDENTITY_MAT4[lane]) return false;
+  }
+  return true;
+}
+
+/**
+ * A TLAS-free pack exposes `bvhNodes[0]` as one direct world-space root. The
+ * concatenated geometry is local-space, so that representation is valid only
+ * for at most one BLAS with exactly one identity placement. A zero-instance
+ * instanced mesh contributes no BLAS and is therefore a valid empty direct
+ * representation.
+ */
+function directBlasIncompatibility(
+  bindings: readonly PrimitiveTlasBinding[],
+  instances: readonly PendingTlasInstance[],
+): string | null {
+  if (bindings.length === 0) return null;
+  if (bindings.length > 1) {
+    return `the packed scene has ${bindings.length} disjoint BLAS roots`;
+  }
+  const binding = bindings[0]!;
+  if (binding.instanceCount !== 1 || instances.length !== 1) {
+    return binding.primitiveKind === 'instanced-mesh'
+      ? `instanced-mesh "${binding.primitiveId}" has ${binding.instanceCount} instances that remain invertible`
+      : `${binding.primitiveKind} "${binding.primitiveId}" has ${binding.instanceCount} invertible ` +
+        `placement${binding.instanceCount === 1 ? '' : 's'}`;
+  }
+  if (!isIdentityTransform(instances[0]!.localToWorld)) {
+    return `${binding.primitiveKind} "${binding.primitiveId}" has a non-identity transform`;
+  }
+  return null;
 }
 
 interface PackedPrimitiveSlice {
@@ -978,23 +1019,16 @@ function splicePrimitiveBlasIntoPack(
  * Pack mesh-like primitives from a `@vitrum/core` `Scene` into concatenated
  * local BLAS buffers and an optional TLAS over instances.
  *
- * **`tlas:false` + multiple primitives:** when the caller explicitly disables TLAS
- * but the scene contains more than one mesh-like primitive, the resulting
- * per-BLAS-only concat is an untraversable forest (the WGSL traversal expects a
- * single root node, not multiple disjoint subtrees). The packer automatically
- * upgrades to `tlas:true` in this case and emits a warning. If you intentionally
- * want a single-primitive pack without a TLAS, ensure the scene contains exactly
- * one mesh-like primitive.
+ * **`tlas:false` representation boundary:** direct traversal starts at BLAS root
+ * zero and has no instance transform. It is therefore valid only for an empty
+ * pack or one identity-space BLAS with one identity placement. Multiple
+ * primitives, multiple instances, and any non-identity placement are
+ * automatically upgraded to TLAS with a warning. Singular placements are
+ * skipped; a BLAS with no surviving placement is omitted so it cannot be
+ * mistaken for direct root-zero geometry.
  */
 export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePackResult {
-  // H34-d: guard the `tlas:false` + multiple-primitive footgun. Count mesh-like
-  // primitives first (excluding analytics that are already skipped below). Auto-
-  // upgrade to tlas mode if >1 mesh-like primitive is present.
-  const meshLikeCount = scene.primitives.filter(
-    (p) => p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh',
-  ).length;
   const requestedTlas = opts.tlas !== false;
-  const buildTlasTree = requestedTlas || meshLikeCount > 1;
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
@@ -1006,14 +1040,6 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   const pendingTlasInstances: PendingTlasInstance[] = [];
   const primitiveTlasBindings: PrimitiveTlasBinding[] = [];
   const warnings: string[] = [];
-
-  if (!requestedTlas && meshLikeCount > 1) {
-    warnings.push(
-      `packSceneFromCore: tlas:false was requested but the scene has ${meshLikeCount} mesh-like ` +
-      `primitives. A per-BLAS-only concat of multiple primitives is an untraversable forest; ` +
-      `automatically upgrading to tlas:true.`,
-    );
-  }
 
   for (const primitive of scene.primitives) {
     if (!isMeshLike(primitive)) {
@@ -1051,6 +1077,46 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     const triBase = triMaterialIds.length;
     const nodeBase = Math.floor(bvhNodeWords.length / BVH_NODE_FLOATS);
 
+    const localAabb = { min: slice.localAabbMin, max: slice.localAabbMax };
+
+    const transforms =
+      primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
+    // Always resolve placement metadata, even for a requested direct pack. The
+    // post-pack representation gate needs the exact contributing BLAS/instance
+    // set after skipped geometry and singular placements have been accounted for.
+    const instanceSourceIndices: number[] = [];
+    const primitiveInstances: PendingTlasInstance[] = [];
+    for (let sourceIndex = 0; sourceIndex < transforms.length; sourceIndex += 1) {
+      const { instance, nonInvertible } = resolveOneTransform(
+        transforms[sourceIndex],
+        localAabb.min,
+        localAabb.max,
+        nodeBase,
+      );
+      if (nonInvertible) {
+        // H34-e: singular transform → skip this TLAS instance with a warning
+        // rather than silently placing geometry at the origin.
+        warnings.push(
+          `Primitive "${primitive.id}" has non-invertible instance transform; ` +
+          `skipping this TLAS instance (geometry would be placed at the origin otherwise).`,
+        );
+        continue;
+      }
+      primitiveInstances.push(instance);
+      instanceSourceIndices.push(sourceIndex);
+    }
+    // A BLAS with no surviving placement is not renderable. Keeping its local
+    // nodes in an otherwise empty pack would make `tlasNodeCount === 0` look
+    // like a valid root-0 direct pack and resurrect singular geometry at
+    // identity in consumers that support the canonical direct fallback.
+    if (primitiveInstances.length === 0) {
+      warnings.push(
+        `Primitive "${primitive.id}" has no invertible placements; ` +
+        `skipping its geometry and BLAS nodes.`,
+      );
+      continue;
+    }
+
     for (let i = 0; i < slice.localPositions.length; i += 1) positions.push(slice.localPositions[i] ?? 0);
     for (let i = 0; i < slice.localNormals.length; i += 1) normals.push(slice.localNormals[i] ?? 0);
     for (let i = 0; i < slice.localUvs.length; i += 1) uvs.push(slice.localUvs[i] ?? 0);
@@ -1083,50 +1149,20 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
       );
     }
 
-    const localAabb = { min: slice.localAabbMin, max: slice.localAabbMax };
-
-    if (buildTlasTree) {
-      const transforms =
-        primitive.kind === 'instanced-mesh' ? primitive.instances : [primitive.transform ?? undefined];
-      // Zero-instance case is handled above (before geometry concatenation); this
-      // branch should never be reached with an empty transforms array now.
-      // Record the exact raw indices that land in the TLAS. Non-invertible
-      // transforms are skipped, and a count alone cannot distinguish stable
-      // membership from a same-count swap.
-      const instanceSourceIndices: number[] = [];
-      for (let sourceIndex = 0; sourceIndex < transforms.length; sourceIndex += 1) {
-        const { instance, nonInvertible } = resolveOneTransform(
-          transforms[sourceIndex],
-          localAabb.min,
-          localAabb.max,
-          nodeBase,
-        );
-        if (nonInvertible) {
-          // H34-e: singular transform → skip this TLAS instance with a warning
-          // rather than silently placing geometry at the origin.
-          warnings.push(
-            `Primitive "${primitive.id}" has non-invertible instance transform; ` +
-            `skipping this TLAS instance (geometry would be placed at the origin otherwise).`,
-          );
-          continue;
-        }
-        pendingTlasInstances.push(instance);
-        instanceSourceIndices.push(sourceIndex);
-      }
-      primitiveTlasBindings.push({
-        primitiveId: primitive.id,
-        primitiveKind: primitive.kind,
-        blasRoot: nodeBase,
-        instanceSourceIndices,
-        instanceCount: instanceSourceIndices.length,
-        vertexStart: vertexBase,
-        vertexCount,
-        triStart: triBase,
-        triCount,
-        localAabbMin: localAabb.min,
-        localAabbMax: localAabb.max,
-      });
-    }
+    pendingTlasInstances.push(...primitiveInstances);
+    primitiveTlasBindings.push({
+      primitiveId: primitive.id,
+      primitiveKind: primitive.kind,
+      blasRoot: nodeBase,
+      instanceSourceIndices,
+      instanceCount: instanceSourceIndices.length,
+      vertexStart: vertexBase,
+      vertexCount,
+      triStart: triBase,
+      triCount,
+      localAabbMin: localAabb.min,
+      localAabbMax: localAabb.max,
+    });
   }
 
   const packedPositions = new Float32Array(positions);
@@ -1137,6 +1173,16 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   const packedIndices = new Uint32Array(indices);
   const packedTriMaterialIds = new Uint32Array(triMaterialIds);
   const packedBvhNodes = new Float32Array(new Uint32Array(bvhNodeWords).buffer);
+  const directIncompatibility = requestedTlas
+    ? null
+    : directBlasIncompatibility(primitiveTlasBindings, pendingTlasInstances);
+  const buildTlasTree = requestedTlas || directIncompatibility != null;
+  if (directIncompatibility != null) {
+    warnings.push(
+      `packSceneFromCore: tlas:false was requested, but ${directIncompatibility}. ` +
+      `A direct BLAS can represent only one identity-space placement; automatically upgrading to tlas:true.`,
+    );
+  }
   const tlasBuild = buildTlasTree
     ? buildTlasFromInstances(pendingTlasInstances)
     : {
@@ -1164,7 +1210,7 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
     tlasNodeCount: tlasBuild.tlasNodeCount,
-    primitiveTlasBindings,
+    primitiveTlasBindings: buildTlasTree ? primitiveTlasBindings : [],
     warnings: mergePackWarnings([], warnings),
   };
   validatePackedBlasForest(pack);

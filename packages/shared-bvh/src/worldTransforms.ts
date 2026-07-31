@@ -118,9 +118,14 @@ export function applyDirectionMatrix4(
   const tx = (m[0] ?? 0) * x + (m[4] ?? 0) * y + (m[8] ?? 0) * z;
   const ty = (m[1] ?? 0) * x + (m[5] ?? 0) * y + (m[9] ?? 0) * z;
   const tz = (m[2] ?? 0) * x + (m[6] ?? 0) * y + (m[10] ?? 0) * z;
-  const len = Math.sqrt(tx * tx + ty * ty + tz * tz);
-  if (len <= 1e-12) return [0, 0, 0];
-  return [tx / len, ty / len, tz / len];
+  const scale = Math.max(Math.abs(tx), Math.abs(ty), Math.abs(tz));
+  if (!(scale > 0) || !Number.isFinite(scale)) return [0, 0, 0];
+  const sx = tx / scale;
+  const sy = ty / scale;
+  const sz = tz / scale;
+  const scaledLength = Math.hypot(sx, sy, sz);
+  if (!(scaledLength > 0) || !Number.isFinite(scaledLength)) return [0, 0, 0];
+  return [sx / scaledLength, sy / scaledLength, sz / scaledLength];
 }
 
 /** Full 4×4 determinant of a column-major matrix — = THREE's

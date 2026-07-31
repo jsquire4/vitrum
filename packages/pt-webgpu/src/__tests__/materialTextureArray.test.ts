@@ -135,6 +135,20 @@ describe('createMaterialTextureArray', () => {
     expect(call[3]).toEqual({ width: 2, height: 1 });
   });
 
+  it('normalizes one-channel as RRR and two-channel as RG0 with opaque alpha', () => {
+    installGpuConstStubs();
+    const { device, writeTexture } = makeDevice();
+    createMaterialTextureArray(device, [
+      { width: 1, height: 1, data: new Uint8Array([25]) },
+      { width: 1, height: 1, data: new Uint8Array([10, 20]) },
+    ], 'rgba8unorm');
+
+    const first = writeTexture.mock.calls[0] as [unknown, Uint8Array, unknown, unknown];
+    const second = writeTexture.mock.calls[1] as [unknown, Uint8Array, unknown, unknown];
+    expect(Array.from(first[1])).toEqual([25, 25, 25, 255]);
+    expect(Array.from(second[1])).toEqual([10, 20, 0, 255]);
+  });
+
   it('normalizes Float32 raw data to RGBA8 rows before writeTexture', () => {
     installGpuConstStubs();
     const { device, writeTexture } = makeDevice();
@@ -389,6 +403,116 @@ describe('createMaterialTextureArray', () => {
     expect(px[3]).toBeCloseTo(1.0, 3);
     expect(px[4]).toBeCloseTo(100.0, 0); // >> 1.0 survives packing
     expect(px[5]).toBeCloseTo(0.25, 2);
+  });
+
+  it('uses the same RG0 rule for two-channel HDR emissive payloads', () => {
+    installGpuConstStubs();
+    const { device, writeTexture } = makeDevice();
+    createMaterialTextureArray(
+      device,
+      [{ width: 1, height: 1, data: new Float32Array([0.25, 0.5]) }],
+      'rgba16float',
+    );
+    const call = writeTexture.mock.calls[0] as [unknown, Uint16Array, unknown, unknown];
+    const px = Array.from(call[1]).map(halfToFloat);
+    expect(px).toEqual([0.25, 0.5, 0, 1]);
+  });
+
+  it('rejects a bright emissive texel that overflows an otherwise finite packed factor', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    const f32Max = 3.4028234663852886e38;
+    expect(() => createMaterialTextureArray(
+      device,
+      [{
+        width: 2,
+        height: 1,
+        // The mean red texel is one, so an average-only classifier would
+        // accept this map. The exact bright texel must still fail.
+        data: new Float32Array([2, 0, 0, 1, 0, 0, 0, 1]),
+      }],
+      'rgba16float',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 0,
+          field: 'emissiveMap',
+          colorSpace: 'srgb',
+          texCoord: 0,
+        }],
+      }],
+      new Set(),
+      { emissiveMap: [[[f32Max, 0, 0]]] },
+    )).toThrow(/emissiveMap layer 0 texel 0 radiance must remain finite/);
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it('rejects exact positive light-map texel products that disappear in Float32', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    const f32Min = 1.401298464324817e-45;
+    expect(() => createMaterialTextureArray(
+      device,
+      [{ width: 1, height: 1, data: new Uint8Array([1, 0, 0, 255]) }],
+      'rgba8unorm',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 0,
+          field: 'lightMap',
+          colorSpace: 'linear',
+          texCoord: 0,
+        }],
+      }],
+      new Set(),
+      { lightMap: [[[f32Min, f32Min, f32Min]]] },
+    )).toThrow(/positive .*lightMap layer 0 texel 0 radiance.*underflow/);
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it('keeps opaque light-map sources supported through the shader finite guard', () => {
+    installGpuConstStubs();
+    const { device } = makeDevice();
+    const external = { width: 1, height: 1 };
+    const array = createMaterialTextureArray(
+      device,
+      [external],
+      'rgba8unorm',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 0,
+          field: 'lightMap',
+          colorSpace: 'linear',
+          texCoord: 0,
+        }],
+      }],
+      new Set(),
+      { lightMap: [[[1, 1, 1]]] },
+    );
+    expect(array.layerCount).toBe(1);
+  });
+
+  it('fails closed for active emissive envelopes without exact CPU texels', () => {
+    installGpuConstStubs();
+    const { device, createTexture } = makeDevice();
+    expect(() => createMaterialTextureArray(
+      device,
+      [{ width: 1, height: 1 }],
+      'rgba16float',
+      [{
+        layer: 0,
+        uses: [{
+          materialIndex: 0,
+          field: 'emissiveMap',
+          colorSpace: 'srgb',
+          texCoord: 0,
+        }],
+      }],
+      new Set(),
+      { emissiveMap: [[[1, 1, 1]]] },
+    )).toThrow(/no exact CPU-readable texels/);
+    expect(createTexture).not.toHaveBeenCalled();
   });
 
   it('accepts explicit mipmapped bump policies because bump height samples are policy-aware', () => {

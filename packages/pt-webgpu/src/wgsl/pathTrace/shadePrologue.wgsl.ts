@@ -26,7 +26,12 @@
  * prologue used to live (between the trace-miss `break;` block and
  * `let throughputAtVertex = throughput;`).
  */
-export function composeShadePrologueWgsl(
+export interface ShadePrologueWgslParts {
+  readonly material: string;
+  readonly surface: string;
+}
+
+export function composeShadeProloguePartsWgsl(
   emissiveComment: string,
   baseColorTexApply = '',
   emissiveTexApply = '',
@@ -40,9 +45,9 @@ export function composeShadePrologueWgsl(
   extensionLobeTexApply = '',
   clearcoatNormalMapApply = '',
   emissiveOwnershipGuard = '',
-): string {
+): ShadePrologueWgslParts {
   const materialDecl = 'var';
-  return /* wgsl */ `    let matId = hitMaterialId(hit);
+  const material = /* wgsl */ `    let matId = hitMaterialId(hit);
     ${materialDecl} mat = decodeMaterial(matId);
     var baseColor = mat.baseColor;${baseColorTexApply}${aoApply}
     var roughness = mat.roughness;
@@ -76,10 +81,15 @@ export function composeShadePrologueWgsl(
     let hitPos = ray.origin + ray.direction * hit.dist;
     let isFrontFace = hit.frontFace;
     var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}${bumpMapApply}
-    var clearcoatNormal = normal;${clearcoatNormalMapApply}
+    var clearcoatNormal = normal;${clearcoatNormalMapApply}`;
+  const surface = /* wgsl */ `
 
 ${emissiveComment}
-    if (!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission${emissiveOwnershipGuard}) {
+    if (
+      !prevSampleAllowsAreaMis &&
+      !sppmOwnsCurrentEmission${emissiveOwnershipGuard} &&
+      (isFrontFace || mat.doubleSided)
+    ) {
       // A3 — emitters in spectral mode: upsample the RGB emission to a spectrum
       // via Jakob-Hanika and evaluate at the hero λ, scaled to preserve the
       // emitter's luminance (flat-spectrum × luminance approximation in the
@@ -170,6 +180,40 @@ ${emissiveComment}
       );
       baseColor = vec3f(reflScalar);
     }`;
+  return { material, surface };
+}
+
+export function composeShadePrologueWgsl(
+  emissiveComment: string,
+  baseColorTexApply = '',
+  emissiveTexApply = '',
+  ormTexApply = '',
+  normalMapApply = '',
+  aoApply = '',
+  lightMapApply = '',
+  bumpMapApply = '',
+  transmissionMapApply = '',
+  volumeThicknessMapApply = '',
+  extensionLobeTexApply = '',
+  clearcoatNormalMapApply = '',
+  emissiveOwnershipGuard = '',
+): string {
+  const parts = composeShadeProloguePartsWgsl(
+    emissiveComment,
+    baseColorTexApply,
+    emissiveTexApply,
+    ormTexApply,
+    normalMapApply,
+    aoApply,
+    lightMapApply,
+    bumpMapApply,
+    transmissionMapApply,
+    volumeThicknessMapApply,
+    extensionLobeTexApply,
+    clearcoatNormalMapApply,
+    emissiveOwnershipGuard,
+  );
+  return parts.material + parts.surface;
 }
 
 /** Full-tier emissive-on-hit rationale (5 lines). */
@@ -193,7 +237,7 @@ export const SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL =
 /** Full-tier emissive texture modulation (P2). Injected after `var emissive`;
  *  no-op (vec4(1)) for materials without an emissive map → byte-identical. */
 export const SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL =
-  `\n    emissive = emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;`;
+  `\n    emissive = ptFiniteNonNegativeRadianceProduct(emissive, sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb);`;
 
 /** Full-tier ORM (metallicRoughness) texture modulation (P2). Injected after
  *  `var metallic`; glTF packing G=roughness, B=metallic. vec4(1) when absent →
@@ -225,7 +269,7 @@ export const SHADE_PROLOGUE_AO_APPLY_FULL =
  *  the conservative, double-count-proof choice. 0 when no lightMap → byte-identical.
  *  Adds to the emission var so it never enters NEE. */
 export const SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL =
-  `\n    emissive = emissive + select(vec3f(0.0), sampleLightMapRadiance(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), bounce == 0u);`;
+  `\n    emissive = ptFiniteNonNegativeRadianceSum(emissive, select(vec3f(0.0), sampleLightMapRadiance(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), bounce == 0u));`;
 
 /** D3 — bump map: perturb the shading normal by the height-field gradient
  *  (applied AFTER the normal map so the two compose). Returns the normal unchanged

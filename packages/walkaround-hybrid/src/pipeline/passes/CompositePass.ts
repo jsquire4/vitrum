@@ -23,6 +23,7 @@ import type {
 } from '../Pass.js';
 import type { PassLabel } from '../timestampQueries.js';
 import { COMPOSITE_UBO } from './uboLayouts.js';
+import type { PipelineFrameInputs } from '../pipelineFrameInputs.js';
 
 export class CompositePass implements Pass {
   readonly id = 'composite' as const;
@@ -55,22 +56,35 @@ export class CompositePass implements Pass {
 
   async initialize(_ctx: PassInitContext): Promise<void> {}
 
-  dispatch(ctx: PassDispatchContext): void {
-    const { device, encoder, bglCache, resources, inputs, renderTimestampWrites } = ctx;
+  /**
+   * Publish the exact presentation dials used by either a full frame or the
+   * throttled composite-only path.
+   */
+  writeUniforms(
+    device: GPUDevice,
+    composite: PipelineFrameInputs['composite'],
+  ): boolean {
     const uboBuffer = this._uboRef.buf;
-    if (uboBuffer == null) return;
+    if (uboBuffer == null) return false;
 
     // Pack CompositeUniforms: tonemapMode (u32), exposure (f32),
     // outputColorSpace (u32), _pad (u32). Defaults: aces(0), 1.0, srgb(0).
-    const c = inputs.composite;
     const compositeUboBytes = new ArrayBuffer(COMPOSITE_UBO.sizeBytes);
     COMPOSITE_UBO.pack(new DataView(compositeUboBytes), 0, {
-      tonemapMode:      c.tonemapMode,
-      exposure:         c.exposure,
-      outputColorSpace: c.outputColorSpace,
+      tonemapMode:      composite.tonemapMode,
+      exposure:         composite.exposure,
+      outputColorSpace: composite.outputColorSpace,
       _pad:             0,
     });
     device.queue.writeBuffer(uboBuffer, 0, compositeUboBytes);
+    return true;
+  }
+
+  dispatch(ctx: PassDispatchContext): void {
+    const { device, encoder, bglCache, resources, inputs, renderTimestampWrites } = ctx;
+    if (!this.writeUniforms(device, inputs.composite)) return;
+    const uboBuffer = this._uboRef.buf;
+    if (uboBuffer == null) return;
 
     const finalTex = resources.common.resolvedTexture;
     const bg = buildCompositeBindGroup(

@@ -68,10 +68,10 @@ describe('walkaround shader hash policy', () => {
     expect(checkedSources).toContain('worldHash2');
   });
 
-  it('clips TLAS stained-glass tinted visibility against reconstructed world tMax', () => {
-    expect(SURFACE_TEXTURES_WGSL).toContain('let worldHitPos = tlasTransformPointCols');
-    expect(SURFACE_TEXTURES_WGSL).toContain('tCompare = dot(worldHitPos - worldOrigin, worldDir)');
-    expect(SURFACE_TEXTURES_WGSL).toContain('local t drives barycentrics, reconstructed');
+  it('clips stained-glass visibility in the canonical world-distance walk', () => {
+    expect(SURFACE_TEXTURES_WGSL).toContain('let hit = traceSceneFirstHit(');
+    expect(SURFACE_TEXTURES_WGSL).toContain('if (!hit.didHit || hit.dist >= remaining)');
+    expect(SURFACE_TEXTURES_WGSL).toContain('walkRay.origin = origin + dir * traveled;');
     expect(SURFACE_TEXTURES_WGSL).not.toContain('localOrigin, localDir, 1e20');
   });
 });

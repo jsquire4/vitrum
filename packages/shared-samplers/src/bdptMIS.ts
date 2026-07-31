@@ -31,6 +31,37 @@ import {
   saturatingPositiveMultiply,
 } from './numericGuards.js';
 
+type ScaledDirection = {
+  readonly unit: readonly [number, number, number];
+  readonly length: number;
+};
+
+function scaledDirection(
+  value: readonly [number, number, number],
+): ScaledDirection | null {
+  const scale = Math.max(
+    Math.abs(value[0]),
+    Math.abs(value[1]),
+    Math.abs(value[2]),
+  );
+  if (!(scale > 0) || !Number.isFinite(scale)) return null;
+  const scaled = [
+    value[0] / scale,
+    value[1] / scale,
+    value[2] / scale,
+  ] as const;
+  const scaledLength = Math.hypot(...scaled);
+  if (!(scaledLength > 0) || !Number.isFinite(scaledLength)) return null;
+  return {
+    unit: [
+      scaled[0] / scaledLength,
+      scaled[1] / scaledLength,
+      scaled[2] / scaledLength,
+    ],
+    length: scale * scaledLength,
+  };
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Full Veach §10.3 implementation (T2.H4)
 // ────────────────────────────────────────────────────────────────────────────
@@ -73,23 +104,28 @@ export function geometricTermG(
   requireFinite(dx, 'geometricTermG.dx');
   requireFinite(dy, 'geometricTermG.dy');
   requireFinite(dz, 'geometricTermG.dz');
-  const dist = Math.hypot(dx, dy, dz);
+  const connection = scaledDirection([dx, dy, dz]);
 
-  if (dist <= 0) return 0;
-  const dist2 = dist * dist;
-  const invDist = 1 / dist;
+  if (connection == null) return 0;
+  const dist2 = connection.length * connection.length;
 
   // Unit direction i→j
-  const wx = dx * invDist;
-  const wy = dy * invDist;
-  const wz = dz * invDist;
+  const [wx, wy, wz] = connection.unit;
 
   // |cos θᵢ| = |normalI · w|, |cos θⱼ| = |normalJ · (−w)|
-  const normalILength = Math.hypot(normalI[0], normalI[1], normalI[2]);
-  const normalJLength = Math.hypot(normalJ[0], normalJ[1], normalJ[2]);
-  if (normalILength < 1e-12 || normalJLength < 1e-12) return 0;
-  const cosI = Math.abs(normalI[0] * wx + normalI[1] * wy + normalI[2] * wz) / normalILength;
-  const cosJ = Math.abs(normalJ[0] * wx + normalJ[1] * wy + normalJ[2] * wz) / normalJLength;
+  const normalIDirection = scaledDirection(normalI);
+  const normalJDirection = scaledDirection(normalJ);
+  if (normalIDirection == null || normalJDirection == null) return 0;
+  const cosI = Math.abs(
+    normalIDirection.unit[0] * wx +
+    normalIDirection.unit[1] * wy +
+    normalIDirection.unit[2] * wz,
+  );
+  const cosJ = Math.abs(
+    normalJDirection.unit[0] * wx +
+    normalJDirection.unit[1] * wy +
+    normalJDirection.unit[2] * wz,
+  );
 
   const result = (cosI * cosJ) / dist2;
   return Number.isFinite(result) ? result : Number.MAX_VALUE;
@@ -139,16 +175,17 @@ function convertDensitySAtoArea(
   const dx = destPos[0] - fromPos[0];
   const dy = destPos[1] - fromPos[1];
   const dz = destPos[2] - fromPos[2];
-  const dist = Math.hypot(dx, dy, dz);
-  if (dist <= 0) return pdfSA; // coincident → unit Jacobian (endpoint guard)
-  const dist2 = dist * dist;
+  const connection = scaledDirection([dx, dy, dz]);
+  if (connection == null) return pdfSA;
+  const dist2 = connection.length * connection.length;
 
-  const normalLength = Math.hypot(destNorm[0], destNorm[1], destNorm[2]);
-  if (normalLength < 1e-12) return 0;
-  const invDist = 1 / dist;
+  const normalDirection = scaledDirection(destNorm);
+  if (normalDirection == null) return 0;
   const cosDest = Math.abs(
-    destNorm[0] * dx * invDist + destNorm[1] * dy * invDist + destNorm[2] * dz * invDist,
-  ) / normalLength;
+    normalDirection.unit[0] * connection.unit[0] +
+    normalDirection.unit[1] * connection.unit[1] +
+    normalDirection.unit[2] * connection.unit[2],
+  );
   const result = (pdfSA * cosDest) / dist2;
   return Number.isFinite(result) ? result : Number.MAX_VALUE;
 }
@@ -189,9 +226,11 @@ export interface BDPTFullVertex {
   readonly pdfRev: number;
   /**
    * True when this vertex lies on a specular (delta-function BSDF) surface.
-   * Any strategy whose sweep passes through a specular vertex has weight 0 per
-   * Veach §10.3.5 — the delta PDF cannot be evaluated by an explicit
-   * connection from the other subpath.
+   * A strategy whose explicit connection edge touches this vertex has weight 0
+   * per Veach §10.3.5 — the delta PDF cannot be evaluated by a deterministic
+   * connection from the other subpath. The recurrence must nevertheless walk
+   * across this vertex so that farther strategies with non-delta connection
+   * edges remain eligible.
    */
   readonly isSpecular: boolean;
 }
@@ -242,8 +281,11 @@ export interface BDPTFullVertex {
  *
  * **Specular zero-weight rule (Veach §10.3.5):** a hypothetical strategy whose
  * connection edge touches a specular (delta-BSDF) vertex cannot be sampled by an
- * explicit connection, so its pdf is left at 0 and the sweep breaks (all further
- * strategies in that direction stay 0).
+ * explicit connection, so its pdf is left at 0. The recurrence itself continues
+ * across the delta vertex: farther strategies may place their connection on a
+ * fully non-delta edge and are still valid. As in PBRT's `MISWeight`, zero
+ * densities are remapped to one for the ratio walk; the connection-edge mask,
+ * rather than an early loop exit, excludes the delta techniques.
  *
  * @param vertices    - merged path [v_0=light endpoint, …, v_{n-1}=camera endpoint]
  * @param selectedS   - index of the chosen strategy (0-based light vertex count)
@@ -291,6 +333,12 @@ export function buildBDPTStrategyPDFs_full(
     return convertDensitySAtoArea(v.pdfRev, next.position, v.position, v.normal);
   };
 
+  // PBRT's MISWeight uses Remap0 while walking ratios. Delta distributions have
+  // no finite solid-angle density, so their stored directional PDF is commonly
+  // zero; treating that sentinel as a literal zero would terminate the
+  // recurrence and incorrectly discard valid strategies beyond the delta run.
+  const remapZeroDensity = (pdf: number): number => pdf === 0 ? 1 : pdf;
+
   // ── Left sweep (decrement s): flip v_{s−1}; p_{s−1} = p_s · pRev(s−1)/pFwd(s−1) ──
   {
     let p = pRef;
@@ -299,16 +347,16 @@ export function buildBDPTStrategyPDFs_full(
 
       // Strategy s−1 connects light subpath v_0…v_{s−2} to camera subpath
       // v_{s−1}…. Its connection edge is (v_{s−2}, v_{s−1}). If either endpoint
-      // of that edge is specular the strategy cannot be sampled — stop here.
+      // of that edge is specular the strategy cannot be sampled. Do not stop the
+      // recurrence: a farther connection edge can be fully non-specular.
       const connNeighbor = s - 2 >= 0 ? vertices[s - 2]! : undefined;
-      if (flip.isSpecular || (connNeighbor?.isSpecular ?? false)) break;
+      const connectionIsDelta =
+        flip.isSpecular || (connNeighbor?.isSpecular ?? false);
 
-      const pFwd = fwdArea(s - 1);
-      const pRev = revArea(s - 1);
-      if (pFwd <= 0 || pRev <= 0) break;
-
+      const pFwd = remapZeroDensity(fwdArea(s - 1));
+      const pRev = remapZeroDensity(revArea(s - 1));
       p = saturatingPositiveMultiply(p, pRev / pFwd);
-      pdfs[s - 1] = p;
+      if (!connectionIsDelta) pdfs[s - 1] = p;
     }
   }
 
@@ -320,16 +368,15 @@ export function buildBDPTStrategyPDFs_full(
 
       // Strategy s+1 connects light subpath v_0…v_s to camera subpath v_{s+1}….
       // Its connection edge is (v_s, v_{s+1}). If either endpoint is specular the
-      // strategy cannot be sampled — stop here.
+      // strategy cannot be sampled. Continue walking so later non-delta
+      // connection edges remain eligible.
       const connNeighbor = vertices[s + 1]!;
-      if (flip.isSpecular || connNeighbor.isSpecular) break;
+      const connectionIsDelta = flip.isSpecular || connNeighbor.isSpecular;
 
-      const pFwd = fwdArea(s);
-      const pRev = revArea(s);
-      if (pFwd <= 0 || pRev <= 0) break;
-
+      const pFwd = remapZeroDensity(fwdArea(s));
+      const pRev = remapZeroDensity(revArea(s));
       p = saturatingPositiveMultiply(p, pFwd / pRev);
-      pdfs[s + 1] = p;
+      if (!connectionIsDelta) pdfs[s + 1] = p;
     }
   }
 

@@ -191,8 +191,8 @@ function buildMaskedTlasInstanceAny(): string {
   );
   fn = mustReplace(
     fn,
-    'let localHit = bvhIntersectFirstHitAtRoot(localRay, triEps, blasRoot, skipGlass);',
-    'let localHit = bvhIntersectFirstHitAtRootCastMask(localRay, triEps, blasRoot, skipGlass, castMask, castMaskWidth);',
+    'let localHit = bvhIntersectFirstHitAtRoot(localRay, localTMin, blasRoot, skipGlass);',
+    'let localHit = bvhIntersectFirstHitAtRootCastMask(localRay, localTMin, blasRoot, skipGlass, castMask, castMaskWidth);',
     'tlas-instance-any per-instance BLAS rewire',
   );
   return fn;
@@ -256,8 +256,8 @@ function buildPredicateTlasInstanceAny(): string {
   );
   fn = mustReplace(
     fn,
-    'let localHit = bvhIntersectFirstHitAtRoot(localRay, triEps, blasRoot, skipGlass);',
-    'let localHit = bvhIntersectFirstHitAtRootCastPredicate(localRay, triEps, blasRoot, skipGlass);',
+    'let localHit = bvhIntersectFirstHitAtRoot(localRay, localTMin, blasRoot, skipGlass);',
+    'let localHit = bvhIntersectFirstHitAtRootCastPredicate(localRay, localTMin, blasRoot, skipGlass);',
     'predicate tlas-instance-any per-instance BLAS rewire',
   );
   return fn;

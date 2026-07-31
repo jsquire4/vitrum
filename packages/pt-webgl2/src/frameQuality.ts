@@ -1,4 +1,5 @@
 import type { FrameQualitySettings } from '@vitrum/core';
+import { requireNonNegativeFloat32 } from './scene/float32Policy.js';
 
 export interface ResolvedWebGl2FrameQuality {
   readonly samplesTarget: number;
@@ -87,6 +88,10 @@ export function validateWebGl2FrameQuality(quality: unknown): asserts quality is
           `(got ${q.filteredGlossyFactor})`,
       );
     }
+    requireNonNegativeFloat32(
+      q.filteredGlossyFactor,
+      'renderFrame: quality.filteredGlossyFactor',
+    );
   }
   if (q.exposure !== undefined) {
     assertFiniteNumber('renderFrame: quality.exposure', q.exposure);
@@ -95,6 +100,10 @@ export function validateWebGl2FrameQuality(quality: unknown): asserts quality is
         `renderFrame: quality.exposure must be >= 0 (got ${q.exposure})`,
       );
     }
+    requireNonNegativeFloat32(
+      q.exposure,
+      'renderFrame: quality.exposure',
+    );
   }
   if (q.tonemap !== undefined &&
       (typeof q.tonemap !== 'string' || !TONEMAP_MODES.has(q.tonemap as never))) {
@@ -136,8 +145,14 @@ export function resolveWebGl2FrameQuality(
   const requestedBounces = q.bounces ?? maxBounces;
   const requestedSamples = q.samplesTarget ?? defaultSamplesTarget;
   const requestedResolution = q.resolutionFactor ?? 1;
-  const requestedGlossy = q.filteredGlossyFactor ?? 0;
-  const requestedExposure = q.exposure ?? 1;
+  const requestedGlossy = requireNonNegativeFloat32(
+    q.filteredGlossyFactor ?? 0,
+    'renderFrame: quality.filteredGlossyFactor',
+  );
+  const requestedExposure = requireNonNegativeFloat32(
+    q.exposure ?? 1,
+    'renderFrame: quality.exposure',
+  );
 
   return {
     bounces: clamp(requestedBounces, 1, maxBounces),

@@ -215,7 +215,10 @@ describe('advanced estimator composition', () => {
     expect(tauPrime[2]).toBeCloseTo(5 / 12, 14);
 
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
-      'photonFlux = spectralEmissionAtHero(photonFlux, photonHeroLambda);',
+      'photonFlux = ptScaleEnvironmentRadiance(\n' +
+      '      spectralEmissionAtHero(photonFlux, photonHeroLambda),\n' +
+      '      1.0,\n' +
+      '    );',
     );
     expect(SPPM_PHOTON_PASS_WGSL).toContain('spectralCombinedReflectanceAtHero(');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('cauchyIorAtLambda(');

@@ -221,7 +221,9 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // f and throughput computed at prevPos (prevMat/prevNormal/woAtPrev/scatterDir).
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('surfaceThroughputMul = bsPrev.throughputMul;');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('surfaceRayOrigin = bsPrev.newRayOrigin;');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('var newThroughput = prevThroughput * surfaceThroughputMul * segmentWeight;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('var incomingPathThroughput = prevThroughput;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('incomingPathThroughput = ptScaleEnvironmentRadiance(');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('incomingPathThroughput * surfaceThroughputMul * segmentWeight;');
     // pdfFwd = scatter pdf at prevPos (SA, no baked-in geometry term).
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('pdfScatter = bsPrev.sampledEventPdf;');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('let pdfFwd = pdfScatter * segmentForwardDensity;');
@@ -251,7 +253,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fPrev = vec3f(1.0);');
     // Surface vertices still use the real extension-aware BRDF.
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('surfaceThroughputMul = bsPrev.throughputMul;');
-    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('newThroughput = prevThroughput * fPrev * cosPrev / pdfScatter * segmentWeight;');
+    expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('incomingPathThroughput * fPrev * cosPrev / pdfScatter * segmentWeight;');
   });
 
   it('launches directional and environment roots from the scene-bounding disk', () => {
@@ -263,7 +265,8 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(code).toContain('fn bdptInfiniteLaunchDisk(');
     expect(code).toContain('BDPT_LV_DIRECTIONAL_EMITTER_MATID');
     expect(code).toContain('BDPT_LV_ENVIRONMENT_EMITTER_MATID');
-    expect(code).toContain('1.0 / (PI * radius * radius),');
+    expect(code).toContain('let launchArea = measureAreaVector(');
+    expect(code).toContain('positionPdf = 1.0 / launchArea.area;');
   });
 
   it('mirrors emitter castShadow:false into BDPT bounce-0 connection visibility', () => {
@@ -282,7 +285,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       'if (!lightEmitterCastShadowDisabled && traceAny(',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng,',
+      'shadowRay, ptRayTMin(), ptFiniteSegmentTMax(dist), rng,',
     );
   });
 

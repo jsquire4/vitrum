@@ -37,6 +37,7 @@ import type {
   SceneEmitter,
   SceneEnvironment,
   ScenePrimitive,
+  ScenePrimitivePatch,
 } from '@vitrum/core';
 
 /** Which engine the coordinator is presenting. */
@@ -53,7 +54,7 @@ export type HandoffPhase =
 
 export interface ProgressiveHandoffControllerTarget {
   setScene(scene: Scene): void;
-  updatePrimitive?(id: string, patch: Partial<ScenePrimitive>): void;
+  updatePrimitive?(id: string, patch: ScenePrimitivePatch): void;
   reset?(): void;
 }
 
@@ -108,9 +109,11 @@ export interface ProgressiveHandoffOptions {
    *  full sample target. Ignored when settleBehindRealtime is false. */
   readonly convergedDisplaySamples?: number;
   /** P8 increment 2: on each handoff, SEED the converged engine's accumulator from
-   *  the real-time engine's last frame (a DECAYING PRIOR — `seedAccumulator`) so the
-   *  converged image starts from the smooth real-time output instead of a 1-sample
-   *  blizzard, WITHOUT biasing the converged mean. Requires the real-time engine to
+   *  the real-time engine's last frame (a DECAYING PREVIEW PRIOR —
+   *  `seedAccumulator`) so the first progressive frames start from the smooth
+   *  real-time output instead of a 1-sample blizzard. Before that seeded cohort
+   *  could be published as terminal, the coordinator resets it and begins the
+   *  canonical unseeded accumulation. Requires the real-time engine to
    *  expose `getProgressiveSeedTexture()`, the converged engine `seedAccumulator()`,
    *  and BOTH to share one GPUDevice (use `createProgressiveEngine`); a no-op
    *  otherwise. Default false (resets to black, the v1 behaviour).
@@ -306,6 +309,9 @@ export class ProgressiveHandoffCoordinator {
   /** The converged accumulator holds a DIFFERENT camera's samples (or none);
    *  reset it before the first converged frame of a settle. */
   #convergedStale = true;
+  /** The current converged cohort contains realtime preview radiance and may be
+   * displayed progressively, but must be retired before terminal publication. */
+  #seededPreviewActive = false;
   #scene: Scene | null;
   /** Last size successfully accepted by both phases. Null until the first
    *  coordinator-routed resize, so a failed first resize cannot be rolled back
@@ -367,6 +373,7 @@ export class ProgressiveHandoffCoordinator {
     this.#stillFrames = 0;
     this.#phase = 'realtime';
     this.#convergedStale = true;
+    this.#seededPreviewActive = false;
   }
 
   #resetEnginesAfterControllerMutation(): void {
@@ -542,7 +549,7 @@ export class ProgressiveHandoffCoordinator {
   }
 
   /** Patch a primitive on both engines (where supported) and restart at real-time. */
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+  updatePrimitive(id: string, patch: ScenePrimitivePatch): void {
     const nextScene = this.#scene != null ? patchPrimitiveInScene(this.#scene, id, patch) : null;
     const bothSupported =
       typeof this.#realtime.updatePrimitive === 'function' &&
@@ -759,16 +766,19 @@ export class ProgressiveHandoffCoordinator {
     const moved = this.#prev === null || cameraMoved(this.#prev, cam, this.#eps);
     const nextStillFrames = moved ? 0 : this.#stillFrames + 1;
     const nextConvergedStale = moved ? true : this.#convergedStale;
+    let nextSeededPreviewActive = moved ? false : this.#seededPreviewActive;
     const publish = (
       phase: HandoffPhase,
       active: Engine,
       convergedStale: boolean,
+      seededPreviewActive: boolean,
     ): void => {
       this.#prev = cam;
       this.#stillFrames = nextStillFrames;
       this.#phase = phase;
       this.#lastActive = active;
       this.#convergedStale = convergedStale;
+      this.#seededPreviewActive = seededPreviewActive;
     };
 
     if (nextStillFrames >= this.#threshold) {
@@ -781,21 +791,44 @@ export class ProgressiveHandoffCoordinator {
         // without biasing the converged mean. Runs AFTER reset (the seed is the sole
         // prior). No-op unless seedFromRealtime + both engines' capabilities (+ a
         // shared device at runtime).
-        if (this.#seedFromRealtime) this.#seedConvergedFromRealtime(input);
+        nextSeededPreviewActive =
+          this.#seedFromRealtime && this.#seedConvergedFromRealtime(input);
       }
       // Always advance the converged engine (it accumulates either way).
-      const convOutput = this.#converged.renderFrame(input);
+      let convOutput = this.#converged.renderFrame(input);
+      if (
+        nextSeededPreviewActive &&
+        (convOutput.isConverged ||
+          convOutput.samplesAccumulated >= this.#displaySamples)
+      ) {
+        // A realtime seed is a presentation prior, not a physical sample. Its
+        // finite weight would remain in a finite-SPP terminal mean. Retire the
+        // preview cohort before it can become authoritative, then start the
+        // canonical accumulator with one real PT sample on this same frame.
+        try {
+          this.#converged.reset();
+          convOutput = this.#converged.renderFrame(input);
+          nextSeededPreviewActive = false;
+        } catch (error) {
+          // Reset may already have changed backend state. Force the next retry
+          // through a fresh cohort instead of treating either generation as
+          // publishable.
+          this.#convergedStale = true;
+          this.#seededPreviewActive = false;
+          throw error;
+        }
+      }
       const convReady =
         convOutput.isConverged || convOutput.samplesAccumulated >= this.#displaySamples;
       if (!this.#settleBehind || convReady) {
-        publish('converging', this.#converged, false);
+        publish('converging', this.#converged, false, nextSeededPreviewActive);
         return { phase: 'converging', active: this.#converged, output: convOutput, stillFrames: nextStillFrames };
       }
       // Pre-roll: the converged engine accumulated above (behind the scenes);
       // keep DISPLAYING the smooth real-time image until it is clean enough,
       // hiding the real-time → 1-sample pop.
       const rtOutput = this.#realtime.renderFrame(input);
-      publish('prerolling', this.#realtime, false);
+      publish('prerolling', this.#realtime, false, nextSeededPreviewActive);
       return {
         phase: 'prerolling',
         active: this.#realtime,
@@ -808,7 +841,7 @@ export class ProgressiveHandoffCoordinator {
     // Real-time: moving, or still-but-settling (below the threshold).
     const nextPhase: HandoffPhase = nextStillFrames > 0 ? 'settling' : 'realtime';
     const output = this.#realtime.renderFrame(input);
-    publish(nextPhase, this.#realtime, nextConvergedStale);
+    publish(nextPhase, this.#realtime, nextConvergedStale, nextSeededPreviewActive);
     return { phase: nextPhase, active: this.#realtime, output, stillFrames: nextStillFrames };
   }
 
@@ -844,16 +877,23 @@ export class ProgressiveHandoffCoordinator {
    *  are the DESTINATION dims (not the source), so we derive them from the viewport
    *  rather than the source texture dims — which may differ when source and dest have
    *  different resolutionFactors.  The backend resamples the seed texture to fit. */
-  #seedConvergedFromRealtime(input: FrameInput): void {
+  #seedConvergedFromRealtime(input: FrameInput): boolean {
     const src = this.#realtime.getProgressiveSeedTexture?.();
-    if (src == null) return;
+    if (
+      src == null ||
+      this.#seedWeight <= 0 ||
+      typeof this.#converged.seedAccumulator !== 'function'
+    ) {
+      return false;
+    }
     const destWidth = input.viewport?.width ?? src.width;
     const destHeight = input.viewport?.height ?? src.height;
-    this.#converged.seedAccumulator?.(src.texture, {
+    this.#converged.seedAccumulator(src.texture, {
       weight: this.#seedWeight,
       width: destWidth,
       height: destHeight,
     });
+    return true;
   }
 
   #advanceController(input: FrameInput): void {

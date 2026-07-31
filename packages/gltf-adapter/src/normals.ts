@@ -28,11 +28,15 @@ export function generateVertexNormals(
     );
   }
   const vertexCount = Math.floor(positions.length / 3);
-  resourceLedger?.chargeDecodedGeometryBytes(positions.byteLength, allocationPath);
+  const accumulatorBytes = positions.length * Float64Array.BYTES_PER_ELEMENT;
+  resourceLedger?.chargeDecodedGeometryBytes(
+    positions.byteLength + accumulatorBytes,
+    allocationPath,
+  );
   const normals = new Float32Array(positions.length);
+  const accumulated = new Float64Array(positions.length);
 
   const triCount = indices ? Math.floor(indices.length / 3) : Math.floor(vertexCount / 3);
-
   for (let t = 0; t < triCount; t++) {
     const i0 = indices ? (indices[t * 3] ?? 0) : t * 3;
     const i1 = indices ? (indices[t * 3 + 1] ?? 0) : t * 3 + 1;
@@ -61,21 +65,25 @@ export function generateVertexNormals(
     const cy = e1z * e2x - e1x * e2z;
     const cz = e1x * e2y - e1y * e2x;
 
-    accumulateNormal(normals, i0, cx, cy, cz);
-    accumulateNormal(normals, i1, cx, cy, cz);
-    accumulateNormal(normals, i2, cx, cy, cz);
+    accumulateNormal(accumulated, i0, cx, cy, cz);
+    accumulateNormal(accumulated, i1, cx, cy, cz);
+    accumulateNormal(accumulated, i2, cx, cy, cz);
   }
 
   for (let vertex = 0; vertex < vertexCount; vertex++) {
     const base = vertex * 3;
-    const x = normals[base] ?? 0;
-    const y = normals[base + 1] ?? 0;
-    const z = normals[base + 2] ?? 0;
-    const length = Math.hypot(x, y, z);
-    if (length > 1e-10) {
-      normals[base] = x / length;
-      normals[base + 1] = y / length;
-      normals[base + 2] = z / length;
+    const x = accumulated[base] ?? 0;
+    const y = accumulated[base + 1] ?? 0;
+    const z = accumulated[base + 2] ?? 0;
+    const scale = Math.max(Math.abs(x), Math.abs(y), Math.abs(z));
+    if (scale > 0 && Number.isFinite(scale)) {
+      const sx = x / scale;
+      const sy = y / scale;
+      const sz = z / scale;
+      const length = Math.hypot(sx, sy, sz);
+      normals[base] = sx / length;
+      normals[base + 1] = sy / length;
+      normals[base + 2] = sz / length;
     } else {
       normals[base] = 0;
       normals[base + 1] = 1;
@@ -87,7 +95,7 @@ export function generateVertexNormals(
 }
 
 function accumulateNormal(
-  normals: Float32Array,
+  normals: Float64Array,
   vertex: number,
   x: number,
   y: number,

@@ -223,6 +223,38 @@ describe('T3 — specular vertex zeroes only strategies whose connection touches
   });
 });
 
+describe('T3b — the recurrence crosses delta runs to reach valid strategies', () => {
+  // v2 is a delta vertex with the conventional zero continuous-density
+  // sentinel. Strategies s=2 and s=3 connect to v2 and are invalid, while the
+  // farther s=0/s=1 and s=4/s=5 strategies connect on diffuse edges.
+  const vertices: BDPTFullVertex[] = [
+    { position: [0, 0, 0], normal: [1, 0, 0], pdfFwd: 0.8, pdfRev: 0.7, isSpecular: false },
+    { position: [1, 0, 0], normal: [1, 0, 0], pdfFwd: 0.6, pdfRev: 0.5, isSpecular: false },
+    { position: [2, 0, 0], normal: [1, 0, 0], pdfFwd: 0.0, pdfRev: 0.0, isSpecular: true  },
+    { position: [3, 0, 0], normal: [1, 0, 0], pdfFwd: 0.4, pdfRev: 0.3, isSpecular: false },
+    { position: [4, 0, 0], normal: [1, 0, 0], pdfFwd: 0.7, pdfRev: 0.6, isSpecular: false },
+    { position: [5, 0, 0], normal: [1, 0, 0], pdfFwd: 0.9, pdfRev: 0.8, isSpecular: false },
+  ];
+
+  it('continues left past the two delta-touching connections', () => {
+    const pdfs = buildBDPTStrategyPDFs_full(vertices, 4, 0.25);
+    expect(pdfs[2]).toBe(0);
+    expect(pdfs[3]).toBe(0);
+    expect(pdfs[0]).toBeGreaterThan(0);
+    expect(pdfs[1]).toBeGreaterThan(0);
+    expect(sumWeights(pdfs)).toBeCloseTo(1, 12);
+  });
+
+  it('continues right past the two delta-touching connections', () => {
+    const pdfs = buildBDPTStrategyPDFs_full(vertices, 1, 0.25);
+    expect(pdfs[2]).toBe(0);
+    expect(pdfs[3]).toBe(0);
+    expect(pdfs[4]).toBeGreaterThan(0);
+    expect(pdfs[5]).toBeGreaterThan(0);
+    expect(sumWeights(pdfs)).toBeCloseTo(1, 12);
+  });
+});
+
 // ── T4: physical area-measure path PDF on a VARYING-G fixture ─────────────────
 //
 // This is a *genuine* first-principles test, NOT a re-statement of the
@@ -447,6 +479,13 @@ describe('T5 — geometricTermG matches analytic formula', () => {
       [1, 0, 0], [1, 0, 0],
     );
     expect(g).toBeCloseTo(1.0, 12);
+  });
+
+  it('is invariant to a tiny non-zero normal magnitude', () => {
+    expect(geometricTermG(
+      [0, 0, 0], [1e-20, 0, 0],
+      [2, 0, 0], [-1e-20, 0, 0],
+    )).toBeCloseTo(0.25, 12);
   });
 });
 

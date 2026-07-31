@@ -88,6 +88,38 @@ function createTrackedGl(record = new Map<string, unknown>()): TrackedGl {
           fn(...args);
         };
       }
+      if (prop === 'texSubImage2D') {
+        return (...args: unknown[]): void => {
+          const data = args[8];
+          const width = Number(args[4]);
+          const height = Number(args[5]);
+          const isFloatRgbaPayload =
+            args[6] === base.RGBA && args[7] === base.FLOAT &&
+            data instanceof Float32Array && data.length === width * height * 4;
+          if (failNextFloatRgbaUpload && isFloatRgbaPayload) {
+            failNextFloatRgbaUpload = false;
+            throw new Error('synthetic OIDN upload failure');
+          }
+          // Normalize the record to texImage2D's argument positions so the
+          // assertions can treat allocation-backed and staged subuploads alike.
+          uploads.push({
+            texture: currentTexture,
+            args: [
+              args[0],
+              args[1],
+              base.RGBA32F,
+              width,
+              height,
+              0,
+              args[6],
+              args[7],
+              data,
+            ],
+          });
+          const fn = Reflect.get(target, prop, receiver) as (...values: unknown[]) => void;
+          fn(...args);
+        };
+      }
       if (prop === 'deleteTexture') {
         return (texture: WebGLTexture | null): void => {
           deleted.push(texture);
@@ -252,7 +284,10 @@ describe('pt-webgl2 OIDN final denoiser', () => {
       const uploadsBeforeExtension = tracked.uploads.length;
       const extended = engine.renderFrame(frame(2, 2, 2));
       expect(extended).toMatchObject({ kind: 'rendered', samplesAccumulated: 2, isConverged: true });
-      expect(tracked.deleted).toContain(firstSource);
+      // The OIDN source aliases the inactive progressive history. Extending
+      // accumulation overwrites that history transactionally; it is not a
+      // separately-owned texture to retire.
+      expect(tracked.deleted).not.toContain(firstSource);
       await flushAsync();
       await flushAsync();
       expect(bridge.denoiseFinal).toHaveBeenCalledTimes(2);
@@ -264,8 +299,9 @@ describe('pt-webgl2 OIDN final denoiser', () => {
       const secondSource = secondUploads[0]!.texture;
       expect(secondSource).not.toBe(firstSource);
       engine.reset();
-      expect(tracked.deleted).toContain(secondSource);
+      expect(tracked.deleted).not.toContain(secondSource);
       engine.dispose();
+      expect(tracked.deleted).toContain(secondSource);
     } finally {
       warn.mockRestore();
     }

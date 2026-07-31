@@ -145,9 +145,8 @@ describe('B1 — glossy/metal specular indirect term', () => {
       'return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);',
     );
     expect(body).not.toContain('if (isGlass || isMetal)');
-    expect(SHADE_WGSL).toContain(
-      'lo_indirect(pix, dims, pos, normal, isGlass, metal)',
-    );
+    expect(SHADE_WGSL).toContain('receiverMaterialKey,');
+    expect(SHADE_WGSL).toContain('let Lo_indirect   = lo_indirect(');
   });
 
   it('ggxBrdf exposes only the rich evaluators consumed by production passes', () => {
@@ -185,9 +184,11 @@ describe('B1 — glossy/metal specular indirect term', () => {
   it('consumes valid GRIS samples for glossy and metal receivers', () => {
     const body = fnBody(SHADE_WGSL, 'lo_indirectSpecular');
     expect(body).not.toContain('if (ubo.grisReuse == 1u)');
-    expect(body).toContain('let grisVisibility = giReservoirVisibility(g);');
+    expect(body).toContain('var grisVisibility = giReservoirVisibility(g);');
     expect(body).toContain('let toS = giReservoirDirectionVector(g, pos);');
-    expect(body).toContain('return g.Lo * specBrdf * g.W * grisVisibility;');
+    expect(body).toContain(
+      'return receiverLo * specBrdf * g.W * domainJacobian * grisVisibility;',
+    );
   });
 
   it('does not reinterpret the post-glass transmission reservoir as primary reflection', () => {
@@ -239,7 +240,9 @@ describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
 
   it('shade lo_transmittedGI blends half-res GI reservoirs and uses the indirect clamp', () => {
     const body = fnBody(SHADE_WGSL, 'lo_transmittedGI');
-    expect(body).toContain('let halfPxF = vec2f(gid) * 0.5;');
+    expect(body).toContain(
+      '(vec2f(gid) - vec2f(giSampleCenter)) / f32(giStride)',
+    );
     expect(body).toContain('for (var k: u32 = 0u; k < 4u; k = k + 1u)');
     expect(body).toContain('Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;');
     expect(body).toContain('Lo_transmitted = Lo_transmitted / totalW;');

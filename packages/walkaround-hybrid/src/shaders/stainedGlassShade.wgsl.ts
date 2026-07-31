@@ -19,8 +19,9 @@
  * `causticStrategy:'refractive-trace'`; the retired shadow-ray caustic helper
  * no longer ships in this module.
  *
- * The aperture math is identical to the original inline body in shade.wgsl
- * when its flag is on. The helper reads module-scope state
+ * The aperture model matches the original inline body in shade.wgsl when its
+ * flag is on, with scalar-sky publication routed through the canonical
+ * finite-binary32 scaler. The helper reads module-scope state
  * (ubo + bvh_index/bvh_position/bvh + bvh_beer) directly, exactly as the
  * inline versions did; only the per-pixel locals are passed as parameters.
  *
@@ -51,8 +52,7 @@ export const STAINED_GLASS_SHADE_WGSL = /* wgsl */ `
 // (a square-pyramid pattern around the surface "up axis").
 //
 // T5 — opt-in: early-returns vec3f(0) unless ubo.stainedGlassFlags bit 1
-// (SG_FLAG_SKY_APERTURE) is set. The math below is byte-identical to the
-// original inline lo_sky_aperture body once the flag is on.
+// (SG_FLAG_SKY_APERTURE) is set.
 fn lo_sg_aperture(
   pos:     vec3f,
   normal:  vec3f,
@@ -64,7 +64,7 @@ fn lo_sg_aperture(
   if (isGlass || isMetal) { return vec3f(0.0); }
   let skyTint = ubo.skyTint;
   let skyIrradiance = ubo.skyIrradiance;
-  let originSky = pos + normal * 1e-3;
+  let originSky = pos + normal * walkaroundRayOriginBias();
   let upAxis = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(normal.y) < 0.99);
   let tangent = safe_normalize(cross(upAxis, normal));
   let bitangent = cross(normal, tangent);
@@ -79,7 +79,7 @@ fn lo_sg_aperture(
   // Centre tap (along normal, weight 1.0). luminance(c) is the canonical
   // Rec.709 helper from COMMON_WGSL (shade requires common).
   {
-    let v = bvhTraceTintedVisibility(bvh_beer, originSky, normal, 1e6);
+    let v = bvhTraceTintedVisibility(bvh_beer, originSky, normal, INFINITY);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * 1.0;
     weightAccum = weightAccum + 1.0;
@@ -90,32 +90,36 @@ fn lo_sg_aperture(
   let diag2 = safe_normalize(normal * cos45 + bitangent * sin45);
   let diag3 = safe_normalize(normal * cos45 - bitangent * sin45);
   {
-    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag0, 1e6);
+    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag0, INFINITY);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
-    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag1, 1e6);
+    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag1, INFINITY);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
-    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag2, 1e6);
+    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag2, INFINITY);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   {
-    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag3, 1e6);
+    let v = bvhTraceTintedVisibility(bvh_beer, originSky, diag3, INFINITY);
     let lum = luminance(v);
     skyAccum = skyAccum + lum * cos45;
     weightAccum = weightAccum + cos45;
   }
   let skyVisScalar = skyAccum / max(weightAccum, 1e-6);
   let skyVisAvg = vec3f(skyVisScalar);
-  return skyVisAvg * skyTint * skyIrradiance * albedo * INV_PI;
+  let scalarSkyRadiance = walkaroundScaleEnvironmentRadiance(
+    skyTint,
+    skyIrradiance,
+  );
+  return skyVisAvg * scalarSkyRadiance * albedo * INV_PI;
 }
 
 `;
@@ -130,5 +134,5 @@ fn lo_sg_aperture(
 export const STAINED_GLASS_SHADE_MODULE: WgslModule = {
   name: 'stainedGlassShade',
   source: STAINED_GLASS_SHADE_WGSL,
-  requires: ['common'],
+  requires: ['common', 'environmentSample'],
 };

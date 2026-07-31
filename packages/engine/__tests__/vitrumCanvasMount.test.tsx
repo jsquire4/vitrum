@@ -14,7 +14,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Window } from 'happy-dom';
-import type { Scene, ScenePrimitive } from '@vitrum/core';
+import type { Scene, ScenePrimitive, ScenePrimitivePatch } from '@vitrum/core';
 import type { GltfAssetResult, GltfForEngineResult, GltfJson } from '@vitrum/gltf-adapter';
 import type { EngineWithBackendId } from '../src/createEngine.js';
 import type { GltfProgressiveEngineResult } from '../src/gltf.js';
@@ -864,7 +864,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     engine.setScene(replacementScene);
     expect(coordinator.setScene).toHaveBeenCalledWith(replacementScene);
 
-    const primitivePatch: Partial<ScenePrimitive> = {
+    const primitivePatch: ScenePrimitivePatch = {
       material: { baseColor: [0.25, 0.5, 0.75], roughness: 1, metallic: 0 },
     };
     engine.updatePrimitive?.('gltf-prim-0', primitivePatch);

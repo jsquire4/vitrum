@@ -349,12 +349,14 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
       'vec2 uv0 = texelFetch1D( attributesArray, uvLayer, faceIndices.x ).xy;',
     );
     expect(compactUtil).toContain(
-      'float determinant = delta1.x * delta2.y - delta1.y * delta2.x;',
+      'float determinant = normalizedDelta1.x * normalizedDelta2.y - normalizedDelta1.y * normalizedDelta2.x;',
     );
     expect(compactUtil).toContain(
-      'tangent = ( edge1 * delta2.y - edge2 * delta1.y ) * inverseDeterminant;',
+      'tangent = ( edge1 * normalizedDelta2.y - edge2 * normalizedDelta1.y ) * inverseDeterminant;',
     );
-    expect(compactUtil).toContain('if ( uvLayer == ATTR_UV && length( uv0TangentSample.xyz ) > 1e-6 )');
+    expect(compactUtil).toContain(
+      'if ( uvLayer == ATTR_UV && vitrumFiniteNonZeroVec3( uv0TangentSample.xyz ) )',
+    );
   });
 
   it('uses selected-UV tangent frames for mapped-rich normal, bump, layer, and clearcoat maps', () => {

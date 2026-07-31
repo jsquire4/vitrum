@@ -140,7 +140,10 @@ describe('SPPM production pipeline closure', () => {
 
   it('defines explicit zero-work exits and no legacy reservoir estimator path', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (availableLightCount == 0u) { return; }');
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('if (r0 <= 1e-9 || nPhotons == 0u) { return; }');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain(
+      'if (!(r0 > 0.0) || nPhotons == 0u) { return; }',
+    );
+    expect(SPPM_GROUP3_BINDINGS_WGSL).not.toContain('r0 <= 1e-9');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('atomicExchange(&sppmCellCounters[cellIdx]');
     for (const legacy of [
       'reservoirXi',

@@ -38,6 +38,8 @@ fn traceRefractiveCausticPath(
   var mediumDepth = 0u;
   var mediumIor: array<f32, 4>;
   var mediumTri: array<u32, 4>;
+  var mediumMaterialWord: array<u32, 4>;
+  var mediumInstance: array<u32, 4>;
   var mediumBeer: array<f32, 4>;
   var mediumThickness: array<f32, 4>;
   var interfaceCount = 0u;
@@ -73,10 +75,11 @@ fn traceRefractiveCausticPath(
     // length distance directly.
     if (mediumDepth > 0u) {
       let top = mediumDepth - 1u;
-      let distanceScale = hit.dist / max(mediumThickness[top], 1e-5);
-      let fallback = pow(clamp(mediumBeer[top], 1e-6, 1.0), distanceScale);
+      let segmentDistance = hit.dist + ubo.triIntersectEpsilon * 4.0;
+      let distanceScale = segmentDistance / max(mediumThickness[top], 1e-5);
+      let fallback = pow(clamp(mediumBeer[top], 0.0, 1.0), distanceScale);
       let spectral = materialSpectralAttenuation(
-        mediumTri[top], hit.dist, vec3f(fallback),
+        mediumTri[top], segmentDistance, vec3f(fallback),
       );
       out.throughput = out.throughput * refractiveCausticChannel(spectral, channel);
     }
@@ -103,9 +106,19 @@ fn traceRefractiveCausticPath(
     );
     let iorRgb = materialDispersionIorRgb(hit.indices.w, decodeIor(materialWord));
     let materialIor = refractiveCausticChannel(iorRgb, channel);
-    let materialThickness = max(materialOpticalThickness(hit.indices.w), 0.0);
+    var materialThickness = max(materialOpticalThickness(hit.indices.w), 0.0);
+    let thicknessTexel = sampleMaterialAtlasRawAtOffset(
+      hit.indices.w,
+      MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+      hit.uv,
+      materialAtlasUv1ForHit(hit),
+    );
+    if (thicknessTexel.x >= 0.0) {
+      materialThickness = materialThickness *
+        clamp(thicknessTexel.g, 0.0, 1.0);
+    }
     let incidentDirection = ray.direction;
-    let entering = dot(incidentDirection, hit.normal) < 0.0;
+    let entering = hit.side >= 0.0;
     if (materialThickness > 0.0 && !entering && mediumDepth == 0u) {
       out.throughput = 0.0;
       return out;
@@ -139,7 +152,11 @@ fn traceRefractiveCausticPath(
       interfaceMappedNormal,
       dot(interfaceMappedNormal, hit.normal) >= 0.0,
     );
-    let faceNormal = select(-alignedInterfaceNormal, alignedInterfaceNormal, entering);
+    let faceNormal = select(
+      -alignedInterfaceNormal,
+      alignedInterfaceNormal,
+      dot(incidentDirection, alignedInterfaceNormal) < 0.0,
+    );
     if (dot(incidentDirection, faceNormal) >= -1e-6) {
       // A pathological mapped normal must not turn the transport solve into an
       // invalid negative-cosine refraction. Keep this raw-call correction zero.
@@ -150,18 +167,30 @@ fn traceRefractiveCausticPath(
     var incidentIor = 1.0;
     if (mediumDepth > 0u) {
       incidentIor = mediumIor[mediumDepth - 1u];
-    } else if (!entering) {
+    } else if (materialThickness > 0.0 && !entering) {
       incidentIor = materialIor;
     }
-    var targetIor = 1.0;
-    if (entering) {
+    var targetIor = materialIor;
+    if (materialThickness <= 0.0) {
+      targetIor = materialIor;
+    } else if (entering) {
       if (mediumDepth >= 4u) {
         out.throughput = 0.0;
         return out;
       }
       targetIor = materialIor;
-    } else if (mediumDepth > 1u) {
-      targetIor = mediumIor[mediumDepth - 2u];
+    } else {
+      let top = mediumDepth - 1u;
+      if (
+        mediumMaterialWord[top] != materialWord ||
+        mediumInstance[top] != hit.instanceIndex
+      ) {
+        out.throughput = 0.0;
+        return out;
+      }
+      if (mediumDepth > 1u) {
+        targetIor = mediumIor[mediumDepth - 2u];
+      }
     }
 
     var interfaceRng =
@@ -269,6 +298,8 @@ fn traceRefractiveCausticPath(
     if (entering) {
       mediumIor[mediumDepth] = materialIor;
       mediumTri[mediumDepth] = hit.indices.w;
+      mediumMaterialWord[mediumDepth] = materialWord;
+      mediumInstance[mediumDepth] = hit.instanceIndex;
       mediumBeer[mediumDepth] = entryBeer;
       mediumThickness[mediumDepth] = entryThickness;
       mediumDepth = mediumDepth + 1u;
@@ -320,7 +351,7 @@ fn lo_refractive_caustic(
   if (dot(normal, sunBase) <= 0.0) { return vec3f(0.0); }
 
   var probe = Ray();
-  probe.origin = pos + normal * 1e-3;
+  probe.origin = pos + normal * walkaroundRayOriginBias();
   probe.direction = sunBase;
 
   // Core's directional-emitter contract bounds angularDiameter to [0, PI], so
@@ -347,7 +378,7 @@ fn lo_refractive_caustic(
   // zero correction instead of a spurious negative caustic.
   let baselineT = traceSceneAlphaTintTransmittanceTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
-    probe.origin, sunBase, 1e6, ubo.triIntersectEpsilon,
+    probe.origin, sunBase, INFINITY, ubo.triIntersectEpsilon,
     bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
   );
   let baseline = baselineT * max(0.0, dot(normal, sunBase));

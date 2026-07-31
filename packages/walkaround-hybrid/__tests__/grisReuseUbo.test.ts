@@ -69,6 +69,7 @@ function fakeInputs(): PipelineFrameInputs {
     },
     filter: {
       triIntersectEpsilon: 1e-5,
+      rayOriginBias: 1e-3,
       glassMixScale: 0.7,
       indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05],
@@ -91,22 +92,23 @@ function capturingDevice(backing: Uint8Array): GPUDevice {
 }
 
 describe('WalkaroundUBO generalized-reuse ABI tail', () => {
-  it('keeps the retired toggle slot zero at u32[103] and epoch bits at u32[105]', () => {
+  it('packs scene-relative ray bias at f32[103] and epoch bits at u32[105]', () => {
     expect(WALKAROUND_UBO_SIZE_BYTES).toBe(432);
-    expect(WALKAROUND_UBO_WGSL).toMatch(/_abiPadRetiredGrisToggle:\s+u32,/);
-    expect(WALKAROUND_UBO_WGSL).toContain('offset 412 — retired structural toggle');
+    expect(WALKAROUND_UBO_WGSL).toMatch(/rayOriginBias:\s+f32,/);
+    expect(WALKAROUND_UBO_WGSL).toContain('offset 412 — 1e-3 at Cornell scale');
     expect(WALKAROUND_UBO_WGSL).toContain('y bits = GRIS history epoch');
 
     const bytes = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(bytes), {} as GPUBuffer, fakeInputs(), undefined, undefined, undefined, 0x89abcdef);
     const words = new Uint32Array(bytes.buffer);
-    expect(words[103]).toBe(0);
+    expect(new Float32Array(bytes.buffer)[103]).toBeCloseTo(1e-3);
     expect(words[105]).toBe(0x89abcdef);
   });
 
-  it('defaults the retired toggle slot and epoch to zero', () => {
-    const words = new Uint32Array(packWalkaroundUBO(fakeInputs()));
-    expect(words[103]).toBe(0);
+  it('defaults the epoch to zero without clearing the live ray-bias slot', () => {
+    const packed = packWalkaroundUBO(fakeInputs());
+    const words = new Uint32Array(packed);
+    expect(new Float32Array(packed)[103]).toBeCloseTo(1e-3);
     expect(words[105]).toBe(0);
   });
 
@@ -272,10 +274,12 @@ describe('GRIS target/proposal boundary', () => {
     expect(SHADING_TERMS_WGSL).toContain('return clamp(g.sampleVisibility, 0.0, 1.0);');
     expect(specular).toContain('if (isGlass) { return vec3f(0.0); }');
     expect(specular).toContain('g.prefixVertexCount != GI_PREFIX_RECONNECTABLE');
-    expect(specular).toContain('let grisVisibility = giReservoirVisibility(g);');
+    expect(specular).toContain('var grisVisibility = giReservoirVisibility(g);');
     expect(specular).toContain('if (grisVisibility <= 0.0) { return vec3f(0.0); }');
     expect(specular).toContain('let toS = giReservoirDirectionVector(g, pos);');
-    expect(specular).toContain('return g.Lo * specBrdf * g.W * grisVisibility;');
+    expect(specular).toContain(
+      'return receiverLo * specBrdf * g.W * domainJacobian * grisVisibility;',
+    );
     expect(specular).not.toContain('if (ubo.grisReuse == 1u) { return vec3f(0.0); }');
     expect(transmitted).toContain('if (!isGlass) { return vec3f(0.0); }');
     expect(transmitted).toContain('g.prefixVertexCount != GI_PREFIX_CAMERA_TRANSMISSION');

@@ -79,6 +79,32 @@ NEURAL_PREPROCESSING = {
     'nonFinite': 'zero',
 }
 
+UNET_SPATIAL_ALIGNMENT = 8
+
+
+def parse_patch_size(raw: str | int) -> int:
+    """
+    Parse a training crop size that survives all three stride-two U-Net levels.
+
+    Decoder skip-adds require the input height and width to be divisible by
+    2**3. Reject incompatible sizes at CLI parsing (and dataset construction)
+    instead of failing much later with a tensor-shape mismatch.
+    """
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError('patch size must be an integer') from error
+    if value < UNET_SPATIAL_ALIGNMENT:
+        raise argparse.ArgumentTypeError(
+            f'patch size must be at least {UNET_SPATIAL_ALIGNMENT} pixels'
+        )
+    if value % UNET_SPATIAL_ALIGNMENT != 0:
+        raise argparse.ArgumentTypeError(
+            f'patch size must be divisible by {UNET_SPATIAL_ALIGNMENT} '
+            '(three stride-two U-Net levels)'
+        )
+    return value
+
 
 def preprocess_radiance_np(values: np.ndarray) -> np.ndarray:
     """Finite-safe linear-HDR preprocessing used for noisy inputs and clean targets."""
@@ -346,7 +372,7 @@ class DenoisingDataset(Dataset if _HAS_TORCH else object):
     """
 
     def __init__(self, data_dir: str, patch_size: int = 256):
-        self.patch_size = patch_size
+        self.patch_size = parse_patch_size(patch_size)
         self.samples: list[tuple[Path, Path, Path, Path]] = []
 
         data_path = Path(data_dir)
@@ -398,11 +424,15 @@ class DenoisingDataset(Dataset if _HAS_TORCH else object):
         # Random crop for training.
         _, H, W = x.shape
         p = self.patch_size
-        if H > p and W > p:
-            y0 = torch.randint(0, H - p, (1,)).item()
-            x0 = torch.randint(0, W - p, (1,)).item()
-            x     = x[:, y0:y0+p, x0:x0+p]
-            clean = clean[:, y0:y0+p, x0:x0+p]
+        if H < p or W < p:
+            raise ValueError(
+                f'Training sample {noisy_path} is {W}x{H}, smaller than the '
+                f'configured {p}x{p} patch.'
+            )
+        y0 = torch.randint(0, H - p + 1, (1,)).item() if H > p else 0
+        x0 = torch.randint(0, W - p + 1, (1,)).item() if W > p else 0
+        x     = x[:, y0:y0+p, x0:x0+p]
+        clean = clean[:, y0:y0+p, x0:x0+p]
 
         return x, clean
 
@@ -836,7 +866,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--epochs',     type=int,   default=50, help='Number of training epochs')
     p.add_argument('--batch',      type=int,   default=4,  help='Batch size')
     p.add_argument('--lr',         type=float, default=1e-4, help='Initial learning rate')
-    p.add_argument('--patch-size', type=int,   default=256, help='Training crop size (pixels)')
+    p.add_argument(
+        '--patch-size',
+        type=parse_patch_size,
+        default=256,
+        help='Training crop size (pixels; divisible by 8 for three stride-two levels)',
+    )
     p.add_argument('--out-pth',    default='model.pth',    help='Output PyTorch checkpoint path')
     p.add_argument('--out-bin',    default='weights.bin',  help='Output vitrum binary weights path')
     p.add_argument('--seed',       type=int,   default=1984, help='RNG seed (dry-run weight init)')

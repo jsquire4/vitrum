@@ -164,6 +164,7 @@ export type CreateEngineErrorPhase =
   | 'attach:initial'
   | 'attach:swapchain'
   | 'attach:present'
+  | 'attach:frame-preparation'
   | 'attach:renderFrame';
 
 export interface CreateEngineErrorEvent {

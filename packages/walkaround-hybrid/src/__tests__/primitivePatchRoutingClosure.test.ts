@@ -2,7 +2,6 @@ import {
   asMat4,
   type MeshPrimitive,
   type Scene,
-  type ScenePrimitive,
 } from '@vitrum/core';
 import { describe, expect, it, vi } from 'vitest';
 import { HybridEngine } from '../HybridEngine.js';
@@ -59,15 +58,17 @@ function makeIdentityPatchEngine(): {
 
 describe('primitive patch routing closure', () => {
   it.each([
-    ['id', { id: 'mesh-a' }],
-    ['kind', { kind: 'mesh' }],
-  ] satisfies ReadonlyArray<readonly [string, Partial<ScenePrimitive>]>)(
-    'treats an equal %s discriminant as neutral without rebuilding',
-    (_field, patch) => {
+    ['id', { id: 'mesh-a' }, /id cannot be changed or supplied/],
+    ['kind', { kind: 'mesh' }, /kind cannot change or be supplied/],
+  ] satisfies ReadonlyArray<
+    readonly [string, Record<string, unknown>, RegExp]
+  >)(
+    'rejects even an equal %s discriminant before any rebuild',
+    (_field, patch, expected) => {
       const { engine, scene, routePrimitiveUpdate, setScene } =
         makeIdentityPatchEngine();
 
-      expect(() => engine.updatePrimitive('mesh-a', patch)).not.toThrow();
+      expect(() => engine.updatePrimitive('mesh-a', patch as never)).toThrow(expected);
       expect(setScene).not.toHaveBeenCalled();
       expect(routePrimitiveUpdate).not.toHaveBeenCalled();
       expect(
@@ -77,17 +78,17 @@ describe('primitive patch routing closure', () => {
   );
 
   it.each([
-    ['id', { id: 'mesh-b' }, /id cannot be changed/],
-    ['kind', { kind: 'analytic' }, /kind cannot change from "mesh" to "analytic"/],
+    ['id', { id: 'mesh-b' }, /id cannot be changed or supplied/],
+    ['kind', { kind: 'analytic' }, /kind cannot change or be supplied/],
   ] satisfies ReadonlyArray<
-    readonly [string, Partial<ScenePrimitive>, RegExp]
+    readonly [string, Record<string, unknown>, RegExp]
   >)(
     'rejects a changed %s discriminant before any rebuild',
     (_field, patch, expected) => {
       const { engine, scene, routePrimitiveUpdate, setScene } =
         makeIdentityPatchEngine();
 
-      expect(() => engine.updatePrimitive('mesh-a', patch)).toThrow(expected);
+      expect(() => engine.updatePrimitive('mesh-a', patch as never)).toThrow(expected);
       expect(setScene).not.toHaveBeenCalled();
       expect(routePrimitiveUpdate).not.toHaveBeenCalled();
       expect(

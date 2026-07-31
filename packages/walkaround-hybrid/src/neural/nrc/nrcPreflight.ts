@@ -1,4 +1,5 @@
 import type { NrcConfig } from './nrcSubsystem.js';
+import { HYBRID_WEBGPU_REQUIRED_LIMITS } from '../../webgpuLimits.js';
 import { NRC_DIAGNOSTIC_BYTES } from './nrcDiagnostics.js';
 import {
   createNrcInferenceArenaLayout,
@@ -357,7 +358,7 @@ export function preflightNrcResources(
   enforceLimit('fixed 64-lane kernel X size', 64, reportedLimit(device, 'maxComputeWorkgroupSizeX'));
   enforceLimit('workgroup storage', footprint.workgroupStorageBytes, reportedLimit(device, 'maxComputeWorkgroupStorageSize'));
   enforceLimit('dispatch workgroup count', footprint.maxDispatchWorkgroups, reportedLimit(device, 'maxComputeWorkgroupsPerDimension'));
-  // Production gi-ris NRC is deliberately pinned to the portable WebGPU floor:
+  // Production gi-ris NRC is pinned to the compiled renderer layout:
   // frame/scene/ubo/hybrid-NRC = four groups and exactly eight storage bindings.
   enforceLimit('gi-ris bind groups', 4, reportedLimit(device, 'maxBindGroups'));
   enforceLimit(
@@ -365,7 +366,8 @@ export function preflightNrcResources(
     reportedLimit(device, 'maxStorageBuffersPerShaderStage'),
   );
   enforceLimit(
-    'gi-ris sampled textures', 16,
+    'gi-ris sampled textures',
+    HYBRID_WEBGPU_REQUIRED_LIMITS['maxSampledTexturesPerShaderStage']!,
     reportedLimit(device, 'maxSampledTexturesPerShaderStage'),
   );
   return footprint;

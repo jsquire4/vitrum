@@ -51,6 +51,24 @@ describe('generateVertexNormals', () => {
     ]);
   });
 
+  it('does not erase a tiny isolated face beside ordinary-sized geometry', () => {
+    const s = 1e-30;
+    const positions = new Float32Array([
+      0, 0, 0,
+      1, 0, 0,
+      0, 1, 0,
+      0, 0, 0,
+      0, s, 0,
+      0, 0, s,
+    ]);
+
+    expect(Array.from(generateVertexNormals(positions, undefined).slice(9))).toEqual([
+      1, 0, 0,
+      1, 0, 0,
+      1, 0, 0,
+    ]);
+  });
+
   it('rejects indices outside the position accessor', () => {
     expect(() => generateVertexNormals(
       new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),

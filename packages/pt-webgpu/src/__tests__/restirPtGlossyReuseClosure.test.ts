@@ -104,8 +104,7 @@ function temporalSurfaceIdentityMatches(
   if (current.triangleIndex < triangleCount) {
     return Math.hypot(delta[0], delta[1]) <= 0.08;
   }
-  const scale = Math.max(1, length(current.surfaceParam));
-  return length(delta) <= 0.03 * scale;
+  return length(delta) <= 0.03;
 }
 
 function temporalNormalIsValid(normal: Vec3): boolean {
@@ -141,12 +140,12 @@ function selectTemporalCandidateOrCurrent(
     const delta = sub(current.surfaceParam, candidate.surfaceParam);
     const surfaceDistance = current.triangleIndex < triangleCount
       ? Math.hypot(delta[0], delta[1])
-      : length(delta) / Math.max(1, length(current.surfaceParam));
-    if (selected == null || surfaceDistance + 1e-6 < bestSurfaceDistance) {
+      : length(delta);
+    if (selected == null || surfaceDistance < bestSurfaceDistance) {
       selected = candidate;
       bestSurfaceDistance = surfaceDistance;
       ambiguous = false;
-    } else if (Math.abs(surfaceDistance - bestSurfaceDistance) <= 1e-6) {
+    } else if (surfaceDistance === bestSurfaceDistance) {
       ambiguous = true;
     }
   }
@@ -407,7 +406,10 @@ describe('ReSTIR-PT glossy reuse closure — proposals and domain state', () => 
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain('current.triangleIndexV != previous.triangleIndexV');
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain('const RPT_TEMPORAL_IDENTITY_RADIUS: i32 = 2;');
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain('let candidate = loadReservoirPTHero_ro(&rpt_resPrev, candidateIdx);');
-    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('surfaceDistance + 1e-6 < bestSurfaceDistance');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain('surfaceDistance < bestSurfaceDistance');
+    expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
+      'surfaceDistance == bestSurfaceDistance',
+    );
     expect(RESTIR_PT_TEMPORAL_WGSL).not.toContain('rCur.xv - rPrev.xv');
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain('current.surfaceParamV - previous.surfaceParamV');
   });

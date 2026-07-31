@@ -26,6 +26,7 @@
 // sync with the same authored `mesh-area` emitter.
 
 import type { MaterialSpec, Scene, ScenePrimitive, SceneNodeId, Vec3 } from '@vitrum/core';
+import { materialWithExplicitMeshEmitterAuthority } from './meshEmitterPolicy.js';
 
 type FoldedMeshAreaEmitterMaterial = MaterialSpec & {
   readonly meshEmitterCastShadowDisabled?: boolean;
@@ -56,8 +57,9 @@ export function foldMeshAreaEmittersIntoMaterials(scene: Scene): Scene {
   const primitives = scene.primitives.map((prim): ScenePrimitive => {
     const r = radianceByMesh.get(prim.id);
     if (r == null) return prim;
+    const authoritativeMaterial = materialWithExplicitMeshEmitterAuthority(prim.material);
     const material: FoldedMeshAreaEmitterMaterial = {
-      ...prim.material,
+      ...authoritativeMaterial,
       emissive: r.color,
       emissiveIntensity: r.intensity,
       ...(r.castShadowDisabled ? { meshEmitterCastShadowDisabled: true } : {}),

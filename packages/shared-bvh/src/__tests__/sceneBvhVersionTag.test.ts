@@ -35,6 +35,43 @@ function minimalScene(material: number | Partial<MaterialSpec> = 0.5): Scene {
   };
 }
 
+const PACKED_MATERIAL_BASE: MaterialSpec = {
+  baseColor: [0.2, 0.3, 0.4],
+  roughness: 0.4,
+  metallic: 0.2,
+  emissive: [0.1, 0.2, 0.3],
+  emissiveIntensity: 2,
+  transmission: 0.25,
+  ior: 1.5,
+  attenuationColor: [0.8, 0.9, 0.7],
+  attenuationDistance: 3,
+  thickness: 0.5,
+};
+
+function sceneWithPackedMaterial(
+  material: MaterialSpec,
+  opts: {
+    readonly castShadow?: boolean;
+    readonly normals?: Float32Array;
+  } = {},
+): Scene {
+  return {
+    primitives: [
+      {
+        kind: 'mesh',
+        id: 'packed-tri',
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: opts.normals ?? new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        material,
+        castShadow: opts.castShadow ?? true,
+      },
+    ],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function equalLengthEditedVertexScene(y: number): Scene {
   return {
     primitives: [
@@ -254,6 +291,170 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
     }));
 
     expect(bvh.buffers).not.toBe(first);
+  });
+
+  it('no tag → every canonical packed MaterialEntry lane triggers a rebuild', () => {
+    const mutations: ReadonlyArray<readonly [string, MaterialSpec]> = [
+      ['baseColor.r', { ...PACKED_MATERIAL_BASE, baseColor: [0.25, 0.3, 0.4] }],
+      ['baseColor.g', { ...PACKED_MATERIAL_BASE, baseColor: [0.2, 0.35, 0.4] }],
+      ['baseColor.b', { ...PACKED_MATERIAL_BASE, baseColor: [0.2, 0.3, 0.45] }],
+      ['roughness', { ...PACKED_MATERIAL_BASE, roughness: 0.45 }],
+      ['emissive.r', { ...PACKED_MATERIAL_BASE, emissive: [0.15, 0.2, 0.3] }],
+      ['emissive.g', { ...PACKED_MATERIAL_BASE, emissive: [0.1, 0.25, 0.3] }],
+      ['emissive.b', { ...PACKED_MATERIAL_BASE, emissive: [0.1, 0.2, 0.35] }],
+      ['emissiveIntensity', { ...PACKED_MATERIAL_BASE, emissiveIntensity: 3 }],
+      ['metallic', { ...PACKED_MATERIAL_BASE, metallic: 0.3 }],
+      ['ior', { ...PACKED_MATERIAL_BASE, ior: 1.6 }],
+      ['transmission', { ...PACKED_MATERIAL_BASE, transmission: 0.35 }],
+      ['attenuationDistance', { ...PACKED_MATERIAL_BASE, attenuationDistance: 4 }],
+      ['thickness', { ...PACKED_MATERIAL_BASE, thickness: 0.6 }],
+      ['attenuationColor.r', {
+        ...PACKED_MATERIAL_BASE,
+        attenuationColor: [0.75, 0.9, 0.7],
+      }],
+      ['attenuationColor.g', {
+        ...PACKED_MATERIAL_BASE,
+        attenuationColor: [0.8, 0.85, 0.7],
+      }],
+      ['attenuationColor.b', {
+        ...PACKED_MATERIAL_BASE,
+        attenuationColor: [0.8, 0.9, 0.65],
+      }],
+    ];
+
+    for (const [label, mutated] of mutations) {
+      const bvh = new SceneBvh();
+      bvh.updateFromCore(sceneWithPackedMaterial(PACKED_MATERIAL_BASE));
+      const before = bvh.buffers;
+      bvh.updateFromCore(sceneWithPackedMaterial(mutated));
+      expect(bvh.buffers, `${label} byte lane must invalidate SceneBvh`)
+        .not.toBe(before);
+    }
+  });
+
+  it('no tag → doubleSided-only canonical flag mutation triggers rebuild', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(sceneWithPackedMaterial(PACKED_MATERIAL_BASE));
+    const before = bvh.buffers;
+
+    bvh.updateFromCore(sceneWithPackedMaterial({
+      ...PACKED_MATERIAL_BASE,
+      doubleSided: true,
+    }));
+
+    expect(bvh.buffers).not.toBe(before);
+  });
+
+  it('no tag → castShadow-only canonical flag mutation triggers rebuild', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(sceneWithPackedMaterial(PACKED_MATERIAL_BASE, { castShadow: true }));
+    const before = bvh.buffers;
+
+    bvh.updateFromCore(sceneWithPackedMaterial(PACKED_MATERIAL_BASE, { castShadow: false }));
+
+    expect(bvh.buffers).not.toBe(before);
+  });
+
+  it('no tag → normals-only published-buffer mutation triggers rebuild', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(sceneWithPackedMaterial(
+      PACKED_MATERIAL_BASE,
+      { normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]) },
+    ));
+    const before = bvh.buffers;
+
+    bvh.updateFromCore(sceneWithPackedMaterial(
+      PACKED_MATERIAL_BASE,
+      { normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]) },
+    ));
+
+    expect(bvh.buffers).not.toBe(before);
+    expect(Array.from(bvh.buffers?.normals ?? [])).toContain(1);
+  });
+
+  it('no tag → omitted and explicit +Infinity attenuation pack identically', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(minimalScene({
+      transmission: 1,
+      attenuationColor: [0.5, 0.5, 0.5],
+      thickness: 0.25,
+    }));
+    const before = bvh.buffers;
+
+    bvh.updateFromCore(minimalScene({
+      transmission: 1,
+      attenuationColor: [0.5, 0.5, 0.5],
+      attenuationDistance: Number.POSITIVE_INFINITY,
+      thickness: 0.25,
+    }));
+
+    expect(bvh.buffers).toBe(before);
+  });
+
+  it('no tag → raw material changes republish even when compact MaterialEntry bytes match', () => {
+    const bvh = new SceneBvh();
+    bvh.updateFromCore(sceneWithPackedMaterial({
+      ...PACKED_MATERIAL_BASE,
+      emissive: [0.1, 0.2, 0.3],
+      emissiveIntensity: 2,
+    }));
+    const before = bvh.buffers;
+
+    bvh.updateFromCore(sceneWithPackedMaterial({
+      ...PACKED_MATERIAL_BASE,
+      emissive: [0.2, 0.4, 0.6],
+      emissiveIntensity: 1,
+    }));
+
+    expect(bvh.buffers).not.toBe(before);
+    expect(bvh.buffers?.materials[0]?.emissive).toEqual([0.2, 0.4, 0.6]);
+    expect(bvh.buffers?.materials[0]?.emissiveIntensity).toBe(1);
+  });
+
+  it('no tag → texture/layer/extension-only behavior changes republish raw materials', () => {
+    const cases: ReadonlyArray<readonly [string, MaterialSpec, MaterialSpec]> = [
+      [
+        'texture handle',
+        { ...PACKED_MATERIAL_BASE, baseColorMap: { handle: { id: 'a' } } },
+        { ...PACKED_MATERIAL_BASE, baseColorMap: { handle: { id: 'b' } } },
+      ],
+      [
+        'face-layer normal map',
+        {
+          ...PACKED_MATERIAL_BASE,
+          frontLayer: {
+            transmission: [1, 1, 1],
+            normalMap: { handle: { id: 'layer-a' } },
+          },
+        },
+        {
+          ...PACKED_MATERIAL_BASE,
+          frontLayer: {
+            transmission: [1, 1, 1],
+            normalMap: { handle: { id: 'layer-b' } },
+          },
+        },
+      ],
+      [
+        'skipEmitter',
+        { ...PACKED_MATERIAL_BASE },
+        { ...PACKED_MATERIAL_BASE, extensions: { skipEmitter: true } },
+      ],
+      [
+        'surfaceTextureId',
+        { ...PACKED_MATERIAL_BASE, extensions: { surfaceTextureId: 1 } },
+        { ...PACKED_MATERIAL_BASE, extensions: { surfaceTextureId: 2 } },
+      ],
+    ];
+
+    for (const [label, initial, changed] of cases) {
+      const bvh = new SceneBvh();
+      bvh.updateFromCore(sceneWithPackedMaterial(initial));
+      const before = bvh.buffers;
+      bvh.updateFromCore(sceneWithPackedMaterial(changed));
+      expect(bvh.buffers, label).not.toBe(before);
+      expect(bvh.buffers?.materials[0], label).toMatchObject(changed);
+    }
   });
 
   it('dispose clears tag so next call always rebuilds', () => {

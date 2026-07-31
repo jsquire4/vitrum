@@ -12,6 +12,10 @@ import { writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  validateGeneratedDznStatusNumericFields,
+} from './dznStatusNumericValidation.mjs';
+import { readOptionalNonEmptyFlagValue } from './selectorValidation.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptDir, '../..');
@@ -23,7 +27,7 @@ const DEFAULT_TIMEOUT_MS = 420_000;
 const timeoutMs = parseTimeoutMs(process.env.VITRUM_BEHAVIORAL_GATE_DZN_TIMEOUT_MS, DEFAULT_TIMEOUT_MS);
 const timeoutSeconds = Math.max(1, Math.ceil(timeoutMs / 1000));
 const gateArgs = process.argv.slice(2);
-const filter = readFlagValue(gateArgs, '--filter');
+const filter = readOptionalNonEmptyFlagValue(gateArgs, '--filter');
 const goldenVariant = process.env.VITRUM_BEHAVIORAL_GOLDEN_VARIANT ?? (gateArgs.includes('--require-full-tier') ? 'dzn-full' : '');
 const statusPath = resolveStatusPath(filter);
 
@@ -93,6 +97,7 @@ if (result.status === 124) {
   process.exit(2);
 }
 
+let wrapperExitStatus = result.status ?? 1;
 if (result.status != null) {
   const passed = result.status === 0;
   const status = {
@@ -109,10 +114,23 @@ if (result.status != null) {
     summary: parseSummary(result.stdout ?? ''),
     configs: parseConfigRows(result.stdout ?? ''),
   };
+  if (passed) {
+    try {
+      validateGeneratedDznStatusNumericFields(status);
+    } catch (error) {
+      status.verdict = 'FAIL';
+      status.reason = {
+        code: 'dzn-behavioral-gate-invalid-numeric-evidence',
+        message: error instanceof Error ? error.message : String(error),
+      };
+      wrapperExitStatus = 1;
+      console.error(`[behavioral-gate:dzn] ${status.reason.message}`);
+    }
+  }
   writeFileSync(statusPath, `${JSON.stringify(status, null, 2)}\n`);
 }
 
-process.exit(result.status ?? 1);
+process.exit(wrapperExitStatus);
 
 function parseTimeoutMs(raw, fallback) {
   if (raw == null || raw === '') return fallback;
@@ -122,13 +140,6 @@ function parseTimeoutMs(raw, fallback) {
     return fallback;
   }
   return Math.max(1000, Math.floor(n));
-}
-
-function readFlagValue(args, name) {
-  const eq = args.find((a) => a.startsWith(`${name}=`));
-  if (eq) return eq.slice(name.length + 1);
-  const i = args.indexOf(name);
-  return i >= 0 ? (args[i + 1] ?? '') : '';
 }
 
 function parseSummary(stdout) {

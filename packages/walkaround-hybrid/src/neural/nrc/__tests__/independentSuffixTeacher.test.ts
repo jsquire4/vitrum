@@ -59,6 +59,21 @@ describe('NRC independent suffix teacher', () => {
     expect(terminal).toBeGreaterThan(direct);
   });
 
+  it('charges Beer per geometric medium segment and pairs authored exits', () => {
+    const src = NRC_INDEPENDENT_SUFFIX_WGSL;
+    expect(src).toContain('fn nrcTeacherBeerForSegment(');
+    expect(src).toContain('segmentLength / authoredThickness');
+    expect(src).toContain('let entering = currentHit.side >= 0.0;');
+    expect(src).toContain('mediumMaterialWord[top] != materialWord');
+    expect(src).toContain(
+      'mediumInstance[top] != currentHit.instanceIndex',
+    );
+    expect(src).toContain('if (mediumDepth != 0u) { break; }');
+    expect(src).not.toContain(
+      'nextThroughput = nextThroughput * nrcTeacherBeerTint(currentHit)',
+    );
+  });
+
   it('caps independent suffix traces to one collision-free candidate per record slot', () => {
     expect(RIS_GI_NRC_BODY).toContain('let nrcTeacherStride = max(1u, 1u +');
     expect(RIS_GI_NRC_BODY).toContain('let nrcTeacherSlot = pixelIdxGi / nrcTeacherStride;');

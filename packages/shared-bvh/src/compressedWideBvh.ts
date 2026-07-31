@@ -115,6 +115,11 @@ export interface CwbvhTraverseOptions {
    * mirror TLAS BLAS-root remapping.
    */
   readonly root?: number;
+  /**
+   * @deprecated Legacy alias used only as the default for `tMin` when `tMin`
+   * is omitted. Triangle determinant and barycentric tolerances are
+   * scale-independent and are no longer controlled by this value.
+   */
   readonly triEps?: number;
   readonly tMin?: number;
   readonly tMax?: number;
@@ -508,6 +513,13 @@ function v3Sub(a: readonly [number, number, number], b: readonly [number, number
   return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 }
 
+function v3Scale(
+  value: readonly [number, number, number],
+  scale: number,
+): [number, number, number] {
+  return [value[0] * scale, value[1] * scale, value[2] * scale];
+}
+
 function v3Cross(a: readonly [number, number, number], b: readonly [number, number, number]): [number, number, number] {
   return [
     a[1] * b[2] - a[2] * b[1],
@@ -541,21 +553,63 @@ function intersectTriangle(
   a: readonly [number, number, number],
   b: readonly [number, number, number],
   c: readonly [number, number, number],
-  triEps: number,
+  tMin: number,
 ): { t: number; bary: readonly [number, number, number] } | null {
-  const e1 = v3Sub(b, a);
-  const e2 = v3Sub(c, a);
+  const e1Raw = v3Sub(b, a);
+  const e2Raw = v3Sub(c, a);
+  const edgeScale = Math.max(
+    ...e1Raw.map(Math.abs),
+    ...e2Raw.map(Math.abs),
+  );
+  const directionScale = Math.max(...ray.direction.map(Math.abs));
+  if (
+    !(edgeScale > 0) ||
+    !Number.isFinite(edgeScale) ||
+    !(directionScale > 0) ||
+    !Number.isFinite(directionScale)
+  ) {
+    return null;
+  }
+  const e1 = v3Scale(e1Raw, 1 / edgeScale);
+  const e2 = v3Scale(e2Raw, 1 / edgeScale);
+  const direction = v3Scale(ray.direction, 1 / directionScale);
+  const ao = v3Scale(v3Sub(ray.origin, a), 1 / edgeScale);
   const n = v3Cross(e1, e2);
-  const det = -v3Dot(ray.direction, n);
-  if (Math.abs(det) < triEps) return null;
+  const det = -v3Dot(direction, n);
+  const normalLength = Math.hypot(n[0], n[1], n[2]);
+  const directionLength = Math.hypot(
+    direction[0],
+    direction[1],
+    direction[2],
+  );
+  if (
+    !(normalLength > 0) ||
+    !Number.isFinite(normalLength) ||
+    !(directionLength > 0) ||
+    !Number.isFinite(directionLength) ||
+    Math.abs(det) / (normalLength * directionLength) <= 1e-7
+  ) {
+    return null;
+  }
   const invDet = 1 / det;
-  const ao = v3Sub(ray.origin, a);
-  const dao = v3Cross(ao, ray.direction);
+  const dao = v3Cross(ao, direction);
   const u = v3Dot(e2, dao) * invDet;
   const v = -v3Dot(e1, dao) * invDet;
-  const t = v3Dot(ao, n) * invDet;
+  const t = (v3Dot(ao, n) * invDet * edgeScale) / directionScale;
   const w = 1 - u - v;
-  if (u < -triEps || v < -triEps || w < -triEps || t < triEps) return null;
+  const barycentricEpsilon = 1e-6;
+  if (
+    !Number.isFinite(u) ||
+    !Number.isFinite(v) ||
+    !Number.isFinite(w) ||
+    !Number.isFinite(t) ||
+    u < -barycentricEpsilon ||
+    v < -barycentricEpsilon ||
+    w < -barycentricEpsilon ||
+    t < Math.max(tMin, 0)
+  ) {
+    return null;
+  }
   return { t, bary: [w, u, v] };
 }
 
@@ -571,7 +625,7 @@ function intersectAabb(
   for (let axis = 0; axis < 3; axis += 1) {
     const o = ray.origin[axis] ?? 0;
     const d = ray.direction[axis] ?? 0;
-    if (Math.abs(d) < 1e-30) {
+    if (d === 0) {
       if (o < (min[axis] ?? 0) || o > (max[axis] ?? 0)) return null;
       continue;
     }
@@ -705,12 +759,21 @@ export function intersectCompressedWideBvhFirstHit(
 ): CwbvhIntersection {
   const positionStride = opts.positionStride ?? 4;
   const indexStride = opts.indexStride ?? 4;
-  const triEps = opts.triEps ?? 1e-5;
-  const tMin = opts.tMin ?? triEps;
+  const legacyTriEps = opts.triEps ?? 1e-5;
+  const tMin = opts.tMin ?? legacyTriEps;
   let closest = opts.tMax ?? Number.POSITIVE_INFINITY;
   const skipGlass = opts.skipGlass ?? false;
   const maxStackDepth = opts.maxStackDepth ?? Number.POSITIVE_INFINITY;
-  validateCwbvhTraversalInputs(cwbvh, positions, ray, positionStride, indexStride, triEps, tMin, closest);
+  validateCwbvhTraversalInputs(
+    cwbvh,
+    positions,
+    ray,
+    positionStride,
+    indexStride,
+    legacyTriEps,
+    tMin,
+    closest,
+  );
   if (!Number.isInteger(maxStackDepth) && maxStackDepth !== Number.POSITIVE_INFINITY || maxStackDepth < 1) {
     throw new RangeError('CWBVH maxStackDepth must be a positive integer or Infinity');
   }
@@ -773,7 +836,7 @@ export function intersectCompressedWideBvhFirstHit(
           const a = positionAt(positions, i0, positionStride);
           const b = positionAt(positions, i1, positionStride);
           const c = positionAt(positions, i2, positionStride);
-          const hit = intersectTriangle(ray, a, b, c, triEps);
+          const hit = intersectTriangle(ray, a, b, c, tMin);
           if (hit != null && hit.t > tMin && hit.t < closest) {
             closest = hit.t;
             hitTriangle = tri;

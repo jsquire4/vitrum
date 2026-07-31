@@ -87,6 +87,10 @@ import {
   buildPpgUpdateWgsl,
   PPG_DEFAULT_MAX_DTREE_NODES_PER_CELL,
 } from '../ppg/ppgUpdate.wgsl.js';
+import {
+  assertHybridSwapChainFormat,
+  hybridCompositeFragmentConstants,
+} from '../presentationTarget.js';
 
 /**
  * Keys in `CompiledPipelines` whose value type is `GPUComputePipeline` (not
@@ -178,6 +182,10 @@ export function createCompositePipeline(
   bglCache: BGLCache,
   swapChainFormat: GPUTextureFormat,
 ): GPURenderPipeline {
+  assertHybridSwapChainFormat(
+    swapChainFormat,
+    'createCompositePipeline.swapChainFormat',
+  );
   const modules = compositeShaderModulesByDevice.get(device);
   if (modules == null) {
     throw new Error(
@@ -195,6 +203,7 @@ export function createCompositePipeline(
       module: modules.fragment,
       entryPoint: 'fragMain',
       targets: [{ format: swapChainFormat }],
+      constants: hybridCompositeFragmentConstants(swapChainFormat),
     },
     primitive: { topology: 'triangle-list' },
   });
@@ -228,6 +237,10 @@ export async function compilePipelines(
     ppgMaxDTreeNodesPerCell?: number;
   },
 ): Promise<CompiledPipelines> {
+  assertHybridSwapChainFormat(
+    swapChainFormat,
+    'compilePipelines.swapChainFormat',
+  );
   // Generalized reconnection-shift reuse is the sole structural GI path.
   const reservoirGiStrideU32 = RESERVOIR_GI_STRIDE_U32;
   const wgslModules = new Map(WGSL_MODULES);
@@ -500,6 +513,7 @@ export async function compilePipelines(
       module: compFragSM,
       entryPoint: 'fragMain',
       targets: [{ format: swapChainFormat }],
+      constants: hybridCompositeFragmentConstants(swapChainFormat),
     },
     primitive: { topology: 'triangle-list' },
   });

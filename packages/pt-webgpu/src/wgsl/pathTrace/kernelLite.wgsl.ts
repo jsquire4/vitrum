@@ -97,7 +97,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
     let sppmOwnsCurrentEmission = false;
-    let hit = traceClosest(ray, 1e-4, INFINITY);
+    let hit = traceClosest(ray, ptRayTMin(), INFINITY);
     if (!hit.didHit) {
       // Diffuse/glossy BSDF environment paths were already added with their MIS
       // weight at the previous vertex. Only camera and delta/specular-transmission
@@ -106,7 +106,8 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
         // A3 — spectralise the env at the hero λ in spectral mode (RGB unchanged).
         let envRgb = sampleEnvironmentColor(ray.direction);
         let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
-        radiance = radiance + throughput * envContribution;
+        radiance = radiance + throughput *
+          ptScaleEnvironmentRadiance(envContribution, 1.0);
       }
       break;
     }
@@ -205,12 +206,12 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             let angDiamRaw = dDirAD.w;
             let dirShadowDisabled = angDiamRaw < 0.0;
             let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);
-            if (angDiam > 0.0) {
-              let cosHalfAngle = cos(angDiam * 0.5);
+            if (!ptDirectionalConeIsDelta(angDiam)) {
               let xi1 = rand_f32(&rng);
               let xi2 = rand_f32(&rng);
-              let cosTheta = mix(cosHalfAngle, 1.0, xi1);
-              let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+              let sinCosTheta = ptDirectionalConeSinCos(angDiam, xi1);
+              let sinTheta = sinCosTheta.x;
+              let cosTheta = sinCosTheta.y;
               let phi = 6.28318530718 * xi2;
               let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(lightDir.x) > 0.9);
               let basisY = normalize(cross(lightDir, tangentX));
@@ -218,8 +219,14 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               lightDir = normalize(sinTheta * cos(phi) * basisX + sinTheta * sin(phi) * basisY + cosTheta * lightDir);
             }
             let directOffsetNormal = select(-normal, normal, dot(normal, lightDir) > 0.0);
-            let shadowRay = Ray(hitPos + directOffsetNormal * 1e-3, lightDir);
-            if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY)) {
+            let shadowRay = Ray(
+              hitPos + directOffsetNormal * ptRayOriginBias(),
+              lightDir,
+            );
+            if (
+              dirShadowDisabled ||
+              !traceAny(shadowRay, ptRayTMin(), INFINITY)
+            ) {
               let nDotL = abs(dot(normal, lightDir));
               let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, normal, wo, lightDir,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
@@ -243,17 +250,26 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           let ptMaxDist = extra.x;
           let ptDecay   = extra.y;
           let toPoint = lp - hitPos;
-          let dist2 = max(dot(toPoint, toPoint), 1e-5);
-          let dist = sqrt(dist2);
-          if (ptMaxDist > 0.0 && dist > ptMaxDist) {
+          let dist = safe_length(toPoint);
+          if (!(dist > 0.0) || (ptMaxDist > 0.0 && dist > ptMaxDist)) {
             current = current + 1u;
             continue;
           }
           let wi = toPoint / dist;
           let pointOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-          let pointShadowRay = Ray(hitPos + pointOffsetNormal * 1e-3, wi);
+          let pointShadowRay = Ray(
+            hitPos + pointOffsetNormal * ptRayOriginBias(),
+            wi,
+          );
           // SHADOW-01 — extra.z carries the emitter castShadowDisabled flag.
-          if (extra.z > 0.5 || !traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+          if (
+            extra.z > 0.5 ||
+            !traceAny(
+              pointShadowRay,
+              ptRayTMin(),
+              ptFiniteSegmentTMax(dist),
+            )
+          ) {
             let nDotL = abs(dot(normal, wi));
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
@@ -282,9 +298,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           let spMaxDist = spExtra.x;
           let spDecay   = spExtra.y;
           let toSpot = spos - hitPos;
-          let dist2 = max(dot(toSpot, toSpot), 1e-5);
-          let dist = sqrt(dist2);
-          if (spMaxDist > 0.0 && dist > spMaxDist) {
+          let dist = safe_length(toSpot);
+          if (!(dist > 0.0) || (spMaxDist > 0.0 && dist > spMaxDist)) {
             current = current + 1u;
             continue;
           }
@@ -292,9 +307,19 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           let coneCos = dot(-wi, spotDir);
           if (coneCos >= cosOuter) {
             let spotOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-            let spotShadowRay = Ray(hitPos + spotOffsetNormal * 1e-3, wi);
+            let spotShadowRay = Ray(
+              hitPos + spotOffsetNormal * ptRayOriginBias(),
+              wi,
+            );
             // SHADOW-01 — spExtra.z carries the emitter castShadowDisabled flag.
-            if (spExtra.z > 0.5 || !traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+            if (
+              spExtra.z > 0.5 ||
+              !traceAny(
+                spotShadowRay,
+                ptRayTMin(),
+                ptFiniteSegmentTMax(dist),
+              )
+            ) {
               let nDotL = abs(dot(normal, wi));
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
               let attenuation = pointSpotDistanceAttenuation(dist, spMaxDist, spDecay);
@@ -329,34 +354,41 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
           let rshapeL = textureLoad(liteLightTex, vec2i(i32(rb2 + 3u), 0), 0);
           let rr   = rshapeL.rgb;
           let isDiscL = abs(rshapeL.w - 1.0) < 0.5;
+          let areaMeasure = measureAreaVector(
+            ru, rv, select(4.0, PI, isDiscL),
+          );
           let xi1l = rand_f32(&rng);
           let xi2l = rand_f32(&rng);
           var lpos: vec3f;
-          var area: f32;
           if (isDiscL) {
             // D9.11 — Shirley & Chiu 1997 concentric-disc map via shared kernelCore helper.
             let discL = concentricDiscSample(vec2f(xi1l * 2.0 - 1.0, xi2l * 2.0 - 1.0));
             lpos = rpos + ru * discL.x + rv * discL.y;
-            area = PI * length(cross(ru, rv));
           } else {
             lpos = rpos + ru * (xi1l * 2.0 - 1.0) + rv * (xi2l * 2.0 - 1.0);
-            area = 4.0 * length(cross(ru, rv));
           }
           let toLight = lpos - hitPos;
-          let dist2 = max(dot(toLight, toLight), 1e-6);
-          let dist = sqrt(dist2);
-          let wi = toLight / dist;
+          let dist = safe_length(toLight);
+          let wi = safe_normalize(toLight);
           let nDotL = abs(dot(normal, wi));
-          if (nDotL > 0.0 && area > 0.0) {
+          if (
+            dist > 0.0 && nDotL > 0.0 &&
+            areaMeasure.valid != 0u
+          ) {
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
               0.0, 0.0, thinFilm, false);
-            let lightNormal = safe_normalize(cross(ru, rv));
+            let lightNormal = areaMeasure.normal;
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
-              let lightPdf = dist2 / (cosLight * area);
+              let lightPdf =
+                ptAreaToSolidAnglePdf(dist, cosLight, areaMeasure);
+              if (!(lightPdf > 0.0)) {
+                current = current + 1u;
+                continue;
+              }
               let brdfPdf = brdfDirectionalPdfFullSampled(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
@@ -364,10 +396,20 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 0.0, 0.0, thinFilm);
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let rectOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-              let shadowRay = Ray(hitPos + rectOffsetNormal * 1e-3, wi);
+              let shadowRay = Ray(
+                hitPos + rectOffsetNormal * ptRayOriginBias(),
+                wi,
+              );
               // SHADOW-01 — rect record texel 0 .w carries castShadowDisabled.
               let rectShadowDisabledL = textureLoad(liteLightTex, vec2i(i32(rb2), 0), 0).w > 0.5;
-              if (rectShadowDisabledL || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3))) {
+              if (
+                rectShadowDisabledL ||
+                !traceAny(
+                  shadowRay,
+                  ptRayTMin(),
+                  ptFiniteSegmentTMax(dist),
+                )
+              ) {
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
                 directLi = directLi + throughput * brdf * nDotL * rrOut * misWeight / lightPdf;
               }
@@ -393,8 +435,11 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         let nDotL = abs(dot(normal, envDir));
         if (nDotL > 0.0) {
           let envOffsetNormal = select(-normal, normal, dot(normal, envDir) > 0.0);
-          let shadowRay = Ray(hitPos + envOffsetNormal * 1e-3, envDir);
-          if (!traceAny(shadowRay, 1e-4, INFINITY)) {
+          let shadowRay = Ray(
+            hitPos + envOffsetNormal * ptRayOriginBias(),
+            envDir,
+          );
+          if (!traceAny(shadowRay, ptRayTMin(), INFINITY)) {
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
@@ -406,7 +451,14 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               mat.specularColor, mat.specularIntensity,
               0.0, 0.0, thinFilm);
             // A3 — spectralise the env radiance at the hero λ (RGB unchanged).
-            let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u);
+            let envColorOut = ptScaleEnvironmentRadiance(
+              select(
+                envColor,
+                spectralEmissionAtHero(envColor, heroLambda),
+                params.spectralEnabled != 0u,
+              ),
+              1.0,
+            );
             let misWeight = powerHeuristic(envPdf, brdfPdf);
             directLi = directLi + throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8);
           }

@@ -460,9 +460,17 @@ describe('DDGI deferred payload ownership', () => {
 
     expect(passState(pass)._lights).toEqual([expect.objectContaining({
       position: { x: 1, y: 2, z: 3 },
-      color: { r: 0.2, g: 0.3, b: 0.4 },
+      color: {
+        r: Math.fround(0.2),
+        g: Math.fround(0.3),
+        b: Math.fround(0.4),
+      },
     })]);
-    expect(passState(pass)._skyTint).toEqual([0.4, 0.6, 1]);
+    expect(passState(pass)._skyTint).toEqual([
+      Math.fround(0.4),
+      Math.fround(0.6),
+      1,
+    ]);
     pass.dispose();
   });
 

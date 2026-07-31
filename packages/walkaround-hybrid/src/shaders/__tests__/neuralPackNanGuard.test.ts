@@ -27,14 +27,15 @@ describe('neuralPack — world-normal contract and NaN guard', () => {
     );
   });
 
-  it('uses select to replace zero-length normals before normalization', () => {
+  it('uses an explicit fallback for zero-length/non-finite normals', () => {
     expect(NEURAL_PACK_WGSL).toMatch(
-      /select\(vec3f\(0\.0, 1\.0, 0\.0\), finiteValue,[\s\S]*lengthSquared >= 1e-6\)/,
+      /if\s*\(\s*!\(scale > 0\.0\)\s*\|\|\s*!neuralFinite\(scale\)\s*\)\s*\{[\s\S]*return vec3f\(0\.0, 1\.0, 0\.0\);/,
     );
   });
 
-  it('normalizes only the non-zero safe vector', () => {
-    expect(NEURAL_PACK_WGSL).toContain('return normalize(safe);');
+  it('max-component-equilibrates the non-zero safe vector before normalization', () => {
+    expect(NEURAL_PACK_WGSL).toContain('let scaled = finiteValue / scale;');
+    expect(NEURAL_PACK_WGSL).toContain('return scaled / length(scaled);');
     expect(NEURAL_PACK_WGSL).not.toContain('normalize(finiteValue)');
   });
 });

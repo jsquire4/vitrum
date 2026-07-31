@@ -1,6 +1,13 @@
-import type { EngineWarning, MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
+import type {
+  EngineWarning,
+  MaterialSpec,
+  MaterialSpecPatch,
+  Scene,
+  ScenePrimitive,
+  ScenePrimitivePatch,
+} from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
-import { MATERIAL_PIXELS, packMaterialsTexture } from './materialsTexture.js';
+import { packMaterialsTexture } from './materialsTexture.js';
 import { LIGHT_PIXELS, packLightsTexture } from './lightsTexture.js';
 import { hasMeshAreaLightForPrimitive, packMeshAreaLights, TRI_LIGHT_PIXELS } from './meshAreaLights.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
@@ -11,10 +18,10 @@ import {
   buildSceneGeometryTextureData,
   buildRefitSceneGeometryTextures,
   expandAnalyticPrimitiveFallbacks,
-  updateRgba32f,
-  updateRgba32fRect,
-  updateRgba32fArray,
-  updateRgba32ui,
+  uploadRgba32f,
+  uploadRgba32fRect,
+  uploadRgba32fArray,
+  uploadRgba32ui,
 } from './uploadSceneTextures.js';
 import {
   materialTextureAtlasLayerCapacities,
@@ -32,6 +39,7 @@ import {
   ATTR_LAYER_UV1,
   sameUvAttributeLayout,
 } from './uvAttributeLayout.js';
+import { computeWebgl2TransportBounds } from './sceneScalePolicy.js';
 
 export const TEXTURE_MAP_FIELDS: ReadonlySet<string> = new Set([
   'baseColorMap',
@@ -149,7 +157,7 @@ function isMeshLikePrimitive(p: ScenePrimitive | undefined): p is Extract<
   return p?.kind === 'mesh' || p?.kind === 'instanced-mesh' || p?.kind === 'skinned-mesh';
 }
 
-function canFastPathMaterialPatch(patch: Partial<ScenePrimitive>): boolean {
+function canFastPathMaterialPatch(patch: ScenePrimitivePatch): boolean {
   let sawMaterialLaneField = false;
   for (const key of Object.keys(patch)) {
     if (key === 'id' || key === 'kind') continue;
@@ -224,7 +232,7 @@ function materialTextureValueAt(material: Record<string, unknown>, path: string)
   return parent[path.slice(dot + 1)];
 }
 
-export function materialTextureMapPatchFields(patch: Partial<ScenePrimitive>): string[] {
+export function materialTextureMapPatchFields(patch: ScenePrimitivePatch): string[] {
   if (patch.material == null) return [];
   return textureMapPatchEntries(patch.material as unknown as Record<string, unknown>)
     .map((entry) => entry.path)
@@ -232,7 +240,7 @@ export function materialTextureMapPatchFields(patch: Partial<ScenePrimitive>): s
 }
 
 function texturePatchNeedsAtlasRefresh(
-  patch: Partial<ScenePrimitive> & { material: MaterialSpec },
+  patch: ScenePrimitivePatch & { material: MaterialSpecPatch },
   materialLayerMap: MaterialTextureAtlasLayerMaps,
 ): boolean {
   const mat = patch.material as unknown as Record<string, unknown>;
@@ -257,12 +265,12 @@ function effectiveUvLayerMap(current: UploadedSceneTextures): ReadonlyMap<number
 }
 
 function texturePatchNeedsUvLayoutRefresh(
-  patch: Partial<ScenePrimitive> & { material: MaterialSpec },
+  patch: ScenePrimitivePatch & { material: MaterialSpecPatch },
   current: UploadedSceneTextures,
 ): boolean {
   const layout = effectiveUvLayerMap(current);
   for (const entry of textureMapPatchEntries(
-    patch.material as unknown as Record<string, unknown>,
+    patch.material,
   )) {
     if (entry.value == null || typeof entry.value !== 'object') continue;
     const texCoord = (entry.value as { readonly texCoord?: number }).texCoord ?? 0;
@@ -278,7 +286,7 @@ function textureHandleOf(value: unknown): unknown {
 
 function texturePatchMayCompactAtlas(
   previousMaterial: MaterialSpec | undefined,
-  patch: Partial<ScenePrimitive> & { material: MaterialSpec },
+  patch: ScenePrimitivePatch & { material: MaterialSpecPatch },
 ): boolean {
   if (previousMaterial == null) return false;
   const previous = previousMaterial as unknown as Record<string, unknown>;
@@ -304,7 +312,7 @@ function textureValueNeedsAtlasRefresh(
   return materialLayerMap[storageClass]?.[colorSpace].has(handle) !== true;
 }
 
-function canRefreshGeometryTextures(patch: Partial<ScenePrimitive>): boolean {
+function canRefreshGeometryTextures(patch: ScenePrimitivePatch): boolean {
   let sawGeometryField = false;
   for (const key of Object.keys(patch)) {
     if (key === 'id' || key === 'kind') continue;
@@ -337,8 +345,14 @@ function updateResidentMeshLightTexture(
 
   const currentMeshLightDim = squareDim((current.meshLightCount ?? 0) * TRI_LIGHT_PIXELS);
   if (current.meshLights != null && currentMeshLightDim === nextMeshLightsData.dim) {
-    updateRgba32f(gl, current.meshLights, nextMeshLightsData.data, nextMeshLightsData.dim, 'mesh-area lights');
-    return current.meshLights;
+    const replacement = uploadRgba32f(
+      gl,
+      nextMeshLightsData.data,
+      nextMeshLightsData.dim,
+      'mesh-area lights',
+    );
+    deleteOldTextures.push(current.meshLights);
+    return replacement;
   }
   throw new Error(
     'pt-webgl2: mesh-light storage replacement requires a transactional scene rebuild',
@@ -353,11 +367,10 @@ function updateResidentLightsTexture(
   const currentLightsDim = squareDim(current.lightCount * LIGHT_PIXELS);
   const lights = nextLightsData.data as Float32Array;
   if (currentLightsDim === nextLightsData.dim) {
-    updateRgba32f(gl, current.lights, lights, nextLightsData.dim, 'scene lights');
+    return uploadRgba32f(gl, lights, nextLightsData.dim, 'scene lights');
   } else {
     throw new Error('pt-webgl2: light storage replacement requires a transactional scene rebuild');
   }
-  return current.lights;
 }
 
 function updateNullableRectTexture(
@@ -379,43 +392,41 @@ function updateNullableRectTexture(
     throw new Error(`pt-webgl2: ${resourceName} allocation requires a transactional scene rebuild`);
   }
   if (currentWidth === nextData.width && currentHeight === nextData.height) {
-    updateRgba32fRect(gl, currentTexture, nextData.data, nextData.width, nextData.height, resourceName);
+    const replacement = uploadRgba32fRect(
+      gl,
+      nextData.data,
+      nextData.width,
+      nextData.height,
+      resourceName,
+    );
+    deleteOldTextures.push(currentTexture);
+    return replacement;
   } else {
     throw new Error(`pt-webgl2: ${resourceName} storage replacement requires a transactional scene rebuild`);
   }
-  return currentTexture;
 }
 
-function updateResidentMaterialSlotTexture(
+function allocateMutationTransaction<T>(
   gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Float32Array,
-  dim: number,
-  slot: number,
-): void {
-  if (gl.isContextLost()) {
-    throw new Error('pt-webgl2: WebGL context lost — cannot update scene materials texture');
-  }
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  let texel = slot * MATERIAL_PIXELS;
-  let remaining = MATERIAL_PIXELS;
-  while (remaining > 0) {
-    const x = texel % dim;
-    const y = Math.floor(texel / dim);
-    const width = Math.min(remaining, dim - x);
-    gl.texSubImage2D(
-      gl.TEXTURE_2D,
-      0,
-      x,
-      y,
-      width,
-      1,
-      gl.RGBA,
-      gl.FLOAT,
-      data.subarray(texel * 4, (texel + width) * 4),
-    );
-    texel += width;
-    remaining -= width;
+  build: (own: (texture: WebGLTexture) => WebGLTexture) => T,
+): T {
+  const allocated: WebGLTexture[] = [];
+  const own = (texture: WebGLTexture): WebGLTexture => {
+    allocated.push(texture);
+    return texture;
+  };
+  try {
+    return build(own);
+  } catch (error) {
+    for (const texture of allocated) {
+      try {
+        gl.deleteTexture(texture);
+      } catch {
+        // Preserve the upload error. A failed best-effort retirement must not
+        // hide the operation that made the candidate transaction unusable.
+      }
+    }
+    throw error;
   }
 }
 
@@ -592,7 +603,7 @@ export function tryFastPathMaterialMutation(
   geoPack: WorldSpaceMergeResult | null,
   nextScene: Scene,
   primitiveId: string,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): WebGl2MutationSwap | null {
   if (current == null || geoPack == null || !canFastPathMaterialPatch(patch)) return null;
   const primitive = nextScene.primitives.find((p) => String(p.id) === primitiveId);
@@ -665,21 +676,32 @@ export function tryFastPathMaterialMutation(
       uvLayerByTexCoord: effectiveUvLayerMap(current),
     },
   );
-  if (
-    foldedMaterials == null &&
-    materialTextureDimMatches(current, geoPack, materialData)
-  ) {
-    updateResidentMaterialSlotTexture(gl, current.materials, materialData.data as Float32Array, materialData.dim, slot);
-  } else {
-    updateRgba32f(gl, current.materials, materialData.data as Float32Array, materialData.dim, 'scene materials');
-  }
-
-  const deleteOldTextures: (WebGLTexture | null)[] = [];
-  const meshLights = meshLightsData != null
-    ? updateResidentMeshLightTexture(gl, current, meshLightsData, deleteOldTextures)
-    : null;
+  const { materials, meshLights, deleteOldTextures } = allocateMutationTransaction(
+    gl,
+    (own) => {
+      const retired: (WebGLTexture | null)[] = [current.materials];
+      const nextMaterialsTexture = own(
+        uploadRgba32f(
+          gl,
+          materialData.data,
+          materialData.dim,
+          'scene materials',
+        ),
+      );
+      const nextMeshLights = meshLightsData != null
+        ? updateResidentMeshLightTexture(gl, current, meshLightsData, retired)
+        : null;
+      if (nextMeshLights != null) own(nextMeshLights);
+      return {
+        materials: nextMaterialsTexture,
+        meshLights: nextMeshLights,
+        deleteOldTextures: retired,
+      };
+    },
+  );
   return {
     textures: withTextureReplacementsForGl(gl, current, {
+      materials,
       ...(meshLightsData != null
         ? {
             meshLights,
@@ -700,7 +722,8 @@ export function tryFastPathGeometryMutation(
   current: UploadedSceneTextures | null,
   currentMerged: WorldSpaceMergeResult | null,
   nextScene: Scene,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
+  options: { readonly bdpt?: boolean } = {},
 ): WebGl2MutationSwap | null {
   if (current == null || !canRefreshGeometryTextures(patch)) return null;
   if (currentMerged != null) {
@@ -709,6 +732,7 @@ export function tryFastPathGeometryMutation(
       warningMethod: 'updatePrimitive',
     });
     if (refit != null) {
+      computeWebgl2TransportBounds(refit.merged, nextScene, options);
       const structuredWarnings: EngineWarning[] = [...refit.structuredWarnings];
       if (
         !canRewriteMeshLightsResident(current, refit.meshLightsData) ||
@@ -724,7 +748,10 @@ export function tryFastPathGeometryMutation(
           phase: 'mutation',
           method: 'updatePrimitive',
           message: `[vitrum/pt-webgl2] ${warning}`,
-          details: { warning, operation: 'geometry-bvh-refit-subimage-update' },
+          details: {
+            warning,
+            operation: 'geometry-bvh-refit-staged-texture-replacement',
+          },
         });
       }
       const vertexColorMaterialIdsChanged = !sameNumberSet(
@@ -741,27 +768,73 @@ export function tryFastPathGeometryMutation(
             },
           )
         : null;
-      updateRgba32f(gl, current.bvhBounds, refit.bvhData.bounds, refit.bvhData.boundsDim, 'scene BVH bounds');
-      updateRgba32f(gl, current.bvhPosition, refit.bvhData.position, refit.bvhData.positionDim, 'scene BVH position');
-      updateRgba32fArray(
-        gl,
-        current.attributesArray,
-        refit.attrData.data,
-        refit.attrData.dim,
-        refit.attrData.layers,
-        'vertex attributes',
-      );
-      if (materialsData != null) {
-        updateRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
-      }
-
-      const deleteOldTextures: (WebGLTexture | null)[] = [];
       const nextMeshLightsData = refit.meshLightsData;
-      const meshLights = updateResidentMeshLightTexture(gl, current, nextMeshLightsData, deleteOldTextures);
+      const replacements = allocateMutationTransaction(gl, (own) => {
+        const deleteOldTextures: (WebGLTexture | null)[] = [
+          current.bvhBounds,
+          current.bvhPosition,
+          current.attributesArray,
+        ];
+        const bvhBounds = own(
+          uploadRgba32f(
+            gl,
+            refit.bvhData.bounds,
+            refit.bvhData.boundsDim,
+            'scene BVH bounds',
+          ),
+        );
+        const bvhPosition = own(
+          uploadRgba32f(
+            gl,
+            refit.bvhData.position,
+            refit.bvhData.positionDim,
+            'scene BVH position',
+          ),
+        );
+        const attributesArray = own(
+          uploadRgba32fArray(
+            gl,
+            refit.attrData.data,
+            refit.attrData.dim,
+            refit.attrData.layers,
+            'vertex attributes',
+          ),
+        );
+        const materials = materialsData != null
+          ? own(
+              uploadRgba32f(
+                gl,
+                materialsData.data,
+                materialsData.dim,
+                'scene materials',
+              ),
+            )
+          : current.materials;
+        if (materialsData != null) deleteOldTextures.push(current.materials);
+        const meshLights = updateResidentMeshLightTexture(
+          gl,
+          current,
+          nextMeshLightsData,
+          deleteOldTextures,
+        );
+        if (meshLights != null) own(meshLights);
+        return {
+          bvhBounds,
+          bvhPosition,
+          attributesArray,
+          materials,
+          meshLights,
+          deleteOldTextures,
+        };
+      });
 
       return {
         textures: withTextureReplacementsForGl(gl, current, {
-          meshLights,
+          bvhBounds: replacements.bvhBounds,
+          bvhPosition: replacements.bvhPosition,
+          attributesArray: replacements.attributesArray,
+          materials: replacements.materials,
+          meshLights: replacements.meshLights,
           meshLightCount: nextMeshLightsData.triLightCount,
           totalEmissiveArea: nextMeshLightsData.totalEmissiveArea,
           totalEmissivePower: nextMeshLightsData.totalEmissivePower,
@@ -771,7 +844,7 @@ export function tryFastPathGeometryMutation(
           attributeLayerCount: refit.attrData.layers,
         }),
         geoPack: refit.merged,
-        deleteOldTextures,
+        deleteOldTextures: replacements.deleteOldTextures,
         structuredWarnings,
       };
     }
@@ -782,6 +855,7 @@ export function tryFastPathGeometryMutation(
       warningPhase: 'mutation',
       warningMethod: 'updatePrimitive',
     });
+    computeWebgl2TransportBounds(built.merged, nextScene, options);
     const vertexColorMaterialIdsChanged = !sameNumberSet(
       current.vertexColorMaterialIds,
       built.vertexColorMaterialIds,
@@ -806,35 +880,95 @@ export function tryFastPathGeometryMutation(
           details: { warning, operation: 'geometry-topology-resident-update' },
         });
       }
-      updateRgba32f(gl, current.bvhBounds, built.bvhData.bounds, built.bvhData.boundsDim, 'scene BVH bounds');
-      updateRgba32ui(gl, current.bvhContents, built.bvhData.contents, built.bvhData.contentsDim, 'scene BVH contents');
-      updateRgba32f(gl, current.bvhPosition, built.bvhData.position, built.bvhData.positionDim, 'scene BVH position');
-      updateRgba32ui(gl, current.bvhIndex, built.bvhData.index, built.bvhData.indexDim, 'scene BVH index');
-      updateRgba32ui(
-        gl,
-        current.materialIndex,
-        built.bvhData.materialIndex,
-        built.bvhData.materialIndexDim,
-        'scene BVH material index',
-      );
-      if (vertexColorMaterialIdsChanged) {
-        updateRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
-      }
-      updateRgba32fArray(
-        gl,
-        current.attributesArray,
-        built.attrData.data,
-        built.attrData.dim,
-        built.attrData.layers,
-        'vertex attributes',
-      );
-
-      const deleteOldTextures: (WebGLTexture | null)[] = [];
-      const meshLights = updateResidentMeshLightTexture(gl, current, built.meshLightsData, deleteOldTextures);
+      const replacements = allocateMutationTransaction(gl, (own) => {
+        const deleteOldTextures: (WebGLTexture | null)[] = [
+          current.bvhBounds,
+          current.bvhContents,
+          current.bvhPosition,
+          current.bvhIndex,
+          current.materialIndex,
+          current.attributesArray,
+        ];
+        const bvhBounds = own(
+          uploadRgba32f(gl, built.bvhData.bounds, built.bvhData.boundsDim, 'scene BVH bounds'),
+        );
+        const bvhContents = own(
+          uploadRgba32ui(
+            gl,
+            built.bvhData.contents,
+            built.bvhData.contentsDim,
+            'scene BVH contents',
+          ),
+        );
+        const bvhPosition = own(
+          uploadRgba32f(
+            gl,
+            built.bvhData.position,
+            built.bvhData.positionDim,
+            'scene BVH position',
+          ),
+        );
+        const bvhIndex = own(
+          uploadRgba32ui(gl, built.bvhData.index, built.bvhData.indexDim, 'scene BVH index'),
+        );
+        const materialIndex = own(
+          uploadRgba32ui(
+            gl,
+            built.bvhData.materialIndex,
+            built.bvhData.materialIndexDim,
+            'scene BVH material index',
+          ),
+        );
+        const materials = vertexColorMaterialIdsChanged
+          ? own(
+              uploadRgba32f(
+                gl,
+                materialsData.data,
+                materialsData.dim,
+                'scene materials',
+              ),
+            )
+          : current.materials;
+        if (vertexColorMaterialIdsChanged) deleteOldTextures.push(current.materials);
+        const attributesArray = own(
+          uploadRgba32fArray(
+            gl,
+            built.attrData.data,
+            built.attrData.dim,
+            built.attrData.layers,
+            'vertex attributes',
+          ),
+        );
+        const meshLights = updateResidentMeshLightTexture(
+          gl,
+          current,
+          built.meshLightsData,
+          deleteOldTextures,
+        );
+        if (meshLights != null) own(meshLights);
+        return {
+          bvhBounds,
+          bvhContents,
+          bvhPosition,
+          bvhIndex,
+          materialIndex,
+          materials,
+          attributesArray,
+          meshLights,
+          deleteOldTextures,
+        };
+      });
 
       return {
         textures: withTextureReplacementsForGl(gl, current, {
-          meshLights,
+          bvhBounds: replacements.bvhBounds,
+          bvhContents: replacements.bvhContents,
+          bvhPosition: replacements.bvhPosition,
+          bvhIndex: replacements.bvhIndex,
+          materialIndex: replacements.materialIndex,
+          materials: replacements.materials,
+          attributesArray: replacements.attributesArray,
+          meshLights: replacements.meshLights,
           meshLightCount: built.meshLightsData.triLightCount,
           totalEmissiveArea: built.meshLightsData.totalEmissiveArea,
           totalEmissivePower: built.meshLightsData.totalEmissivePower,
@@ -844,7 +978,7 @@ export function tryFastPathGeometryMutation(
           attributeLayerCount: built.attrData.layers,
         }),
         geoPack: built.merged,
-        deleteOldTextures,
+        deleteOldTextures: replacements.deleteOldTextures,
         structuredWarnings,
       };
     }
@@ -861,6 +995,7 @@ export function tryFastPathPrimitiveListMutation(
   opts: {
     readonly method: 'addPrimitive' | 'removePrimitive';
     readonly primitiveId: string;
+    readonly bdpt?: boolean;
   },
 ): WebGl2MutationSwap | null {
   if (current == null) return null;
@@ -872,6 +1007,7 @@ export function tryFastPathPrimitiveListMutation(
     warningPhase: 'mutation',
     warningMethod: opts.method,
   });
+  computeWebgl2TransportBounds(built.merged, mutationScene, opts);
   const structuredWarnings: EngineWarning[] = [...built.structuredWarnings];
   for (const warning of [...analyticExpansion.warnings, ...built.warnings]) {
     structuredWarnings.push({
@@ -927,34 +1063,93 @@ export function tryFastPathPrimitiveListMutation(
     materialStorageMatches &&
     meshLightStorageMatches
   ) {
-    const deleteOldTextures: (WebGLTexture | null)[] = [];
-    updateRgba32f(gl, current.bvhBounds, built.bvhData.bounds, built.bvhData.boundsDim, 'scene BVH bounds');
-    updateRgba32ui(gl, current.bvhContents, built.bvhData.contents, built.bvhData.contentsDim, 'scene BVH contents');
-    updateRgba32f(gl, current.bvhPosition, built.bvhData.position, built.bvhData.positionDim, 'scene BVH position');
-    updateRgba32ui(gl, current.bvhIndex, built.bvhData.index, built.bvhData.indexDim, 'scene BVH index');
-    updateRgba32ui(
-      gl,
-      current.materialIndex,
-      built.bvhData.materialIndex,
-        built.bvhData.materialIndexDim,
-        'scene BVH material index',
+    const replacements = allocateMutationTransaction(gl, (own) => {
+      const deleteOldTextures: (WebGLTexture | null)[] = [
+        current.bvhBounds,
+        current.bvhContents,
+        current.bvhPosition,
+        current.bvhIndex,
+        current.materialIndex,
+        current.materials,
+        current.attributesArray,
+      ];
+      const bvhBounds = own(
+        uploadRgba32f(gl, built.bvhData.bounds, built.bvhData.boundsDim, 'scene BVH bounds'),
       );
-    const materials = current.materials;
-    updateRgba32f(gl, current.materials, materialsData.data as Float32Array, materialsData.dim, 'scene materials');
-    updateRgba32fArray(
-      gl,
-      current.attributesArray,
-      built.attrData.data,
-      built.attrData.dim,
-      built.attrData.layers,
-      'vertex attributes',
-    );
-    const meshLights = updateResidentMeshLightTexture(gl, current, built.meshLightsData, deleteOldTextures);
+      const bvhContents = own(
+        uploadRgba32ui(
+          gl,
+          built.bvhData.contents,
+          built.bvhData.contentsDim,
+          'scene BVH contents',
+        ),
+      );
+      const bvhPosition = own(
+        uploadRgba32f(
+          gl,
+          built.bvhData.position,
+          built.bvhData.positionDim,
+          'scene BVH position',
+        ),
+      );
+      const bvhIndex = own(
+        uploadRgba32ui(gl, built.bvhData.index, built.bvhData.indexDim, 'scene BVH index'),
+      );
+      const materialIndex = own(
+        uploadRgba32ui(
+          gl,
+          built.bvhData.materialIndex,
+          built.bvhData.materialIndexDim,
+          'scene BVH material index',
+        ),
+      );
+      const materials = own(
+        uploadRgba32f(
+          gl,
+          materialsData.data,
+          materialsData.dim,
+          'scene materials',
+        ),
+      );
+      const attributesArray = own(
+        uploadRgba32fArray(
+          gl,
+          built.attrData.data,
+          built.attrData.dim,
+          built.attrData.layers,
+          'vertex attributes',
+        ),
+      );
+      const meshLights = updateResidentMeshLightTexture(
+        gl,
+        current,
+        built.meshLightsData,
+        deleteOldTextures,
+      );
+      if (meshLights != null) own(meshLights);
+      return {
+        bvhBounds,
+        bvhContents,
+        bvhPosition,
+        bvhIndex,
+        materialIndex,
+        materials,
+        attributesArray,
+        meshLights,
+        deleteOldTextures,
+      };
+    });
 
     return {
       textures: withTextureReplacementsForGl(gl, current, {
-        materials,
-        meshLights,
+        bvhBounds: replacements.bvhBounds,
+        bvhContents: replacements.bvhContents,
+        bvhPosition: replacements.bvhPosition,
+        bvhIndex: replacements.bvhIndex,
+        materialIndex: replacements.materialIndex,
+        materials: replacements.materials,
+        attributesArray: replacements.attributesArray,
+        meshLights: replacements.meshLights,
         meshLightCount: built.meshLightsData.triLightCount,
         totalEmissiveArea: built.meshLightsData.totalEmissiveArea,
         totalEmissivePower: built.meshLightsData.totalEmissivePower,
@@ -965,7 +1160,7 @@ export function tryFastPathPrimitiveListMutation(
       }),
       geoPack: built.merged,
       scene: mutationScene,
-      deleteOldTextures,
+      deleteOldTextures: replacements.deleteOldTextures,
       structuredWarnings,
     };
   }
@@ -979,6 +1174,7 @@ export function tryFastPathEmitterMutation(
   geoPack: WorldSpaceMergeResult | null,
   nextScene: Scene,
   emitterId: string,
+  options: { readonly bdpt?: boolean } = {},
 ): WebGl2MutationSwap | null {
   if (current == null || geoPack == null) return null;
   const changed = nextScene.emitters.find((e) => String(e.id) === emitterId);
@@ -986,6 +1182,7 @@ export function tryFastPathEmitterMutation(
   const lightsData = packLightsTexture(nextScene.emitters);
   const structuredWarnings: EngineWarning[] = [];
   const meshLightsData = packMeshAreaLights(nextScene, geoPack);
+  computeWebgl2TransportBounds(geoPack, nextScene, options);
   const lightsStorageMatches =
     squareDim(current.lightCount * LIGHT_PIXELS) === lightsData.dim;
   const meshLightStorageMatches = meshLightsData.data == null
@@ -996,40 +1193,54 @@ export function tryFastPathEmitterMutation(
   if (!lightsStorageMatches || !meshLightStorageMatches) {
     return null;
   }
-  const lights = updateResidentLightsTexture(gl, current, lightsData);
-  const deleteOldTextures: (WebGLTexture | null)[] = [];
-  const meshLights = updateResidentMeshLightTexture(gl, current, meshLightsData, deleteOldTextures);
   const foldedMaterials = isMeshAreaMutation
     ? repackMeshAreaFoldedMaterials(geoPack, nextScene)
     : null;
-  if (foldedMaterials != null) {
-    const materialData = packMaterialsTexture(
-      foldedMaterials.nextMaterials,
-      current.materialLayerMap ?? undefined,
-      {
-        vertexColorMaterialIds: current.vertexColorMaterialIds,
-        uvLayerByTexCoord: effectiveUvLayerMap(current),
-      },
-    );
-    updateRgba32f(
+  const materialData = foldedMaterials != null
+    ? packMaterialsTexture(
+        foldedMaterials.nextMaterials,
+        current.materialLayerMap ?? undefined,
+        {
+          vertexColorMaterialIds: current.vertexColorMaterialIds,
+          uvLayerByTexCoord: effectiveUvLayerMap(current),
+        },
+      )
+    : null;
+  const replacements = allocateMutationTransaction(gl, (own) => {
+    const deleteOldTextures: (WebGLTexture | null)[] = [current.lights];
+    const lights = own(updateResidentLightsTexture(gl, current, lightsData));
+    const meshLights = updateResidentMeshLightTexture(
       gl,
-      current.materials,
-      materialData.data as Float32Array,
-      materialData.dim,
-      'scene materials',
+      current,
+      meshLightsData,
+      deleteOldTextures,
     );
-  }
+    if (meshLights != null) own(meshLights);
+    const materials = materialData != null
+      ? own(
+          uploadRgba32f(
+            gl,
+            materialData.data,
+            materialData.dim,
+            'scene materials',
+          ),
+        )
+      : current.materials;
+    if (materialData != null) deleteOldTextures.push(current.materials);
+    return { lights, meshLights, materials, deleteOldTextures };
+  });
   return {
     textures: withTextureReplacementsForGl(gl, current, {
-      lights,
+      lights: replacements.lights,
       lightCount: lightsData.lightCount,
-      meshLights,
+      meshLights: replacements.meshLights,
+      materials: replacements.materials,
       meshLightCount: meshLightsData.triLightCount,
       totalEmissiveArea: meshLightsData.totalEmissiveArea,
       totalEmissivePower: meshLightsData.totalEmissivePower,
     }),
     ...(foldedMaterials != null ? { geoPack: foldedMaterials.nextGeoPack } : {}),
-    deleteOldTextures,
+    deleteOldTextures: replacements.deleteOldTextures,
     structuredWarnings,
   };
 }
@@ -1047,7 +1258,7 @@ export function fastPathEnvironmentMutation(
     warningMethod: 'updateEnvironment',
   });
   const deleteOldTextures: (WebGLTexture | null)[] = [];
-  const canUpdateRectWithoutAllocation = (
+  const canReplaceRectWithoutSceneRebuild = (
     currentTexture: WebGLTexture | null,
     currentWidth: number,
     currentHeight: number,
@@ -1058,49 +1269,50 @@ export function fastPathEnvironmentMutation(
     currentHeight === next.height
   );
   if (
-    !canUpdateRectWithoutAllocation(current.envMap, current.envWidth, current.envHeight, env.map) ||
-    !canUpdateRectWithoutAllocation(
-      current.envMarginal,
+    !canReplaceRectWithoutSceneRebuild(
+      current.envMap,
+      current.envWidth,
       current.envHeight,
-      current.envMarginal != null ? 1 : 0,
-      env.marginal,
+      env.map,
     ) ||
-    !canUpdateRectWithoutAllocation(current.envConditional, current.envWidth, current.envHeight, env.conditional)
+    !canReplaceRectWithoutSceneRebuild(
+      current.envConditional,
+      current.envWidth,
+      current.envHeight,
+      env.conditional,
+    )
   ) {
     return null;
   }
-  const envMap = updateNullableRectTexture(
-    gl,
-    current.envMap,
-    current.envWidth,
-    current.envHeight,
-    env.map,
-    'environment map',
-    deleteOldTextures,
-  );
-  const envMarginal = updateNullableRectTexture(
-    gl,
-    current.envMarginal,
-    current.envHeight,
-    current.envMarginal != null ? 1 : 0,
-    env.marginal,
-    'environment marginal CDF',
-    deleteOldTextures,
-  );
-  const envConditional = updateNullableRectTexture(
-    gl,
-    current.envConditional,
-    current.envWidth,
-    current.envHeight,
-    env.conditional,
-    'environment conditional CDF',
-    deleteOldTextures,
-  );
+  const replacements = allocateMutationTransaction(gl, (own) => {
+    const envMap = updateNullableRectTexture(
+      gl,
+      current.envMap,
+      current.envWidth,
+      current.envHeight,
+      env.map,
+      'environment map',
+      deleteOldTextures,
+    );
+    if (envMap != null) own(envMap);
+    const envConditional = updateNullableRectTexture(
+      gl,
+      current.envConditional,
+      current.envWidth,
+      current.envHeight,
+      env.conditional,
+      'environment CDF distribution',
+      deleteOldTextures,
+    );
+    if (envConditional != null) own(envConditional);
+    if (current.envMarginal != null) deleteOldTextures.push(current.envMarginal);
+    return { envMap, envMarginal: null, envConditional };
+  });
   return {
     textures: withTextureReplacementsForGl(gl, current, {
-      envMap,
-      envMarginal,
-      envConditional,
+      envMap: replacements.envMap,
+      envMarginal: replacements.envMarginal,
+      envConditional: replacements.envConditional,
       envTotalSum: env.totalSum,
       envWidth: env.map?.width ?? 0,
       envHeight: env.map?.height ?? 0,

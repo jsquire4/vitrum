@@ -279,6 +279,10 @@ describe('pt-webgpu symmetric volumetric BDPT', () => {
     expect(bdpt).toContain('bdptWriteMediumVertex(');
     expect(bdpt).toContain('eyeIsMedium: bool,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'log(cosX) + log(cosY) -',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('return exp(logG);');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain(
       'return (cosX * cosY) / dist2;',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(

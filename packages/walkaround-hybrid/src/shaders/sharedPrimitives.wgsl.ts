@@ -28,9 +28,26 @@ ${BSDF_PRIMITIVES_WGSL}
 ${LUMINANCE_WGSL}
 
 fn safe_normalize(v: vec3f) -> vec3f {
-  let len = length(v);
-  if (len < 1e-8) { return vec3f(0.0, 1.0, 0.0); }
-  return v / len;
+  let maxComponent = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(maxComponent > 0.0) || maxComponent > 3.402823e38) {
+    return vec3f(0.0, 1.0, 0.0);
+  }
+  let scaled = v / maxComponent;
+  let scaledLength = length(scaled);
+  if (!(scaledLength > 0.0) || scaledLength > 3.402823e38) {
+    return vec3f(0.0, 1.0, 0.0);
+  }
+  return scaled / scaledLength;
+}
+
+fn safe_length(v: vec3f) -> f32 {
+  let maxComponent = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(maxComponent > 0.0) || maxComponent > INFINITY) {
+    return 0.0;
+  }
+  let scaledLength = length(v / maxComponent);
+  let result = maxComponent * scaledLength;
+  return select(0.0, result, result > 0.0 && result <= INFINITY);
 }
 
 fn vitrumPcgSeed2(a: u32, b: u32, salt: u32) -> u32 {

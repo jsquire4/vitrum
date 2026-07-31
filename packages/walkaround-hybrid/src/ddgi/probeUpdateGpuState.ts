@@ -22,7 +22,7 @@ import type { ProbeUpdateBvhGpuBuffers } from './probeUpdateBvhBuffers.js';
  *                     a TLAS capacity-growing refit can replace only a subset.
  *  - `raysG1`       materials/lights/emitters/atlas/tangent/color — keyed on all seven identities.
  *  - `raysG2`       per-frame — keyed on irrReadTex + rayResultsBuf +
- *                     activeProbesBuf + envMapView + envSamplerForProbe.
+ *                     activeProbesBuf + envMapView.
  *  - `classifyG0`   ray/state resources — keyed on rayResultsBuf +
  *                     activeProbesBuf + exact active-prefix byte length +
  *                     irrReadTex + irrWriteTex.
@@ -108,7 +108,7 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
    * Wave 4 — HDRI into DDGI probe misses (2026-06-10).
    *
    * Env-map texture view for the `ddgiEnvMap` binding (@group(2) @binding(6)).
-   * A 1×1 placeholder rgba16float view is always bound so the bind group is
+   * A 1×1 placeholder rgba32float view is always bound so the bind group is
    * valid even when no HDRI is loaded (hasEnv=0 in FrameParams gates the
    * sample path in WGSL — the placeholder is never actually read).
    *
@@ -123,8 +123,4 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
    *  the view was supplied externally (non-owned). Destroyed by dispose only
    *  when `envMapOwnedByPass` is true. */
   envMapPlaceholderTex: GPUTexture | null;
-  /** Sampler for ddgiEnvMap (@group(2) @binding(7)). When the caller provides
-   *  a view, it should also provide a matching sampler; otherwise the pass's
-   *  own `linearSampler` is reused (clamp, linear). */
-  envSamplerForProbe: GPUSampler;
 }

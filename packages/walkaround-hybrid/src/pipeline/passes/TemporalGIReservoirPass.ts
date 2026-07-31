@@ -55,7 +55,10 @@ export class TemporalGIReservoirPass implements Pass {
     ], buildBg);
     // group(1) — shared scene BVH/TLAS/material atlas. Half-res dispatch.
     dispatchSingleBindGroup(ctx, this._pipeline, bg, 'gi-temporal', {
-      half: true,
+      dispatchOverride: {
+        wgX: ctx.restirGiWgX,
+        wgY: ctx.restirGiWgY,
+      },
       extraGroups: [{ slot: 1, group: sceneBindGroup }],
     });
   }

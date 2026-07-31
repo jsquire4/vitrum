@@ -8,6 +8,10 @@ import type { EngineWarning } from '@vitrum/core';
 import type { PTEngineWebGL2Options } from './options.js';
 import { WEBGL2_MAX_BOUNCES } from './limits.js';
 import { DEFAULT_RENDER_TARGET_BUDGET_BYTES } from './gl/renderTargetBudget.js';
+import {
+  requireFiniteFloat32,
+  requireNonNegativeFloat32,
+} from './scene/float32Policy.js';
 
 // General BDPT uses a fixed-size texture stack: one endpoint plus up to seven
 // surface/medium extensions. Four vertices is the balanced production default;
@@ -193,6 +197,10 @@ function validateDof(value: unknown): void {
         `(got ${String(value.focusDistance)})`,
     );
   }
+  requireNonNegativeFloat32(
+    value.focusDistance,
+    'createPTEngine_WebGL2: dof.focusDistance',
+  );
   assertFiniteNumber('createPTEngine_WebGL2: dof.bokehSize', value.bokehSize);
   if (value.bokehSize < 0) {
     throw new RangeError(
@@ -200,6 +208,10 @@ function validateDof(value: unknown): void {
         `(got ${String(value.bokehSize)})`,
     );
   }
+  const packedBokehSize = requireNonNegativeFloat32(
+    value.bokehSize,
+    'createPTEngine_WebGL2: dof.bokehSize',
+  );
   if (value.apertureBlades !== undefined) {
     const blades = value.apertureBlades;
     if (
@@ -218,6 +230,10 @@ function validateDof(value: unknown): void {
       'createPTEngine_WebGL2: dof.apertureRotation',
       value.apertureRotation,
     );
+    requireFiniteFloat32(
+      value.apertureRotation,
+      'createPTEngine_WebGL2: dof.apertureRotation',
+    );
   }
   if (value.anamorphicRatio !== undefined) {
     assertFiniteNumber(
@@ -229,6 +245,23 @@ function validateDof(value: unknown): void {
         `createPTEngine_WebGL2: dof.anamorphicRatio must be > 0 ` +
           `(got ${String(value.anamorphicRatio)})`,
       );
+    }
+    const packedAnamorphicRatio = requireNonNegativeFloat32(
+      value.anamorphicRatio,
+      'createPTEngine_WebGL2: dof.anamorphicRatio',
+    );
+    // Mirror the shader's real branch: ratios below one never evaluate a
+    // reciprocal; ratios at/above one produce a finite squeeze in (0, 1].
+    if (packedBokehSize > 0 && packedAnamorphicRatio >= 1) {
+      const squeeze = requireFiniteFloat32(
+        1 / packedAnamorphicRatio,
+        'createPTEngine_WebGL2: dof.anamorphic squeeze',
+      );
+      if (!(squeeze > 0 && squeeze <= 1)) {
+        throw new RangeError(
+          'createPTEngine_WebGL2: dof.anamorphic squeeze must remain in (0, 1]',
+        );
+      }
     }
   }
 }
@@ -395,6 +428,10 @@ export function validateAndResolveWebgl2Options(
           `(got ${String(opts.backgroundAlpha)})`,
       );
     }
+    requireNonNegativeFloat32(
+      opts.backgroundAlpha,
+      'createPTEngine_WebGL2: backgroundAlpha',
+    );
   }
   if (opts.backgroundBlur !== undefined) {
     assertFiniteNumber('createPTEngine_WebGL2: backgroundBlur', opts.backgroundBlur);
@@ -404,12 +441,18 @@ export function validateAndResolveWebgl2Options(
           `(got ${String(opts.backgroundBlur)})`,
       );
     }
+    requireNonNegativeFloat32(
+      opts.backgroundBlur,
+      'createPTEngine_WebGL2: backgroundBlur',
+    );
   }
 
   validateDof(opts.dof);
-  if (opts.cameraType === 'equirectangular' && opts.dof !== undefined) {
+  const hasActiveDof =
+    opts.dof !== undefined && Math.fround(opts.dof.bokehSize) > 0;
+  if (opts.cameraType === 'equirectangular' && hasActiveDof) {
     throw new RangeError(
-      'createPTEngine_WebGL2: dof is unsupported when cameraType is "equirectangular"; ' +
+      'createPTEngine_WebGL2: active dof is unsupported when cameraType is "equirectangular"; ' +
         'thin-lens depth of field has no coherent full-sphere focal plane',
     );
   }

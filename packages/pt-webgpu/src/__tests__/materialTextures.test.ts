@@ -376,6 +376,12 @@ describe('collectMaterialTextures (P2 host)', () => {
     expect(descriptors[MATERIAL_TEX_FLOAT_STRIDE + 19]).toBe(1);
   });
 
+  it('rejects authored-positive light-map intensity that vanishes at Float32 publication', () => {
+    expect(() => collectMaterialTextures([
+      mat({ lightMapIntensity: 1e-46 }),
+    ])).toThrow(/lightMapIntensity.*remain positive after Float32 packing/);
+  });
+
   it('collects clearcoatNormalMap as LINEAR data with scale, wrap, and UV metadata', () => {
     const ccNormalTex = { id: 'cc-normal' };
     const { linearSources, descriptors } = collectMaterialTextures([
@@ -985,6 +991,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
 
   it('normal maps consume authored tangents with handedness before falling back to derived tangents', () => {
     const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
+    const compactWgsl = wgsl.replace(/\s+/g, ' ');
     expect(wgsl).toContain(
       'fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32, isFrontFace: bool)',
     );
@@ -994,8 +1001,15 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('let ta = meshTangents[tri.x];');
     expect(wgsl).toContain('let handednessRaw = ta.w * u + tb.w * v + tc.w * w;');
     expect(wgsl).toContain('frame.bitangent = cross(normal, tangent) * handedness;');
-    expect(wgsl).toContain('let linearDeterminant = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz);');
-    expect(wgsl).toContain('var bitangent = f * (-duv2.x * e1 + duv1.x * e2);');
+    expect(wgsl).toContain(
+      'instanceHandedness =\n            transformLinearOrientationSign(l2w0, l2w1, l2w2);',
+    );
+    expect(wgsl).not.toContain(
+      'let linearDeterminant = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz);',
+    );
+    expect(compactWgsl).toContain(
+      'var bitangent = f * (-normalizedDuv2.x * e1 + normalizedDuv1.x * e2);',
+    );
     expect(wgsl).toContain('dot(cross(normal, tangent), bitangent) >= 0.0');
     expect(wgsl).toContain('if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u)');
     expect(wgsl).toContain('let l2w0 = tlasInstanceLocalToWorld[m];');
@@ -1040,6 +1054,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('MATERIAL_TEX_UV_METALLIC');
     expect(wgsl).toContain('sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_AO');
     expect(wgsl).toContain('sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_LIGHT');
+    expect(wgsl).toContain('return ptFiniteNonNegativeRadianceProduct(texel, vec3f(intensity));');
     expect(wgsl).toContain('sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY');
     expect(wgsl).toContain('sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv, MATERIAL_TEX_UV_BUMP');
     expect(wgsl).toContain('sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ALPHA');

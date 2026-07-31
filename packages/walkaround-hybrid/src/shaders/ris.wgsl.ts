@@ -89,9 +89,75 @@ fn restirDirectVisibilityScalar(tint: vec3f) -> f32 {
   return clamp(luminance(tint), 0.0, 1.0);
 }
 
+// At reservoirScale > 1 one reservoir is intentionally shared by several
+// full-resolution receivers. Its selection target therefore cannot depend on
+// any representative receiver's normal, material, depth, or visibility.
+// This proposal reservoir uses emitted radiance as a strictly source-domain
+// target and retains the exact flat-CDF × area / environment-solid-angle PDF.
+// Shade re-evaluates the complete receiver integrand and visibility per pixel.
+fn buildReceiverIndependentDI(rng: ptr<function, u32>) -> ReservoirDI {
+  var r = emptyReservoirDI();
+  var mAreaSupport = 0u;
+  var mEnvSupport = 0u;
+  let envStrategyActive = envHasMap();
+  let scheduledAreaM = M_LIGHT;
+  let scheduledEnvM = select(0u, M_ENV, envStrategyActive);
+  let scheduledTotalM = scheduledAreaM + scheduledEnvM;
+  let areaRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledAreaM));
+  let envRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledEnvM));
+  let emCount = max(ubo.emitterCount, 1u);
+
+  // Flat power-CDF selection is receiver independent. ReGIR and the light tree
+  // are deliberately bypassed here because both condition their proposal on a
+  // representative world-space receiver.
+  for (var i = 0u; i < M_LIGHT; i = i + 1u) {
+    mAreaSupport = mAreaSupport + 1u;
+    let lid = sampleEmitterIdx(emCount, rand_f32(rng));
+    let emitterSelPmf = emitterCdfPmf(emCount, lid);
+    let e = sceneLoadEmitter(lid);
+    let xi = rand2(rng);
+    let ls = sampleEmitterPoint(e, xi);
+    let pX = emitterSelPmf * ls.pdfArea;
+    let pHat = restir_di_coarse_proposal_phat(lid, xi);
+    var w = 0.0;
+    if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }
+    if (!reservoirDiFinite(w)) { w = 0.0; }
+    updateReservoirDI(&r, lid, xi, w * areaRisScale, rng);
+  }
+
+  for (var i = 0u; i < M_ENV; i = i + 1u) {
+    let envSample = envImportanceSample(rng);
+    if (!envStrategyActive) { continue; }
+    mEnvSupport = mEnvSupport + 1u;
+    let pHat = max(0.0, luminance(envSample.color));
+    var w = 0.0;
+    if (pHat > 0.0 && envSample.pdf > 0.0) {
+      w = pHat / envSample.pdf;
+    }
+    if (!reservoirDiFinite(w)) { w = 0.0; }
+    updateReservoirDI(
+      &r,
+      ENV_SAMPLE_SENTINEL,
+      envDirToXi(envSample.dir),
+      w * envRisScale,
+      rng,
+    );
+  }
+
+  r.areaM = mAreaSupport;
+  r.envM = mEnvSupport;
+  r.M = mAreaSupport + mEnvSupport;
+  if (r.M > 0u && r.w_sum > 0.0) {
+    let pHat = restir_di_coarse_proposal_phat(r.lightId, r.xi);
+    r.W = select(0.0, r.w_sum / (f32(r.M) * pHat), pHat > 0.0);
+  }
+  return r;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = ubo.screenSize;
+  let reservoirDims = restirDiDimensions();
 
   // Checkerboard sparse-RIS (opt-in; OFF by default). RIS SEEDS the per-pixel
   // reservoir (primary BVH cast + M_LIGHT emitter candidates) — the single most
@@ -114,15 +180,21 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // last active pixel on odd widths; that overshoot lands at px >= W and is
   // caught by the bounds guard. When OFF, pix == gid.xy and the dispatch is
   // full-res ⇒ bit-identical with the pre-checkerboard kernel.
-  var pix = gid.xy;
-  if (ubo.checkerboardOn == 1u) {
+  var reservoirCoord = gid.xy;
+  if (ubo.checkerboardOn == 1u && restirReservoirScaleValue() == 1u) {
     let startCol = (gid.y + ubo.frameParity) & 1u;
-    pix = vec2u(gid.x * 2u + startCol, gid.y);
+    reservoirCoord = vec2u(gid.x * 2u + startCol, gid.y);
   }
-  if (any(pix >= dims)) { return; }
+  if (any(reservoirCoord >= reservoirDims)) { return; }
 
-  let pixelIdx = pix.y * dims.x + pix.x;
+  let pix = restirDiFullPixel(reservoirCoord);
+  let pixelIdx = reservoirCoord.y * reservoirDims.x + reservoirCoord.x;
   var rng = pcgInit(pix.x ^ (ubo.frameSeed * 73856093u), pix.y ^ (ubo.frameSeed * 19349663u), ubo.frameSeed);
+
+  if (restirReservoirScaleValue() > 1u) {
+    storeReservoirDI_rw(pixelIdx, buildReceiverIndependentDI(&rng));
+    return;
+  }
 
   // --- Primary ray cast to find the surface hit ---
   // Compute inverse view-projection matrix for ray generation.
@@ -294,11 +366,12 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     let ls  = sampleEmitterPoint(e, xiTri);
 
     let toL   = ls.pos - pos;
-    let dist2 = dot(toL, toL);
-    if (dist2 < 1e-8) { continue; }
-    let wi     = toL / sqrt(dist2);
+    let dist = safe_length(toL);
+    if (!(dist > 0.0)) { continue; }
+    let dist2 = dist * dist;
+    let wi = safe_normalize(toL);
     let nDotL  = max(0.0, dot(normal, wi));
-    let nlDotL = max(0.0, dot(-e.normal, wi));
+    let nlDotL = emitterTriCosineTowardReceiver(e, -wi);
     if (nDotL <= 0.0 || nlDotL <= 0.0) { continue; }
 
     // evalGGX includes NdotL; G is the emitter geometry term only.
@@ -342,7 +415,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // returns the SA-measure env p̂ (no G term) for sentinel lids, consistent
   // with the SA source pdf used here.
   //
-  // VISIBILITY: shadow ray toward the sampled direction with tmax=1e20 (to infinity).
+  // VISIBILITY: shadow ray toward the sampled direction with finite-f32 tmax.
   // skipGlass=true (same as emitter shadow rays — glass is translucent to env light).
   for (var ei = 0u; ei < M_ENV; ei++) {
     let envS = envImportanceSample(&rng);
@@ -355,7 +428,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (nDotL <= 0.0) { continue; }
     let brdfE = restir_di_eval_surface_brdf(surf, envS.dir);
     // p̂ = luminance(envColor * brdf) — no G term (env is at infinity).
-    let pHatE = luminance(envS.color * envMapIntensity * brdfE);
+    let receiverEnvironment = walkaroundScaleEnvironmentRadiance(
+      envS.color,
+      envMapIntensity,
+    );
+    let pHatE = luminance(receiverEnvironment * brdfE);
     // Source pdf: solid-angle pdf from the CDF importance sample (same measure as p̂).
     var wE = select(0.0, pHatE / envS.pdf, pHatE > 0.0);
     if (!reservoirDiFinite(wE)) { wE = 0.0; }
@@ -375,7 +452,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   if (r.M > 0u && r.w_sum > 0.0) {
     let lid = r.lightId;
     // WS1 — offset along the GEOMETRIC normal (smooth normal can self-hit).
-    let shadowOrig = pos + geoNormal * 1e-3;
+    let shadowOrig = pos + geoNormal * walkaroundRayOriginBias();
 
     // Wave 4 — ENV_SAMPLE_SENTINEL: shadow ray to infinity along the stored dir.
     if (lid == ENV_SAMPLE_SENTINEL) {
@@ -387,7 +464,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
         ubo.bvhMode, ubo.tlasNodeCount,
 
-        shadowOrig, envDir, 1e20, ubo.triIntersectEpsilon,
+        shadowOrig, envDir, INFINITY, ubo.triIntersectEpsilon,
         bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
         ubo.sunAngular.z >= 1.5);
       let shadowT = restirDirectVisibilityScalar(shadowTint);
@@ -408,8 +485,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       // to the occluder's.
       let ls  = sampleEmitterPoint(e, r.xi);
       let toL = ls.pos - pos;
-      let dist = length(toL);
-      let wi  = toL / dist;
+      let dist = safe_length(toL);
+      let wi  = safe_normalize(toL);
       // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
       // (light passes through glass; per-channel tinted-visibility handles tint).
       // SHADOW-01 / ALPHA-03 — castShadow:false geometry is skipped and readable
@@ -418,11 +495,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       // recomputes and re-colors the selected sample.
       // Emitter castShadow:false disables the emitter's own NEE shadow ray.
       var shadowT = 1.0;
-      if (e.castShadowDisabled < 0.5) {
+      if (!emitterTriCastShadowDisabled(e)) {
         let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
           ubo.bvhMode, ubo.tlasNodeCount,
 
-          shadowOrig, wi, dist - 2e-3, ubo.triIntersectEpsilon,
+          shadowOrig, wi, max(0.0, dist - walkaroundRayEndMargin()), ubo.triIntersectEpsilon,
           bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
           ubo.sunAngular.z >= 1.5);
         shadowT = restirDirectVisibilityScalar(shadowTint);

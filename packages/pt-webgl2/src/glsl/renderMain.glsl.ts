@@ -30,8 +30,9 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 						// replays the continuation path with the exact same RNG state as the
 						// main radiance pass. The light proposal and visibility trace save and
 						// restore their mutable RNG state separately at the capture site.
-						uint h = uint( gl_FragCoord.x ) * 0x9e3779b9u;
-						h ^= uint( gl_FragCoord.y ) * 0x85ebca6bu;
+							vec2 logicalFragCoord = gl_FragCoord.xy + uTileOrigin;
+							uint h = uint( logicalFragCoord.x ) * 0x9e3779b9u;
+							h ^= uint( logicalFragCoord.y ) * 0x85ebca6bu;
 						h ^= uint( seed ) * 0xc2b2ae35u;
 						h ^= candidateOrdinal * 0x27d4eb2fu;
 						h ^= h >> 16u;
@@ -46,8 +47,9 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 					void main() {
 
 						// init
-						rng_initialize( gl_FragCoord.xy, seed );
-						sobolPixelIndex = ( uint( gl_FragCoord.x ) << 16 ) | uint( gl_FragCoord.y );
+							vec2 logicalFragCoord = gl_FragCoord.xy + uTileOrigin;
+							rng_initialize( logicalFragCoord, seed );
+							sobolPixelIndex = ( uint( logicalFragCoord.x ) << 16 ) | uint( logicalFragCoord.y );
 						sobolPathIndex = uint( seed );
 
                                                 #if FEATURE_BDPT && ! NEE_CANDIDATE_PASS
@@ -167,9 +169,13 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 
 // ── Section 2: camera ray + env rotation + G-buffer init + BDPT eye stack ─
 const RENDER_MAIN_GBUFFER = /* glsl */ `
-						// get camera ray
-						Ray ray = getCameraRay();
-						vec3 primaryRayOrigin = ray.origin;
+							// get camera ray
+							Ray ray = getCameraRay();
+							vec3 primaryRayOrigin = ray.origin;
+							// The forward-hit MIS density belongs to the preceding accepted
+							// scattering vertex. Fog boundaries, alpha skips, and non-shadow
+							// surfaces may advance ray.origin without changing that vertex.
+							vec3 incomingAcceptedVertexPoint = ray.origin;
 
 						// inverse environment rotation
 						envRotation3x3 = mat3( environmentRotation );
@@ -378,8 +384,50 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							}
                                                         if ( forwardAreaLightHit ) {
 
+                                                                Light forwardAreaLight =
+                                                                        readLightInfo(
+                                                                                lights.tex,
+                                                                                forwardAreaLightIndex
+                                                                        );
+                                                                VitrumAreaVectorMeasure forwardAreaMeasure =
+                                                                        vitrumMeasureAreaVector(
+                                                                                forwardAreaLight.u,
+                                                                                forwardAreaLight.v,
+                                                                                forwardAreaLight.type ==
+                                                                                        CIRC_AREA_LIGHT_TYPE
+                                                                                        ? PI / 4.0
+                                                                                        : 1.0
+                                                                        );
+                                                                vec3 fullForwardLightDelta =
+                                                                        forwardAreaLightRec.point -
+                                                                        incomingAcceptedVertexPoint;
+                                                                float fullForwardLightDistance =
+                                                                        vitrumLengthVec3(
+                                                                                fullForwardLightDelta
+                                                                        );
+                                                                vec3 fullForwardLightDirection =
+                                                                        fullForwardLightDistance > 0.0
+                                                                        ? fullForwardLightDelta /
+                                                                                fullForwardLightDistance
+                                                                        : vec3( 0.0 );
+                                                                float fullForwardLightPdf =
+                                                                        forwardAreaMeasure.valid
+                                                                        ? vitrumAreaToSolidAnglePdf(
+                                                                                fullForwardLightDistance,
+                                                                                dot(
+                                                                                        - fullForwardLightDirection,
+                                                                                        forwardAreaLightRec.normal
+                                                                                ),
+                                                                                forwardAreaMeasure
+                                                                        )
+                                                                        : 0.0;
                                                                 vec3 forwardAreaLightThroughput = state.throughput * pathThroughputFromRgb( forwardAreaLightRec.emission, state.wavelength );
                                                                 vec3 forwardAreaLightRgb = wavelengthToRGB( state.wavelength, forwardAreaLightThroughput, state.wavelengthPdf );
+                                                                bool shadowDisabledForwardOwnedByNee =
+                                                                        forwardAreaLightRec.castShadowDisabled > 0.5 &&
+                                                                        ! state.firstRay &&
+                                                                        ! scatterRec.sampledDelta &&
+                                                                        ! state.transmissiveRay;
 
                                                                 #if FEATURE_BDPT
 
@@ -393,6 +441,11 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
                                                                 #else
 
+                                                                // castShadow:false changes finite-light visibility into an
+                                                                // NEE-only proposal. Keep camera/delta/transmission visibility,
+                                                                // but do not add an ordinary BSDF hit a second time.
+                                                                if ( shadowDisabledForwardOwnedByNee ) break;
+
                                                                 #if FEATURE_MIS
 
 								// NOTE: Only area lights are supported for forward sampling and can be hit.
@@ -404,7 +457,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
                                                                                         readLightInfo( lights.tex, forwardAreaLightIndex ).power
                                                                                 ) / sumLightPower
                                                                                 : 0.0;
-									float lightSamplePdf = forwardAreaLightRec.pdf / lightsDenom * float( lights.count ) * discreteSelectPdf;
+										float lightSamplePdf = fullForwardLightPdf / lightsDenom * float( lights.count ) * discreteSelectPdf;
 									float misWeight = misHeuristic( scatterRec.pdf, lightSamplePdf );
 									forwardAreaLightRgb *= misWeight;
 								}
@@ -429,7 +482,17 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 									vec3 background = sampleBackground( ray.direction, rand2( 2 ) );
 									vec3 backgroundThroughput = state.throughput * pathThroughputFromRgb( background, state.wavelength );
 									pc_fragColor.rgb += wavelengthToRGB( state.wavelength, backgroundThroughput, state.wavelengthPdf );
-									pc_fragColor.a = backgroundAlpha;
+									// Background alpha describes camera-visible
+									// coverage only. Once an accepted surface or
+									// medium vertex wrote the primary G-buffer,
+									// a later path miss contributes environment
+									// radiance without making that covered pixel
+									// transparent.
+									if ( ! gbufWritten ) {
+
+										pc_fragColor.a = backgroundAlpha;
+
+									}
 
                                                                 } else {
 
@@ -454,14 +517,20 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
                                                                         float misWeight =
                                                                                 misHeuristic( scatterRec.pdf, envPdf );
                                                                         #endif
-									vec3 environmentThroughput = state.throughput * pathThroughputFromRgb( envColor, state.wavelength );
-									pc_fragColor.rgb += state.envMapIntensity * environmentIntensity * wavelengthToRGB( state.wavelength, environmentThroughput, state.wavelengthPdf ) * misWeight;
+									vec3 environmentRadiance = finiteEquirectRadiance(
+										envColor, state.envMapIntensity
+									);
+									vec3 environmentThroughput = state.throughput * pathThroughputFromRgb( environmentRadiance, state.wavelength );
+									pc_fragColor.rgb += wavelengthToRGB( state.wavelength, environmentThroughput, state.wavelengthPdf ) * misWeight;
 
 									#else
 
 									vec3 envColor = sampleEquirectColor( envMapInfo.map, envRotation3x3 * ray.direction );
-									vec3 environmentThroughput = state.throughput * pathThroughputFromRgb( envColor, state.wavelength );
-									pc_fragColor.rgb += state.envMapIntensity * environmentIntensity * wavelengthToRGB( state.wavelength, environmentThroughput, state.wavelengthPdf );
+									vec3 environmentRadiance = finiteEquirectRadiance(
+										envColor, state.envMapIntensity
+									);
+									vec3 environmentThroughput = state.throughput * pathThroughputFromRgb( environmentRadiance, state.wavelength );
+									pc_fragColor.rgb += wavelengthToRGB( state.wavelength, environmentThroughput, state.wavelengthPdf );
 
                                                                         #endif
 
@@ -511,6 +580,8 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							}
 
 							#endif
+							bool activeMaterialMeshEmitterNeeDisabled = bool( activeMaterialFlags & 0x80u );
+							bool activeMaterialDoubleSided = bool( activeMaterialFlags & 0x02u );
 
 							// early out if this is a matte material
 							if ( activeMaterialMatte && state.firstRay ) {
@@ -560,11 +631,24 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 // ── Section 5: G-buffer capture + surface shading + NEE + BDPT connection ─
 const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 
-							// Sprint 5: G-buffer primary-hit capture (once per path, at first real surface hit).
+								vec3 geometricHitPoint =
+									ray.origin + ray.direction * surfaceHit.dist;
+								float incomingAcceptedVertexDistance =
+									vitrumLengthVec3(
+										geometricHitPoint - incomingAcceptedVertexPoint
+									);
+								vec3 incomingAcceptedVertexDirection =
+									incomingAcceptedVertexDistance > 0.0
+										? ( geometricHitPoint - incomingAcceptedVertexPoint ) /
+											incomingAcceptedVertexDistance
+										: vec3( 0.0 );
+								// Sprint 5: G-buffer primary-hit capture (once per path, at first real surface hit).
 							// Depth is distance from the original primary-ray origin to the
-							// first accepted hit; alpha pass-through is not a hit.
-							if ( ! gbufWritten ) {
-								gbufLinearDepth = distance( ray.origin + ray.direction * surfaceHit.dist, primaryRayOrigin );
+								// first accepted hit; alpha pass-through is not a hit.
+								if ( ! gbufWritten ) {
+									gbufLinearDepth = vitrumSaturatedLengthVec3(
+										geometricHitPoint - primaryRayOrigin
+									);
 								// World normal encoded to [0,1] (decode: xyz*2-1).
 								gbufNormalEnc = surf.normal * 0.5 + 0.5;
 								// Demodulated base color: surf.color holds baseColor x ao (no lighting).
@@ -598,23 +682,34 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
                                                         // The c=0 endpoint connection owns every ordinary finite
                                                         // mesh-emitter arrival. Preserve only camera/delta-chain hits.
                                                         bool skipForwardMeshEmission =
+                                                                ! activeMaterialMeshEmitterNeeDisabled &&
                                                                 ! state.firstRay && ! incomingWasDelta;
                                                         #else
                                                         bool skipForwardMeshEmission =
                                                                 activeMaterialMeshEmitterCastShadowDisabled &&
-                                                                ! state.firstRay && ! incomingWasDelta;
+                                                                ! activeMaterialMeshEmitterNeeDisabled &&
+                                                                ! state.firstRay && ! incomingWasDelta &&
+                                                                ! state.transmissiveRay;
                                                         #endif
-							if ( ! skipForwardMeshEmission ) {
+							// Closed transmissive boundaries must remain traversable on their
+							// back face, but a single-sided emissive material still radiates
+							// only through its authored front orientation.
+							bool surfaceEmissionVisible = surf.frontFace || activeMaterialDoubleSided;
+							if ( ! skipForwardMeshEmission && surfaceEmissionVisible ) {
 								if (
+									! activeMaterialMeshEmitterNeeDisabled &&
 									uMeshLightCount != 0u &&
                                                                         uTotalEmissivePower > 0.0 &&
                                                                         ! state.firstRay &&
                                                                         ! incomingWasDelta &&
 									surf.emission != vec3( 0.0 )
 								) {
-									float cosLight = dot( surf.faceNormal, ray.direction );
-									float neePdf = meshAreaLightForwardPdf(
-										surfaceHit.dist * surfaceHit.dist,
+										float cosLight = dot(
+											surf.faceNormal,
+											incomingAcceptedVertexDirection
+										);
+										float neePdf = meshAreaLightForwardPdf(
+											incomingAcceptedVertexDistance,
 										cosLight,
 										uTotalEmissivePower,
 										surf.emission
@@ -653,11 +748,9 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 								scatterRec = bsdfSample( - ray.direction, surf, state.wavelength );
 
 							}
-							state.isShadowRay = scatterRec.specularPdf < rand( 4 );
+								state.isShadowRay = scatterRec.specularPdf < rand( 4 );
 
-							bool isBelowSurface = ! surf.volumeParticle && dot( scatterRec.direction, surf.faceNormal ) < 0.0;
-							vec3 geometricHitPoint =
-								ray.origin + ray.direction * surfaceHit.dist;
+								bool isBelowSurface = ! surf.volumeParticle && dot( scatterRec.direction, surf.faceNormal ) < 0.0;
                                                         vec3 hitPoint = stepRayOrigin( ray.origin, ray.direction, isBelowSurface ? - surf.faceNormal : surf.faceNormal, surfaceHit.dist );
 
                                                         #if FEATURE_BDPT
@@ -666,7 +759,7 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
                                                         // s>=2 power-heuristic denominator.
                                                         bool bdptEyeIsSpec = scatterRec.sampledDelta;
                                                         if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
-                                                                bdptEyePos[ bdptEyeDepth ] = hitPoint;
+                                                                bdptEyePos[ bdptEyeDepth ] = geometricHitPoint;
                                                                 bdptEyeNrm[ bdptEyeDepth ] = surf.volumeParticle
                                                                         ? vec3( 0.0 )
                                                                         : surf.normal;
@@ -728,7 +821,7 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
                                                                                         neeLightSample.bdptLaunchPdf,
                                                                                         neeLightSample.direction,
                                                                                         surf,
-                                                                                        hitPoint,
+                                                                                        geometricHitPoint,
                                                                                         - ray.direction,
                                                                                         state.wavelength,
                                                                                         bdptEyeDepth,
@@ -859,7 +952,7 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
                                                                                 // vertex budget as the unidirectional path.
                                                                                 if ( bdptLvi + bdptEyeDepth >= bounces ) break;
 										pc_fragColor.rgb += evaluateBdptConnection(
-											hitPoint,
+												geometricHitPoint,
 											surf.normal,
 										- ray.direction,    // worldWo at eye vertex
 										state.throughput,
@@ -992,21 +1085,50 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							// eyePdfFwd=1.0 is gone). The swapped-direction reverse density at this
 							// vertex toward the previous one is merged pdfFwd(E_{depth-1}); write it
 							// into the previous slot (PBRT camera[d-1].pdfRev set while at camera[d]).
-							if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
-								if ( bdptEyeDepth >= 1 ) {
-									vec3 bdptToPrev = normalize( bdptPrevPos - hitPoint );
-                                                                        bool bdptSwappedDelta;
-                                                                        float bdptSwappedRev = bsdfPdfResult(
-                                                                                scatterRec.direction,
-                                                                                bdptToPrev,
-                                                                                surf,
-                                                                                state.wavelength,
-                                                                                bdptSwappedDelta
-                                                                        );
-                                                                        bdptEyePdfFwd[ bdptEyeDepth - 1 ] =
-                                                                                bdptSwappedRev *
-                                                                                bdptEyeSegmentReverseDensity;
-                                                                }
+								if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
+									if ( bdptEyeDepth >= 1 ) {
+										// This direction belongs only to the alternate
+										// reverse strategy. If its finite representation
+										// fails, zero that density without terminating the
+										// sampled eye path or corrupting adjacent strategies.
+										float bdptPatchedReverseDensity = 0.0;
+										vec3 bdptToPrevEdge =
+											bdptPrevPos - geometricHitPoint;
+										if (
+											! any( isnan( bdptToPrevEdge ) ) &&
+											! any( isinf( bdptToPrevEdge ) ) &&
+											vitrumFiniteNonZeroVec3( bdptToPrevEdge )
+										) {
+											vec3 bdptToPrev = vitrumNormalizeVec3(
+												bdptToPrevEdge, vec3( 0.0 )
+											);
+	                                                                                bool bdptSwappedDelta;
+	                                                                                float bdptSwappedRev = bsdfPdfResult(
+	                                                                                        scatterRec.direction,
+	                                                                                        bdptToPrev,
+	                                                                                        surf,
+	                                                                                        state.wavelength,
+	                                                                                        bdptSwappedDelta
+	                                                                                );
+											float candidateReverseDensity =
+												bdptSwappedRev *
+												bdptEyeSegmentReverseDensity;
+											if (
+												! bdptSwappedDelta &&
+												bdptSwappedRev >= 0.0 &&
+												! isnan( bdptSwappedRev ) &&
+												! isinf( bdptSwappedRev ) &&
+												candidateReverseDensity >= 0.0 &&
+												! isnan( candidateReverseDensity ) &&
+												! isinf( candidateReverseDensity )
+											) {
+												bdptPatchedReverseDensity =
+													candidateReverseDensity;
+											}
+										}
+	                                                                        bdptEyePdfFwd[ bdptEyeDepth - 1 ] =
+											bdptPatchedReverseDensity;
+	                                                                }
                                                                 #if ! NEE_CANDIDATE_PASS
                                                                 if (
                                                                         envMapInfo.totalSum > 0.0 &&
@@ -1020,13 +1142,28 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
                                                                         float pendingNeePdf =
                                                                                 pendingEnvironmentPdf /
                                                                                 bdptDistantNeeDenom();
-                                                                        float pendingLaunchPdf =
-                                                                                bdptEnvironmentEmitterPower() /
-                                                                                bdptTotalEmitterPower() *
-                                                                                pendingEnvironmentPdf /
-                                                                                (
-                                                                                        PI * uBdptSceneRadius * uBdptSceneRadius
+                                                                        float launchRadius =
+                                                                                max(
+                                                                                        uBdptSceneRadius,
+                                                                                        1.175494351e-38
                                                                                 );
+                                                                        VitrumAreaVectorMeasure launchArea =
+                                                                                vitrumMeasureAreaVector(
+                                                                                        vec3( launchRadius, 0.0, 0.0 ),
+                                                                                        vec3( 0.0, launchRadius, 0.0 ),
+                                                                                        PI
+                                                                                );
+                                                                        float environmentDiscretePdf =
+                                                                                bdptEmitterDiscretePdf(
+                                                                                        bdptEnvironmentEmitterLogPower()
+                                                                                );
+                                                                        float pendingLaunchPdf =
+                                                                                launchArea.valid &&
+                                                                                environmentDiscretePdf > 0.0
+                                                                                        ? environmentDiscretePdf *
+                                                                                                pendingEnvironmentPdf /
+                                                                                                launchArea.area
+                                                                                        : 0.0;
                                                                         bdptPendingEnvironmentMisWeight =
                                                                                 bdptInfiniteEyeFamilyWeight(
                                                                                         0,
@@ -1036,7 +1173,7 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
                                                                                         pendingLaunchPdf,
                                                                                         scatterRec.direction,
                                                                                         surf,
-                                                                                        hitPoint,
+                                                                                        geometricHitPoint,
                                                                                         - ray.direction,
                                                                                         state.wavelength,
                                                                                         bdptEyeDepth,
@@ -1052,7 +1189,7 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
                                                                 }
                                                                 #endif
                                                                 bdptPrevScatterPdf = max( scatterRec.pdf, 0.0 );
-                                                            bdptPrevPos = hitPoint;
+                                                            bdptPrevPos = geometricHitPoint;
                                                             bdptEyeSegmentDensity = 1.0;
                                                             bdptEyeSegmentReverseDensity = surf.volumeParticle
                                                                     ? max( state.fogMaterial.opacity, 0.0 )
@@ -1061,18 +1198,17 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							}
 							#endif
 
-							// prepare for next ray
-							ray.direction = scatterRec.direction;
-							ray.origin = hitPoint;
+								// prepare for next ray
+								ray.direction = scatterRec.direction;
+								ray.origin = hitPoint;
+								incomingAcceptedVertexPoint = geometricHitPoint;
 
 						}
 `;
 
 // ── Section 9: post-loop alpha + debug + G-buffer write ──────────────────
 const RENDER_MAIN_POST_LOOP = /* glsl */ `
-						pc_fragColor.a *= opacity;
-
-						#if NEE_CANDIDATE_PASS
+							#if NEE_CANDIDATE_PASS
 
 						// K is packed only after the path terminates, so every eligible vertex
 						// contributes to the inclusion probability even if the retained light
@@ -1088,9 +1224,37 @@ const RENDER_MAIN_POST_LOOP = /* glsl */ `
 							uintBitsToFloat( neeFinalFlags )
 						);
 
-						#else
+							#else
 
-						// Sprint 5: Write G-buffer outputs.
+							// Fold this complete main-path sample directly into the
+							// progressive ping-pong history. NEE is added afterward
+							// with the same opacity, eliminating a third full-size
+							// raw-sample target and a separate blend pass.
+							vec4 historyColor = texelFetch(
+								uAccumHistory,
+								ivec2( gl_FragCoord.xy ),
+								0
+							);
+							float inverseOpacity = 1.0 - opacity;
+							float totalAlpha =
+								historyColor.a * inverseOpacity +
+								pc_fragColor.a * opacity;
+							if ( historyColor.a != 0.0 || pc_fragColor.a != 0.0 ) {
+
+								pc_fragColor.rgb =
+									historyColor.rgb *
+										( inverseOpacity * historyColor.a / totalAlpha ) +
+									pc_fragColor.rgb *
+										( opacity * pc_fragColor.a / totalAlpha );
+								pc_fragColor.a = totalAlpha;
+
+							} else {
+
+								pc_fragColor = vec4( 0.0 );
+
+							}
+
+							// Sprint 5: Write G-buffer outputs.
 						// If gbufWritten == false (sky/miss on first ray), sky sentinels are used:
 						//   gNormalDepth.rgb = (0.5,1.0,0.5) → decodes to world-up (0,1,0)
 						//   gNormalDepth.w   = 0.0 (sky depth sentinel, matches shared-denoisers convention)

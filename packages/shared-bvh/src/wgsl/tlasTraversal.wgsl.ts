@@ -61,18 +61,50 @@ fn tlasLastTraversalStatus() -> u32 {
 }
 
 fn tlasSafeNormalize(v: vec3f) -> vec3f {
-  let lengthSquared = dot(v, v);
-  if (lengthSquared <= 1e-20) { return vec3f(0.0); }
-  return v * inverseSqrt(lengthSquared);
+  let scale = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(scale > 0.0) || scale > 3.402823e38) {
+    return vec3f(0.0);
+  }
+  let scaled = v / scale;
+  return scaled / length(scaled);
 }
 
 fn tlasTransformPointCols(c0: vec4f, c1: vec4f, c2: vec4f, c3: vec4f, p: vec3f) -> vec3f {
-  let r = c0 * p.x + c1 * p.y + c2 * p.z + c3;
-  return r.xyz / max(abs(r.w), 1e-8);
+  let raw = c0 * p.x + c1 * p.y + c2 * p.z + c3;
+  let scale = max(max(abs(raw.x), abs(raw.y)), max(abs(raw.z), abs(raw.w)));
+  if (!(scale > 0.0) || scale > 3.402823e38) { return vec3f(0.0); }
+  let r = raw / scale;
+  if (r.w == 0.0) { return vec3f(0.0); }
+  let point = r.xyz / r.w;
+  if (!all(point == point) || any(abs(point) > vec3f(3.402823e38))) {
+    return vec3f(0.0);
+  }
+  return point;
 }
 
 fn tlasTransformDirectionCols(c0: vec4f, c1: vec4f, c2: vec4f, d: vec3f) -> vec3f {
   return tlasSafeNormalize((c0 * d.x + c1 * d.y + c2 * d.z).xyz);
+}
+
+fn tlasRayParameterAtPoint(ray: Ray, point: vec3f) -> f32 {
+  let delta = point - ray.origin;
+  let deltaScale = max(abs(delta.x), max(abs(delta.y), abs(delta.z)));
+  let directionScale = max(
+    abs(ray.direction.x),
+    max(abs(ray.direction.y), abs(ray.direction.z)),
+  );
+  if (
+    !(directionScale > 0.0) || directionScale > 3.402823e38 ||
+    deltaScale > 3.402823e38
+  ) {
+    return -1.0;
+  }
+  if (!(deltaScale > 0.0)) { return 0.0; }
+  let scaledDirection = ray.direction / directionScale;
+  let directionLengthSquared = dot(scaledDirection, scaledDirection);
+  return (
+    dot(delta / deltaScale, scaledDirection) / directionLengthSquared
+  ) * (deltaScale / directionScale);
 }
 
 fn tlasTransformNormalFromLocalCols(w2l0: vec4f, w2l1: vec4f, w2l2: vec4f, nLocal: vec3f) -> vec3f {
@@ -92,7 +124,20 @@ fn tlasTransformNormalFromLocalCols(w2l0: vec4f, w2l1: vec4f, w2l2: vec4f, nLoca
 // describe the authored world-space front face. The inverse has the same sign,
 // therefore callers holding either L2W or W2L columns may use this helper.
 fn tlasLinearOrientationSign(c0: vec4f, c1: vec4f, c2: vec4f) -> f32 {
-  let determinant = dot(c0.xyz, cross(c1.xyz, c2.xyz));
+  let scale0 = max(abs(c0.x), max(abs(c0.y), abs(c0.z)));
+  let scale1 = max(abs(c1.x), max(abs(c1.y), abs(c1.z)));
+  let scale2 = max(abs(c2.x), max(abs(c2.y), abs(c2.z)));
+  if (
+    !(scale0 > 0.0) || scale0 > 3.402823e38 ||
+    !(scale1 > 0.0) || scale1 > 3.402823e38 ||
+    !(scale2 > 0.0) || scale2 > 3.402823e38
+  ) {
+    return 1.0;
+  }
+  let determinant = dot(
+    c0.xyz / scale0,
+    cross(c1.xyz / scale1, c2.xyz / scale2),
+  );
   return select(-1.0, 1.0, determinant >= 0.0);
 }
 
@@ -133,14 +178,18 @@ fn tlasTraceInstanceFirstHit(
   var localRay: Ray;
   localRay.origin = tlasTransformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
   localRay.direction = tlasTransformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
+  let localStart = tlasTransformPointCols(
+    w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * triEps,
+  );
+  let localTMin = max(tlasRayParameterAtPoint(localRay, localStart), 0.0);
   var blasRoot = 0u;
   if (instIdx < tlasBlasRootCount()) { blasRoot = tlasLoadBlasRoot(instIdx); }
-  let localHit = bvhIntersectFirstHitAtRoot(localRay, triEps, blasRoot, false);
-  if (localHit.didHit && localHit.dist > 0.0) {
+  let localHit = bvhIntersectFirstHitAtRoot(localRay, localTMin, blasRoot, false);
+  if (localHit.didHit && localHit.dist > localTMin) {
     let localHitPos = localRay.origin + localRay.direction * localHit.dist;
     let worldHitPos = tlasTransformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
-    let worldDist = dot(worldHitPos - ray.origin, ray.direction);
-    if (worldDist > 0.0 && worldDist < (*best).dist) {
+    let worldDist = tlasRayParameterAtPoint(ray, worldHitPos);
+    if (worldDist > triEps && worldDist < (*best).dist) {
       *best = localHit;
       (*best).dist = worldDist;
       (*best).normal = tlasTransformNormalFromLocalCols(w2l0, w2l1, w2l2, localHit.normal);
@@ -179,14 +228,18 @@ fn tlasTraceInstanceAny(
   var localRay: Ray;
   localRay.origin = tlasTransformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
   localRay.direction = tlasTransformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
+  let localStart = tlasTransformPointCols(
+    w2l0, w2l1, w2l2, w2l3, ray.origin + ray.direction * triEps,
+  );
+  let localTMin = max(tlasRayParameterAtPoint(localRay, localStart), 0.0);
   var blasRoot = 0u;
   if (instIdx < tlasBlasRootCount()) { blasRoot = tlasLoadBlasRoot(instIdx); }
-  let localHit = bvhIntersectFirstHitAtRoot(localRay, triEps, blasRoot, skipGlass);
-  if (!localHit.didHit || localHit.dist <= 0.0) { return false; }
+  let localHit = bvhIntersectFirstHitAtRoot(localRay, localTMin, blasRoot, skipGlass);
+  if (!localHit.didHit || localHit.dist <= localTMin) { return false; }
   let localHitPos = localRay.origin + localRay.direction * localHit.dist;
   let worldHitPos = tlasTransformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
-  let worldDist = dot(worldHitPos - ray.origin, ray.direction);
-  return worldDist > 1e-4 && worldDist < tMax;
+  let worldDist = tlasRayParameterAtPoint(ray, worldHitPos);
+  return worldDist > triEps && worldDist < tMax;
 }
 
 fn tlasAnyFallback(ray: Ray, tMax: f32, triEps: f32, skipGlass: bool) -> bool {

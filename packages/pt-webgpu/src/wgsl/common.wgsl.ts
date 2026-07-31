@@ -1,7 +1,4 @@
-import {
-  PCG_WGSL,
-  SOBOL_DIRECTION_NUMBERS_WGSL,
-} from '@vitrum/shared-samplers';
+import { PCG_WGSL, SOBOL_DIRECTION_NUMBERS_WGSL } from '@vitrum/shared-samplers';
 import { SAFE_INV_DIR_WGSL, MOLLER_TRUMBORE_WGSL } from '@vitrum/shared-bvh';
 
 export type PtWebgpuSamplingMode = 'pcg' | 'sobol';
@@ -195,15 +192,10 @@ fn ptRngFrameKey(frameSeed: u32, frameIndex: u32) -> u32 {
 `;
 
 /** Compose the exact RNG implementation and frame-key mapping for a mode. */
-export function composePtWebgpuRngWgsl(
-  sampling: PtWebgpuSamplingMode = 'pcg',
-): string {
-  const rng = sampling === 'sobol'
-    ? PT_WEBGPU_SOBOL_RNG_WGSL
-    : `alias PtRngState = u32;\n${PCG_WGSL}`;
-  const frameKey = sampling === 'sobol'
-    ? SOBOL_FRAME_KEY_WGSL
-    : PCG_FRAME_KEY_WGSL;
+export function composePtWebgpuRngWgsl(sampling: PtWebgpuSamplingMode = 'pcg'): string {
+  const rng =
+    sampling === 'sobol' ? PT_WEBGPU_SOBOL_RNG_WGSL : `alias PtRngState = u32;\n${PCG_WGSL}`;
+  const frameKey = sampling === 'sobol' ? SOBOL_FRAME_KEY_WGSL : PCG_FRAME_KEY_WGSL;
   // Preserve the historical blank line between the two modules so every
   // existing production composition remains byte-for-byte stable.
   return `${rng}\n\n${frameKey}`;
@@ -219,15 +211,13 @@ export function composePtWebgpuRngWgsl(
  *
  * ReSTIR/DDGI-specific reservoir and lighting logic is intentionally excluded.
  */
-export function composePtWebgpuCommonWgsl(
-  sampling: PtWebgpuSamplingMode = 'pcg',
-): string {
+export function composePtWebgpuCommonWgsl(sampling: PtWebgpuSamplingMode = 'pcg'): string {
   const rng = composePtWebgpuRngWgsl(sampling);
   return /* wgsl */ `
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
 const INV_2PI = 0.15915494309189535;
-const INFINITY = 1e20;
+const INFINITY = 3.402823466e38;
 
 struct BVHNode {
   boundsMin: array<f32, 3>,
@@ -252,11 +242,196 @@ struct HitResult {
 ${rng}
 
 fn safe_normalize(v: vec3f) -> vec3f {
-  let len = length(v);
-  if (len < 1e-8) {
+  let scale = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(scale > 0.0) || scale > 3.402823e38) {
     return vec3f(0.0, 1.0, 0.0);
   }
-  return v / len;
+  let scaled = v / scale;
+  return scaled / length(scaled);
+}
+
+fn safe_length(v: vec3f) -> f32 {
+  let scale = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(scale > 0.0) || scale > INFINITY) {
+    return 0.0;
+  }
+  let result = scale * length(v / scale);
+  if (!(result > 0.0) || result > INFINITY) {
+    return 0.0;
+  }
+  return result;
+}
+
+struct AreaVectorMeasure {
+  normal: vec3f,
+  area: f32,
+  edgeScale: f32,
+  valid: u32,
+};
+
+// Scale-equilibrated area-vector contract shared by every finite-area emitter
+// path. The cross product is formed only after both axes are divided by one
+// shared max-component scale. Its direction is normalized in that O(1) domain,
+// then coefficient·|u×v| is recovered with one multiplication by edgeScale at
+// a time. Exact collinearity remains invalid; NaN, infinity, underflow to zero,
+// and overflow fail closed through valid=0.
+fn measureAreaVector(
+  u: vec3f,
+  v: vec3f,
+  coefficient: f32,
+) -> AreaVectorMeasure {
+  var result: AreaVectorMeasure;
+  result.normal = vec3f(0.0, 1.0, 0.0);
+  result.area = 0.0;
+  result.edgeScale = 0.0;
+  result.valid = 0u;
+  if (
+    !all(u == u) || !all(v == v) || !(coefficient > 0.0) ||
+    any(abs(u) > vec3f(3.402823e38)) ||
+    any(abs(v) > vec3f(3.402823e38)) ||
+    coefficient > 3.402823e38
+  ) {
+    return result;
+  }
+  let edgeScale = max(
+    max(abs(u.x), max(abs(u.y), abs(u.z))),
+    max(abs(v.x), max(abs(v.y), abs(v.z))),
+  );
+  if (!(edgeScale > 0.0) || edgeScale > 3.402823e38) {
+    return result;
+  }
+  let areaVector = cross(u / edgeScale, v / edgeScale);
+  let crossScale = max(
+    abs(areaVector.x),
+    max(abs(areaVector.y), abs(areaVector.z)),
+  );
+  if (!(crossScale > 0.0) || crossScale > 3.402823e38) {
+    return result;
+  }
+  let areaDirection = areaVector / crossScale;
+  let directionLength = length(areaDirection);
+  if (!(directionLength > 0.0) || directionLength > 3.402823e38) {
+    return result;
+  }
+  let normal = areaDirection / directionLength;
+  var area = coefficient * (crossScale * directionLength);
+  area = (area * edgeScale) * edgeScale;
+  let inverseArea = 1.0 / area;
+  if (
+    !(area > 0.0) || area > 3.402823e38 ||
+    !(inverseArea > 0.0) || inverseArea > 3.402823e38 ||
+    !all(normal == normal) || any(abs(normal) > vec3f(3.402823e38))
+  ) {
+    return result;
+  }
+  result.normal = normal;
+  result.area = area;
+  result.edgeScale = edgeScale;
+  result.valid = 1u;
+  return result;
+}
+
+// Solve rel = u·s + v·t by projecting onto the coordinate pair whose 2x2
+// determinant is the dominant component of the already scale-safe area normal.
+// This avoids the squared cross magnitude in the Gram-system inverse.
+// Return (s, t, valid).
+fn solveAreaVectorCoordinates(
+  u: vec3f,
+  v: vec3f,
+  rel: vec3f,
+  measure: AreaVectorMeasure,
+) -> vec3f {
+  if (measure.valid == 0u) {
+    return vec3f(0.0);
+  }
+  let scaledU = u / measure.edgeScale;
+  let scaledV = v / measure.edgeScale;
+  let scaledRel = rel / measure.edgeScale;
+  let absNormal = abs(measure.normal);
+  var det = 0.0;
+  var sNumerator = 0.0;
+  var tNumerator = 0.0;
+  if (absNormal.x >= absNormal.y && absNormal.x >= absNormal.z) {
+    det = scaledU.y * scaledV.z - scaledU.z * scaledV.y;
+    sNumerator = scaledRel.y * scaledV.z - scaledRel.z * scaledV.y;
+    tNumerator = scaledU.y * scaledRel.z - scaledU.z * scaledRel.y;
+  } else if (absNormal.y >= absNormal.z) {
+    det = scaledU.z * scaledV.x - scaledU.x * scaledV.z;
+    sNumerator = scaledRel.z * scaledV.x - scaledRel.x * scaledV.z;
+    tNumerator = scaledU.z * scaledRel.x - scaledU.x * scaledRel.z;
+  } else {
+    det = scaledU.x * scaledV.y - scaledU.y * scaledV.x;
+    sNumerator = scaledRel.x * scaledV.y - scaledRel.y * scaledV.x;
+    tNumerator = scaledU.x * scaledRel.y - scaledU.y * scaledRel.x;
+  }
+  if (det == 0.0) {
+    return vec3f(0.0);
+  }
+  let coordinates = vec2f(sNumerator, tNumerator) / det;
+  if (
+    !all(coordinates == coordinates) ||
+    any(abs(coordinates) > vec2f(3.402823e38))
+  ) {
+    return vec3f(0.0);
+  }
+  return vec3f(coordinates, 1.0);
+}
+
+fn finite_homogeneous_point_common(value: vec4f) -> vec4f {
+  let scale = max(max(abs(value.x), abs(value.y)), max(abs(value.z), abs(value.w)));
+  if (!(scale > 0.0) || scale > 3.402823e38) {
+    return vec4f(0.0);
+  }
+  let normalized = value / scale;
+  if (normalized.w == 0.0) {
+    return vec4f(0.0);
+  }
+  let point = normalized.xyz / normalized.w;
+  if (
+    !all(point == point) ||
+    any(abs(point) > vec3f(3.402823e38))
+  ) {
+    return vec4f(0.0);
+  }
+  return vec4f(point, 1.0);
+}
+
+fn unproject_ray_common(invViewProjection: mat4x4f, ndc: vec2f) -> Ray {
+  var ray: Ray;
+  ray.origin = vec3f(0.0);
+  ray.direction = vec3f(0.0);
+  var farH = invViewProjection * vec4f(ndc, 1.0, 1.0);
+  var nearH = invViewProjection * vec4f(ndc, -1.0, 1.0);
+  let farScale = max(max(abs(farH.x), abs(farH.y)), max(abs(farH.z), abs(farH.w)));
+  let nearScale = max(max(abs(nearH.x), abs(nearH.y)), max(abs(nearH.z), abs(nearH.w)));
+  if (
+    !(farScale > 0.0) || farScale > 3.402823e38 ||
+    !(nearScale > 0.0) || nearScale > 3.402823e38
+  ) {
+    return ray;
+  }
+  farH /= farScale;
+  nearH /= nearScale;
+  let nearPoint = finite_homogeneous_point_common(nearH);
+  if (nearPoint.w == 0.0) {
+    return ray;
+  }
+  var orientation = 1.0;
+  if (farH.w != 0.0) {
+    orientation = sign(farH.w * nearH.w);
+  }
+  let directionNumerator =
+    (farH.xyz * nearH.w - nearH.xyz * farH.w) * orientation;
+  let directionScale = max(
+    abs(directionNumerator.x),
+    max(abs(directionNumerator.y), abs(directionNumerator.z)),
+  );
+  if (!(directionScale > 0.0) || directionScale > 3.402823e38) {
+    return ray;
+  }
+  ray.origin = nearPoint.xyz;
+  ray.direction = safe_normalize(directionNumerator);
+  return ray;
 }
 
 ${SAFE_INV_DIR_WGSL}
@@ -273,19 +448,27 @@ ${MOLLER_TRUMBORE_WGSL}
 // full BVH_INTERSECT_WGSL) because its traversal kernels define their own
 // BVHNode / Ray / SceneHit / HitResult structs, which would collide with the
 // ones BVH_INTERSECT_WGSL declares. The wrapper just unpacks the core's
-// TriHit: returns the hit distance t on a hit, INFINITY on a miss. The
-// three pt-webgpu call sites (traceMeshBvh in intersection/intersectionLite,
-// intersectMeshAreaLightRay in connect) compare the returned f32 against their
-// own t-bounds, so the f32 contract is preserved.
+// TriHit: returns the hit distance t on a hit, INFINITY on a miss. This scalar
+// adapter remains only for call sites that need distance but no hit attributes;
+// mesh traversal consumes mollerTrumboreCore directly so barycentrics,
+// determinant side, and the scale-safe normal cannot drift from acceptance.
 //
 // NUMERICS NOTE (V7): switching to the canonical core changes edge behaviour --
-// the core uses triEps-tolerant SIGNED barycentric tests (u/v/w < -triEps)
+// the core uses fixed, dimensionless SIGNED barycentric tests
+// (u/v/w < -MOLLER_TRUMBORE_BARYCENTRIC_EPSILON)
 // instead of the old strict u<0||u>1 / v<0||u+v>1 tests, so hits grazing a
-// triangle edge by less than triEps are now accepted (closes shared-edge
+// triangle edge by less than that tolerance are now accepted (closes shared-edge
 // cracks). The hit distance t for interior hits is algebraically unchanged.
 // The __tests__/cpuTracer.ts oracle mirrors this same core so it stays in sync.
-fn intersectTriangle(origin: vec3f, dir: vec3f, a: vec3f, b: vec3f, c: vec3f) -> f32 {
-  let core = mollerTrumboreCore(origin, dir, a, b, c, params.triIntersectEpsilon);
+fn intersectTriangle(
+  origin: vec3f,
+  dir: vec3f,
+  a: vec3f,
+  b: vec3f,
+  c: vec3f,
+  tMin: f32,
+) -> f32 {
+  let core = mollerTrumboreCore(origin, dir, a, b, c, tMin);
   if (!core.hit) {
     return INFINITY;
   }

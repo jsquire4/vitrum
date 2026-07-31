@@ -70,6 +70,7 @@
  */
 
 import type { MaterialSpec } from '@vitrum/core';
+import { packRadianceRgbScaleF32 } from './radianceFloat32.js';
 
 /** Floats per entry. 16 × 4 = 64 bytes. */
 export const MATERIAL_ENTRY_FLOATS = 16;
@@ -191,11 +192,11 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
   };
   if (material.emissive !== undefined) {
     const ei = material.emissiveIntensity ?? 1;
-    out.emissive = [
-      material.emissive[0] * ei,
-      material.emissive[1] * ei,
-      material.emissive[2] * ei,
-    ];
+    out.emissive = packRadianceRgbScaleF32(
+      material.emissive,
+      ei,
+      'core material emissive',
+    ).scaled;
   }
   if (material.ior !== undefined) out.ior = material.ior;
   if (material.transmission !== undefined) out.transmission = material.transmission;
@@ -237,14 +238,22 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
 export function toProductionEmissiveRadiance(m: MaterialSpec): MaterialSpec {
   if (m.emissive === undefined) return m;
   const intensity = m.emissiveIntensity ?? 1;
-  if (intensity === 1) return m;
+  const emissive = packRadianceRgbScaleF32(
+    m.emissive,
+    intensity,
+    'production material emissive',
+  ).scaled;
+  if (
+    intensity === 1 &&
+    emissive[0] === m.emissive[0] &&
+    emissive[1] === m.emissive[1] &&
+    emissive[2] === m.emissive[2]
+  ) {
+    return m;
+  }
   return {
     ...m,
-    emissive: [
-      m.emissive[0] * intensity,
-      m.emissive[1] * intensity,
-      m.emissive[2] * intensity,
-    ],
+    emissive,
     emissiveIntensity: 1,
   };
 }

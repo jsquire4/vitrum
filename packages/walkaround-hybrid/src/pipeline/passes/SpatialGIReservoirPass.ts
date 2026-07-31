@@ -84,7 +84,13 @@ export class SpatialGIReservoirPass implements Pass {
         outBuf,
         resources.common.uboBuffer,
       ], buildBg);
-      dispatchSingleBindGroup(ctx, this._pipeline, bg, label, { half: true, ...giExtra });
+      dispatchSingleBindGroup(ctx, this._pipeline, bg, label, {
+        dispatchOverride: {
+          wgX: ctx.restirGiWgX,
+          wgY: ctx.restirGiWgY,
+        },
+        ...giExtra,
+      });
     };
 
     if (this._passCount === 2) {

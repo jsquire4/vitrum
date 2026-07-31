@@ -14,57 +14,38 @@ export const shape_intersection_functions = /* glsl */`
 		planeDist = 0.0;
 		coordinates = vec2( 0.0 );
 
-		float rayDenominator = dot( rayDirection, normal );
+		VitrumAreaVectorMeasure areaMeasure =
+			vitrumMeasureAreaVector( u, v, 1.0 );
+		if ( ! areaMeasure.valid ) return false;
+		float rayDenominator = dot( rayDirection, areaMeasure.normal );
 		if ( rayDenominator == 0.0 || isnan( rayDenominator ) || isinf( rayDenominator ) ) {
 
 			return false;
 
 		}
 
-		float t = dot( center - rayOrigin, normal ) / rayDenominator;
-		if ( ! ( t > EPSILON ) || isnan( t ) || isinf( t ) ) {
+		float t = dot( center - rayOrigin, areaMeasure.normal ) / rayDenominator;
+		if (
+			! ( t > max( RAY_OFFSET * 0.01, 1.175494351e-38 ) ) ||
+			isnan( t ) || isinf( t )
+		) {
 
 			return false;
 
 		}
 
 		vec3 relative = rayOrigin + rayDirection * t - center;
-		float uLengthSquared = dot( u, u );
-		float vLengthSquared = dot( v, v );
-		float axisDot = dot( u, v );
-		vec3 axisCross = cross( u, v );
-		float gramDeterminant = dot( axisCross, axisCross );
-		if (
-			! ( uLengthSquared > 0.0 ) ||
-			! ( vLengthSquared > 0.0 ) ||
-			! ( gramDeterminant > 0.0 ) ||
-			isnan( uLengthSquared ) || isinf( uLengthSquared ) ||
-			isnan( vLengthSquared ) || isinf( vLengthSquared ) ||
-			isnan( axisDot ) || isinf( axisDot ) ||
-			isnan( gramDeterminant ) || isinf( gramDeterminant )
-		) {
-
-			return false;
-
-		}
-
-		float relativeU = dot( relative, u );
-		float relativeV = dot( relative, v );
-		float uCoordinate =
-			( relativeU * vLengthSquared - relativeV * axisDot ) / gramDeterminant;
-		float vCoordinate =
-			( relativeV * uLengthSquared - relativeU * axisDot ) / gramDeterminant;
-		if (
-			isnan( uCoordinate ) || isinf( uCoordinate ) ||
-			isnan( vCoordinate ) || isinf( vCoordinate )
-		) {
+		vec3 areaCoordinates = vitrumAreaVectorCoordinates(
+			u, v, relative, areaMeasure
+		);
+		if ( areaCoordinates.z == 0.0 ) {
 
 			return false;
 
 		}
 
 		planeDist = t;
-		coordinates = vec2( uCoordinate, vCoordinate );
+		coordinates = areaCoordinates.xy;
 		return true;
 
 	}

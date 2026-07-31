@@ -55,6 +55,11 @@ import type { Tunables } from './HybridEngineTuning.js';
 /** Canonical Cornell-box world-space diagonal (±1 box ⇒ 2·√3). The reference
  *  scale at which every clamp default reproduces its tuned value exactly. */
 export const CORNELL_DIAGONAL = 2 * Math.sqrt(3);
+/** The historical 1 mm secondary-ray offset expressed as a fraction of the
+ * canonical Cornell diagonal. This is geometry-scale policy, not a host
+ * radiometric clamp, so it is derived automatically and has no absolute
+ * override path. */
+export const RAY_ORIGIN_BIAS_PER_SCENE_DIAGONAL = 1e-3 / CORNELL_DIAGONAL;
 
 /** The radiometric knobs scaled by B15, with their dimensionality exponent on
  *  the scale ratio `s = D_scene / D_cornell`. Irradiance/radiance clamps use
@@ -64,6 +69,10 @@ const SCALE_EXPONENTS: Partial<Record<keyof Tunables, number>> = {
   restirGiIrrClamp: -2,
   directFireflyClamp: -2,
   emitterDist2Floor: +2,
+  spatialDepthTolFloor: +1,
+  gtaoDepthThreshold: +1,
+  gtaoBilateralDepthSigma: +1,
+  restirGiSpatialCoplanarTol: +1,
 };
 
 /** Host-explicit-override flags for the B15-scaled knobs. A `true` entry means
@@ -73,6 +82,10 @@ export interface ScaleAwareHostExplicit {
   readonly restirGiIrrClamp: boolean;
   readonly directFireflyClamp: boolean;
   readonly emitterDist2Floor: boolean;
+  readonly spatialDepthTolFloor: boolean;
+  readonly gtaoDepthThreshold: boolean;
+  readonly gtaoBilateralDepthSigma: boolean;
+  readonly restirGiSpatialCoplanarTol: boolean;
   readonly indirectFireflyClamp: boolean;
 }
 
@@ -91,6 +104,9 @@ export interface ScaleAwareInputs {
 export interface ScaleAwareResult {
   readonly tunables: Tunables;
   readonly indirectFireflyClamp: readonly [number, number, number];
+  /** Scale-relative secondary-ray origin offset. Exactly 1e-3 at the
+   * canonical Cornell scale and proportional to the authored scene diagonal. */
+  readonly rayOriginBias: number;
   /** The scene diagonal used (for telemetry / debug). */
   readonly sceneDiagonal: number;
   /** The scale ratio `D_scene / D_cornell` (1 ⇒ Cornell-scale ⇒ no change). */
@@ -176,8 +192,8 @@ export function sceneWorldDiagonal(scene: Scene | null): number {
   const dx = b.maxX - b.minX;
   const dy = b.maxY - b.minY;
   const dz = b.maxZ - b.minZ;
-  const diag = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  return diag > 1e-6 ? diag : CORNELL_DIAGONAL;
+  const diag = Math.hypot(dx, dy, dz);
+  return diag > 0 && Number.isFinite(diag) ? diag : CORNELL_DIAGONAL;
 }
 
 // ── The scaling law ─────────────────────────────────────────────────────────
@@ -197,9 +213,8 @@ export function deriveScaleAwareClamps(
   const s = diag / CORNELL_DIAGONAL;
 
   // Exact Cornell-scale short-circuit guarantees byte-identity (no float drift
-  // from pow(1, k)). |s - 1| within a tight epsilon ⇒ leave the baselines
-  // untouched.
-  const isCornellScale = Math.abs(s - 1) < 1e-6;
+  // from pow(1, k)) without quantising nearby, genuinely distinct scales.
+  const isCornellScale = s === 1;
 
   const scaled: Record<string, number> = { ...inputs.baseTunables };
 
@@ -207,17 +222,9 @@ export function deriveScaleAwareClamps(
     for (const key of Object.keys(SCALE_EXPONENTS) as Array<keyof Tunables>) {
       const k = SCALE_EXPONENTS[key]!;
       const knob = key as keyof ScaleAwareHostExplicit;
-      // Only the three scalar knobs are in both maps; the membership check keeps
-      // TS + the host-explicit gate honest.
-      if (
-        knob === 'restirGiIrrClamp' ||
-        knob === 'directFireflyClamp' ||
-        knob === 'emitterDist2Floor'
-      ) {
-        if (inputs.hostExplicit[knob]) continue; // host override → never scaled
-        const base = inputs.baseTunables[key];
-        scaled[key as string] = base * Math.pow(s, k);
-      }
+      if (inputs.hostExplicit[knob]) continue;
+      const base = inputs.baseTunables[key];
+      scaled[key as string] = base * Math.pow(s, k);
     }
   }
 
@@ -235,6 +242,7 @@ export function deriveScaleAwareClamps(
   return {
     tunables: Object.freeze(scaled) as unknown as Tunables,
     indirectFireflyClamp: indirect,
+    rayOriginBias: diag * RAY_ORIGIN_BIAS_PER_SCENE_DIAGONAL,
     sceneDiagonal: diag,
     scaleRatio: s,
   };

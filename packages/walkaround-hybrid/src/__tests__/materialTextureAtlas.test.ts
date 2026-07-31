@@ -2,11 +2,15 @@ import { describe, expect, it, vi } from 'vitest';
 import type { MaterialSpec, TextureRef } from '@vitrum/core';
 import {
   BASE_COLOR_MAP_META_TEX_WIDTH,
+  MATERIAL_META_HEADER_TEXELS,
   MATERIAL_MAP_META_TEXEL_OFFSETS,
   MATERIAL_MAP_META_TEXELS_PER_TRI,
   packMaterialTextureAtlas,
+  planMaterialTextureAtlasLayout,
+  type MaterialTextureAtlasPayload,
   uploadMaterialTextureAtlas,
 } from '../pipeline/materialTextureAtlas.js';
+import { unpackMaterialTextureAtlasPixels } from '../bvh/materialTextureAtlasCodec.js';
 import { SHADE_WGSL } from '../shaders/shade.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
 
@@ -28,7 +32,66 @@ function parseMaterialAtlasU32Constants(wgsl: string): Map<string, number> {
   return constants;
 }
 
+function decodedAtlasData(atlas: MaterialTextureAtlasPayload): number[] {
+  const decoded: number[] = [];
+  for (const layer of atlas.atlasLayers) {
+    if (layer.kind !== 'cpu') {
+      throw new Error('decodedAtlasData only accepts CPU-backed test layers.');
+    }
+    const values = unpackMaterialTextureAtlasPixels(layer.data, layer.encoding);
+    for (let i = 0; i < values.length; i += 4) {
+      decoded.push(
+        layer.decodeSrgb ? srgbToLinear(values[i]!) : values[i]!,
+        layer.decodeSrgb ? srgbToLinear(values[i + 1]!) : values[i + 1]!,
+        layer.decodeSrgb ? srgbToLinear(values[i + 2]!) : values[i + 2]!,
+        values[i + 3]!,
+      );
+    }
+  }
+  return decoded;
+}
+
 describe('walkaround materialTextureAtlas', () => {
+  it('normalizes CPU raw channels as RRR, RG0, RGB, and authored RGBA', () => {
+    const makeMap = (
+      channels: 1 | 2 | 3 | 4,
+      data: readonly number[],
+    ): TextureRef => ({
+      handle: {
+        width: 1,
+        height: 1,
+        data: Float32Array.from(data),
+        __vitrum_hint__: {
+          channels,
+          dataType: 'float32',
+          colorSpace: 'linear',
+        },
+      },
+    });
+    const atlas = packMaterialTextureAtlas(
+      [
+        {
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          baseColorMap: makeMap(1, [0.25]),
+          normalMap: makeMap(2, [0.25, 0.5]),
+          roughnessMap: makeMap(3, [0.25, 0.5, 0.75]),
+          metallicMap: makeMap(4, [0.25, 0.5, 0.75, 0.125]),
+        },
+      ],
+      new Uint32Array([0]),
+      1,
+    );
+
+    expect(decodedAtlasData(atlas)).toEqual([
+      0.25, 0.25, 0.25, 1,
+      0.25, 0.5, 0, 1,
+      0.25, 0.5, 0.75, 1,
+      0.25, 0.5, 0.75, 0.125,
+    ]);
+  });
+
   it('rejects adversarial metadata dimensions before traversing material data', () => {
     const materialRead = vi.fn();
     const material = {
@@ -49,11 +112,86 @@ describe('walkaround materialTextureAtlas', () => {
     expect(materialRead).not.toHaveBeenCalled();
   });
 
-  it('preflights a 4096² decode plus its final atlas before either Float32Array allocation', () => {
+  it('stores one material record plus a packed triangle-to-material table', () => {
+    const materials: MaterialSpec[] = [
+      {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        envMapIntensity: 0.25,
+      },
+      {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        envMapIntensity: 2,
+      },
+    ];
+    const atlas = packMaterialTextureAtlas(
+      materials,
+      new Uint32Array([1, 0, 1, 1, 0]),
+      5,
+    );
+    const totalTexels = atlas.baseColorMetaData.length / 4;
+    const headerBase = totalTexels - MATERIAL_META_HEADER_TEXELS;
+    expect(Array.from(atlas.baseColorMetaData.slice(
+      headerBase * 4,
+      headerBase * 4 + 8,
+    )))
+      .toEqual([
+        3,
+        2,
+        5,
+        MATERIAL_MAP_META_TEXELS_PER_TRI,
+        0,
+        2 * MATERIAL_MAP_META_TEXELS_PER_TRI,
+        2 * MATERIAL_MAP_META_TEXELS_PER_TRI + 2,
+        0,
+      ]);
+    const metadataBits = new Uint32Array(
+      atlas.baseColorMetaData.buffer,
+      atlas.baseColorMetaData.byteOffset,
+      atlas.baseColorMetaData.length,
+    );
+    expect(metadataBits[headerBase * 4]).toBe(0x40400000);
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'let version = materialMetaExactU32(formatHeader.x);',
+    );
+    expect(MATERIAL_ATLAS_WGSL).not.toContain(
+      'bitcast<u32>(formatHeader.x)',
+    );
+    const triangleMaterialBase = 2 * MATERIAL_MAP_META_TEXELS_PER_TRI;
+    expect(Array.from(atlas.baseColorMetaData.slice(
+      triangleMaterialBase * 4,
+      triangleMaterialBase * 4 + 8,
+    ))).toEqual([1, 0, 1, 1, 0, 0, 0, 0]);
+    expect(atlas.baseColorMetaData[
+      MATERIAL_MAP_META_TEXEL_OFFSETS.ENV_INTENSITY * 4
+    ]).toBeCloseTo(0.25);
+    expect(atlas.baseColorMetaData[
+      (MATERIAL_MAP_META_TEXELS_PER_TRI + MATERIAL_MAP_META_TEXEL_OFFSETS.ENV_INTENSITY) * 4
+    ]).toBeCloseTo(2);
+  });
+
+  it('keeps million-triangle metadata bounded when materials and UV lanes are shared', () => {
+    const triCount = 1_000_000;
+    const atlas = packMaterialTextureAtlas(
+      [{ baseColor: [1, 1, 1], roughness: 1, metallic: 0 }],
+      new Uint32Array(0),
+      triCount,
+    );
+    // ABI v1 duplicated 157 RGBA32F texels for every triangle (>2.5 GiB).
+    // ABI v2 stores 157 texels once and four material ids per table texel.
+    expect(atlas.baseColorMetaData.byteLength).toBeLessThan(5 * 1024 * 1024);
+    expect(atlas.baseColorMetaWidth).toBe(BASE_COLOR_MAP_META_TEX_WIDTH);
+    expect(atlas.baseColorMetaHeight).toBeLessThanOrEqual(62);
+  });
+
+  it('preflights an 8192² decode before either Float32Array allocation', () => {
     const pixelRead = vi.fn();
     const float32Allocation = vi.fn();
     const data = {
-      length: 4,
+      length: 8192 * 8192 * 4,
       get 0() {
         pixelRead();
         return 255;
@@ -65,8 +203,8 @@ describe('walkaround materialTextureAtlas', () => {
       metallic: 0,
       baseColorMap: {
         handle: {
-          width: 4096,
-          height: 4096,
+          width: 8192,
+          height: 8192,
           data,
           __vitrum_hint__: { channels: 4, dataType: 'uint8' },
         },
@@ -87,7 +225,7 @@ describe('walkaround materialTextureAtlas', () => {
         triMaterialIds,
         1,
       )).toThrow(
-        /baseColorMap RGBA decode requires 268435456 CPU bytes .*above the .*aggregate staging budget/,
+        /baseColorMap RGBA decode requires 1073741824 CPU bytes, above the .*per-allocation staging budget/,
       );
       expect(float32Allocation).not.toHaveBeenCalled();
       expect(pixelRead).not.toHaveBeenCalled();
@@ -113,13 +251,86 @@ describe('walkaround materialTextureAtlas', () => {
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
 
     expect(atlas.readableBaseColorLayerCount).toBe(1);
-    expect(atlas.atlasDim).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(1, 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(0, 5);
-    expect(atlas.atlasData[3]).toBeCloseTo(1, 5);
+    const pixels = decodedAtlasData(atlas);
+    expect(atlas.atlasLayers[0]).toMatchObject({ width: 1, height: 1 });
+    expect(atlas.atlasLayers).toHaveLength(1);
+    expect(pixels[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
+    expect(pixels[1]).toBeCloseTo(1, 5);
+    expect(pixels[2]).toBeCloseTo(0, 5);
+    expect(pixels[3]).toBeCloseTo(1, 5);
     expect(atlas.baseColorMetaData[0]).toBe(0);
+  });
+
+  it('rejects invalid raw texture hint enums and integer payload values', () => {
+    const invalidHandles = [
+      {
+        width: 1,
+        height: 1,
+        data: new Float32Array([0.5]),
+        __vitrum_hint__: { channels: 1, dataType: 'float-32' },
+      },
+      {
+        width: 1,
+        height: 1,
+        data: new Uint8Array([128]),
+        __vitrum_hint__: { channels: 1, colorSpace: 'gamma' },
+      },
+      {
+        width: 1,
+        height: 1,
+        data: [256],
+        __vitrum_hint__: { channels: 1, dataType: 'uint8' },
+      },
+      {
+        width: 1,
+        height: 1,
+        data: [0.5],
+        __vitrum_hint__: { channels: 1, dataType: 'uint8' },
+      },
+    ];
+    for (const handle of invalidHandles) {
+      const atlas = packMaterialTextureAtlas(
+        [{
+          baseColor: [1, 1, 1],
+          roughness: 1,
+          metallic: 0,
+          baseColorMap: { handle },
+        }],
+        new Uint32Array([0]),
+        1,
+      );
+      expect(atlas.atlasLayers).toHaveLength(0);
+      expect(atlas.diagnostics).toEqual([
+        expect.objectContaining({
+          code: 'invalid-material-texture-payload',
+          field: 'baseColorMap',
+        }),
+      ]);
+    }
+  });
+
+  it('rejects CPU sRGB declarations for linear-data maps like the GPU path', () => {
+    expect(() => packMaterialTextureAtlas(
+      [{
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        roughnessMap: {
+          handle: {
+            width: 1,
+            height: 1,
+            data: new Uint8Array([128]),
+            __vitrum_hint__: {
+              channels: 1,
+              dataType: 'uint8',
+              colorSpace: 'srgb',
+            },
+          },
+        },
+      }],
+      new Uint32Array([0]),
+      1,
+    )).toThrow(/roughnessMap is a linear-data map, but its CPU source declares srgb/);
   });
 
   it('treats Uint16Array atlas handles as normalized uint16 unless explicitly hinted as float16', () => {
@@ -138,10 +349,11 @@ describe('walkaround materialTextureAtlas', () => {
 
     const atlas = packMaterialTextureAtlas([normalizedMaterial], new Uint32Array([0]), 1);
 
-    expect(atlas.atlasData[0]).toBeCloseTo(32768 / 65535, 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(1, 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(0, 5);
-    expect(atlas.atlasData[3]).toBeCloseTo(1, 5);
+    const pixels = decodedAtlasData(atlas);
+    expect(pixels[0]).toBeCloseTo(32768 / 65535, 5);
+    expect(pixels[1]).toBeCloseTo(1, 5);
+    expect(pixels[2]).toBeCloseTo(0, 5);
+    expect(pixels[3]).toBeCloseTo(1, 5);
 
     const halfFloat = {
       width: 1,
@@ -157,10 +369,11 @@ describe('walkaround materialTextureAtlas', () => {
     };
     const halfAtlas = packMaterialTextureAtlas([halfMaterial], new Uint32Array([0]), 1);
 
-    expect(halfAtlas.atlasData[0]).toBeCloseTo(0.5, 5);
-    expect(halfAtlas.atlasData[1]).toBeCloseTo(1, 5);
-    expect(halfAtlas.atlasData[2]).toBeCloseTo(0, 5);
-    expect(halfAtlas.atlasData[3]).toBeCloseTo(1, 5);
+    const halfPixels = decodedAtlasData(halfAtlas);
+    expect(halfPixels[0]).toBeCloseTo(0.5, 5);
+    expect(halfPixels[1]).toBeCloseTo(1, 5);
+    expect(halfPixels[2]).toBeCloseTo(0, 5);
+    expect(halfPixels[3]).toBeCloseTo(1, 5);
   });
 
   it('reports unreadable atlas-backed map handles as diagnostics and disables metadata', () => {
@@ -228,14 +441,15 @@ describe('walkaround materialTextureAtlas', () => {
       };
 
       const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+      const pixels = decodedAtlasData(atlas);
 
       expect(warnSpy).not.toHaveBeenCalled();
       expect(atlas.readableBaseColorLayerCount).toBe(1);
       expect(atlas.baseColorMetaData[0]).toBe(0);
-      expect(atlas.atlasData[0]).toBeCloseTo(srgbToLinear(64 / 255), 5);
-      expect(atlas.atlasData[1]).toBeCloseTo(srgbToLinear(128 / 255), 5);
-      expect(atlas.atlasData[2]).toBeCloseTo(1, 5);
-      expect(atlas.atlasData[3]).toBeCloseTo(1, 5);
+      expect(pixels[0]).toBeCloseTo(srgbToLinear(64 / 255), 5);
+      expect(pixels[1]).toBeCloseTo(srgbToLinear(128 / 255), 5);
+      expect(pixels[2]).toBeCloseTo(1, 5);
+      expect(pixels[3]).toBeCloseTo(1, 5);
       expect(atlas.diagnostics).toEqual([
         expect.objectContaining({
           code: 'ambiguous-material-texture-stride',
@@ -427,10 +641,75 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.readableBaseColorLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[0]).toBe(0);
     expect(atlas.baseColorMetaData[1]).toBe(2 * 16);
-    const affineBase = MATERIAL_MAP_META_TEXEL_OFFSETS.UV_AFFINE_BASE * 4;
+    const headerBase =
+      atlas.baseColorMetaData.length / 4 - MATERIAL_META_HEADER_TEXELS;
+    const affineBase =
+      atlas.baseColorMetaData[(headerBase + 1) * 4 + 2]! * 4;
     expect(Array.from(atlas.baseColorMetaData.slice(affineBase, affineBase + 8)))
       .toEqual([2, 0, 0.25, 0, 0, 3, -0.5, 1]);
     expect(atlas.diagnostics).toEqual([]);
+  });
+
+  it('reconstructs high UV lanes independently of uniform source-chart scale', () => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Uint8Array([255, 255, 255, 255]),
+          __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+        },
+        texCoord: 2,
+      },
+    };
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1, {
+      indices: new Uint32Array([0, 1, 2]),
+      uv0: new Float32Array([0, 0, 1e-6, 0, 0, 1e-6]),
+      uvSets: new Map([
+        [2, new Float32Array([0.25, -0.5, 2.25, -0.5, 0.25, 2.5])],
+      ]),
+    });
+    const headerBase =
+      atlas.baseColorMetaData.length / 4 - MATERIAL_META_HEADER_TEXELS;
+    const affineBase =
+      atlas.baseColorMetaData[(headerBase + 1) * 4 + 2]! * 4;
+    const affine = atlas.baseColorMetaData.slice(affineBase, affineBase + 8);
+    expect(affine[0]).toBeCloseTo(2e6, -1);
+    expect(affine[1]).toBe(0);
+    expect(affine[2]).toBeCloseTo(0.25);
+    expect(affine[4]).toBe(0);
+    expect(affine[5]).toBeCloseTo(3e6, -1);
+    expect(affine[6]).toBeCloseTo(-0.5);
+  });
+
+  it('rejects truncated high-UV streams instead of synthesizing zero vertices', () => {
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Uint8Array([255, 255, 255, 255]),
+          __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+        },
+        texCoord: 2,
+      },
+    };
+    expect(() => packMaterialTextureAtlas(
+      [material],
+      new Uint32Array([0]),
+      1,
+      {
+        indices: new Uint32Array([0, 1, 2]),
+        uv0: new Float32Array([0, 0, 1, 0, 0, 1]),
+        uvSets: new Map([[2, new Float32Array([0, 0, 1, 0])]]),
+      },
+    )).toThrow(/triangle 0.*texCoord 2.*does not supply the UV stream/);
   });
 
   it('fails explicitly when atlas-backed maps exceed the fourteen high-UV affine lanes', () => {
@@ -506,11 +785,89 @@ describe('walkaround materialTextureAtlas', () => {
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
 
     expect(atlas.readableBaseColorLayerCount).toBe(1);
-    expect(atlas.atlasDim).toBe(4);
-    expect(atlas.atlasMipLevelCount).toBe(3);
+    expect(atlas.atlasLayers[0]).toMatchObject({
+      width: 4,
+      height: 4,
+      mipLevelCount: 3,
+    });
     expect(atlas.baseColorMetaData[0]).toBe(0);
     expect(atlas.baseColorMetaData[1]).toBe(2 * 256);
     expect(atlas.diagnostics).toEqual([]);
+  });
+
+  it('certifies the packed 4K RGBA8 mip-chain footprint', () => {
+    const packed = packMaterialTextureAtlas([{
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Uint8Array([255, 255, 255, 255]),
+          __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+        },
+        mipFilter: 'linear',
+      },
+    }], new Uint32Array([0]), 1);
+    const source = packed.atlasLayers[0]!;
+    const payload: MaterialTextureAtlasPayload = {
+      ...packed,
+      atlasLayers: [{
+        ...source,
+        kind: 'cpu',
+        width: 4096,
+        height: 4096,
+        mipLevelCount: 13,
+        data: new Uint32Array(0),
+      }],
+    };
+    const plan = planMaterialTextureAtlasLayout(payload, {
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
+    });
+    expect(plan.rawCodecBytes).toBe(89_478_484);
+    expect(plan.atlasBytes).toBe(100_663_296);
+    expect(plan.metadataBytes).toBe(2_880);
+    expect(plan.allocatedBytes).toBe(100_666_176);
+  });
+
+  it('certifies five native-size 2K RGBA8 maps without RGBA32F expansion', () => {
+    const handle = () => ({
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 255]),
+      __vitrum_hint__: { channels: 4 as const, dataType: 'uint8' as const },
+    });
+    const packed = packMaterialTextureAtlas([{
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle: handle() },
+      normalMap: { handle: handle() },
+      roughnessMap: { handle: handle() },
+      metallicMap: { handle: handle() },
+      aoMap: { handle: handle() },
+    }], new Uint32Array([0]), 1);
+    const payload: MaterialTextureAtlasPayload = {
+      ...packed,
+      atlasLayers: packed.atlasLayers.map((source) => ({
+        ...source,
+        kind: 'cpu' as const,
+        width: 2048,
+        height: 2048,
+        mipLevelCount: 1,
+        data: new Uint32Array(0),
+      })),
+    };
+    const plan = planMaterialTextureAtlasLayout(payload, {
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
+    });
+    expect(plan.rawCodecBytes).toBe(83_886_080);
+    expect(plan.atlasBytes).toBe(83_886_080);
+    expect(plan.metadataBytes).toBe(4_032);
+    expect(plan.allocatedBytes).toBe(83_890_112);
   });
 
   it('packs roughnessMap and metallicMap as linear scalar atlas slots', () => {
@@ -545,10 +902,11 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.readableBaseColorLayerCount).toBe(0);
     expect(atlas.readableRoughnessLayerCount).toBe(1);
     expect(atlas.readableMetallicLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(10 / 255, 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(200 / 255, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    const pixels = decodedAtlasData(atlas);
+    expect(pixels[0]).toBeCloseTo(10 / 255, 5);
+    expect(pixels[1]).toBeCloseTo(128 / 255, 5);
+    expect(pixels[2]).toBeCloseTo(200 / 255, 5);
 
     // Slot layout: baseColor=[0,1], roughness=[2,3], metallic=[4,5], ao=[6,7],
     // alpha=[8,9], alphaCoverage=[10], emissive=[11,12],
@@ -594,10 +952,11 @@ describe('walkaround materialTextureAtlas', () => {
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
 
     expect(atlas.readableAoLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(96 / 255, 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(200 / 255, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    const pixels = decodedAtlasData(atlas);
+    expect(pixels[0]).toBeCloseTo(96 / 255, 5);
+    expect(pixels[1]).toBeCloseTo(128 / 255, 5);
+    expect(pixels[2]).toBeCloseTo(200 / 255, 5);
     // Slot layout: baseColor=[0,1], roughness=[2,3], metallic=[4,5], ao=[6,7].
     expect(atlas.baseColorMetaData[0]).toBe(-1);
     expect(atlas.baseColorMetaData[8]).toBe(-1);
@@ -631,9 +990,10 @@ describe('walkaround materialTextureAtlas', () => {
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
 
     expect(atlas.readableAlphaLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(64 / 255, 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    const pixels = decodedAtlasData(atlas);
+    expect(pixels[0]).toBeCloseTo(64 / 255, 5);
+    expect(pixels[1]).toBeCloseTo(128 / 255, 5);
     // alpha slot starts at texel 8, coverage scalars at texel 10.
     expect(atlas.baseColorMetaData[32]).toBe(0);
     expect(atlas.baseColorMetaData[33]).toBe(2 + 1 * 4 + 16);
@@ -659,10 +1019,11 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableBaseColorLayerCount).toBe(1);
     expect(atlas.readableAlphaLayerCount).toBe(0);
-    expect(atlas.atlasData[3]).toBeCloseTo(64 / 255, 5);
+    expect(pixels[3]).toBeCloseTo(64 / 255, 5);
     expect(atlas.baseColorMetaData[0]).toBe(0);
     expect(atlas.baseColorMetaData[32]).toBe(-1);
     expect(atlas.baseColorMetaData[40]).toBe(1);
@@ -692,12 +1053,13 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableEmissiveLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(srgbToLinear(64 / 255), 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(1, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    expect(pixels[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
+    expect(pixels[1]).toBeCloseTo(srgbToLinear(64 / 255), 5);
+    expect(pixels[2]).toBeCloseTo(1, 5);
     // emissive slot starts at texel 11.
     expect(atlas.baseColorMetaData[44]).toBe(0);
     expect(atlas.baseColorMetaData[45]).toBe(1 + 2 * 4 + 16);
@@ -724,11 +1086,12 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableTransmissionLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(192 / 255, 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(64 / 255, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    expect(pixels[0]).toBeCloseTo(192 / 255, 5);
+    expect(pixels[1]).toBeCloseTo(64 / 255, 5);
     // transmission slot starts at texel 13.
     expect(atlas.baseColorMetaData[52]).toBe(0);
     expect(atlas.baseColorMetaData[53]).toBe(2 + 1 * 4 + 16);
@@ -758,10 +1121,11 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableThicknessLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[1]).toBeCloseTo(192 / 255, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    expect(pixels[1]).toBeCloseTo(192 / 255, 5);
     // thicknessMap metadata starts at texel 47.
     expect(atlas.baseColorMetaData[188]).toBe(0);
     expect(atlas.baseColorMetaData[189]).toBe(1 + 2 * 4 + 16);
@@ -788,10 +1152,11 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableBumpLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(96 / 255, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    expect(pixels[0]).toBeCloseTo(96 / 255, 5);
     // bumpMap metadata starts at texel 49; bumpScale metadata at texel 51.
     expect(atlas.baseColorMetaData[196]).toBe(0);
     expect(atlas.baseColorMetaData[197]).toBe(2 + 1 * 4 + 16);
@@ -819,12 +1184,13 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableNormalLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(128 / 255, 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(1, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    expect(pixels[0]).toBeCloseTo(128 / 255, 5);
+    expect(pixels[1]).toBeCloseTo(128 / 255, 5);
+    expect(pixels[2]).toBeCloseTo(1, 5);
     // normal slot starts at texel 15; normalScale metadata at texel 17.
     expect(atlas.baseColorMetaData[60]).toBe(0);
     expect(atlas.baseColorMetaData[61]).toBe(1 + 2 * 4 + 16);
@@ -852,12 +1218,13 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableLightLayerCount).toBe(1);
-    expect(atlas.atlasLayerCount).toBe(1);
-    expect(atlas.atlasData[0]).toBeCloseTo(64 / 255, 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(1, 5);
+    expect(atlas.atlasLayers).toHaveLength(1);
+    expect(pixels[0]).toBeCloseTo(64 / 255, 5);
+    expect(pixels[1]).toBeCloseTo(128 / 255, 5);
+    expect(pixels[2]).toBeCloseTo(1, 5);
     // lightMap slot starts at texel 18; lightMapIntensity metadata at texel 20.
     expect(atlas.baseColorMetaData[72]).toBe(0);
     expect(atlas.baseColorMetaData[73]).toBe(2 + 1 * 4 + 16);
@@ -874,6 +1241,7 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     // specular metadata lives at texel 21 (vec4 lanes 84..87).
     expect(atlas.baseColorMetaData[84]).toBeCloseTo(0.04 * 0.25, 5);
@@ -921,17 +1289,18 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableSpecularColorLayerCount).toBe(1);
     expect(atlas.readableSpecularIntensityLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[96]).toBe(0);  // specularColorMap layer
     expect(atlas.baseColorMetaData[104]).toBe(1); // specularIntensityMap layer
     expect(atlas.baseColorMetaData[105]).toBe(16); // uv1 selector
-    expect(atlas.atlasData[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
-    expect(atlas.atlasData[1]).toBeCloseTo(srgbToLinear(64 / 255), 5);
-    expect(atlas.atlasData[2]).toBeCloseTo(1, 5);
+    expect(pixels[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
+    expect(pixels[1]).toBeCloseTo(srgbToLinear(64 / 255), 5);
+    expect(pixels[2]).toBeCloseTo(1, 5);
     const intensityLayerBase = 4;
-    expect(atlas.atlasData[intensityLayerBase + 3]).toBeCloseTo(128 / 255, 5);
+    expect(pixels[intensityLayerBase + 3]).toBeCloseTo(128 / 255, 5);
   });
 
   it('packs clearcoat and sheen texture maps into atlas metadata with glTF channels', () => {
@@ -978,6 +1347,7 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableClearcoatLayerCount).toBe(1);
     expect(atlas.readableClearcoatRoughnessLayerCount).toBe(1);
@@ -992,16 +1362,16 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[128]).toBe(3); // sheenColorMap layer
     expect(atlas.baseColorMetaData[136]).toBe(4); // sheenRoughnessMap layer
     expect(atlas.baseColorMetaData[137]).toBe(16); // uv1 selector
-    expect(atlas.atlasData[0]).toBeCloseTo(128 / 255, 5);
-    expect(atlas.atlasData[4 + 1]).toBeCloseTo(192 / 255, 5);
+    expect(pixels[0]).toBeCloseTo(128 / 255, 5);
+    expect(pixels[4 + 1]).toBeCloseTo(192 / 255, 5);
     const clearcoatNormalLayerBase = 8;
-    expect(atlas.atlasData[clearcoatNormalLayerBase + 1]).toBeCloseTo(192 / 255, 5);
+    expect(pixels[clearcoatNormalLayerBase + 1]).toBeCloseTo(192 / 255, 5);
     const sheenColorLayerBase = 12;
-    expect(atlas.atlasData[sheenColorLayerBase]).toBeCloseTo(srgbToLinear(64 / 255), 5);
-    expect(atlas.atlasData[sheenColorLayerBase + 1]).toBeCloseTo(srgbToLinear(128 / 255), 5);
-    expect(atlas.atlasData[sheenColorLayerBase + 2]).toBeCloseTo(1, 5);
+    expect(pixels[sheenColorLayerBase]).toBeCloseTo(srgbToLinear(64 / 255), 5);
+    expect(pixels[sheenColorLayerBase + 1]).toBeCloseTo(srgbToLinear(128 / 255), 5);
+    expect(pixels[sheenColorLayerBase + 2]).toBeCloseTo(1, 5);
     const sheenRoughnessLayerBase = 16;
-    expect(atlas.atlasData[sheenRoughnessLayerBase + 3]).toBeCloseTo(96 / 255, 5);
+    expect(pixels[sheenRoughnessLayerBase + 3]).toBeCloseTo(96 / 255, 5);
   });
 
   it('packs anisotropy controls and KHR anisotropy maps into atlas metadata', () => {
@@ -1021,15 +1391,16 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableAnisotropyLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[156]).toBe(0); // anisotropyMap layer (texel 39)
     expect(atlas.baseColorMetaData[157]).toBe(16); // uv1 selector
     expect(atlas.baseColorMetaData[164]).toBeCloseTo(0.5, 5); // anisotropy scalar (texel 41)
     expect(atlas.baseColorMetaData[165]).toBeCloseTo(0.25, 5); // anisotropyRotation
-    expect(atlas.atlasData[0]).toBeCloseTo(1, 5); // direction.r
-    expect(atlas.atlasData[1]).toBeCloseTo(128 / 255, 5); // direction.g
-    expect(atlas.atlasData[2]).toBeCloseTo(64 / 255, 5); // strength.b
+    expect(pixels[0]).toBeCloseTo(1, 5); // direction.r
+    expect(pixels[1]).toBeCloseTo(128 / 255, 5); // direction.g
+    expect(pixels[2]).toBeCloseTo(64 / 255, 5); // strength.b
   });
 
   it('packs iridescence controls and KHR iridescence maps into atlas metadata', () => {
@@ -1057,6 +1428,7 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableIridescenceLayerCount).toBe(1);
     expect(atlas.readableIridescenceThicknessLayerCount).toBe(1);
@@ -1067,8 +1439,8 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[185]).toBeCloseTo(2, 5); // iridescence IOR
     expect(atlas.baseColorMetaData[186]).toBeCloseTo(200, 5); // min thickness nm
     expect(atlas.baseColorMetaData[187]).toBeCloseTo(800, 5); // max thickness nm
-    expect(atlas.atlasData[0]).toBeCloseTo(128 / 255, 5); // factor.r
-    expect(atlas.atlasData[4 + 1]).toBeCloseTo(192 / 255, 5); // thickness.g
+    expect(pixels[0]).toBeCloseTo(128 / 255, 5); // factor.r
+    expect(pixels[4 + 1]).toBeCloseTo(192 / 255, 5); // thickness.g
   });
 
   it('packs scalar clearcoat controls into per-triangle material metadata', () => {
@@ -1115,7 +1487,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[95]).toBe(0);
   });
 
-  it('packs envMapIntensity as non-negative per-triangle material metadata', () => {
+  it('packs finite non-negative envMapIntensity and rejects invalid authored values', () => {
     const authored: MaterialSpec = {
       baseColor: [1, 1, 1],
       roughness: 1,
@@ -1127,7 +1499,7 @@ describe('walkaround materialTextureAtlas', () => {
       roughness: 1,
       metallic: 0,
     };
-    const clamped: MaterialSpec = {
+    const invalid: MaterialSpec = {
       baseColor: [1, 1, 1],
       roughness: 1,
       metallic: 0,
@@ -1138,8 +1510,9 @@ describe('walkaround materialTextureAtlas', () => {
       .toBeCloseTo(2.5, 5);
     expect(packMaterialTextureAtlas([defaulted], new Uint32Array([0]), 1).baseColorMetaData[208])
       .toBe(1);
-    expect(packMaterialTextureAtlas([clamped], new Uint32Array([0]), 1).baseColorMetaData[208])
-      .toBe(0);
+    expect(() =>
+      packMaterialTextureAtlas([invalid], new Uint32Array([0]), 1),
+    ).toThrow(/envMapIntensity must be finite and non-negative/);
   });
 
   it('packs frontLayer/backLayer transmission, roughness, and layer-local normal maps', () => {
@@ -1181,7 +1554,7 @@ describe('walkaround materialTextureAtlas', () => {
     const backNormalScale = MATERIAL_MAP_META_TEXEL_OFFSETS.BACK_LAYER_NORMAL_SCALE * 4;
 
     expect(atlas.readableNormalLayerCount).toBe(2);
-    expect(atlas.atlasLayerCount).toBe(2);
+    expect(atlas.atlasLayers).toHaveLength(2);
     expect(atlas.baseColorMetaData[front]).toBe(1);
     expect(atlas.baseColorMetaData[front + 1]).toBe(0.5);
     expect(atlas.baseColorMetaData[front + 2]).toBe(0);
@@ -1335,8 +1708,12 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('propagated ray-differential model');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleMaterialAtlasRawAtOffsetForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAtlasFilterMode(samplerPacked: u32, lod: f32)');
-    expect(MATERIAL_ATLAS_WGSL).toContain('textureNumLevels(materialTextureAtlas)');
-    expect(MATERIAL_ATLAS_WGSL).toContain('textureDimensions(materialTextureAtlas, level)');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let lastLevel = address.mipLevelCount - 1u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAtlasLevelDimensions(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialMaxAbsVec2(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let uvScale = max(materialMaxAbsVec2(duv1)');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialTraversalStepAt(');
+    expect(MATERIAL_ATLAS_WGSL).not.toContain('let step = max(1e-4, triEps * 4.0)');
     expect(MATERIAL_ATLAS_WGSL).not.toContain('sampleMaterialAtlasBaseLevel');
     expect(MATERIAL_ATLAS_WGSL).toContain('@group(1) @binding(23) var bvh_vertex_color: texture_2d<f32>;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleVertexColorForHit(hit: IntersectionResult) -> vec4f');
@@ -1352,8 +1729,9 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain(
       'packedMaterialHasTransmission(hit.matColorPacked)',
     );
-    expect(MATERIAL_ATLAS_WGSL).toContain('let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);');
-    expect(MATERIAL_ATLAS_WGSL).toContain('let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let baseColorAlpha = select(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let alphaMapCoverage = select(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('materialAtlasMapAvailableAtOffset(');
     expect(MATERIAL_ATLAS_WGSL).toContain('let vertexColorAlpha = sampleVertexColorForHit(hit).a;');
     expect(MATERIAL_ATLAS_WGSL).toContain('out.coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
     expect(MATERIAL_ATLAS_WGSL).toContain('return alpha.coverage < alpha.cutoff;');
@@ -1389,7 +1767,9 @@ describe('walkaround materialTextureAtlas', () => {
       'let authoredAo = sampleAoMapFactor(primaryHit, materialWord);',
     );
     expect(SHADE_WGSL).toContain('traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(');
-    expect(SHADE_WGSL).toContain('let Lo_emitterGlow = sampleEmissiveMap(');
+    expect(SHADE_WGSL).toContain('let Lo_emitterGlow = select(');
+    expect(SHADE_WGSL).toContain('sampleEmissiveMap(');
+    expect(SHADE_WGSL).toContain('materialEmissionSideAdmittedForHit(primaryHit)');
     expect(SHADE_WGSL).toContain('let lightMapIrradiance = sampleLightMap(primaryHit);');
     expect(SHADE_WGSL).toContain('let Lo_lightMap = albedo * INV_PI * lightMapIrradiance;');
     expect(SHADE_WGSL).toContain('envMapIntensity, isGlass, isMetal, &rng)');
@@ -1403,6 +1783,10 @@ describe('walkaround materialTextureAtlas', () => {
     const firstDestroy = vi.fn();
     let allocation = 0;
     const device = {
+      limits: {
+        maxTextureDimension2D: 4096,
+        maxTextureArrayLayers: 256,
+      },
       createTexture: vi.fn(() => {
         allocation += 1;
         if (allocation === 2) throw new Error('meta texture allocation failed');
@@ -1418,5 +1802,28 @@ describe('walkaround materialTextureAtlas', () => {
     expect(() => uploadMaterialTextureAtlas(device, payload))
       .toThrow('meta texture allocation failed');
     expect(firstDestroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects metadata texture dimensions above the device limit before allocation', () => {
+    const createTexture = vi.fn();
+    const device = {
+      limits: {
+        maxTextureDimension2D: 4096,
+        maxTextureArrayLayers: 256,
+      },
+      createTexture,
+    } as unknown as GPUDevice;
+    const packed = packMaterialTextureAtlas([], new Uint32Array([0]), 1);
+    const oversizedHeight = 4097;
+    const expectedValues = packed.baseColorMetaWidth * oversizedHeight * 4;
+    const payload = {
+      ...packed,
+      baseColorMetaHeight: oversizedHeight,
+      baseColorMetaData: { length: expectedValues } as Float32Array,
+    };
+
+    expect(() => uploadMaterialTextureAtlas(device, payload))
+      .toThrow(/metadata dimensions .* exceed maxTextureDimension2D 4096/);
+    expect(createTexture).not.toHaveBeenCalled();
   });
 });

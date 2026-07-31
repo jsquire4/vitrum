@@ -61,7 +61,7 @@ export const GET_SURFACE_RECORD_BASIC_GLSL = /* glsl */ `
     surf.hasActiveLayer = false;
     surf.materialIndex = materialIndex;
     surf.attenuationColor = vec3( 1.0 );
-    surf.attenuationDistance = 1e20;
+    surf.attenuationDistance = INFINITY;
     surf.attenuationThickness = 0.0;
     surf.hasAttenuationThickness = false;
 

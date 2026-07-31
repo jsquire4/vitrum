@@ -203,6 +203,12 @@ describe('J4 — reconnectionGeometryTerm matches |cos θ_out| / dist²', () => 
     // Edge along X, normal along Z ⊥ X → cos θ_out = 0.
     expect(reconnectionGeometryTerm([0, 0, 0], [1, 0, 0], [0, 0, 1])).toBeCloseTo(0, 12);
   });
+
+  it('is invariant to a tiny non-zero normal magnitude', () => {
+    expect(
+      reconnectionGeometryTerm([0, 0, 0], [2, 0, 0], [-1e-20, 0, 0]),
+    ).toBeCloseTo(0.25, 12);
+  });
 });
 
 // ── J5: degenerate-Jacobian behaviour + self-shift ────────────────────────────

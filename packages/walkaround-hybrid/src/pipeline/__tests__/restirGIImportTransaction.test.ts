@@ -22,6 +22,9 @@ type TrackedBuffer = GPUBuffer & {
 
 type PipelineInternals = {
   _initialized: boolean;
+  _width: number;
+  _height: number;
+  _reservoirScale: number;
   _res: FrameResources;
   _resourceCache: { clear(): void };
   _accumFrameIndex: number;
@@ -129,10 +132,20 @@ function makePipeline(
     reservoirGiPreviousBuffer: trackedBuffer(),
     reservoirGiSpatialBuffer: trackedBuffer(),
   },
+  dimensions: {
+    readonly width?: number;
+    readonly height?: number;
+    readonly reservoirScale?: number;
+  } = {},
 ) {
-  const pipeline = new WalkaroundGPUPipeline(device, WIDTH, HEIGHT);
+  const pipeline = new WalkaroundGPUPipeline(
+    device,
+    dimensions.width ?? WIDTH,
+    dimensions.height ?? HEIGHT,
+  );
   const state = pipeline as unknown as PipelineInternals;
   state._initialized = true;
+  state._reservoirScale = dimensions.reservoirScale ?? 1;
   state._res = { restirGI: live } as unknown as FrameResources;
   const clear = vi.spyOn(state._resourceCache, 'clear');
   return { pipeline, state, live, clear };
@@ -149,6 +162,21 @@ function expectLiveUnchanged(
 }
 
 describe('ReSTIR-GI reservoir import transaction', () => {
+  it('accepts only the GI grid implied by internal dimensions and active scale', () => {
+    const gpu = makeDevice();
+    const made = makePipeline(
+      gpu.device,
+      undefined,
+      { width: 16, height: 16, reservoirScale: 4 },
+    );
+
+    expect(made.pipeline.canImportRestirGIReservoirs(snapshot())).toBe(true);
+    made.state._reservoirScale = 2;
+    expect(made.pipeline.canImportRestirGIReservoirs(snapshot())).toBe(false);
+    expect(gpu.device.createBuffer).not.toHaveBeenCalled();
+    expectLiveUnchanged(made.state, made.live);
+  });
+
   it.each([
     ['null', null],
     ['empty object', {}],

@@ -27,6 +27,12 @@ describe('pipeline compiler diagnostics', () => {
 
     const createdLabels: string[] = [];
     const inspectedLabels: string[] = [];
+    const asyncRenderDescriptors: GPURenderPipelineDescriptor[] = [];
+    const syncRenderDescriptors: GPURenderPipelineDescriptor[] = [];
+    const createPipelineLayout = vi.fn(
+      (desc: GPUPipelineLayoutDescriptor) =>
+        ({ bindGroupLayouts: desc.bindGroupLayouts }) as unknown as GPUPipelineLayout,
+    );
     const device = {
       createShaderModule(desc: GPUShaderModuleDescriptor): GPUShaderModule {
         const label = String(desc.label ?? '');
@@ -40,11 +46,16 @@ describe('pipeline compiler diagnostics', () => {
       },
       createBindGroupLayout: (desc: GPUBindGroupLayoutDescriptor) =>
         ({ entries: desc.entries }) as unknown as GPUBindGroupLayout,
-      createPipelineLayout: (desc: GPUPipelineLayoutDescriptor) =>
-        ({ bindGroupLayouts: desc.bindGroupLayouts }) as unknown as GPUPipelineLayout,
+      createPipelineLayout,
       createComputePipelineAsync: async () => ({} as GPUComputePipeline),
-      createRenderPipelineAsync: async () => ({} as GPURenderPipeline),
-      createRenderPipeline: () => ({} as GPURenderPipeline),
+      createRenderPipelineAsync: async (desc: GPURenderPipelineDescriptor) => {
+        asyncRenderDescriptors.push(desc);
+        return {} as GPURenderPipeline;
+      },
+      createRenderPipeline: (desc: GPURenderPipelineDescriptor) => {
+        syncRenderDescriptors.push(desc);
+        return {} as GPURenderPipeline;
+      },
     } as unknown as GPUDevice;
     const bglCache = {};
 
@@ -55,9 +66,45 @@ describe('pipeline compiler diagnostics', () => {
       });
 
       expect(inspectedLabels.sort()).toEqual(createdLabels.sort());
+      expect(asyncRenderDescriptors).toHaveLength(1);
+      expect(asyncRenderDescriptors[0]?.fragment?.constants).toEqual({
+        VT_ATTACHMENT_SRGB: 0,
+        VT_TARGET_MAX_R: 1,
+        VT_TARGET_MAX_G: 1,
+        VT_TARGET_MAX_B: 1,
+      });
       const moduleCount = createdLabels.length;
-      createCompositePipeline(device, bglCache, 'rgba8unorm');
+      createCompositePipeline(device, bglCache, 'rgba8unorm-srgb');
+      createCompositePipeline(device, bglCache, 'rgba16float');
       expect(createdLabels).toHaveLength(moduleCount);
+      expect(syncRenderDescriptors).toHaveLength(2);
+      expect(syncRenderDescriptors[0]?.fragment?.constants).toEqual({
+        VT_ATTACHMENT_SRGB: 1,
+        VT_TARGET_MAX_R: 1,
+        VT_TARGET_MAX_G: 1,
+        VT_TARGET_MAX_B: 1,
+      });
+      expect(syncRenderDescriptors[1]?.fragment?.constants).toEqual({
+        VT_ATTACHMENT_SRGB: 0,
+        VT_TARGET_MAX_R: 65_504,
+        VT_TARGET_MAX_G: 65_504,
+        VT_TARGET_MAX_B: 65_504,
+      });
+      expect(syncRenderDescriptors[0]?.fragment?.targets).toEqual([
+        { format: 'rgba8unorm-srgb' },
+      ]);
+
+      const layoutCallsBeforeInvalid = createPipelineLayout.mock.calls.length;
+      expect(() =>
+        createCompositePipeline(
+          device,
+          bglCache,
+          'depth24plus' as GPUTextureFormat,
+        ),
+      ).toThrow(/swapChainFormat is unsupported/);
+      expect(createPipelineLayout).toHaveBeenCalledTimes(
+        layoutCallsBeforeInvalid,
+      );
     } finally {
       if (previousGPUShaderStage === undefined) {
         delete (globalThis as { GPUShaderStage?: unknown }).GPUShaderStage;
@@ -68,6 +115,25 @@ describe('pipeline compiler diagnostics', () => {
         });
       }
     }
+  });
+
+  it('rejects an invalid initial format before creating any GPU object', async () => {
+    const createShaderModule = vi.fn();
+    const createPipelineLayout = vi.fn();
+    const device = {
+      createShaderModule,
+      createPipelineLayout,
+    } as unknown as GPUDevice;
+
+    await expect(
+      compilePipelines(
+        device,
+        {},
+        'depth24plus' as GPUTextureFormat,
+      ),
+    ).rejects.toThrow(/swapChainFormat is unsupported/);
+    expect(createShaderModule).not.toHaveBeenCalled();
+    expect(createPipelineLayout).not.toHaveBeenCalled();
   });
 
   it('routes shader compilation warnings through structured warning sinks', () => {

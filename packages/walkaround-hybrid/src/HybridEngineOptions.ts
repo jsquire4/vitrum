@@ -35,6 +35,11 @@ type ValidDenoiser = (typeof VALID_DENOISERS)[number];
 import type { Tunables } from './HybridEngineTuning.js';
 import type { HybridEnvironmentMapResolver } from './environment/resolveHybridEnvironment.js';
 import type { NrcConfig } from './neural/nrc/nrcSubsystem.js';
+import {
+  canonicalizeLightingDirectionF32,
+  packNonNegativeLightingFloat32,
+  packNonNegativeLightingRgbF32,
+} from './lightingFloat32.js';
 
 /**
  * Runtime-mutable lighting parameters for {@link HybridEngine.updateLighting}.
@@ -118,12 +123,6 @@ export function assertKnownLightingKeys(
         `finite ${nonNegative ? 'non-negative ' : ''}[x, y, z] tuple.`,
       );
     }
-    const numericLanes = lanes as readonly number[];
-    if (key === 'primaryLightDir' && numericLanes.every((lane) => Math.abs(lane) <= 1e-12)) {
-      throw new TypeError(
-        '[@vitrum/walkaround-hybrid] updateLighting: primaryLightDir must be non-zero.',
-      );
-    }
   };
   const assertNonNegativeScalar = (
     key: 'primaryLightIntensity' | 'skyIrradiance',
@@ -140,6 +139,35 @@ export function assertKnownLightingKeys(
   assertVec3('skyTint', true);
   assertNonNegativeScalar('primaryLightIntensity');
   assertNonNegativeScalar('skyIrradiance');
+
+  // Validate the exact binary32 publication boundary as part of the closed
+  // runtime vocabulary check. The engine snapshots the returned canonical
+  // values before publication; these calls keep malformed values from reaching
+  // any transaction preparation.
+  if (opts.primaryLightDir !== undefined) {
+    canonicalizeLightingDirectionF32(
+      opts.primaryLightDir as [number, number, number],
+      'updateLighting.primaryLightDir',
+    );
+  }
+  if (opts.primaryLightIntensity !== undefined) {
+    packNonNegativeLightingFloat32(
+      opts.primaryLightIntensity as number,
+      'updateLighting.primaryLightIntensity',
+    );
+  }
+  if (opts.skyTint !== undefined) {
+    packNonNegativeLightingRgbF32(
+      opts.skyTint as [number, number, number],
+      'updateLighting.skyTint',
+    );
+  }
+  if (opts.skyIrradiance !== undefined) {
+    packNonNegativeLightingFloat32(
+      opts.skyIrradiance as number,
+      'updateLighting.skyIrradiance',
+    );
+  }
 }
 
 export interface HybridEngineOptions extends EngineOptions {
@@ -155,6 +183,35 @@ export interface HybridEngineOptions extends EngineOptions {
    *  selected, the quality-preset-scaled internal height must be >= 8 and a
    *  multiple of 8. */
   readonly height: number;
+
+  /**
+   * Resolution policy for the resolution-dependent walkaround frame graph.
+   *
+   * - `'auto'` (default) keeps the full swap-chain presentation size but
+   *   selects the largest internal render resolution that fits the persistent
+   *   frame-resource budget and reported WebGPU limits. It first increases the
+   *   ReSTIR reservoir scale, preserving full-resolution shading, and only
+   *   then lowers the complete internal graph.
+   * - `'native'` requires the exact quality-scaled internal resolution and
+   *   rejects before allocation when it does not fit. It never silently
+   *   downscales an explicit native request.
+   */
+  readonly frameResourceResolutionPolicy?: 'auto' | 'native';
+
+  /**
+   * Steady-state byte ceiling for resolution-dependent persistent frame
+   * resources. Defaults to 384 MiB. Transactional resize temporarily owns two
+   * generations, so its reported peak is bounded by twice this value.
+   */
+  readonly maxPersistentFrameResourceBytes?: number;
+
+  /**
+   * Explicit integer ReSTIR grid scale. DI uses `floor(internal/scale)` and GI
+   * uses `floor(internal/(2*scale))`. Omit to let the bounded resolver choose
+   * the smallest scale in `[1,4]` that preserves the largest shading
+   * resolution. PPG/NRC currently require scale 1.
+   */
+  readonly restirReservoirScale?: 1 | 2 | 3 | 4;
 
   /**
    * PR-7 — when true, run eligible `skinned-mesh` primitives through the GPU

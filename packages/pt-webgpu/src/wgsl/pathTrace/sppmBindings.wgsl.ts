@@ -40,11 +40,7 @@ export {
   sppmInitialRadius,
 } from '../../sppmParams.js';
 
-import {
-  SPPM_MAX_CELLS,
-  SPPM_PHOTON_COUNT,
-  SPPM_ALPHA,
-} from '../../sppmParams.js';
+import { SPPM_MAX_CELLS, SPPM_PHOTON_COUNT, SPPM_ALPHA } from '../../sppmParams.js';
 
 /**
  * SPPM group-3 WGSL bindings (bindings 6/7/8/9) — composed into the megakernel
@@ -144,12 +140,12 @@ fn sppmPhotonMediumMatId(ph: PhotonRecord) -> u32 {
 
 // SppmPixelStats (32 bytes = 8 × f32) — per-pixel progressive SPPM state.
 //   A4-progressive: Hachisuka & Jensen 2009, §4 (Knaus-Zwicker formulation).
-//   Holds the accumulated tau (brdf-weighted flux sum), current gather radius²,
+//   Holds the accumulated tau (brdf-weighted flux sum), current gather radius,
 //   and accumulated photon count N so the update rule can proceed from any frame.
 //   Reset (zeroed) whenever the PT accumulator resets (camera move/setScene/reset).
 struct SppmPixelStats {
   tau     : vec3f,   // accumulated brdf-weighted flux (τ in Hachisuka §4)
-  radius2 : f32,     // current per-pixel gather radius² (R² shrinks each frame)
+  radius  : f32,     // current per-pixel gather radius (kept linear for f32 range)
   N       : f32,     // accumulated photon count (floating-point, cf. Knaus-Zwicker)
   _pad0   : f32,
   _pad1   : f32,
@@ -164,16 +160,45 @@ struct SppmPixelStats {
 // Spatial hash: map a world-space position to a cell index.
 // Prime-multiplied coordinate hash (Ihrke et al. 2007, § 4).
 fn sppmCellIndex(pos: vec3f, radius: f32) -> u32 {
-  let r = max(radius, 1e-6);
-  let ix = i32(floor(pos.x / r));
-  let iy = i32(floor(pos.y / r));
-  let iz = i32(floor(pos.z / r));
+  if (!(radius > 0.0) || radius > 3.402823466e38) {
+    return 0u;
+  }
+  // Hash relative to the packed scene center. Dividing absolute world
+  // coordinates by a small radius can exceed i32 even though every photon is
+  // inside a perfectly ordinary, merely translated scene.
+  let sceneCenter = vec3f(
+    sppmStats.sceneCenterX,
+    sppmStats.sceneCenterY,
+    sppmStats.sceneCenterZ,
+  );
+  let centered = pos - sceneCenter;
+  let ix = i32(floor(centered.x / radius));
+  let iy = i32(floor(centered.y / radius));
+  let iz = i32(floor(centered.z / radius));
   // Use bitwise operations on unsigned reinterpretation for the mix.
   let ux = bitcast<u32>(ix);
   let uy = bitcast<u32>(iy);
   let uz = bitcast<u32>(iz);
   let h = (ux * 1223u) ^ (uy * 7919u) ^ (uz * 1049u);
   return h % SPPM_MAX_CELLS_WGSL;
+}
+
+// Scale-free sphere/disk support test. Squaring the world-space difference and
+// the gather radius directly loses valid tiny scenes and overflows large ones.
+fn sppmWithinRadius(diff: vec3f, radius: f32) -> bool {
+  if (!(radius > 0.0) || radius > 3.402823466e38) {
+    return false;
+  }
+  let edgeScale = max(abs(diff.x), max(abs(diff.y), abs(diff.z)));
+  if (edgeScale == 0.0) {
+    return true;
+  }
+  if (!(edgeScale > 0.0) || edgeScale > 3.402823466e38) {
+    return false;
+  }
+  let scaled = diff / edgeScale;
+  let scaledDistance = sqrt(dot(scaled, scaled));
+  return scaledDistance <= radius / edgeScale;
 }
 
 // Publish one photon into the per-frame hash grid. Each invocation owns the
@@ -239,7 +264,7 @@ fn sppmInsertPhoton(
 //     Cesàro mean has the same asymptotic limit.
 //
 //   INITIAL STATE (first frame after reset):
-//     N = 0, radius2 = r₀² (from sppmStats.r0), τ = 0. For M>0 the
+//     N = 0, radius = r₀ (from sppmStats.r0), τ = 0. For M>0 the
 //     first update ratio is α; for M=0 the guarded ratio is one.
 //
 // Encoded heads use recordIndex + 1; zero is the empty/end sentinel.
@@ -286,20 +311,23 @@ fn sppmUpdateProgressiveKind(
 ) {
   let nPhotons = sppmStats.photonCount;
   let r0 = sppmStats.r0;
-  if (r0 <= 1e-9 || nPhotons == 0u) { return; }
+  if (!(r0 > 0.0) || nPhotons == 0u) { return; }
 
   // Load per-pixel progressive state.  On the very first frame after a reset
-  // all fields are zero (the buffer is GPU-cleared); initialise radius2 from
-  // r₀ in that case.
+  // all fields are zero (the buffer is GPU-cleared); initialise the linear
+  // radius from r₀ in that case. Keeping R rather than R² prevents a valid
+  // Float32 r₀ from underflowing or overflowing during initialization.
   // Surface tau has area-density units; volume tau has volume-density units.
   // They must remain distinct across frames even though one eye path is allowed
   // to update only one of them in a frame.
   let statsIndex = pixelIndex * 2u + gatherKind;
   var pxStats = sppmPixelStats[statsIndex];
-  let isFirstFrame = (pxStats.radius2 <= 0.0);
-  let r2 = select(pxStats.radius2, r0 * r0, isFirstFrame);
-  let r  = sqrt(r2);
-  let gridRadius = max(sppmStats.currentRadius, 1e-6);
+  let isFirstFrame = (pxStats.radius <= 0.0);
+  let r = select(pxStats.radius, r0, isFirstFrame);
+  let gridRadius = sppmStats.currentRadius;
+  if (!(gridRadius > 0.0) || gridRadius > 3.402823466e38) {
+    return;
+  }
   var tau = pxStats.tau;
   var N   = pxStats.N;
 
@@ -346,12 +374,11 @@ fn sppmUpdateProgressiveKind(
           cycleSlow = sppmNextEncodedHead(cycleSlow, nPhotons);
           cycleFast = sppmNextEncodedHead(
             sppmNextEncodedHead(cycleFast, nPhotons), nPhotons);
-          let diff  = ph.position - pos;
-          let dist2 = dot(diff, diff);
+          let diff = ph.position - pos;
           let kindMatches = sppmPhotonKind(ph) == gatherKind;
           let mediumMatches = gatherKind == SPPM_PHOTON_KIND_SURFACE ||
             sppmPhotonMediumMatId(ph) == gatherMediumMatId;
-          if (dist2 <= r2 && kindMatches && mediumMatches) {
+          if (sppmWithinRadius(diff, r) && kindMatches && mediumMatches) {
             if (gatherKind == SPPM_PHOTON_KIND_SURFACE) {
               let nDotL = max(dot(normal, -ph.incidentDir), 0.0);
               if (nDotL > 0.0) {
@@ -419,20 +446,35 @@ fn sppmUpdateProgressiveKind(
   let NplusM  = N + M;
   // Guard M=0 ⟹ ratio=1 (no photons this frame → no update, no shrink).
   let ratio   = select(Nprime / NplusM, 1.0, M < 0.5);
-  // Surface gather support is a disk: R'² = R²·ratio. Volume support is a
-  // sphere: R' = R·cbrt(ratio), hence R'² = R²·ratio^(2/3).
-  let radius2Scale = select(
-    pow(ratio, 2.0 / 3.0),
-    ratio,
+  // Surface gather support is a disk: R' = R·sqrt(ratio). Volume support is a
+  // sphere: R' = R·cbrt(ratio). Retaining R directly avoids squaring outside
+  // Float32's usable exponent range.
+  let radiusScale = select(
+    pow(ratio, 1.0 / 3.0),
+    sqrt(ratio),
     gatherKind == SPPM_PHOTON_KIND_SURFACE,
   );
-  let r2prime = r2 * radius2Scale;
+  let rPrime = r * radiusScale;
   let tauPrime = (tau + phiForTau) * ratio;
 
   // Write updated per-pixel stats back.
-  sppmPixelStats[statsIndex].tau     = tauPrime;
-  sppmPixelStats[statsIndex].radius2 = r2prime;
-  sppmPixelStats[statsIndex].N       = Nprime;
+  sppmPixelStats[statsIndex].tau    = tauPrime;
+  sppmPixelStats[statsIndex].radius = rPrime;
+  sppmPixelStats[statsIndex].N      = Nprime;
+}
+
+fn sppmDensityChannel(tau: f32, logDenominator: f32) -> f32 {
+  if (!(tau > 0.0) || tau > 3.402823466e38) {
+    return 0.0;
+  }
+  let logValue = log(tau) - logDenominator;
+  if (logValue >= 88.722839) {
+    return 3.402823466e38;
+  }
+  if (logValue <= -103.27893) {
+    return 0.0;
+  }
+  return exp(logValue);
 }
 
 // Read one measure's current cumulative estimate without mutating it. Update
@@ -448,13 +490,20 @@ fn sppmProgressiveEstimateKind(
   let nPhotons = sppmStats.photonCount;
   let Ne = f32(sppmStats.frameAccumulated) * f32(nPhotons);
   let pxStats = sppmPixelStats[pixelIndex * 2u + gatherKind];
-  if (Ne <= 0.0 || pxStats.radius2 <= 1e-24) { return vec3f(0.0); }
-  let kernelMeasure = select(
-    (4.0 / 3.0) * PI * pxStats.radius2 * sqrt(pxStats.radius2),
-    PI * pxStats.radius2,
+  if (!(Ne > 0.0) || !(pxStats.radius > 0.0)) {
+    return vec3f(0.0);
+  }
+  let logKernelMeasure = select(
+    log(4.0 / 3.0) + log(PI) + 3.0 * log(pxStats.radius),
+    log(PI) + 2.0 * log(pxStats.radius),
     gatherKind == SPPM_PHOTON_KIND_SURFACE,
   );
-  return pxStats.tau / (Ne * kernelMeasure);
+  let logDenominator = log(Ne) + logKernelMeasure;
+  return vec3f(
+    sppmDensityChannel(pxStats.tau.r, logDenominator),
+    sppmDensityChannel(pxStats.tau.g, logDenominator),
+    sppmDensityChannel(pxStats.tau.b, logDenominator),
+  );
 }
 
 fn sppmCurrentProgressiveEstimate(pixelIndex: u32) -> vec3f {
@@ -581,10 +630,12 @@ fn sppmSampleDirectionalCone(
   angularDiameter: f32,
 ) -> vec3f {
   let axis = safe_normalize(axisIn);
-  if (angularDiameter <= 0.0) { return axis; }
-  let cosHalfAngle = cos(angularDiameter * 0.5);
-  let cosTheta = mix(cosHalfAngle, 1.0, rand_f32(rng));
-  let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+  if (ptDirectionalConeIsDelta(angularDiameter)) { return axis; }
+  let sinCosTheta = ptDirectionalConeSinCos(
+    angularDiameter, rand_f32(rng),
+  );
+  let sinTheta = sinCosTheta.x;
+  let cosTheta = sinCosTheta.y;
   let phi = 2.0 * PI * rand_f32(rng);
   var tangent: vec3f;
   var bitangent: vec3f;
@@ -838,30 +889,26 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       let rv = rectAreaLights[rectBase + 2u].xyz;
       let rshape = rectAreaLights[rectBase + 3u];
       let rr = rshape.rgb;
-      let normalRaw = cross(ru, rv);
-      let normalLen = length(normalRaw);
-      if (normalLen > 0.0) {
-        let lightNormal = normalRaw / normalLen;
-        let isDisc = abs(rshape.w - 1.0) < 0.5;
+      let isDisc = abs(rshape.w - 1.0) < 0.5;
+      let areaMeasure = measureAreaVector(
+        ru, rv, select(4.0, PI, isDisc),
+      );
+      if (areaMeasure.valid != 0u) {
+        let lightNormal = areaMeasure.normal;
         let xi1 = rand_f32(&rng);
         let xi2 = rand_f32(&rng);
         var emitPos: vec3f;
-        var area: f32;
         if (isDisc) {
           let disc = sppmConcentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
           emitPos = rpos + ru * disc.x + rv * disc.y;
-          area = PI * normalLen;
         } else {
           emitPos = rpos + ru * (xi1 * 2.0 - 1.0) + rv * (xi2 * 2.0 - 1.0);
-          area = 4.0 * length(cross(ru, rv));
         }
-        if (area > 0.0) {
-          let hemi = cosineHemisphereSample(&rng, lightNormal);
-          photonOrigin = emitPos;
-          photonDir    = hemi.wi;
-          photonFlux   = rr * area * PI * lightSelectInvPdf;
-          seeded = true;
-        }
+        let hemi = cosineHemisphereSample(&rng, lightNormal);
+        photonOrigin = emitPos;
+        photonDir    = hemi.wi;
+        photonFlux   = rr * areaMeasure.area * PI * lightSelectInvPdf;
+        seeded = true;
       }
     }
     current = current + 1u;
@@ -877,10 +924,9 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       let c = meshAreaLights[meshBase + 2u].xyz;
       let e1 = b - a;
       let e2 = c - a;
-      let normalRaw = cross(e1, e2);
-      let normalLen = length(normalRaw);
-      if (normalLen > 0.0) {
-        let lightNormal = normalRaw / normalLen;
+      let areaMeasure = measureAreaVector(e1, e2, 0.5);
+      if (areaMeasure.valid != 0u) {
+        let lightNormal = areaMeasure.normal;
         let r1 = rand_f32(&rng);
         let r2 = rand_f32(&rng);
         let su = sqrt(r1);
@@ -891,14 +937,21 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
         let mr = sampleMeshAreaLightRadiance(
           meshIdx, vec3f(uu, vv, ww), emitPos,
         );
-        let area = 0.5 * normalLen;
-        if (area > 0.0) {
-          let hemi = cosineHemisphereSample(&rng, lightNormal);
-          photonOrigin = emitPos;
-          photonDir    = hemi.wi;
-          photonFlux   = mr * area * PI * lightSelectInvPdf;
-          seeded = true;
+        let twoSidedEmitter = meshAreaLightIsTwoSided(meshIdx);
+        var launchNormal = lightNormal;
+        var sidedPowerScale = 1.0;
+        if (twoSidedEmitter) {
+          sidedPowerScale = 2.0;
+          if (rand_f32(&rng) < 0.5) {
+            launchNormal = -launchNormal;
+          }
         }
+        let hemi = cosineHemisphereSample(&rng, launchNormal);
+        photonOrigin = emitPos;
+        photonDir    = hemi.wi;
+        photonFlux   =
+          mr * areaMeasure.area * PI * sidedPowerScale * lightSelectInvPdf;
+        seeded = true;
       }
     }
     current = current + 1u;
@@ -918,7 +971,9 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     } else {
       envDir = uniformSphere(vec2f(rand_f32(&rng), rand_f32(&rng)));
       envColor = sampleEnvironmentColor(envDir);
-      envPdf = max(environmentPdf(envDir), 1e-8);
+      // This branch samples a uniform sphere because the importance table was
+      // unavailable; its proposal density must match that actual draw.
+      envPdf = 0.25 * INV_PI;
     }
     if (envPdf > 0.0) {
       let extent = sppmStats.sceneExtent;
@@ -931,18 +986,29 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       photonOrigin = sceneCenter + diskPos + envDir * extent * 2.0;
       photonDir    = -envDir;
       let diskArea = PI * extent * extent;
-      photonFlux   = envColor * diskArea * lightSelectInvPdf / envPdf;
+      photonFlux = ptScaleEnvironmentRadiance(envColor, diskArea);
+      photonFlux = ptScaleEnvironmentRadiance(
+        photonFlux,
+        lightSelectInvPdf,
+      );
+      photonFlux = ptScaleEnvironmentRadiance(photonFlux, 1.0 / envPdf);
       seeded = true;
     }
   }
 
   if (!seeded) { return; }
   if (params.spectralEnabled != 0u) {
-    photonFlux = spectralEmissionAtHero(photonFlux, photonHeroLambda);
+    photonFlux = ptScaleEnvironmentRadiance(
+      spectralEmissionAtHero(photonFlux, photonHeroLambda),
+      1.0,
+    );
   }
 
   // ── Trace the photon path ──────────────────────────────────────────────────
-  var ray  = Ray(photonOrigin + photonDir * 1e-3, photonDir);
+  var ray = Ray(
+    photonOrigin + photonDir * ptRayOriginBias(),
+    photonDir,
+  );
   var flux = photonFlux;
   let maxBounces = SPPM_PHOTON_MAX_BOUNCES;
   var photonMediumDepth = 0u;
@@ -960,7 +1026,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     if (bounce >= maxBounces) { break; }
     let alphaTraceOrigin = ray.origin;
     var alphaAdvance = 0.0;
-    var hit = traceClosest(ray, 1e-4, INFINITY);
+    var hit = traceClosest(ray, ptRayTMin(), INFINITY);
     let alphaSurfaceHitLimit = sceneSurfaceHitLimit();
     var alphaSurfaceHitCount = 0u;
     var alphaTraversalValid = true;
@@ -976,10 +1042,10 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       if (!alphaTestPassThrough(
         hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
       )) { break; }
-      let alphaStep = hit.dist + 1e-4;
+      let alphaStep = hit.dist + ptRayTMin();
       alphaAdvance = alphaAdvance + alphaStep;
       ray.origin = ray.origin + ray.direction * alphaStep;
-      hit = traceClosest(ray, 1e-4, INFINITY);
+      hit = traceClosest(ray, ptRayTMin(), INFINITY);
     }
     ray.origin = alphaTraceOrigin;
     if (!alphaTraversalValid) { break; }

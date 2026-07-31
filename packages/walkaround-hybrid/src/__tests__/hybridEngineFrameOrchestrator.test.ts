@@ -383,10 +383,62 @@ function makeRcFrameDeps(args: {
         triIntersectEpsilon: 1e-5,
         glassMixScale: 0.7,
       },
+      rayOriginBias: 1e-3,
       rcWeight: 0.5,
     },
   };
 }
+
+describe('HybridEngineFrameOrchestrator — throttled presentation', () => {
+  it('re-presents with the current exact format and f32-quantized dials', () => {
+    const deps = makeRcFrameDeps({
+      scene: null,
+      primaryLightIntensity: 1,
+      capture: { sunColor: null },
+    });
+    const view = { label: 'fresh-srgb-view' } as unknown as GPUTextureView;
+    let presented:
+      | {
+          view: GPUTextureView;
+          format: GPUTextureFormat;
+          composite: {
+            tonemapMode: number;
+            exposure: number;
+            outputColorSpace: number;
+          };
+        }
+      | null = null;
+    deps.control.targetFrameIntervalMs = 100_000;
+    deps.control.getLastFrameTs = () => performance.now();
+    deps.control.presentLastFrame = (actualView, format, composite) => {
+      presented = { view: actualView, format, composite: { ...composite } };
+    };
+    const exposure = 1 + 2 ** -24;
+    const input = {
+      ...FRAME_INPUT,
+      swapChainView: view,
+      swapChainFormat: 'rgba8unorm-srgb',
+      quality: {
+        tonemap: 'reinhard',
+        exposure,
+        outputColorSpace: 'srgb',
+      },
+    } as unknown as FrameInput;
+
+    const output = runHybridEngineFrame(deps, input);
+
+    expect(output).toBe(HYBRID_FRAME_SKIP_OUTPUT);
+    expect(presented).toEqual({
+      view,
+      format: 'rgba8unorm-srgb',
+      composite: {
+        tonemapMode: 2,
+        exposure: Math.fround(exposure),
+        outputColorSpace: 0,
+      },
+    });
+  });
+});
 
 describe('HybridEngineFrameOrchestrator — RC sun input', () => {
   it('preserves scene RC sun directions until a runtime host override is active', () => {
@@ -408,8 +460,8 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     );
     expect(capture.lights).toHaveLength(2);
     expect(capture.lights?.map((light) => light.direction)).toEqual([
-      { x: -0, y: -1, z: -0 },
-      { x: -0, y: -0, z: -1 },
+      { x: 0, y: -1, z: 0 },
+      { x: 0, y: 0, z: -1 },
     ]);
 
     runHybridEngineFrame(
@@ -423,8 +475,8 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
       FRAME_INPUT,
     );
     expect(capture.lights?.map((light) => light.direction)).toEqual([
-      { x: -1, y: -0, z: -0 },
-      { x: -1, y: -0, z: -0 },
+      { x: -1, y: 0, z: 0 },
+      { x: -1, y: 0, z: 0 },
     ]);
 
     runHybridEngineFrame(
@@ -456,6 +508,28 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     expect(capture.sunColor).toEqual([1, 2, 4]);
   });
 
+  it('uses the exact staged f32 directional-emitter product for RC sun color', () => {
+    const capture = { sunColor: null as readonly [number, number, number] | null };
+    const scene: Scene = {
+      primitives: [],
+      emitters: [{
+        kind: 'directional',
+        id: 'f32-sun',
+        direction: [0, -1, 0],
+        color: [1, 1, 2 ** -149],
+        intensity: 0.5,
+      }],
+      environment: { kind: 'none' },
+    };
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({ scene, primaryLightIntensity: 10, capture }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.sunColor).toEqual([0.5, 0.5, 0]);
+  });
+
   it('keeps the legacy grey primaryLightIntensity fallback when no scene directional exists', () => {
     const capture = { sunColor: null as readonly [number, number, number] | null };
 
@@ -465,6 +539,22 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
     );
 
     expect(capture.sunColor).toEqual([3.5, 3.5, 3.5]);
+  });
+
+  it('f32-quantizes the achromatic RC sun fallback before dispatch', () => {
+    const capture = { sunColor: null as readonly [number, number, number] | null };
+    const halfwayAboveOne = 1 + 2 ** -24;
+
+    runHybridEngineFrame(
+      makeRcFrameDeps({
+        scene: null,
+        primaryLightIntensity: halfwayAboveOne,
+        capture,
+      }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.sunColor).toEqual([1, 1, 1]);
   });
 
   it('forwards directional emitter castShadow:false as the RC sun shadow flag', () => {
@@ -580,5 +670,24 @@ describe('HybridEngineFrameOrchestrator — RC sun input', () => {
 
     expect(capture.scalarSkyRadiance).toEqual([0.5, 1, 2]);
     expect(capture.hasDirectionalEnvironment).toBe(false);
+  });
+
+  it('forwards the exact staged f32 scalar sky product to RC', () => {
+    const capture = {
+      sunColor: null as readonly [number, number, number] | null,
+      scalarSkyRadiance: null as readonly [number, number, number] | null,
+    };
+    runHybridEngineFrame(
+      makeRcFrameDeps({
+        scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+        primaryLightIntensity: 1,
+        skyTint: [1, 1, 2 ** -149],
+        skyIrradiance: 0.5,
+        capture,
+      }),
+      FRAME_INPUT,
+    );
+
+    expect(capture.scalarSkyRadiance).toEqual([0.5, 0.5, 0]);
   });
 });

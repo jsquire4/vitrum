@@ -66,6 +66,10 @@ function makeMockDevice(
   let bufferCreateCount = 0;
   let failureAvailable = true;
   return {
+    limits: {
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
+    },
     createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
       bufferCreateCount++;
       if (failureAvailable && bufferCreateCount === options.failBufferAt) {
@@ -243,7 +247,6 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
       envMapView: GPUTextureView;
       envMapOwnedByPass: boolean;
       envMapPlaceholderTex: GPUTexture | null;
-      envSamplerForProbe: GPUSampler;
       linearSampler: GPUSampler;
     }};
     const gpu = internal._gpu;
@@ -255,7 +258,6 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
     const externalSampler = {} as GPUSampler;
     pass.setEnvironment(externalView, externalSampler, 0.25, 1.5, true);
     expect(gpu.envMapView).toBe(externalView);
-    expect(gpu.envSamplerForProbe).toBe(externalSampler);
     expect(gpu.envMapOwnedByPass).toBe(false);
     expect(gpu.envMapPlaceholderTex).toBeNull();
     expect(tracking.destroyedTextures).toContain(initialPlaceholder);
@@ -263,7 +265,6 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
     const texturesBeforeDisable = tracking.createdTextures.length;
     pass.setEnvironment(null, null, 0, 0, false);
     expect(gpu.envMapView).not.toBe(externalView);
-    expect(gpu.envSamplerForProbe).toBe(gpu.linearSampler);
     expect(gpu.envMapOwnedByPass).toBe(true);
     expect(gpu.envMapPlaceholderTex).not.toBeNull();
     expect(tracking.createdTextures.length).toBe(texturesBeforeDisable + 1);

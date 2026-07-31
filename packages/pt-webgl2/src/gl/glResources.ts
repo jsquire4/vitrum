@@ -1,9 +1,9 @@
 // GlResources — the GL resource owner (plan/three-removal/02-gl-framework.md §5, §6).
 // Analog of pt-webgpu's GpuResources / the fork's PathTracingRenderer state. It owns:
-//   - the accumulation FBO + RGBA32F color texture (+ optional MRT gNormalDepth/gAlbedo),
-//   - the radiance-only shader-composite ping-pong pair (allocated lazily),
+//   - two RGBA32F progressive histories sharing optional MRT gNormalDepth/gAlbedo,
+//   - a budget-bounded four-attachment NEE candidate row tile,
 //   - the PT GlProgram (built from composeTraceGlsl + FULLSCREEN_VERT),
-//   - the portable running-mean composite quad program,
+//   - the tonemap/presentation pass,
 //   - a FullscreenQuad.
 //
 // The per-sample draw (drawAccumStep) replaces the fork's renderTask generator: bind the
@@ -24,29 +24,28 @@ import {
 import { GlProgram } from './glProgram.js';
 import { FullscreenQuad, FULLSCREEN_VERT } from './fullscreenQuad.js';
 import {
-  createRenderTarget,
   createNeeCandidateTarget,
-  bindRenderTarget,
-  clearRenderTarget,
+  createProgressiveTarget,
+  bindProgressiveTarget,
+  clearProgressiveTarget,
   type NeeCandidateTarget,
-  type RenderTarget,
+  type ProgressiveTarget,
 } from './framebuffer.js';
 import { probeGlCaps, type GlCaps } from './glCaps.js';
 import { SOBOL_TEXTURE_SIZE, generateSobolTextureData } from '@vitrum/shared-samplers';
 import { BdptSubpathBuilder } from './BdptSubpathBuilder.js';
 import { PresentPass, selectPresentSources } from './PresentPass.js';
 import { uploadFrameUniforms } from './uploadFrameUniforms.js';
-import { BLEND_FRAG } from './blendFrag.js';
 import {
   readOidnInputsFromWebGlFbos,
   type WebGlOidnReadbackResult,
 } from '../denoise/rgba32fReadback.js';
-import { allocGlTexture } from './texAlloc.js';
+import { allocGlTexture, assertNoGlError } from './texAlloc.js';
 import {
   assertWebGl2RenderTargetRequest,
   DEFAULT_RENDER_TARGET_BUDGET_BYTES,
-  estimateWebGl2DenoisedTargetBytes,
-  estimateWebGl2ResidentBytes,
+  estimateWebGl2RenderTargetBytes,
+  selectWebGl2NeeCandidateRows,
 } from './renderTargetBudget.js';
 import { prepareProgramSequence } from './programPreparation.js';
 
@@ -124,9 +123,8 @@ const SCENE_TEXTURE_BINDINGS: readonly SceneTextureBinding[] = [
   { name: 'uBdptLightPathTex', kind: 'tex2d', source: (_s, d2d) => d2d },
   // EquirectHdrInfo importance-sampling samplers
   { name: 'envMapInfo.map', kind: 'tex2d', source: (s, d2d) => s.envMap ?? d2d },
-  { name: 'envMapInfo.marginalWeights', kind: 'tex2d', source: (s, d2d) => s.envMarginal ?? d2d },
   {
-    name: 'envMapInfo.conditionalWeights',
+    name: 'envMapInfo.distributionWeights',
     kind: 'tex2d',
     source: (s, d2d) => s.envConditional ?? d2d,
   },
@@ -151,6 +149,8 @@ export interface FrameUniforms {
   readonly backgroundBlur: number;
   readonly spectralEnabled: boolean;
   readonly backgroundAlpha: number; // 1 = opaque visible env (default); <1 = transparent
+  /** Scene-relative base offset used by all secondary and visibility rays. */
+  readonly rayOriginBias: number;
   /**
    * A5 (2026-06-10): BDPT host-driver inputs. `bdpt` mirrors the FEATURE_BDPT
    * compile flag (so the driver knows to issue the light-subpath passes); when it
@@ -202,7 +202,6 @@ interface ProgramGraph {
   readonly pt: GlProgram;
   readonly candidate: GlProgram;
   readonly resolve: GlProgram;
-  readonly blend: GlProgram;
   readonly randomType: TraceFeatures['randomType'];
   /**
    * The three path-tracing programs are intentionally linked serially.
@@ -237,20 +236,17 @@ export class GlResources {
   readonly #quad: FullscreenQuad;
   readonly #maxRenderTargetBytes: number;
 
-  /** The PT accumulation target (RGBA32F primary + optional MRT aux). */
-  #accum: RenderTarget | null = null;
-  /** Four-attachment packed handoff from path replay to the no-loop NEE resolve. */
+  /** Two progressive RGBA32F histories sharing the optional last-sample aux pair. */
+  #accum: ProgressiveTarget | null = null;
+  /** Which progressive color currently holds the readable running mean. */
+  #historyReadIndex: 0 | 1 = 0;
+  /** Four-attachment packed handoff, bounded to a row tile and allocated lazily. */
   #neeCandidate: NeeCandidateTarget | null = null;
-  /** Radiance-only shader-composite pair, used for alpha compositing and when
-   * MRT auxiliaries require the PT target itself to remain an unblended sample. */
-  #blend: [RenderTarget, RenderTarget] | null = null;
-  /** Which slot of the blend pair currently holds the readable result. */
-  #blendReadIndex = 0;
+  #neeCandidateRows = 0;
 
   #ptProgram: GlProgram | null = null;
   #neeCandidateProgram: GlProgram | null = null;
   #neeResolveProgram: GlProgram | null = null;
-  #blendProgram: GlProgram | null = null;
   #activeProgramKey: string | null = null;
   #pendingProgramGraph: ProgramGraph | null = null;
   #randomType: TraceFeatures['randomType'] = 0;
@@ -295,7 +291,7 @@ export class GlResources {
       this.#auxBuffers,
       this.#maxRenderTargetBytes,
       this.#caps.maxTexSize,
-      replacingPublishedTargets ? this.#residentRenderTargetBytes() : 0,
+      replacingPublishedTargets ? this.#baseRenderTargetBytes() : 0,
     );
   }
 
@@ -307,36 +303,31 @@ export class GlResources {
   ensureAccumResources(w: number, h: number): boolean {
     this.validateAccumRequest(w, h);
     if (w === this.#accumWidth && h === this.#accumHeight && this.#accum != null) return false;
-    const nextAccum = createRenderTarget(this.#gl, w, h, this.#auxBuffers);
-    let nextNeeCandidate: NeeCandidateTarget | null = null;
-    // Present target — RGBA32F (deliberate: it is the public primaryRadiance
-    // and must stay FLOAT-readable; both render targets allocate RGBA32F).
+    // Candidate data is transient scratch, not part of the last complete frame.
+    // Retire it before the replacement allocation so resize peak accounting is
+    // the exact old persistent layout plus the exact new persistent layout.
+    this.#destroyNeeCandidate();
+    const nextAccum = createProgressiveTarget(this.#gl, w, h, this.#auxBuffers);
+    // The compact RGBA16F present target is still FLOAT-readable into the
+    // public Float32 capture shape.
     try {
-      nextNeeCandidate = createNeeCandidateTarget(this.#gl, w, h);
+      clearProgressiveTarget(this.#gl, nextAccum);
       this.#presentPass.allocate(w, h);
     } catch (error) {
       nextAccum.destroy();
-      nextNeeCandidate?.destroy();
       throw error;
     }
 
     const previousAccum = this.#accum;
-    const previousNeeCandidate = this.#neeCandidate;
-    const previousBlend = this.#blend;
     this.#accum = nextAccum;
-    this.#neeCandidate = nextNeeCandidate;
-    this.#blend = null;
+    this.#neeCandidate = null;
+    this.#neeCandidateRows = 0;
     this.#accumWidth = w;
     this.#accumHeight = h;
-    this.#blendReadIndex = 0;
+    this.#historyReadIndex = 0;
     this.#samples = 0;
     this.#clearDenoisedSource();
     previousAccum?.destroy();
-    previousNeeCandidate?.destroy();
-    if (previousBlend != null) {
-      previousBlend[0].destroy();
-      previousBlend[1].destroy();
-    }
     return true;
   }
 
@@ -351,8 +342,7 @@ export class GlResources {
       this.#activeProgramKey === key &&
       this.#ptProgram != null &&
       this.#neeCandidateProgram != null &&
-      this.#neeResolveProgram != null &&
-      this.#blendProgram != null
+      this.#neeResolveProgram != null
     ) {
       return true;
     }
@@ -363,7 +353,6 @@ export class GlResources {
       let ptProgram: GlProgram | null = null;
       let candidateProgram: GlProgram | null = null;
       let resolveProgram: GlProgram | null = null;
-      let blendProgram: GlProgram | null = null;
       try {
         ptProgram = new GlProgram(this.#gl, FULLSCREEN_VERT, composeTraceGlsl(features), {
           ...baseDefines,
@@ -387,19 +376,16 @@ export class GlResources {
             NEE_CANDIDATE_PASS: 0,
           },
         );
-        blendProgram = new GlProgram(this.#gl, FULLSCREEN_VERT, BLEND_FRAG, {});
       } catch (error) {
         ptProgram?.dispose();
         candidateProgram?.dispose();
         resolveProgram?.dispose();
-        blendProgram?.dispose();
         throw error;
       }
       if (
         ptProgram == null ||
         candidateProgram == null ||
-        resolveProgram == null ||
-        blendProgram == null
+        resolveProgram == null
       ) {
         throw new Error('pt-webgl2: program construction completed without all pass programs');
       }
@@ -408,7 +394,6 @@ export class GlResources {
         pt: ptProgram,
         candidate: candidateProgram,
         resolve: resolveProgram,
-        blend: blendProgram,
         randomType: features.randomType,
         prepareStage: 0,
       };
@@ -427,9 +412,8 @@ export class GlResources {
       if (!preparation.ready) return false;
       // These two programs are tiny and can be polled together after the large
       // graph has linked without materially increasing compiler pressure.
-      const blendReady = pending.blend.prepare();
       const presentReady = this.#presentPass.prepareProgram();
-      if (!blendReady || !presentReady) return false;
+      if (!presentReady) return false;
     } catch (error) {
       this.#disposeProgramGraph(pending);
       this.#pendingProgramGraph = null;
@@ -440,14 +424,12 @@ export class GlResources {
       this.#ptProgram != null &&
       this.#neeCandidateProgram != null &&
       this.#neeResolveProgram != null &&
-      this.#blendProgram != null &&
       this.#activeProgramKey != null
         ? {
             key: this.#activeProgramKey,
             pt: this.#ptProgram,
             candidate: this.#neeCandidateProgram,
             resolve: this.#neeResolveProgram,
-            blend: this.#blendProgram,
             randomType: this.#randomType,
             prepareStage: 3,
           }
@@ -455,7 +437,6 @@ export class GlResources {
     this.#ptProgram = pending.pt;
     this.#neeCandidateProgram = pending.candidate;
     this.#neeResolveProgram = pending.resolve;
-    this.#blendProgram = pending.blend;
     this.#activeProgramKey = pending.key;
     this.#randomType = pending.randomType;
     this.#pendingProgramGraph = null;
@@ -471,26 +452,22 @@ export class GlResources {
   /** Clear all accumulation targets to (0,0,0,0) + reset the sample counter (fork reset()). */
   clearAccum(): void {
     this.#clearDenoisedSource();
-    if (this.#accum != null) clearRenderTarget(this.#gl, this.#accum);
+    if (this.#accum != null) clearProgressiveTarget(this.#gl, this.#accum);
     if (this.#neeCandidate != null) {
       this.#gl.bindFramebuffer(this.#gl.FRAMEBUFFER, this.#neeCandidate.fbo);
       this.#gl.drawBuffers(this.#neeCandidate.drawBuffers);
       this.#gl.clearColor(0, 0, 0, 0);
       this.#gl.clear(this.#gl.COLOR_BUFFER_BIT);
     }
-    if (this.#blend != null) {
-      clearRenderTarget(this.#gl, this.#blend[0]);
-      clearRenderTarget(this.#gl, this.#blend[1]);
-    }
-    this.#blendReadIndex = 0;
+    this.#historyReadIndex = 0;
     this.#samples = 0;
   }
 
   /**
-   * One accumulation step (plan 02 §6). Binds the accum FBO + MRT draw buffers,
+   * One accumulation step (plan 02 §6). Binds a history FBO + MRT draw buffers,
    * uploads the sample seed, binds scene textures, and draws the fullscreen
-   * triangle. After separately resolving NEE into the raw radiance sample, it
-   * performs one portable shader running-mean update into the ping-pong pair.
+   * triangle. Main radiance folds into the next history in-shader; bounded NEE
+   * tiles then add their identically weighted contribution.
    */
   drawAccumStep(
     scene: UploadedSceneTextures,
@@ -507,6 +484,7 @@ export class GlResources {
     ) {
       throw new Error('pt-webgl2: drawAccumStep before ensureProgram');
     }
+    this.#ensureNeeCandidate();
     if (this.#neeCandidate == null) {
       throw new Error('pt-webgl2: drawAccumStep before NEE candidate allocation');
     }
@@ -528,7 +506,9 @@ export class GlResources {
         )
       : null;
 
-    bindRenderTarget(gl, this.#accum);
+    const readIndex = this.#historyReadIndex;
+    const writeIndex: 0 | 1 = readIndex === 0 ? 1 : 0;
+    bindProgressiveTarget(gl, this.#accum, writeIndex);
     gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
     // Core WebGL2 cannot control blending independently per draw buffer. MRT
     // samples therefore render unblended so attachments 1/2 overwrite with the
@@ -536,56 +516,64 @@ export class GlResources {
     // through the portable shader ping-pong pass below. This is an explicit
     // last-sample auxiliary contract (important for DoF, where primary hits can
     // vary); encoded normals and linear depth are never numerically blended.
-    // Main radiance and the separately-resolved NEE term must form ONE complete
-    // sample before the single running-mean update. Therefore every device uses
-    // the portable shader composite. Fixed-function float blending is not a
-    // valid alternate regime because it would blend every MRT attachment and
-    // would accumulate main radiance before the NEE sample is complete.
+    // Main radiance uses the exact straight-alpha running-mean normalization
+    // against the previous history. NEE applies the matching normalization in
+    // its resolve shader before additive composition.
     gl.disable(gl.BLEND);
 
     // Upload the per-frame individual uniforms (D11-6: extracted to
     // uploadFrameUniforms). `prog.use()` and the live setter sequence live there.
-    const sampleOpacity = 1;
+    const sampleOpacity = 1 / (this.#samples + 1);
     uploadFrameUniforms(prog, sampleOpacity, seed, frame);
+    prog.setVec2('uTileOrigin', 0, 0);
+    prog.bindTexture('uAccumHistory', this.#accum.colors[readIndex]);
     this.#bindSceneTextures(prog, scene, bdptResult);
     this.#quad.draw(gl);
 
-    // Replay the exact continuation path into the four packed candidate
-    // attachments. Stateless reservoir replacement plus saved/restored light
-    // RNG leaves every continuation draw bit-identical to the main pass.
     const candidateProgram = this.#neeCandidateProgram;
-    gl.bindFramebuffer(gl.FRAMEBUFFER, this.#neeCandidate.fbo);
-    gl.drawBuffers(this.#neeCandidate.drawBuffers);
-    gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
-    gl.disable(gl.BLEND);
-    uploadFrameUniforms(candidateProgram, 1, seed, frame);
-    this.#bindSceneTextures(candidateProgram, scene, bdptResult);
-    this.#quad.draw(gl);
-
-    // Resolve one retained vertex with no path loop and add it to the raw main
-    // sample. Alpha is zero in the resolve output, so primary/background alpha
-    // remains owned solely by the main trace.
-    bindRenderTarget(gl, this.#accum);
-    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
-    gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
-    gl.enable(gl.BLEND);
-    gl.blendEquation(gl.FUNC_ADD);
-    gl.blendFunc(gl.ONE, gl.ONE);
     const resolveProgram = this.#neeResolveProgram;
-    uploadFrameUniforms(resolveProgram, 1, seed, frame);
-    this.#bindSceneTextures(resolveProgram, scene, bdptResult);
-    for (let attachment = 0; attachment < 4; attachment += 1) {
-      resolveProgram.bindTexture(
-        `uNeeCandidate${attachment}`,
-        this.#neeCandidate.textures[attachment]!,
-      );
+    // Replay and resolve in bounded row tiles. Candidate storage is the largest
+    // scratch allocation that fits the exact configured budget; logical pixel
+    // coordinates keep camera rays and RNG byte-identical to a full-size replay.
+    for (let tileY = 0; tileY < this.#accumHeight; tileY += this.#neeCandidateRows) {
+      const tileHeight = Math.min(this.#neeCandidateRows, this.#accumHeight - tileY);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, this.#neeCandidate.fbo);
+      gl.drawBuffers(this.#neeCandidate.drawBuffers);
+      gl.viewport(0, 0, this.#accumWidth, tileHeight);
+      gl.disable(gl.BLEND);
+      uploadFrameUniforms(candidateProgram, 1, seed, frame);
+      candidateProgram.setVec2('uTileOrigin', 0, tileY);
+      this.#bindSceneTextures(candidateProgram, scene, bdptResult);
+      this.#quad.draw(gl);
+
+      // Add the resolved NEE term into the already-updated running mean. The
+      // resolve output is multiplied by the same 1/(N+1) sample weight.
+      bindProgressiveTarget(gl, this.#accum, writeIndex);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      gl.viewport(0, tileY, this.#accumWidth, tileHeight);
+      gl.enable(gl.BLEND);
+      gl.blendEquation(gl.FUNC_ADD);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      uploadFrameUniforms(resolveProgram, sampleOpacity, seed, frame);
+      resolveProgram.setVec2('uTileOrigin', 0, tileY);
+      // The old history alpha is needed to apply the same straight-alpha
+      // running-mean normalization that the main-path contribution used.
+      // Candidate-valid pixels represent a surface/medium sample with alpha 1,
+      // so totalAlpha = history.a * (1-opacity) + opacity.
+      resolveProgram.bindTexture('uAccumHistory', this.#accum.colors[readIndex]);
+      this.#bindSceneTextures(resolveProgram, scene, bdptResult);
+      for (let attachment = 0; attachment < 4; attachment += 1) {
+        resolveProgram.bindTexture(
+          `uNeeCandidate${attachment}`,
+          this.#neeCandidate.textures[attachment]!,
+        );
+      }
+      this.#quad.draw(gl);
     }
-    this.#quad.draw(gl);
     gl.disable(gl.BLEND);
     gl.drawBuffers(this.#accum.drawBuffers);
 
-    this.#compositeBlendStep();
-
+    this.#historyReadIndex = writeIndex;
     this.#samples += 1;
 
     this.presentAccumulation(frame.tonemapMode, frame.exposure, frame.outputColorSpace);
@@ -635,21 +623,9 @@ export class GlResources {
         `pt-webgl2: OIDN result expected ${pixelCount * 3} RGB floats, got ${frame.rgb.length}`,
       );
     }
-    const nextDenoisedBytes = estimateWebGl2DenoisedTargetBytes(frame.width, frame.height);
-    const residentBytes = this.#residentRenderTargetBytes();
-    if (residentBytes > Number.MAX_SAFE_INTEGER - nextDenoisedBytes) {
-      throw new RangeError(
-        'pt-webgl2: OIDN target replacement peak overflows Number.MAX_SAFE_INTEGER',
-      );
-    }
-    const replacementPeakBytes = residentBytes + nextDenoisedBytes;
-    if (replacementPeakBytes > this.#maxRenderTargetBytes) {
-      throw new RangeError(
-        `pt-webgl2: OIDN target replacement peak requires ${replacementPeakBytes} bytes ` +
-          `(${residentBytes} resident + ${nextDenoisedBytes} new), exceeding ` +
-          `maxRenderTargetBytes=${this.#maxRenderTargetBytes}. ` +
-          `The previous complete denoised frame remains active.`,
-      );
+    const accum = this.#accum;
+    if (accum == null) {
+      throw new Error('pt-webgl2: OIDN result arrived before accumulation allocation');
     }
     const rgba = new Float32Array(pixelCount * 4);
     // OIDNDispatcherCore exposes CPU images in the engine-wide top-left
@@ -667,26 +643,34 @@ export class GlResources {
         rgba[dst + 3] = 1;
       }
     }
-    const next = allocGlTexture(this.#gl, {
-      kind: 'rect',
-      width: frame.width,
-      height: frame.height,
-      internalFormat: this.#gl.RGBA32F,
-      format: this.#gl.RGBA,
-      type: this.#gl.FLOAT,
-      data: rgba,
-      resourceName: 'OIDN denoised linear HDR',
-    });
+    const denoisedIndex: 0 | 1 = this.#historyReadIndex === 0 ? 1 : 0;
+    const next = accum.colors[denoisedIndex];
+    assertNoGlError(this.#gl, 'OIDN denoised linear HDR', 'before');
+    try {
+      this.#gl.bindTexture(this.#gl.TEXTURE_2D, next);
+      this.#gl.texSubImage2D(
+        this.#gl.TEXTURE_2D,
+        0,
+        0,
+        0,
+        frame.width,
+        frame.height,
+        this.#gl.RGBA,
+        this.#gl.FLOAT,
+        rgba,
+      );
+      assertNoGlError(this.#gl, 'OIDN denoised linear HDR', 'after');
+    } finally {
+      this.#gl.bindTexture(this.#gl.TEXTURE_2D, null);
+    }
     const previous = this.#denoisedLinearTex;
     this.#denoisedLinearTex = next;
     try {
       this.presentAccumulation(tonemapMode, exposure, outputColorSpace);
     } catch (error) {
       this.#denoisedLinearTex = previous;
-      this.#gl.deleteTexture(next);
       throw error;
     }
-    if (previous != null) this.#gl.deleteTexture(previous);
   }
 
   /** Stop presenting the accepted OIDN source and return to the live accumulator. */
@@ -695,30 +679,22 @@ export class GlResources {
   }
   /**
    * The tonemapped present texture (the output of the most-recent present pass).
-   * Always points to the presentTex (RGBA32F) written by PresentPass after
+   * Always points to the presentTex (RGBA16F) written by PresentPass after
    * each drawAccumStep. When no present pass has run yet (before the first
    * drawAccumStep), returns the raw HDR accum as a fallback.
    *
    * NOTE: the present texture is the TONEMAPPED output.  Hosts that need the
-   * raw HDR accumulation can read #accum.color directly (internal API only).
+   * raw HDR accumulation can read the active progressive history internally.
    */
   resultTexture(): WebGLTexture | null {
     // Prefer the present-pass output (tonemapped) when it has been allocated.
     if (this.#presentPass.tex != null) return this.#presentPass.tex;
     // Fallback: raw HDR accum (pre-present, e.g. before the first frame).
-    if (this.#blend != null) {
-      const [a, b] = this.#blend;
-      return (this.#blendReadIndex === 0 ? a : b).color;
-    }
-    return this.#accum?.color ?? null;
+    return this.#accum?.colors[this.#historyReadIndex] ?? null;
   }
 
   #linearResultTexture(): WebGLTexture | null {
-    if (this.#blend != null) {
-      const [a, b] = this.#blend;
-      return (this.#blendReadIndex === 0 ? a : b).color;
-    }
-    return this.#accum?.color ?? null;
+    return this.#accum?.colors[this.#historyReadIndex] ?? null;
   }
 
   /**
@@ -744,7 +720,7 @@ export class GlResources {
     if (w <= 0 || h <= 0) return null;
     const colorFbo = this.#linearReadFbo();
     const accum = this.#accum;
-    const auxFbo = accum?.fbo ?? null;
+    const auxFbo = accum?.fbos[this.#historyReadIndex] ?? null;
     const hasAux = this.#auxBuffers && accum?.normalDepth != null && accum.albedo != null;
     return readOidnInputsFromWebGlFbos(this.#gl, {
       colorFbo,
@@ -773,8 +749,6 @@ export class GlResources {
     this.#neeCandidateProgram = null;
     this.#neeResolveProgram?.dispose();
     this.#neeResolveProgram = null;
-    this.#blendProgram?.dispose();
-    this.#blendProgram = null;
     this.#activeProgramKey = null;
     this.#quad.dispose(gl);
     // H7 FIX (2026-06-09): delete the lazily-allocated dummy textures — dispose()
@@ -798,16 +772,12 @@ export class GlResources {
 
   // ----- internals -------------------------------------------------------------------------
 
-  #residentRenderTargetBytes(): number {
+  #baseRenderTargetBytes(): number {
     if (this.#accum == null) return 0;
-    return estimateWebGl2ResidentBytes(
+    return estimateWebGl2RenderTargetBytes(
       this.#accumWidth,
       this.#accumHeight,
       this.#auxBuffers,
-      {
-        blend: this.#blend != null,
-        denoised: this.#denoisedLinearTex != null,
-      },
     );
   }
 
@@ -816,58 +786,28 @@ export class GlResources {
     graph.pt.dispose();
     graph.candidate.dispose();
     graph.resolve.dispose();
-    graph.blend.dispose();
   }
 
-  /** Composite the latest PT radiance sample into the radiance-only ping-pong pair. */
-  #compositeBlendStep(): void {
-    const gl = this.#gl;
-    const accum = this.#accum;
-    if (accum == null) return;
-    this.#ensureBlendPair();
-    const blend = this.#blend;
-    if (blend == null) return;
-    const [slot0, slot1] = blend;
-    const readTarget = this.#blendReadIndex === 0 ? slot0 : slot1;
-    const writeTarget = this.#blendReadIndex === 0 ? slot1 : slot0;
-
-    const blendProg = this.#ensureBlendProgram();
-    bindRenderTarget(gl, writeTarget);
-    gl.viewport(0, 0, this.#accumWidth, this.#accumHeight);
-    gl.disable(gl.BLEND); // the composite math is done in-shader, not by fixed-function blend.
-
-    if (!blendProg.use()) {
-      throw new Error('pt-webgl2: blend pass reached draw before its program was ready');
-    }
-    blendProg.setFloat('opacity', 1 / (this.#samples + 1));
-    // target1 = prior accumulated result; target2 = the just-rendered PT sample.
-    blendProg.bindTexture('target1', readTarget.color);
-    blendProg.bindTexture('target2', accum.color);
-    this.#quad.draw(gl);
-
-    this.#blendReadIndex = 1 - this.#blendReadIndex;
+  #ensureNeeCandidate(): void {
+    if (this.#neeCandidate != null) return;
+    const rows = selectWebGl2NeeCandidateRows(
+      this.#accumWidth,
+      this.#accumHeight,
+      this.#auxBuffers,
+      this.#maxRenderTargetBytes,
+    );
+    this.#neeCandidate = createNeeCandidateTarget(
+      this.#gl,
+      this.#accumWidth,
+      rows,
+    );
+    this.#neeCandidateRows = rows;
   }
 
-  #ensureBlendProgram(): GlProgram {
-    this.#blendProgram ??= new GlProgram(this.#gl, FULLSCREEN_VERT, BLEND_FRAG, {});
-    return this.#blendProgram;
-  }
-
-  #ensureBlendPair(): void {
-    if (this.#blend != null) return;
-    const first = createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false);
-    let second: RenderTarget | null = null;
-    try {
-      second = createRenderTarget(this.#gl, this.#accumWidth, this.#accumHeight, false);
-      clearRenderTarget(this.#gl, first);
-      clearRenderTarget(this.#gl, second);
-    } catch (error) {
-      first.destroy();
-      second?.destroy();
-      throw error;
-    }
-    this.#blend = [first, second];
-    this.#blendReadIndex = 0;
+  #destroyNeeCandidate(): void {
+    this.#neeCandidate?.destroy();
+    this.#neeCandidate = null;
+    this.#neeCandidateRows = 0;
   }
 
   /** Bind the scene texture bundle to the PT program's samplers (plan 04 §4 binding remap).
@@ -979,34 +919,23 @@ export class GlResources {
   }
 
   #clearDenoisedSource(): void {
-    if (this.#denoisedLinearTex != null) {
-      this.#gl.deleteTexture(this.#denoisedLinearTex);
-      this.#denoisedLinearTex = null;
-    }
+    // Denoised RGB aliases the inactive progressive history color and is owned
+    // by #accum. Clearing the source only removes presentation ownership.
+    this.#denoisedLinearTex = null;
   }
 
   #destroyTargets(): void {
     this.#clearDenoisedSource();
     this.#accum?.destroy();
     this.#accum = null;
-    this.#neeCandidate?.destroy();
-    this.#neeCandidate = null;
-    if (this.#blend != null) {
-      this.#blend[0].destroy();
-      this.#blend[1].destroy();
-      this.#blend = null;
-    }
+    this.#destroyNeeCandidate();
     this.#accumWidth = 0;
     this.#accumHeight = 0;
-    this.#blendReadIndex = 0;
+    this.#historyReadIndex = 0;
   }
 
   #linearReadFbo(): WebGLFramebuffer | null {
-    if (this.#blend != null) {
-      const [a, b] = this.#blend;
-      return (this.#blendReadIndex === 0 ? a : b).fbo;
-    }
-    return this.#accum?.fbo ?? null;
+    return this.#accum?.fbos[this.#historyReadIndex] ?? null;
   }
 
   /**
@@ -1019,15 +948,14 @@ export class GlResources {
    * EXT_color_buffer_float is required (enforced by resolveWebGl2TraceTier; the
    * engine never reaches this point without it).
    *
-   * `source:'output'` reads the present FBO — the RGBA32F tonemapped output
-   * written by PresentPass. DELIBERATELY RGBA32F: the present texture is the
-   * public `primaryRadiance`, and hosts/harnesses read it with FLOAT
-   * readPixels; the result target therefore stays RGBA32F.
+   * `source:'output'` reads the RGBA16F present FBO. FLOAT readPixels preserves
+   * the public Float32 capture shape while the display-referred target uses the
+   * compact renderable format expected by the present pass.
    *
    * Returns `null` when the requested FBO has not been allocated yet (before
    * the first frame).
    *
-   * NOTE: readPixelsRgba32f has access to #blend/#accum/#presentPass.fbo and
+   * NOTE: readPixelsRgba32f has access to #accum/#presentPass.fbo and
    * cannot be extracted as a free function without passing those in — left here
    * as a method (D10.1 analysis: too coupled, leaving and reporting).
    */
@@ -1049,8 +977,8 @@ export class GlResources {
         `pt-webgl2: ${source} capture framebuffer is incomplete (status 0x${framebufferStatus.toString(16)})`,
       );
     }
-    // Both targets are RGBA32F (accum AND present),
-    // so both read with the FLOAT path.
+    // The linear target is RGBA32F and the output target RGBA16F. Both are
+    // floating-point color attachments and are read into the Float32 contract.
     const pixels = new Float32Array(w * h * 4);
     gl.readPixels(0, 0, w, h, gl.RGBA, gl.FLOAT, pixels);
     gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);

@@ -42,7 +42,9 @@ describe('derived geometry resource accounting', () => {
       0, 0, 1,
     ]);
     const uvs = new Float32Array([0, 0, 1, 0, 0, 1]);
-    const tangentBytes = 3 * 10 * Float32Array.BYTES_PER_ELEMENT;
+    const tangentBytes =
+      3 * 4 * Float32Array.BYTES_PER_ELEMENT +
+      3 * 3 * 2 * Float64Array.BYTES_PER_ELEMENT;
     const tangentLedger = new ImportResourceLedger({
       maxDecodedGeometryBytes: tangentBytes,
     });

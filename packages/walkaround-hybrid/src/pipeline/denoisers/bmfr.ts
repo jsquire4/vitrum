@@ -33,6 +33,11 @@ import {
 } from './index.js';
 import { publishFrameState } from '../FramePublication.js';
 import { shouldResetDenoiserHistory } from './historyReset.js';
+import type { PreparedSceneMutation } from '../../SceneMutationTransaction.js';
+import {
+  commitPreparedDenoiserResize,
+  noOpDenoiserResizeMutation,
+} from './resizeTransaction.js';
 
 interface BmfrSizedResources {
   readonly historyA: GPUTexture;
@@ -338,16 +343,51 @@ export class BmfrDenoiser implements Denoiser {
     return historyWrite;
   }
 
-  resize(width: number, height: number): void {
+  prepareResize(width: number, height: number): PreparedSceneMutation {
     const device = this._device;
-    if (device == null || this._sized == null) return;
+    if (device == null || this._sized == null) {
+      return noOpDenoiserResizeMutation();
+    }
     const next = this._createSizedResources(device, width, height);
     const previous = this._sized;
-    this._sized = next;
-    this._pingPong = 0;
-    this._historyValid = false;
-    this._lastHasHistory = -1;
-    destroySizedResources(previous);
+    const previousPingPong = this._pingPong;
+    const previousHistoryValid = this._historyValid;
+    const previousLastHasHistory = this._lastHasHistory;
+    let committed = false;
+    let retired = false;
+    let candidateOwned = true;
+    return {
+      commit: () => {
+        if (committed) return;
+        this._sized = next;
+        this._pingPong = 0;
+        this._historyValid = false;
+        this._lastHasHistory = -1;
+        committed = true;
+      },
+      rollback: () => {
+        if (!candidateOwned || retired) return;
+        if (committed) {
+          this._sized = previous;
+          this._pingPong = previousPingPong;
+          this._historyValid = previousHistoryValid;
+          this._lastHasHistory = previousLastHasHistory;
+          committed = false;
+        }
+        destroySizedResources(next);
+        candidateOwned = false;
+      },
+      finalize: () => {
+        if (!committed || retired) return;
+        retired = true;
+        candidateOwned = false;
+        destroySizedResources(previous);
+      },
+    };
+  }
+
+  resize(width: number, height: number): void {
+    commitPreparedDenoiserResize(this.prepareResize(width, height));
   }
 
   dispose(): void {

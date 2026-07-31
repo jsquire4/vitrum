@@ -75,15 +75,21 @@
 
 import type { Scene, SceneEmitter } from '@vitrum/core';
 import type { DDGILight } from './ddgi/types.js';
+import { canonicalizeLightingDirectionF32 } from './lightingFloat32.js';
 
 /** Convert the core/lighting toward-light vector into DDGI's sun travel vector. */
 function primaryLightDirToDdgiSunDirection(
   dir: readonly [number, number, number],
 ): DDGILight['direction'] | null {
-  const len = Math.hypot(dir[0], dir[1], dir[2]);
-  if (len < 1e-12) return null;
-  const inv = 1 / len;
-  return { x: -dir[0] * inv, y: -dir[1] * inv, z: -dir[2] * inv };
+  const packed = canonicalizeLightingDirectionF32(
+    dir,
+    'primary light direction',
+  );
+  return {
+    x: packed[0] === 0 ? 0 : -packed[0],
+    y: packed[1] === 0 ? 0 : -packed[1],
+    z: packed[2] === 0 ? 0 : -packed[2],
+  };
 }
 
 /**
@@ -119,18 +125,10 @@ export function scenePrimaryLightDirection(
 ): [number, number, number] | null {
   const emitter = scene?.emitters.find((candidate) => candidate.kind === 'directional');
   if (emitter == null) return null;
-  const len = Math.hypot(
-    emitter.direction[0],
-    emitter.direction[1],
-    emitter.direction[2],
+  return canonicalizeLightingDirectionF32(
+    emitter.direction,
+    `scene directional emitter ${String(emitter.id)} direction`,
   );
-  if (len < 1e-12) return null;
-  const inv = 1 / len;
-  return [
-    emitter.direction[0] * inv,
-    emitter.direction[1] * inv,
-    emitter.direction[2] * inv,
-  ];
 }
 
 /** Project a single core emitter onto a DDGILight, or null if the emitter
@@ -144,18 +142,19 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
       // (toward-light); the packer + WGSL want a TRAVEL direction (the shader
       // negates it back), so negate here. Intensity carried directly (the
       // host sets sunIntensityMul=1 for the single-count — see header).
-      const len = Math.hypot(e.direction[0], e.direction[1], e.direction[2]);
-      if (len < 1e-12) return null; // degenerate (zero direction)
-      const inv = 1 / len;
+      const direction = canonicalizeLightingDirectionF32(
+        e.direction,
+        `directional emitter ${String(e.id)} direction`,
+      );
       return {
         kind: 'sun',
         id: String(e.id),
         on: true,
         intensity: e.intensity,
         direction: {
-          x: -e.direction[0] * inv,
-          y: -e.direction[1] * inv,
-          z: -e.direction[2] * inv,
+          x: direction[0] === 0 ? 0 : -direction[0],
+          y: direction[1] === 0 ? 0 : -direction[1],
+          z: direction[2] === 0 ? 0 : -direction[2],
         },
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
         ...(typeof e.angularDiameter === 'number' && Number.isFinite(e.angularDiameter)
@@ -194,8 +193,10 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
       // receiver-to-light directions are tested against `-axis`. Inner = full-intensity
       // cone (angle·(1−penumbra)); outer = the full half-angle. glTF
       // KHR_lights_punctual spot falloff.
-      const len = Math.hypot(e.direction[0], e.direction[1], e.direction[2]);
-      const inv = len > 1e-12 ? 1 / len : 0;
+      const direction = canonicalizeLightingDirectionF32(
+        e.direction,
+        `spot emitter ${String(e.id)} direction`,
+      );
       const penumbra = Math.min(Math.max(e.penumbra ?? 0, 0), 1);
       return {
         kind: 'fixture',
@@ -204,7 +205,11 @@ export function coreEmitterToDDGILight(e: SceneEmitter): DDGILight | null {
         intensity: e.intensity,
         position: { x: e.position[0], y: e.position[1], z: e.position[2] },
         color: { r: e.color[0], g: e.color[1], b: e.color[2] },
-        spotAxis: { x: e.direction[0] * inv, y: e.direction[1] * inv, z: e.direction[2] * inv },
+        spotAxis: {
+          x: direction[0],
+          y: direction[1],
+          z: direction[2],
+        },
         spotCosOuter: Math.cos(e.angle),
         spotCosInner: Math.cos(e.angle * (1 - penumbra)),
         distance: typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0,

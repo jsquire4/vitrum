@@ -286,10 +286,14 @@ fn nrcOneBlob(u: f32, out: ptr<function, array<f32, ${K}>>) {
 // nrcEncoding.ts octEncodeDir; matches the canonical octEncode sign convention).
 fn nrcOctEncodeDir(d: vec3f) -> vec2f {
   let a = abs(d);
-  let s = a.x + a.y + a.z;
-  let inv = select(0.0, 1.0 / s, s > 1e-20);
-  var p = d.xy * inv;
-  if (d.z < 0.0) {
+  let scale = max(a.x, max(a.y, a.z));
+  if (!(scale > 0.0) || scale > 3.402823e38) {
+    return vec2f(0.5);
+  }
+  let scaled = d / scale;
+  let inv = 1.0 / (abs(scaled.x) + abs(scaled.y) + abs(scaled.z));
+  var p = scaled.xy * inv;
+  if (scaled.z < 0.0) {
     let sx = select(-1.0, 1.0, p.x >= 0.0);
     let sy = select(-1.0, 1.0, p.y >= 0.0);
     let ox = (1.0 - abs(p.y)) * sx;

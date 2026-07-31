@@ -84,6 +84,56 @@ function vComp(
   return value === undefined ? fallback : value;
 }
 
+function maxAbs3(x: number, y: number, z: number): number {
+  return Math.max(Math.abs(x), Math.abs(y), Math.abs(z));
+}
+
+function normalizedLength3(x: number, y: number, z: number): number {
+  const scale = maxAbs3(x, y, z);
+  if (!(scale > 0) || !Number.isFinite(scale)) return 0;
+  const scaledLength = Math.hypot(x / scale, y / scale, z / scale);
+  return Number.isFinite(scaledLength) && scaledLength > 0 ? scaledLength : 0;
+}
+
+function scaledHandedness(
+  nx: number,
+  ny: number,
+  nz: number,
+  tx: number,
+  ty: number,
+  tz: number,
+  bx: number,
+  by: number,
+  bz: number,
+): number {
+  const normalScale = maxAbs3(nx, ny, nz);
+  const tangentScale = maxAbs3(tx, ty, tz);
+  const bitangentScale = maxAbs3(bx, by, bz);
+  if (
+    !(normalScale > 0)
+    || !(tangentScale > 0)
+    || !(bitangentScale > 0)
+    || !Number.isFinite(normalScale)
+    || !Number.isFinite(tangentScale)
+    || !Number.isFinite(bitangentScale)
+  ) {
+    return 1;
+  }
+  const snx = nx / normalScale;
+  const sny = ny / normalScale;
+  const snz = nz / normalScale;
+  const stx = tx / tangentScale;
+  const sty = ty / tangentScale;
+  const stz = tz / tangentScale;
+  const sbx = bx / bitangentScale;
+  const sby = by / bitangentScale;
+  const sbz = bz / bitangentScale;
+  const cx = sny * stz - snz * sty;
+  const cy = snz * stx - snx * stz;
+  const cz = snx * sty - sny * stx;
+  return cx * sbx + cy * sby + cz * sbz < 0 ? -1 : 1;
+}
+
 /**
  * Pack the merged world-space stream into the 5-layer RGBA32F attribute array
  * (normal / tangent / uv0 / color / uv1). Each layer is a `dim×dim` slab, `dim =
@@ -177,8 +227,11 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
   // Accumulate the Lengyel UV-gradient tangent over each triangle, then per
   // vertex orthonormalize against the normal. Degenerate UVs (no merge UVs) leave
   // the accumulator ~zero, and we fall back to an orthonormal basis tangent.
-  const tanAccum = new Float32Array(vertexCount * 3);
-  const bitanAccum = new Float32Array(vertexCount * 3);
+  // Accumulation is working precision, not the GPU payload. Float64 keeps tiny
+  // finite islands and large but representable meshes from being classified by
+  // Float32 accumulation under/overflow before the final unit-vector pack.
+  const tanAccum = new Float64Array(vertexCount * 3);
+  const bitanAccum = new Float64Array(vertexCount * 3);
   const hasUvs = uvs !== undefined;
   if (hasUvs && triCount > 0) {
     for (let t = 0; t < triCount; t += 1) {
@@ -203,15 +256,26 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
       const du2 = (uvs[i2 * uvStride] ?? 0) - u0;
       const dw2 = (uvs[i2 * uvStride + 1] ?? 0) - w0;
 
-      const denom = du1 * dw2 - du2 * dw1;
-      if (Math.abs(denom) < 1e-12) continue;
+      const uvScale = Math.max(
+        Math.abs(du1),
+        Math.abs(dw1),
+        Math.abs(du2),
+        Math.abs(dw2),
+      );
+      if (!(uvScale > 0) || !Number.isFinite(uvScale)) continue;
+      const ndu1 = du1 / uvScale;
+      const ndw1 = dw1 / uvScale;
+      const ndu2 = du2 / uvScale;
+      const ndw2 = dw2 / uvScale;
+      const denom = ndu1 * ndw2 - ndu2 * ndw1;
+      if (!Number.isFinite(denom) || denom === 0) continue;
       const r = 1 / denom;
-      const tx = (dw2 * e1x - dw1 * e2x) * r;
-      const ty = (dw2 * e1y - dw1 * e2y) * r;
-      const tz = (dw2 * e1z - dw1 * e2z) * r;
-      const bx = (du1 * e2x - du2 * e1x) * r;
-      const by = (du1 * e2y - du2 * e1y) * r;
-      const bz = (du1 * e2z - du2 * e1z) * r;
+      const tx = (ndw2 * e1x - ndw1 * e2x) * r;
+      const ty = (ndw2 * e1y - ndw1 * e2y) * r;
+      const tz = (ndw2 * e1z - ndw1 * e2z) * r;
+      const bx = (ndu1 * e2x - ndu2 * e1x) * r;
+      const by = (ndu1 * e2y - ndu2 * e1y) * r;
+      const bz = (ndu1 * e2z - ndu2 * e1z) * r;
 
       for (const vi of [i0, i1, i2]) {
         tanAccum[vi * 3] = (tanAccum[vi * 3] ?? 0) + tx;
@@ -233,18 +297,14 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     let ty = vComp(authoredTangents, v, 1, 4, 0);
     let tz = vComp(authoredTangents, v, 2, 4, 0);
     let handedness = vComp(authoredTangents, v, 3, 4, 1) < 0 ? -1 : 1;
-    if (Math.sqrt(tx * tx + ty * ty + tz * tz) < 1e-8) {
+    if (normalizedLength3(tx, ty, tz) === 0) {
       tx = tanAccum[v * 3] ?? 0;
       ty = tanAccum[v * 3 + 1] ?? 0;
       tz = tanAccum[v * 3 + 2] ?? 0;
       const bx = bitanAccum[v * 3] ?? 0;
       const by = bitanAccum[v * 3 + 1] ?? 0;
       const bz = bitanAccum[v * 3 + 2] ?? 0;
-      const cx = ny * tz - nz * ty;
-      const cy = nz * tx - nx * tz;
-      const cz = nx * ty - ny * tx;
-      const bitangentDot = cx * bx + cy * by + cz * bz;
-      handedness = bitangentDot < 0 ? -1 : 1;
+      handedness = scaledHandedness(nx, ny, nz, tx, ty, tz, bx, by, bz);
     }
 
     // Gram-Schmidt: t' = normalize(t - n·(n·t))
@@ -252,9 +312,10 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
     tx -= nx * ndt;
     ty -= ny * ndt;
     tz -= nz * ndt;
-    let len = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    let tangentScale = maxAbs3(tx, ty, tz);
+    let scaledLength = normalizedLength3(tx, ty, tz);
 
-    if (len < 1e-8) {
+    if (!(scaledLength > 0) || !(tangentScale > 0)) {
       // No usable UV gradient → arbitrary orthonormal basis tangent from the
       // normal (Frisvad's branchless basis). Guarantees |t|=1, t·n≈0.
       const sign = nz >= 0 ? 1 : -1;
@@ -263,13 +324,22 @@ export function packAttributesArray(merged: MergeWithOptionalAttrs): LayeredTexe
       tx = 1 + sign * nx * nx * a;
       ty = sign * b;
       tz = -sign * nx;
-      len = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
+      tangentScale = maxAbs3(tx, ty, tz);
+      scaledLength = normalizedLength3(tx, ty, tz);
+      if (!(scaledLength > 0) || !(tangentScale > 0)) {
+        tx = 1;
+        ty = 0;
+        tz = 0;
+        tangentScale = 1;
+        scaledLength = 1;
+      }
     }
 
+    const inverseLength = 1 / scaledLength;
     const o = v * 4;
-    data[tangentBase + o] = tx / len;
-    data[tangentBase + o + 1] = ty / len;
-    data[tangentBase + o + 2] = tz / len;
+    data[tangentBase + o] = (tx / tangentScale) * inverseLength;
+    data[tangentBase + o + 1] = (ty / tangentScale) * inverseLength;
+    data[tangentBase + o + 2] = (tz / tangentScale) * inverseLength;
     data[tangentBase + o + 3] = handedness;
   }
 

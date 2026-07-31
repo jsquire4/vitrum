@@ -99,6 +99,32 @@ function cpuMirrorElementBytes(dataType: PtWebgpuTextureCpuMirrorDataType): numb
   return dataType === 'uint8' ? 1 : dataType === 'float32' ? 4 : 2;
 }
 
+function gpuColorFormatChannelCount(format: GPUTextureFormat): 1 | 2 | 3 | 4 | null {
+  if (
+    format.startsWith('rgba') ||
+    format.startsWith('bgra') ||
+    format === 'rgb10a2unorm'
+  ) {
+    return 4;
+  }
+  if (format.startsWith('rgb') || format === 'rg11b10ufloat') return 3;
+  if (
+    format.startsWith('rg8') ||
+    format.startsWith('rg16') ||
+    format.startsWith('rg32')
+  ) {
+    return 2;
+  }
+  if (
+    format.startsWith('r8') ||
+    format.startsWith('r16') ||
+    format.startsWith('r32')
+  ) {
+    return 1;
+  }
+  return null;
+}
+
 function immutableNumericSnapshot(
   data: ArrayLike<number>,
   dataType: PtWebgpuTextureCpuMirrorDataType,
@@ -318,6 +344,17 @@ export function createPtWebgpuTextureSource(
 
   const width = Math.max(1, Math.floor(texture.width / (2 ** baseMipLevel)));
   const height = Math.max(1, Math.floor(texture.height / (2 ** baseMipLevel)));
+  const formatChannels = gpuColorFormatChannelCount(options.format);
+  if (
+    options.cpuMirror != null &&
+    formatChannels != null &&
+    options.cpuMirror.channels !== formatChannels
+  ) {
+    throw new RangeError(
+      `createPtWebgpuTextureSource: cpuMirror.channels must match ${options.format} ` +
+      `(${formatChannels}); received ${String(options.cpuMirror.channels)}.`,
+    );
+  }
   const cpuMirror = options.cpuMirror == null
     ? undefined
     : createCpuMirrorSnapshot(options.cpuMirror, width, height, options.colorSpace);

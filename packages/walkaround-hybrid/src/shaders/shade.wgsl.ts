@@ -308,6 +308,30 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let envMapIntensity = sampleEnvMapIntensity(primaryHit.indices.w);
   let volumeScattering = sampleVolumeScatteringControls(primaryHit.indices.w);
   let authoredAo = sampleAoMapFactor(primaryHit, materialWord);
+  var receiverDomainPayload: RestirDIMaterialPayload;
+  receiverDomainPayload.albedo = albedo;
+  receiverDomainPayload.rough = rough;
+  receiverDomainPayload.metal = metal;
+  receiverDomainPayload.envMapIntensity = envMapIntensity;
+  receiverDomainPayload.clearcoatNormal = clearcoatNormal;
+  receiverDomainPayload.specular = specular;
+  receiverDomainPayload.anisotropy = anisotropy;
+  receiverDomainPayload.anisotropyTangent = anisotropyFrame.tangent;
+  receiverDomainPayload.anisotropyBitangent = anisotropyFrame.bitangent;
+  receiverDomainPayload.iridescence = iridescence;
+  receiverDomainPayload.clearcoat = clearcoat;
+  receiverDomainPayload.sheen = sheen;
+  receiverDomainPayload.sheenRoughness = sheenRoughness;
+  receiverDomainPayload.layerTransmission = layerTransmission;
+  receiverDomainPayload.volumeScattering = volumeScattering;
+  receiverDomainPayload.bulkThickness = materialOpticalThickness(primaryHit.indices.w);
+  let receiverMaterialKey = restir_gi_receiver_domain_key(
+    primaryHit.matColorPacked,
+    materialWord,
+    primaryHit.indices.w,
+    select(0u, primaryHit.instanceIndex, ubo.bvhMode == 1u),
+    receiverDomainPayload,
+  );
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
   // output the authored base color directly, bypassing all lighting and GI.
@@ -330,18 +354,22 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // tests in sprint18-indirectCombine.test.ts continue to match.
   let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, uv1, primaryHit.matColorPacked, primaryHit.indices.w);
   // Camera-visible emitters — emissive-mesh self-emission on the primary hit.
-  let Lo_emitterGlow = sampleEmissiveMap(
-    primaryHit.indices.w,
-    primaryHit.uv,
-    uv1,
-    lo_emitterGlow(primaryHit.indices.w),
+  let Lo_emitterGlow = select(
+    vec3f(0.0),
+    sampleEmissiveMap(
+      primaryHit.indices.w,
+      primaryHit.uv,
+      uv1,
+      lo_emitterGlow(primaryHit.indices.w),
+    ),
+    materialEmissionSideAdmittedForHit(primaryHit),
   );
   // Baked diffuse irradiance is a receiver-local term, not self-emission.
   // Convert E to Lambertian outgoing radiance exactly once: Lo = albedo/pi * E.
   // It remains first-hit only and never enters emitter PDFs or GI propagation.
   let lightMapIrradiance = sampleLightMap(primaryHit);
   let Lo_lightMap = albedo * INV_PI * lightMapIrradiance;
-  let Lo_direct     = lo_direct(pixelIdx, pos, normal, clearcoatNormal, geoNormal, wo, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, envMapIntensity, isGlass, isMetal, &rng);
+  let Lo_direct     = lo_direct(restirDiIndexForFullPixel(pix), pos, normal, clearcoatNormal, geoNormal, wo, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, envMapIntensity, isGlass, isMetal, &rng);
   // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
   // No PDF contamination: these are disjoint from the emitters[] stream.
   let Lo_analyticNEE = lo_analyticNEE(pos, normal, clearcoatNormal, geoNormal, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, wo, isGlass, isMetal);
@@ -360,7 +388,16 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     isGlass, isMetal,
   );
   let Lo_skyAperture = lo_sg_aperture(pos, normal, albedo, isGlass, isMetal);
-  let Lo_indirect   = lo_indirect(pix, dims, pos, normal, isGlass, metal);
+  let Lo_indirect   = lo_indirect(
+    pix,
+    dims,
+    pos,
+    normal,
+    receiverMaterialKey,
+    envMapIntensity,
+    isGlass,
+    metal,
+  );
   // B1 tail (2026-06-10) — glass refracted GI: consumption of the post-glass
   // diffuse reservoir built by risGi's bounded dielectric-prefix walk. Returns vec3f(0)
   // for non-glass surfaces (isGlass gate). The producer has already folded its
@@ -372,7 +409,28 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // B1 — glossy/metal specular indirect: GGX specular lobe × the SAME ReSTIR-GI
   // reservoir sample. UN-demodulated (joins the direct channel below); fires only
   // for metal/glossy surfaces (zero on default-diffuse → invariant preserved).
-  let Lo_indirectSpec = lo_indirectSpecular(pix, dims, pos, normal, clearcoatNormal, wo, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, isGlass);
+  let Lo_indirectSpec = lo_indirectSpecular(
+    pix,
+    dims,
+    pos,
+    normal,
+    clearcoatNormal,
+    wo,
+    albedo,
+    rough,
+    metal,
+    specular,
+    anisotropy,
+    anisotropyFrame.tangent,
+    anisotropyFrame.bitangent,
+    iridescence,
+    clearcoat,
+    sheen,
+    sheenRoughness,
+    receiverMaterialKey,
+    envMapIntensity,
+    isGlass,
+  );
 
   // Active terms (current pipeline state):
   //   Lo_emit           glass primary hit, deterministic per pixel
@@ -397,7 +455,9 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // shade read only the .r channel — equivalent to Bavoil-style scalar
   // AO. The upsample now writes the full per-channel multi-bounce vec3
   // into .rgb, so shade darkens each colour channel by its own factor.
-  let aoRaw = textureLoad(aoFullTexture, vec2i(pix), 0).rgb;
+  let aoDims = textureDimensions(aoFullTexture);
+  let aoCoord = select(vec2i(0), vec2i(pix), all(aoDims == ubo.screenSize));
+  let aoRaw = textureLoad(aoFullTexture, aoCoord, 0).rgb;
   let aoClamped = clamp(aoRaw, vec3f(0.0), vec3f(1.0));
   let ao = vec3f(
     select(1.0, aoClamped.r, aoRaw.r > 0.001),
@@ -517,5 +577,5 @@ export const SHADE_MODULE: WgslModule = {
   source: SHADE_WGSL,
   // D5.1+D5.2: ddgiSample replaced by ddgiGridUbo (which requires ddgiSample
   // transitively, and adds DDGIGridUBO struct + @group(3) @binding(3) + sampleDDGIAtPoint).
-  requires: ['common', 'materialAtlas', 'emitterLeAtXi', 'surfaceTextures', 'ddgiGridUbo', 'sampleCascadeC0', 'stainedGlassShade', 'refractiveCaustics', 'environmentSample'],
+  requires: ['common', 'materialAtlas', 'emitterLeAtXi', 'surfaceTextures', 'ddgiGridUbo', 'grisReuse', 'sampleCascadeC0', 'stainedGlassShade', 'refractiveCaustics', 'environmentSample'],
 };

@@ -12,13 +12,13 @@
  *
  * - 8 storage buffers: RIS/shade/GI-RIS packed scene, PPG, and NRC arenas
  * - 7 storage textures: transparent OIT (six frame targets plus OIT output)
- * - 16 sampled textures: NRC GI-RIS frame, scene, UBO, and hybrid layers
+ * - 17 sampled textures: transparent OIT frame, scene, UBO, and receiver layers
  */
 export const HYBRID_WEBGPU_REQUIRED_LIMITS: Readonly<Record<string, number>> =
   Object.freeze({
     maxStorageBuffersPerShaderStage: 8,
     maxStorageTexturesPerShaderStage: 7,
-    maxSampledTexturesPerShaderStage: 16,
+    maxSampledTexturesPerShaderStage: 17,
   });
 
 /**

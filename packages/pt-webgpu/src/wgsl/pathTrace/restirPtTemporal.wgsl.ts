@@ -55,7 +55,6 @@ export const RESTIR_PT_TEMPORAL_WGSL = /* wgsl */ `
 @group(4) @binding(2) var<storage, read>       rpt_resPrev:    array<u32>;
 @group(4) @binding(4) var<uniform>             rptParams:      RestirPtParams;
 
-const RPT_RECON_NORMAL_BIAS: f32 = 1e-3;
 const RPT_TEMPORAL_IDENTITY_RADIUS: i32 = 2;
 
 fn rptTemporalNormalIsValid(n: vec3f) -> bool {
@@ -72,10 +71,10 @@ fn rptTemporalSurfaceDistance(
 ) -> f32 {
   let delta = current.surfaceParamV - previous.surfaceParamV;
   if (current.triangleIndexV < params.triangleCount) {
-    return length(delta.xy);
+    return rptScaledLength(vec3f(delta.xy, 0.0));
   }
-  let scale = max(1.0, length(current.surfaceParamV));
-  return length(delta) / scale;
+  // Analytic surface parameters are already normalized into [-1,1]^3.
+  return rptScaledLength(delta);
 }
 
 fn rptTemporalSurfaceIdentityMatches(
@@ -103,8 +102,14 @@ fn rptTemporalSurfaceIdentityMatches(
 // the integer pixel coords, or a negative sentinel when behind the prev camera.
 fn rptProjectToPrevPx(worldPos: vec3f) -> vec2i {
   let clip = params.prevViewProj * vec4f(worldPos, 1.0);
-  if (clip.w <= 1e-6) { return vec2i(-1, -1); }
+  if (!all(clip == clip) || any(abs(clip) > vec4f(RPT_MAX_FINITE_F32))
+   || clip.w <= 0.0) {
+    return vec2i(-1, -1);
+  }
   let ndc = clip.xy / clip.w;
+  if (!all(ndc == ndc) || any(abs(ndc) > vec2f(RPT_MAX_FINITE_F32))) {
+    return vec2i(-1, -1);
+  }
   let uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
   if (uv.x < 0.0 || uv.x >= 1.0 || uv.y < 0.0 || uv.y >= 1.0) { return vec2i(-1, -1); }
   let px = i32(uv.x * f32(params.width));
@@ -121,12 +126,20 @@ fn rptReconnectionVisible(
   rng: ptr<function, PtRngState>,
 ) -> bool {
   let toS = xs - xv;
-  let dist = length(toS);
-  if (dist < 1e-4) { return false; }
-  let wi = toS / dist;
-  let orig = xv + nv * RPT_RECON_NORMAL_BIAS;
+  let dist = rptScaledLength(toS);
+  if (!rptFinitePositive(dist)) { return false; }
+  let startEpsilon = rptWorldRayEpsilon(xv, dist);
+  if (!rptFinitePositive(startEpsilon)) { return false; }
+  let orig = xv + safe_normalize(nv) * startEpsilon;
+  if (!rptFiniteVec3(orig)) { return false; }
+  let remaining = xs - orig;
+  let remainingDistance = rptScaledLength(remaining);
+  if (!rptFinitePositive(remainingDistance)) { return false; }
+  let endEpsilon = rptWorldRayEpsilon(xs, remainingDistance);
+  let tMax = remainingDistance - endEpsilon;
+  if (!rptFinitePositive(endEpsilon) || !(tMax > startEpsilon)) { return false; }
   return !traceAny(
-    Ray(orig, wi), 1e-4, max(dist - 2e-3, 1e-3), rng,
+    Ray(orig, safe_normalize(remaining)), startEpsilon, tMax, rng,
   );
 }
 
@@ -194,12 +207,12 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
           continue;
         }
         let surfaceDistance = rptTemporalSurfaceDistance(rCur, candidate);
-        if (!prevFound || surfaceDistance + 1e-6 < bestSurfaceDistance) {
+        if (!prevFound || surfaceDistance < bestSurfaceDistance) {
           rPrev = candidate;
           bestSurfaceDistance = surfaceDistance;
           prevFound = true;
           prevAmbiguous = false;
-        } else if (abs(surfaceDistance - bestSurfaceDistance) <= 1e-6) {
+        } else if (surfaceDistance == bestSurfaceDistance) {
           // Duplicate primitive-local identities at the same search score are
           // not distinguishable without previous geometry. Reject history
           // instead of selecting stale reuse by scan order.
@@ -249,7 +262,8 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
     rPrev, rPrev.heroLambdaV, woPrev, rPrev.xs, rPrev.Lo,
   );
   let prevValid = rptFinitePositive(J)
-               && (pHatPrev_atCur >= 1e-9) && (pHatPrev_native >= 1e-9)
+               && rptFinitePositive(pHatPrev_atCur)
+               && rptFinitePositive(pHatPrev_native)
                && rptReconnectionVisible(rCur.xv, rCur.nv, rPrev.xs, &rng);
 
   // The canonical sample has a separate inverse-support question: could the
@@ -262,7 +276,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   );
   let previousCoversCurrent =
        rptFinitePositive(JCurrentToPrevious)
-    && pHatPrev_atCurSample >= 1e-9
+    && rptFinitePositive(pHatPrev_atCurSample)
     && rptReconnectionVisible(rPrev.xv, rPrev.nv, rCur.xs, &rng);
 
   var rGris = emptyReservoirPTHero();
@@ -270,7 +284,7 @@ fn restirPtTemporal(@builtin(global_invocation_id) gid: vec3u) {
   let representedM = rptSaturatingAddU32(rCur.M, prevM);
 
   // Canonical (current) sample, MIS-weighted against the prev pair.
-  if (rCur.M > 0u && pHatCur_native > 1e-9) {
+  if (rCur.M > 0u && rptFinitePositive(pHatCur_native)) {
     var logMCurrent: f32 = 0.0;
     if (previousCoversCurrent) {
       // The previous proxy is evaluated at the inverse-shifted current sample.

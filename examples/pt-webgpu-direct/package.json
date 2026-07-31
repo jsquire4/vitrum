@@ -2,7 +2,7 @@
   "name": "@vitrum-examples/pt-webgpu-direct",
   "version": "0.0.0",
   "private": true,
-  "description": "Minimal example: createPTEngine_WebGPU direct — negotiateWebGPUDevice + backend factory + swap chain.",
+  "description": "Minimal example: createPTEngine_WebGPU direct — host-owned device, backend factory, and offscreen presentation.",
   "type": "module",
   "scripts": {
     "dev": "vite",

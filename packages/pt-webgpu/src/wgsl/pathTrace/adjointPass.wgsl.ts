@@ -72,11 +72,12 @@ ${MOLLER_TRUMBORE_WGSL}
 ${composePtWebgpuRngWgsl(sampling)}
 
 fn safeNormalize(v: vec3f) -> vec3f {
-  let len = length(v);
-  if (len < 1e-8) {
+  let scale = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(scale > 0.0) || scale > 3.402823e38) {
     return vec3f(0.0, 1.0, 0.0);
   }
-  return v / len;
+  let scaled = v / scale;
+  return scaled / length(scaled);
 }
 
 fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
@@ -84,13 +85,47 @@ fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
     (vec2f(f32(px), f32(py)) + jitter) /
     vec2f(f32(params.width), f32(params.height));
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-  let far4 = params.invViewProj * vec4f(ndc, 1.0, 1.0);
-  let near4 = params.invViewProj * vec4f(ndc, -1.0, 1.0);
-  let farW = far4.xyz / far4.w;
-  let nearW = near4.xyz / near4.w;
+  var farH = params.invViewProj * vec4f(ndc, 1.0, 1.0);
+  var nearH = params.invViewProj * vec4f(ndc, -1.0, 1.0);
   var ray: Ray;
-  ray.origin = params.cameraPos.xyz;
-  ray.direction = safeNormalize(farW - nearW);
+  ray.origin = vec3f(0.0);
+  ray.direction = vec3f(0.0);
+  let farScale =
+    max(max(abs(farH.x), abs(farH.y)), max(abs(farH.z), abs(farH.w)));
+  let nearScale =
+    max(max(abs(nearH.x), abs(nearH.y)), max(abs(nearH.z), abs(nearH.w)));
+  if (
+    !(farScale > 0.0) || farScale > 3.402823e38 ||
+    !(nearScale > 0.0) || nearScale > 3.402823e38
+  ) {
+    return ray;
+  }
+  farH /= farScale;
+  nearH /= nearScale;
+  if (nearH.w == 0.0) {
+    return ray;
+  }
+  let nearPoint = nearH.xyz / nearH.w;
+  var orientation = 1.0;
+  if (farH.w != 0.0) {
+    orientation = sign(farH.w * nearH.w);
+  }
+  let directionNumerator =
+    (farH.xyz * nearH.w - nearH.xyz * farH.w) * orientation;
+  let directionScale = max(
+    abs(directionNumerator.x),
+    max(abs(directionNumerator.y), abs(directionNumerator.z)),
+  );
+  if (
+    !all(nearPoint == nearPoint) ||
+    any(abs(nearPoint) > vec3f(3.402823e38)) ||
+    !(directionScale > 0.0) ||
+    directionScale > 3.402823e38
+  ) {
+    return ray;
+  }
+  ray.origin = nearPoint;
+  ray.direction = safeNormalize(directionNumerator);
   return ray;
 }
 
@@ -109,7 +144,7 @@ fn materialDoubleSided(materialId: u32) -> bool {
 fn closestOpaqueTriangleHit(ray: Ray) -> Hit {
   var best: Hit;
   best.valid = false;
-  best.t = 1e30;
+  best.t = 3.402823466e38;
   best.triangle = 0u;
 
   for (var triangle = 0u; triangle < params.triangleCount; triangle += 1u) {
@@ -132,7 +167,7 @@ fn closestOpaqueTriangleHit(ray: Ray) -> Hit {
       v0,
       positions[idx.y].xyz,
       positions[idx.z].xyz,
-      1e-5,
+      0.0,
     );
     if (!triHit.hit) {
       continue;
@@ -145,7 +180,7 @@ fn closestOpaqueTriangleHit(ray: Ray) -> Hit {
       continue;
     }
 
-    if (triHit.t > 1e-4 && triHit.t < best.t) {
+    if (triHit.t > 0.0 && triHit.t < best.t) {
       best.valid = true;
       best.t = triHit.t;
       best.triangle = triangle;

@@ -7,6 +7,10 @@ import {
   type GIStateCompatibilityInputs,
 } from '../giStateCompatibility.js';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
+import {
+  MATERIAL_ATLAS_ENCODING_RGBA32_FLOAT,
+  packMaterialTextureAtlasPixels,
+} from '../bvh/materialTextureAtlasCodec.js';
 
 function storage(values: readonly number[]) {
   const cpuData = new Uint32Array(values).buffer;
@@ -15,10 +19,19 @@ function storage(values: readonly number[]) {
 
 function atlas(seed: number): SceneBVHBuffers['materialTextureAtlas'] {
   return {
-    atlasData: new Float32Array([seed, 0.25, 0.5, 1]),
-    atlasDim: 1,
-    atlasLayerCount: 1,
-    atlasMipLevelCount: 1,
+    atlasLayers: [{
+      kind: 'cpu',
+      layer: 0,
+      width: 1,
+      height: 1,
+      encoding: MATERIAL_ATLAS_ENCODING_RGBA32_FLOAT,
+      mipLevelCount: 1,
+      decodeSrgb: false,
+      data: packMaterialTextureAtlasPixels(
+        new Float32Array([seed, 0.25, 0.5, 1]),
+        MATERIAL_ATLAS_ENCODING_RGBA32_FLOAT,
+      ),
+    }],
     gpuSourceLayers: [],
     baseColorMetaData: new Float32Array([seed, 0, 0, 0]),
     baseColorMetaWidth: 1,
@@ -106,6 +119,7 @@ function inputs(seed = 1): GIStateCompatibilityInputs {
       width: 1,
       height: 1,
       map: new Float32Array([seed, 0.5, 0.25, 1]),
+      pdf: new Float32Array([0.5]),
       marginal: new Float32Array([0.5, 0, 0, 0]),
       conditional: new Float32Array([0.5, 0, 0, 0]),
       totalWeight: 1,
@@ -143,7 +157,9 @@ describe('GI-state compatibility key', () => {
     cases.push(geometry);
 
     const material = inputs();
-    material.bvh.materialTextureAtlas.atlasData[0] = 99;
+    const materialLayer = material.bvh.materialTextureAtlas.atlasLayers[0]!;
+    if (materialLayer.kind !== 'cpu') throw new Error('expected CPU atlas layer');
+    materialLayer.data[0] = 99;
     cases.push(material);
 
     const emitter = inputs();

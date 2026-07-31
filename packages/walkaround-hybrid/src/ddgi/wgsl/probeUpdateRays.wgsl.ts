@@ -17,13 +17,14 @@ import { HAMMERSLEY_WGSL } from '@vitrum/shared-samplers';
 import {
   OCTAHEDRAL_WGSL,
   MATERIAL_ENTRY_WGSL,
-  BVH_CAST_SHADOW_PREDICATE_WGSL,
   BVH_INTERSECT_WGSL,
   TLAS_TRAVERSAL_WGSL,
   MATERIAL_OPTICS_WGSL,
+  BEER_LAMBERT_WGSL,
   buildMaterialAtlasOffsetConstsWGSL,
 } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
+import { WALKAROUND_ENVIRONMENT_RADIANCE_SCALE_WGSL } from '../../environment/environmentRadianceScale.js';
 import {
   IRR_PROBE_STATE_LOCAL_X,
   IRR_PROBE_STATE_LOCAL_Y,
@@ -122,6 +123,7 @@ export function makeProbeUpdateRaysWGSL(maxMaterials: number): string {
  */
 function _makeProbeUpdateRaysHeader(maxMaterials: number): string { return /* wgsl */`
 
+${WALKAROUND_ENVIRONMENT_RADIANCE_SCALE_WGSL}
 ${HAMMERSLEY_WGSL}
 ${OCTAHEDRAL_WGSL}
 ${MATERIAL_ENTRY_WGSL}
@@ -129,6 +131,7 @@ ${BVH_INTERSECT_WGSL}
 ${TLAS_TRAVERSAL_WGSL}
 ${DDGI_SH_WGSL}
 ${DDGI_SAMPLE_WGSL}
+${BEER_LAMBERT_WGSL}
 
 const WG_SIZE: u32       = ${WG_SIZE}u;
 const RAYS_PER_PROBE: u32  = ${RAYS_PER_PROBE}u;
@@ -146,6 +149,11 @@ const RAYS_PER_THREAD: u32 = ${RAYS_PER_THREAD}u;   // RAYS_PER_PROBE / WG_SIZE
 // same values; the one remaining INFINITY reference below (out.hitDistance
 // for sky misses) now reads BVH_INTERSECT_INFINITY.
 const PI: f32              = 3.14159265359;
+// All DDGI traversal offsets are expressed as fractions of the probe spacing.
+// The host validates spacing as finite and positive before this shader runs.
+const DDGI_TRACE_T_MIN_NORMALIZED: f32 = 1.0e-5;
+const DDGI_SURFACE_STEP_NORMALIZED: f32 = 4.0e-5;
+const DDGI_GLASS_BOUNDARY_STEP_NORMALIZED: f32 = 1.0e-4;
 
 // Probe-side glass-transmission perceptual scale lives on the probe-side
 // FrameParams UBO (frameParams.glassMixScale); the canonical Cornell-tuned
@@ -375,7 +383,8 @@ struct DdgiTraceParams {
 //   [0..2]  vA.xyz + sourceTriIndex (-1 = scalar fallback)
 //   [4..6]  vB.xyz + sourceSubdivLevel
 //   [8..10] vC.xyz + sourceSubdivOrdinal
-//   [12..14] normal.xyz + area (at [15])             [16..18] Le.rgb + castShadowDisabled
+//   [12..14] normal.xyz + area (at [15])             [16..18] Le.rgb + emitterFlags
+// emitterFlags: bit 0 = castShadowDisabled; bit 1 = twoSided.
 // emitterCount (uniform in lights) is reused for the area-emitter count. A
 // dedicated u32 is cheaper than a second UBO; it lives in DdgiTraceParams.
 @group(1) @binding(2) var<storage, read> ddgiEmitterTris: array<vec4f>;
@@ -383,7 +392,7 @@ struct DdgiTraceParams {
 // of the walkaround material atlas, used to modulate direct probe hits on
 // emissive materials and mapped mesh-area emitter samples whose packed
 // sourceTriIndex points back to a material-atlas triangle.
-@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;
+@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<u32>;
 @group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;
 // DDGI-local copy of the authored/generated per-vertex tangent.xyzw stream.
 // Zero tangents intentionally mean "derive the frame from UVs".
@@ -399,11 +408,10 @@ struct DdgiTraceParams {
 @group(2) @binding(4) var<uniform>             gridParams:   ProbeGridParams;
 @group(2) @binding(5) var<uniform>             frameParams:  FrameParams;
 // Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
-// ddgiEnvMap  : rgba16float equirect radiance (unit-intensity, .rgb; .a unused
-//               by DDGI — pdf lane is for DI MIS). A 1×1 placeholder is bound
-//               when hasEnv=0 so the bind group is always valid.
+// ddgiEnvMap  : rgba32float equirect radiance (unit-intensity, .rgb). A 1×1
+//               placeholder is bound when hasEnv=0. Bilinear textureLoad
+//               avoids requiring the optional float32-filterable feature.
 @group(2) @binding(6) var                      ddgiEnvMap:   texture_2d<f32>;
-@group(2) @binding(7) var                      ddgiEnvSamp:  sampler;
 @group(2) @binding(8) var                      visibilityPrev: texture_2d<f32>;
 
 ${DDGI_MATERIAL_ATLAS_OFFSET_CONSTS}
@@ -429,24 +437,88 @@ fn ddgiFeedbackAt(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
   );
 }
 
-fn ddgiMaterialMetaCoord(texel: u32) -> vec2i {
+fn ddgiMaterialMetaRawCoord(texel: u32) -> vec2i {
   let dims = textureDimensions(ddgiMaterialMapMeta);
   let w = max(dims.x, 1u);
   return vec2i(i32(texel % w), i32(texel / w));
 }
 
+fn ddgiMaterialMetaExactU32(value: f32) -> u32 {
+  if (!(value >= 0.0) || value > 16777216.0 || value != floor(value)) {
+    return 0xffffffffu;
+  }
+  return u32(value);
+}
+
+fn ddgiMaterialMetaPhysicalTexel(triIndex: u32, metaOffset: u32) -> u32 {
+  let metaDims = textureDimensions(ddgiMaterialMapMeta);
+  let totalTexels = metaDims.x * metaDims.y;
+  if (totalTexels < 4u) { return totalTexels; }
+  let formatHeader = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(totalTexels - 4u),
+    0,
+  );
+  let addressHeader = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(totalTexels - 3u),
+    0,
+  );
+  let materialRecordCount = ddgiMaterialMetaExactU32(formatHeader.y);
+  let triangleCount = ddgiMaterialMetaExactU32(formatHeader.z);
+  if (
+    ddgiMaterialMetaExactU32(formatHeader.x) != 3u ||
+    materialRecordCount == 0u ||
+    triIndex >= triangleCount ||
+    ddgiMaterialMetaExactU32(formatHeader.w) != DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI
+  ) {
+    return totalTexels;
+  }
+  let materialBase = ddgiMaterialMetaExactU32(addressHeader.x);
+  let triangleMaterialBase = ddgiMaterialMetaExactU32(addressHeader.y);
+  let uvAffineBase = ddgiMaterialMetaExactU32(addressHeader.z);
+  let activeUvLaneCount = ddgiMaterialMetaExactU32(addressHeader.w);
+  if (metaOffset >= 128u && metaOffset < 156u) {
+    let laneWord = metaOffset - 128u;
+    let lane = laneWord / 2u;
+    if (lane >= activeUvLaneCount) { return totalTexels; }
+    let physicalTexel = uvAffineBase
+      + triIndex * activeUvLaneCount * 2u
+      + laneWord;
+    return select(totalTexels, physicalTexel, physicalTexel < totalTexels - 4u);
+  }
+  let idTableTexel = triangleMaterialBase + triIndex / 4u;
+  if (idTableTexel >= totalTexels - 4u) { return totalTexels; }
+  let ids = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(idTableTexel),
+    0,
+  );
+  let materialId = ddgiMaterialMetaExactU32(ids[triIndex & 3u]);
+  if (materialId >= materialRecordCount) { return totalTexels; }
+  let physicalTexel = materialBase
+    + materialId * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI
+    + metaOffset;
+  return select(totalTexels, physicalTexel, physicalTexel < triangleMaterialBase);
+}
+
+fn ddgiMaterialMetaCoord(triIndex: u32, metaOffset: u32) -> vec2i {
+  return ddgiMaterialMetaRawCoord(
+    ddgiMaterialMetaPhysicalTexel(triIndex, metaOffset),
+  );
+}
+
 fn ddgiMaterialMetaAvailable(triIndex: u32, metaOffset: u32) -> bool {
   let dims = textureDimensions(ddgiMaterialMapMeta);
-  let texel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
+  let texel = ddgiMaterialMetaPhysicalTexel(triIndex, metaOffset);
   return texel < dims.x * dims.y;
 }
 
 fn ddgiMaterialMetaLoadOrZero(triIndex: u32, metaOffset: u32) -> vec4f {
-  let texel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
   if (!ddgiMaterialMetaAvailable(triIndex, metaOffset)) {
     return vec4f(0.0);
   }
-  return textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(texel), 0);
+  return textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(triIndex, metaOffset), 0);
 }
 
 fn materialOpticalLoad(triIndex: u32, metaOffset: u32) -> vec4f {
@@ -469,6 +541,341 @@ fn ddgiWrapMaterialUv(uv: vec2f, wrapPacked: u32) -> vec2f {
   let wrapS = wrapPacked & 0x3u;
   let wrapT = (wrapPacked >> 2u) & 0x3u;
   return vec2f(ddgiWrapMaterialUv1(uv.x, wrapS), ddgiWrapMaterialUv1(uv.y, wrapT));
+}
+
+fn ddgiWrapMaterialTexelIndex(index: i32, size: i32, mode: u32) -> i32 {
+  if (size <= 1) { return 0; }
+  if (mode == 1u) { return clamp(index, 0, size - 1); }
+  if (mode == 2u) {
+    let period = size * 2;
+    var x = index % period;
+    if (x < 0) { x = x + period; }
+    return select(x, period - x - 1, x >= size);
+  }
+  var x = index % size;
+  if (x < 0) { x = x + size; }
+  return x;
+}
+
+fn ddgiMaterialAtlasFilterMode(samplerPacked: u32, lod: f32) -> u32 {
+  let magFilter = (samplerPacked >> 10u) & 0x1u;
+  let minFilter = (samplerPacked >> 11u) & 0x1u;
+  return select(magFilter, minFilter, lod > 0.0);
+}
+
+const DDGI_MATERIAL_ATLAS_ADDRESS_TEXELS_PER_LAYER: u32 = 18u;
+const DDGI_MATERIAL_ATLAS_ENCODING_RGBA8_UNORM: u32 = 0u;
+const DDGI_MATERIAL_ATLAS_ENCODING_RGBA8_SNORM: u32 = 1u;
+const DDGI_MATERIAL_ATLAS_ENCODING_RGBA16_FLOAT: u32 = 2u;
+const DDGI_MATERIAL_ATLAS_ENCODING_RGBA16_UNORM: u32 = 3u;
+const DDGI_MATERIAL_ATLAS_ENCODING_RGBA16_SNORM: u32 = 4u;
+const DDGI_MATERIAL_ATLAS_ENCODING_RGBA32_FLOAT: u32 = 5u;
+
+struct DdgiMaterialAtlasLayerAddress {
+  encoding: u32,
+  width: u32,
+  height: u32,
+  mipLevelCount: u32,
+  decodeSrgb: u32,
+  planeCount: u32,
+  recordTexel: u32,
+  valid: u32,
+};
+
+fn ddgiMaterialAtlasLayerAddress(layer: i32) -> DdgiMaterialAtlasLayerAddress {
+  var out: DdgiMaterialAtlasLayerAddress;
+  out.valid = 0u;
+  if (layer < 0) { return out; }
+  let metaDims = textureDimensions(ddgiMaterialMapMeta);
+  let totalTexels = metaDims.x * metaDims.y;
+  if (totalTexels < 4u) { return out; }
+  let directoryHeader = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(totalTexels - 2u),
+    0,
+  );
+  let addressBase = ddgiMaterialMetaExactU32(directoryHeader.x);
+  let layerCount = ddgiMaterialMetaExactU32(directoryHeader.y);
+  let logicalLayer = u32(layer);
+  if (logicalLayer >= layerCount) { return out; }
+  let recordTexel = addressBase +
+    logicalLayer * DDGI_MATERIAL_ATLAS_ADDRESS_TEXELS_PER_LAYER;
+  if (
+    recordTexel + DDGI_MATERIAL_ATLAS_ADDRESS_TEXELS_PER_LAYER >
+    totalTexels - 4u
+  ) {
+    return out;
+  }
+  let info0 = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(recordTexel),
+    0,
+  );
+  let info1 = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(recordTexel + 1u),
+    0,
+  );
+  out.encoding = ddgiMaterialMetaExactU32(info0.x);
+  out.width = ddgiMaterialMetaExactU32(info0.y);
+  out.height = ddgiMaterialMetaExactU32(info0.z);
+  out.mipLevelCount = ddgiMaterialMetaExactU32(info0.w);
+  out.decodeSrgb = ddgiMaterialMetaExactU32(info1.x);
+  out.planeCount = ddgiMaterialMetaExactU32(info1.y);
+  out.recordTexel = recordTexel;
+  out.valid = select(
+    0u,
+    1u,
+    out.width > 0u &&
+    out.height > 0u &&
+    out.mipLevelCount > 0u &&
+    (out.planeCount == 1u || out.planeCount == 2u || out.planeCount == 4u),
+  );
+  return out;
+}
+
+fn ddgiMaterialAtlasMapAvailableAtOffset(
+  triIndex: u32,
+  metaOffset: u32,
+) -> bool {
+  let metaDims = textureDimensions(ddgiMaterialMapMeta);
+  let totalTexels = metaDims.x * metaDims.y;
+  let physicalTexel = ddgiMaterialMetaPhysicalTexel(triIndex, metaOffset);
+  if (physicalTexel >= totalTexels) { return false; }
+  let meta0 = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(physicalTexel),
+    0,
+  );
+  return ddgiMaterialAtlasLayerAddress(i32(meta0.x)).valid != 0u;
+}
+
+fn ddgiMaterialAtlasLevelDimensions(
+  address: DdgiMaterialAtlasLayerAddress,
+  level: u32,
+) -> vec2u {
+  let divisor = 1u << min(level, 31u);
+  return max(vec2u(1u), vec2u(address.width, address.height) / divisor);
+}
+
+fn ddgiMaterialAtlasSigned16(value: u32) -> i32 {
+  let word = value & 0xffffu;
+  return select(i32(word), i32(word) - 65536, word >= 32768u);
+}
+
+fn ddgiMaterialAtlasSrgbChannelToLinear(value: f32) -> f32 {
+  let c = clamp(value, 0.0, 1.0);
+  return select(c / 12.92, pow((c + 0.055) / 1.055, 2.4), c > 0.04045);
+}
+
+fn ddgiMaterialAtlasDecodeTexel(
+  address: DdgiMaterialAtlasLayerAddress,
+  logicalTexel: vec2i,
+  level: u32,
+) -> vec4f {
+  if (address.valid == 0u || level >= address.mipLevelCount) {
+    return vec4f(-1.0);
+  }
+  let mipRecord = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaRawCoord(address.recordTexel + 2u + level),
+    0,
+  );
+  let origin = vec2u(
+    ddgiMaterialMetaExactU32(mipRecord.x),
+    ddgiMaterialMetaExactU32(mipRecord.y),
+  );
+  let baseLayer = ddgiMaterialMetaExactU32(mipRecord.z);
+  let atlasDims = textureDimensions(ddgiMaterialTextureAtlas);
+  let atlasLayers = textureNumLayers(ddgiMaterialTextureAtlas);
+  let coord = origin + vec2u(logicalTexel);
+  if (
+    coord.x >= atlasDims.x ||
+    coord.y >= atlasDims.y ||
+    baseLayer + address.planeCount > atlasLayers
+  ) {
+    return vec4f(-1.0);
+  }
+  let p0 = textureLoad(
+    ddgiMaterialTextureAtlas,
+    vec2i(coord),
+    i32(baseLayer),
+    0,
+  ).r;
+  var value = vec4f(0.0);
+  if (address.encoding == DDGI_MATERIAL_ATLAS_ENCODING_RGBA8_UNORM) {
+    value = unpack4x8unorm(p0);
+  } else if (address.encoding == DDGI_MATERIAL_ATLAS_ENCODING_RGBA8_SNORM) {
+    value = unpack4x8snorm(p0);
+  } else {
+    let p1 = textureLoad(
+      ddgiMaterialTextureAtlas,
+      vec2i(coord),
+      i32(baseLayer + 1u),
+      0,
+    ).r;
+    if (address.encoding == DDGI_MATERIAL_ATLAS_ENCODING_RGBA16_FLOAT) {
+      value = vec4f(unpack2x16float(p0), unpack2x16float(p1));
+    } else if (address.encoding == DDGI_MATERIAL_ATLAS_ENCODING_RGBA16_UNORM) {
+      value = vec4f(
+        f32(p0 & 0xffffu),
+        f32(p0 >> 16u),
+        f32(p1 & 0xffffu),
+        f32(p1 >> 16u),
+      ) / 65535.0;
+    } else if (address.encoding == DDGI_MATERIAL_ATLAS_ENCODING_RGBA16_SNORM) {
+      value = max(
+        vec4f(
+          f32(ddgiMaterialAtlasSigned16(p0)),
+          f32(ddgiMaterialAtlasSigned16(p0 >> 16u)),
+          f32(ddgiMaterialAtlasSigned16(p1)),
+          f32(ddgiMaterialAtlasSigned16(p1 >> 16u)),
+        ) / 32767.0,
+        vec4f(-1.0),
+      );
+    } else if (
+      address.encoding == DDGI_MATERIAL_ATLAS_ENCODING_RGBA32_FLOAT &&
+      address.planeCount == 4u
+    ) {
+      let p2 = textureLoad(
+        ddgiMaterialTextureAtlas,
+        vec2i(coord),
+        i32(baseLayer + 2u),
+        0,
+      ).r;
+      let p3 = textureLoad(
+        ddgiMaterialTextureAtlas,
+        vec2i(coord),
+        i32(baseLayer + 3u),
+        0,
+      ).r;
+      value = vec4f(
+        bitcast<f32>(p0),
+        bitcast<f32>(p1),
+        bitcast<f32>(p2),
+        bitcast<f32>(p3),
+      );
+    } else {
+      return vec4f(-1.0);
+    }
+  }
+  if (address.decodeSrgb != 0u) {
+    value = vec4f(
+      ddgiMaterialAtlasSrgbChannelToLinear(value.r),
+      ddgiMaterialAtlasSrgbChannelToLinear(value.g),
+      ddgiMaterialAtlasSrgbChannelToLinear(value.b),
+      value.a,
+    );
+  }
+  return value;
+}
+
+fn ddgiSampleMaterialAtlasNearestLevel(
+  wrapped: vec2f,
+  layer: i32,
+  level: u32,
+) -> vec4f {
+  let address = ddgiMaterialAtlasLayerAddress(layer);
+  if (address.valid == 0u) { return vec4f(-1.0); }
+  let dims = ddgiMaterialAtlasLevelDimensions(address, level);
+  let texel = vec2i(
+    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
+    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
+  );
+  return ddgiMaterialAtlasDecodeTexel(address, texel, level);
+}
+
+fn ddgiSampleMaterialAtlasLinearLevel(
+  wrapped: vec2f,
+  layer: i32,
+  samplerPacked: u32,
+  level: u32,
+) -> vec4f {
+  let address = ddgiMaterialAtlasLayerAddress(layer);
+  if (address.valid == 0u) { return vec4f(-1.0); }
+  let dims = ddgiMaterialAtlasLevelDimensions(address, level);
+  let size = vec2i(i32(dims.x), i32(dims.y));
+  let coord = wrapped * vec2f(f32(dims.x), f32(dims.y)) - vec2f(0.5);
+  let base = vec2i(i32(floor(coord.x)), i32(floor(coord.y)));
+  let fraction = coord - floor(coord);
+  let wrapS = samplerPacked & 0x3u;
+  let wrapT = (samplerPacked >> 2u) & 0x3u;
+  let x0 = ddgiWrapMaterialTexelIndex(base.x, size.x, wrapS);
+  let x1 = ddgiWrapMaterialTexelIndex(base.x + 1, size.x, wrapS);
+  let y0 = ddgiWrapMaterialTexelIndex(base.y, size.y, wrapT);
+  let y1 = ddgiWrapMaterialTexelIndex(base.y + 1, size.y, wrapT);
+  let c00 = ddgiMaterialAtlasDecodeTexel(address, vec2i(x0, y0), level);
+  let c10 = ddgiMaterialAtlasDecodeTexel(address, vec2i(x1, y0), level);
+  let c01 = ddgiMaterialAtlasDecodeTexel(address, vec2i(x0, y1), level);
+  let c11 = ddgiMaterialAtlasDecodeTexel(address, vec2i(x1, y1), level);
+  return mix(mix(c00, c10, fraction.x), mix(c01, c11, fraction.x), fraction.y);
+}
+
+fn ddgiSampleMaterialAtlasLevel(
+  wrapped: vec2f,
+  layer: i32,
+  samplerPacked: u32,
+  level: u32,
+  lod: f32,
+) -> vec4f {
+  if (ddgiMaterialAtlasFilterMode(samplerPacked, lod) == 0u) {
+    return ddgiSampleMaterialAtlasNearestLevel(wrapped, layer, level);
+  }
+  return ddgiSampleMaterialAtlasLinearLevel(
+    wrapped,
+    layer,
+    samplerPacked,
+    level,
+  );
+}
+
+fn ddgiSampleMaterialAtlasAtLod(
+  wrapped: vec2f,
+  layer: i32,
+  samplerPacked: u32,
+  lod: f32,
+) -> vec4f {
+  let mipFilter = (samplerPacked >> 8u) & 0x3u;
+  let address = ddgiMaterialAtlasLayerAddress(layer);
+  if (address.valid == 0u) { return vec4f(-1.0); }
+  let lastLevel = address.mipLevelCount - 1u;
+  if (mipFilter == 0u || lastLevel == 0u) {
+    return ddgiSampleMaterialAtlasLevel(
+      wrapped,
+      layer,
+      samplerPacked,
+      0u,
+      lod,
+    );
+  }
+  let clampedLod = clamp(lod, 0.0, f32(lastLevel));
+  if (mipFilter == 1u) {
+    let level = min(u32(floor(clampedLod + 0.5)), lastLevel);
+    return ddgiSampleMaterialAtlasLevel(
+      wrapped,
+      layer,
+      samplerPacked,
+      level,
+      lod,
+    );
+  }
+  let level0 = min(u32(floor(clampedLod)), lastLevel);
+  let level1 = min(level0 + 1u, lastLevel);
+  let c0 = ddgiSampleMaterialAtlasLevel(
+    wrapped,
+    layer,
+    samplerPacked,
+    level0,
+    lod,
+  );
+  let c1 = ddgiSampleMaterialAtlasLevel(
+    wrapped,
+    layer,
+    samplerPacked,
+    level1,
+    lod,
+  );
+  return mix(c0, c1, clampedLod - floor(clampedLod));
 }
 
 fn ddgiPackedUvFromVec4(v: vec4f) -> vec2f {
@@ -544,12 +951,11 @@ struct DdgiMaterialTangentFrame {
 
 fn ddgiFallbackBitangentForNormal(n: vec3f, t: vec3f) -> vec3f {
   let b = cross(n, t);
-  let len2 = dot(b, b);
-  if (len2 < 1e-8) {
+  if (!ddgiCanNormalize(b)) {
     let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(n.y) > 0.95);
-    return normalize(cross(n, up));
+    return ddgiNormalizeOr(cross(n, up), vec3f(0.0, 0.0, 1.0));
   }
-  return b * inverseSqrt(len2);
+  return ddgiNormalizeOr(b, vec3f(0.0, 0.0, 1.0));
 }
 
 fn ddgiBvhTangentTexel(vertexIndex: u32) -> vec4f {
@@ -563,8 +969,28 @@ fn ddgiBvhTangentTexel(vertexIndex: u32) -> vec4f {
   return textureLoad(ddgiBvhTangent, vec2i(i32(vertexIndex % width), i32(y)), 0);
 }
 
+fn ddgiMaxAbsVec2(v: vec2f) -> f32 {
+  return max(abs(v.x), abs(v.y));
+}
+
+fn ddgiMaxAbsVec3(v: vec3f) -> f32 {
+  return max(abs(v.x), max(abs(v.y), abs(v.z)));
+}
+
 fn ddgiTransformDirectionCols(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f, v: vec3f) -> vec3f {
-  return l2w0.xyz * v.x + l2w1.xyz * v.y + l2w2.xyz * v.z;
+  let matrixScale = max(
+    ddgiMaxAbsVec3(l2w0.xyz),
+    max(ddgiMaxAbsVec3(l2w1.xyz), ddgiMaxAbsVec3(l2w2.xyz)),
+  );
+  let vectorScale = ddgiMaxAbsVec3(v);
+  if (!(matrixScale > 0.0) || !(vectorScale > 0.0)) {
+    return vec3f(0.0);
+  }
+  let scaledV = v / vectorScale;
+  return
+    (l2w0.xyz / matrixScale) * scaledV.x +
+    (l2w1.xyz / matrixScale) * scaledV.y +
+    (l2w2.xyz / matrixScale) * scaledV.z;
 }
 
 fn ddgiSmoothShadingNormalForHit(hit: IntersectionResult, geoNormal: vec3f) -> vec3f {
@@ -575,9 +1001,7 @@ fn ddgiSmoothShadingNormalForHit(hit: IntersectionResult, geoNormal: vec3f) -> v
     hit.barycoord.x * n0 +
     hit.barycoord.y * n1 +
     hit.barycoord.z * n2;
-  let len = length(blended);
-  if (len < 1e-6) { return geoNormal; }
-  var n = blended / len;
+  var n = ddgiNormalizeOr(blended, geoNormal);
   let isTlas = ddgiTrace.bvhMode == 1u;
   let tBase = hit.instanceIndex * 4u;
   let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceWorldToLocal);
@@ -596,7 +1020,16 @@ fn ddgiSmoothShadingNormalForHit(hit: IntersectionResult, geoNormal: vec3f) -> v
 }
 
 fn ddgiTangentHandednessForLocalToWorld(l2w0: vec4f, l2w1: vec4f, l2w2: vec4f) -> f32 {
-  let det = dot(l2w0.xyz, cross(l2w1.xyz, l2w2.xyz));
+  let s0 = ddgiMaxAbsVec3(l2w0.xyz);
+  let s1 = ddgiMaxAbsVec3(l2w1.xyz);
+  let s2 = ddgiMaxAbsVec3(l2w2.xyz);
+  if (!(s0 > 0.0) || !(s1 > 0.0) || !(s2 > 0.0)) {
+    return 1.0;
+  }
+  let det = dot(
+    l2w0.xyz / s0,
+    cross(l2w1.xyz / s1, l2w2.xyz / s2),
+  );
   return select(-1.0, 1.0, det >= 0.0);
 }
 
@@ -621,7 +1054,7 @@ fn ddgiPreferAuthoredTangentFrameForHit(
     hit.barycoord.y * tb.w +
     hit.barycoord.z * tc.w;
 
-  if (length(authoredTangent) > 1e-8 && abs(authoredHandedness) > 0.5) {
+  if (ddgiCanNormalize(authoredTangent) && abs(authoredHandedness) > 0.5) {
     let isTlas = ddgiTrace.bvhMode == 1u;
     let tBase = hit.instanceIndex * 4u;
     let tOk = isTlas && tBase + 2u < arrayLength(&tlasInstanceLocalToWorld);
@@ -640,9 +1073,8 @@ fn ddgiPreferAuthoredTangentFrameForHit(
     }
 
     authoredTangent = authoredTangent - frameNormal * dot(frameNormal, authoredTangent);
-    let tLen2 = dot(authoredTangent, authoredTangent);
-    if (tLen2 > 1e-8) {
-      tangent = authoredTangent * inverseSqrt(tLen2);
+    if (ddgiCanNormalize(authoredTangent)) {
+      tangent = ddgiNormalizeOr(authoredTangent, fallbackTangent);
       bitangent = cross(frameNormal, tangent) * select(-1.0, 1.0, authoredHandedness >= 0.0);
     }
   }
@@ -656,8 +1088,7 @@ fn ddgiMaterialTangentFrameForHit(
   mapOffset: u32,
 ) -> DdgiMaterialTangentFrame {
   let triIndex = hit.indices.w;
-  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + mapOffset;
-  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(triIndex, mapOffset), 0);
   let flags = u32(max(meta0.y, 0.0) + 0.5);
   let texCoord = (flags >> 4u) & 0xFu;
 
@@ -677,14 +1108,24 @@ fn ddgiMaterialTangentFrameForHit(
   let tb = materialResolveUv(triIndex, texCoord, uv0b, uv1b);
   let tc = materialResolveUv(triIndex, texCoord, uv0c, uv1c);
 
-  let dp1 = p1.xyz - p0.xyz;
-  let dp2 = p2.xyz - p0.xyz;
-  let duv1 = tb - ta;
-  let duv2 = tc - ta;
+  var dp1 = p1.xyz - p0.xyz;
+  var dp2 = p2.xyz - p0.xyz;
+  let positionScale = max(ddgiMaxAbsVec3(dp1), ddgiMaxAbsVec3(dp2));
+  if (positionScale > 0.0) {
+    dp1 = dp1 / positionScale;
+    dp2 = dp2 / positionScale;
+  }
+  var duv1 = tb - ta;
+  var duv2 = tc - ta;
+  let uvScale = max(ddgiMaxAbsVec2(duv1), ddgiMaxAbsVec2(duv2));
+  if (uvScale > 0.0) {
+    duv1 = duv1 / uvScale;
+    duv2 = duv2 / uvScale;
+  }
   let det = duv1.x * duv2.y - duv1.y * duv2.x;
   var tangent = dp1;
   var bitangent = dp2;
-  if (abs(det) > 1e-8) {
+  if (uvScale > 0.0 && abs(det) > 1e-12) {
     let invDet = 1.0 / det;
     tangent = (dp1 * duv2.y - dp2 * duv1.y) * invDet;
     bitangent = (dp2 * duv1.x - dp1 * duv2.x) * invDet;
@@ -708,20 +1149,18 @@ fn ddgiMaterialTangentFrameForHit(
   }
 
   tangent = tangent - frameNormal * dot(frameNormal, tangent);
-  let tLen2 = dot(tangent, tangent);
-  if (tLen2 < 1e-8) {
+  if (!ddgiCanNormalize(tangent)) {
     let up = select(vec3f(0.0, 1.0, 0.0), vec3f(1.0, 0.0, 0.0), abs(frameNormal.y) > 0.95);
-    tangent = normalize(cross(up, frameNormal));
+    tangent = ddgiNormalizeOr(cross(up, frameNormal), vec3f(1.0, 0.0, 0.0));
   } else {
-    tangent = tangent * inverseSqrt(tLen2);
+    tangent = ddgiNormalizeOr(tangent, vec3f(1.0, 0.0, 0.0));
   }
 
   bitangent = bitangent - frameNormal * dot(frameNormal, bitangent) - tangent * dot(tangent, bitangent);
-  let bLen2 = dot(bitangent, bitangent);
-  if (bLen2 < 1e-8) {
+  if (!ddgiCanNormalize(bitangent)) {
     bitangent = ddgiFallbackBitangentForNormal(frameNormal, tangent);
   } else {
-    bitangent = bitangent * inverseSqrt(bLen2);
+    bitangent = ddgiNormalizeOr(bitangent, ddgiFallbackBitangentForNormal(frameNormal, tangent));
   }
 
   // Authored glTF tangents describe TEXCOORD_0 only. Keep the derivative
@@ -740,32 +1179,34 @@ fn ddgiSampleMaterialAtlasRawAtOffsetDelta(
   uv1: vec2f,
   transformedDelta: vec2f,
 ) -> vec4f {
-  let metaDims = textureDimensions(ddgiMaterialMapMeta);
-  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset;
-  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+  if (
+    !ddgiMaterialMetaAvailable(triIndex, metaOffset) ||
+    !ddgiMaterialMetaAvailable(triIndex, metaOffset + 1u)
+  ) {
     return vec4f(-1.0);
   }
-  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(triIndex, metaOffset), 0);
   let layer = i32(meta0.x);
-  if (layer < 0 || u32(layer) >= textureNumLayers(ddgiMaterialTextureAtlas)) {
-    return vec4f(-1.0);
-  }
+  let address = ddgiMaterialAtlasLayerAddress(layer);
+  if (address.valid == 0u) { return vec4f(-1.0); }
   let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
   let texCoord = (wrapPacked >> 4u) & 0xFu;
   let uv = materialResolveUv(triIndex, texCoord, uv0, uv1);
-  let meta1 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel + 1u), 0);
+  let meta1 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(triIndex, metaOffset + 1u), 0);
   let scaled = uv * meta1.xy;
   let transformed = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
   ) + meta0.zw + transformedDelta;
   let wrapped = ddgiWrapMaterialUv(transformed, wrapPacked);
-  let dims = textureDimensions(ddgiMaterialTextureAtlas);
-  let texel = vec2i(
-    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
-    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
-  );
-  return textureLoad(ddgiMaterialTextureAtlas, texel, layer, 0);
+  // Probe rays have no screen-space derivatives. Use the logical source
+  // footprint per angular probe-ray sample as the bounded minification model;
+  // authored mip/nearest/linear policy still controls the actual lookup.
+  let logicalSize = vec2f(f32(address.width), f32(address.height));
+  let angularSamples = sqrt(f32(max(RAYS_PER_PROBE, 1u)));
+  let footprint = abs(meta1.xy) * logicalSize / angularSamples;
+  let lod = log2(max(max(footprint.x, footprint.y), 1e-8));
+  return ddgiSampleMaterialAtlasAtLod(wrapped, layer, wrapPacked, lod);
 }
 
 fn ddgiSampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
@@ -792,7 +1233,7 @@ fn ddgiSampleMaterialScalarMap(
   fallback: f32,
 ) -> f32 {
   let texel = ddgiSampleMaterialAtlasRaw(triIndex, slot, uv0, uv1);
-  if (texel.x < 0.0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(triIndex, slot * 2u)) {
     return fallback;
   }
   return clamp(fallback * ddgiMaterialMapChannel(texel, channel), 0.0, 1.0);
@@ -809,7 +1250,10 @@ fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: 
     uvs.uv0,
     uvs.uv1,
   );
-  if (texel.x < 0.0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET,
+  )) {
     return scalarTransmission;
   }
   return clamp(scalarTransmission * texel.r, 0.0, 1.0);
@@ -826,7 +1270,10 @@ fn ddgiSampleThicknessMapFactorForHit(hit: IntersectionResult) -> vec2f {
     uvs.uv0,
     uvs.uv1,
   );
-  if (texel.x < 0.0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+  )) {
     return vec2f(1.0, 0.0);
   }
   return vec2f(clamp(texel.g, 0.0, 1.0), 1.0);
@@ -857,11 +1304,17 @@ fn ddgiSampleSpecularControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   var color = scalar.rgb;
   var intensity = scalar.a;
   let colorMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET, uv0, uv1);
-  if (colorMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET,
+  )) {
     color = max(color * colorMap.rgb, vec3f(0.0));
   }
   let intensityMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET, uv0, uv1);
-  if (intensityMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET,
+  )) {
     intensity = clamp(intensity * intensityMap.a, 0.0, 1.0);
   }
   return vec4f(color, intensity);
@@ -873,11 +1326,17 @@ fn ddgiSampleClearcoatControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f {
   var roughness = clamp(cc.y, 0.0, 1.0);
 
   let clearcoatMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET, uv0, uv1);
-  if (clearcoatMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET,
+  )) {
     factor = clamp(factor * clearcoatMap.r, 0.0, 1.0);
   }
   let roughnessMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
-  if (roughnessMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET,
+  )) {
     roughness = clamp(roughness * roughnessMap.g, 0.0, 1.0);
   }
   return vec2f(factor, roughness);
@@ -890,7 +1349,10 @@ fn ddgiSampleSheenControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
   var sheen = clamp(scalars.z, 0.0, 1.0);
 
   let colorMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET, uv0, uv1);
-  if (colorMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET,
+  )) {
     sheenColor = clamp(sheenColor * colorMap.rgb, vec3f(0.0), vec3f(1.0));
   }
   return vec4f(sheenColor, sheen);
@@ -900,7 +1362,10 @@ fn ddgiSampleSheenRoughness(triIndex: u32, uv0: vec2f, uv1: vec2f) -> f32 {
   let scalars = ddgiMaterialMetaLoadOrZero(triIndex, DDGI_MATERIAL_MAP_CLEARCOAT_TEXEL_OFFSET);
   var roughness = clamp(scalars.w, 0.0, 1.0);
   let roughnessMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET, uv0, uv1);
-  if (roughnessMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET,
+  )) {
     roughness = clamp(roughness * roughnessMap.a, 0.0, 1.0);
   }
   return roughness;
@@ -912,7 +1377,10 @@ fn ddgiSampleAnisotropyControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec2f 
   var rotation = scalars.y;
 
   let anisoMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET, uv0, uv1);
-  if (anisoMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET,
+  )) {
     strength = clamp(strength * anisoMap.b, 0.0, 1.0);
     let direction = anisoMap.rg * 2.0 - vec2f(1.0);
     if (dot(direction, direction) > 0.0) {
@@ -930,11 +1398,17 @@ fn ddgiSampleIridescenceControls(triIndex: u32, uv0: vec2f, uv1: vec2f) -> vec4f
   var thicknessMax = max(0.0, scalars.w);
 
   let iridescenceMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET, uv0, uv1);
-  if (iridescenceMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET,
+  )) {
     factor = clamp(factor * iridescenceMap.r, 0.0, 1.0);
   }
   let thicknessMap = ddgiSampleMaterialAtlasRawAtOffset(triIndex, DDGI_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET, uv0, uv1);
-  if (thicknessMap.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET,
+  )) {
     let thickness = mix(thicknessMin, thicknessMax, clamp(thicknessMap.g, 0.0, 1.0));
     thicknessMin = thickness;
     thicknessMax = thickness;
@@ -988,7 +1462,10 @@ fn ddgiApplyHomogeneousVolumeSingleScatter(
   if (all(sigmaS <= vec3f(0.0)) || pathLength <= 0.0) { return radiance; }
   let n = safe_normalize(normal);
   let v = safe_normalize(wo);
-  let phase = ddgiHenyeyGreensteinPhase(dot(n, v), scatter.a);
+  // The incoming radiance is already directionally aggregated. There is no
+  // incident direction left with which to evaluate anisotropic HG, so use its
+  // isotropic angular average rather than inventing one from the surface normal.
+  let phase = ddgiHenyeyGreensteinPhase(0.0, 0.0);
   let source = dot(max(radiance, vec3f(0.0)), vec3f(0.2126, 0.7152, 0.0722)) *
     max(albedo, vec3f(0.0)) * phase;
   let projectedCosine = abs(dot(n, v));
@@ -1200,7 +1677,10 @@ fn ddgiSampleProbeHitMaterial(
     uvs.uv0,
     uvs.uv1,
   );
-  if (baseColorTexel.x >= 0.0) {
+  if (ddgiMaterialAtlasMapAvailableAtOffset(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_SLOT_BASE_COLOR * 2u,
+  )) {
     out.albedo = scalarBaseColor * baseColorTexel.rgb;
   }
   out.roughness = ddgiSampleMaterialScalarMap(
@@ -1320,13 +1800,13 @@ fn ddgiApplyNormalMapAtOffsetForHit(
   normalScaleOffset: u32,
 ) -> vec3f {
   let triIndex = hit.indices.w;
-  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + normalMapOffset;
-  let metaDims = textureDimensions(ddgiMaterialMapMeta);
-  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+  if (
+    !ddgiMaterialMetaAvailable(triIndex, normalMapOffset) ||
+    !ddgiMaterialMetaAvailable(triIndex, normalMapOffset + 1u)
+  ) {
     return fallbackNormal;
   }
-  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
-  if (i32(meta0.x) < 0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(triIndex, normalMapOffset)) {
     return fallbackNormal;
   }
 
@@ -1341,13 +1821,9 @@ fn ddgiApplyNormalMapAtOffsetForHit(
     uvs.uv0,
     uvs.uv1,
   );
-  if (texelColor.x < 0.0) {
-    return fallbackNormal;
-  }
-
   let scaleMeta = textureLoad(
     ddgiMaterialMapMeta,
-    ddgiMaterialMetaCoord(triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + normalScaleOffset),
+      ddgiMaterialMetaCoord(triIndex, normalScaleOffset),
     0,
   );
   let normalScale = max(scaleMeta.x, 0.0);
@@ -1400,19 +1876,22 @@ fn ddgiApplyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f
 
 fn ddgiApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
   let triIndex = hit.indices.w;
-  let metaTexel = triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET;
-  let metaDims = textureDimensions(ddgiMaterialMapMeta);
-  if (metaTexel + 1u >= metaDims.x * metaDims.y) {
+  if (
+    !ddgiMaterialMetaAvailable(triIndex, DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET) ||
+    !ddgiMaterialMetaAvailable(triIndex, DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET + 1u)
+  ) {
     return shadingNormal;
   }
-  let meta0 = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
-  if (i32(meta0.x) < 0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+  )) {
     return shadingNormal;
   }
 
   let scaleMeta = textureLoad(
     ddgiMaterialMapMeta,
-    ddgiMaterialMetaCoord(triIndex * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET),
+      ddgiMaterialMetaCoord(triIndex, DDGI_MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET),
     0,
   );
   let bumpScale = scaleMeta.x;
@@ -1430,20 +1909,25 @@ fn ddgiApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3
     uvs.uv0,
     uvs.uv1,
   );
-  if (hC.x < 0.0) {
-    return shadingNormal;
-  }
-
-  let atlasDims = textureDimensions(ddgiMaterialTextureAtlas);
-  let atlasTexelStep = vec2f(
-    1.0 / f32(max(atlasDims.x, 1u)),
-    1.0 / f32(max(atlasDims.y, 1u)),
+  let bumpMeta = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaCoord(triIndex, DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET),
+    0,
+  );
+  let bumpAddress = ddgiMaterialAtlasLayerAddress(i32(bumpMeta.x));
+  let logicalTexelStep = vec2f(
+    1.0 / f32(max(bumpAddress.width, 1u)),
+    1.0 / f32(max(bumpAddress.height, 1u)),
   );
   let bumpTexelStep = vec2f(
     1.0 / max(scaleMeta.y, 1.0),
     1.0 / max(scaleMeta.z, 1.0),
   );
-  let texelStep = select(atlasTexelStep, bumpTexelStep, scaleMeta.y > 0.0 && scaleMeta.z > 0.0);
+  let texelStep = select(
+    logicalTexelStep,
+    bumpTexelStep,
+    scaleMeta.y > 0.0 && scaleMeta.z > 0.0,
+  );
   let hU = ddgiSampleMaterialAtlasRawAtOffsetDelta(
     triIndex,
     DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET,
@@ -1462,8 +1946,7 @@ fn ddgiApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3
   let dhdv = (hV - hC.r) / texelStep.y;
   let frame = ddgiMaterialTangentFrameForHit(hit, shadingNormal, DDGI_MATERIAL_MAP_BUMP_TEXEL_OFFSET);
   let perturbed = shadingNormal - bumpScale * (dhdu * frame.tangent + dhdv * frame.bitangent);
-  let plen = length(perturbed);
-  let n = select(shadingNormal, perturbed / plen, plen > 1e-6);
+  let n = ddgiNormalizeOr(perturbed, shadingNormal);
   return select(-n, n, dot(n, shadingNormal) >= 0.0);
 }
 
@@ -1479,7 +1962,10 @@ fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3
     uvs.uv0,
     uvs.uv1,
   );
-  if (texel.x < 0.0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
+  )) {
     return scalarEmission;
   }
   return scalarEmission * texel.rgb;
@@ -1497,7 +1983,10 @@ fn ddgiSampleLightMapIrradiance(hit: IntersectionResult) -> vec3f {
     uvs.uv0,
     uvs.uv1,
   );
-  if (texel.x < 0.0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_LIGHT_TEXEL_OFFSET,
+  )) {
     return vec3f(0.0);
   }
   let intensity = ddgiMaterialMetaLoadOrZero(
@@ -1585,7 +2074,10 @@ fn ddgiSampleEmitterLeAtBary(base: u32, localBary: vec3f, scalarEmission: vec3f)
     uv0,
     uv1,
   );
-  if (texel.x < 0.0) {
+  if (!ddgiMaterialAtlasMapAvailableAtOffset(
+    triIndex,
+    DDGI_MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
+  )) {
     return scalarEmission;
   }
   return scalarEmission * texel.rgb;
@@ -1603,12 +2095,17 @@ fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage
   out.coverage = 1.0;
   out.cutoff = 0.0;
 
-  let metaDims = textureDimensions(ddgiMaterialMapMeta);
-  let metaTexel = hit.indices.w * DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI + DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET;
-  if (metaTexel >= metaDims.x * metaDims.y) {
+  if (!ddgiMaterialMetaAvailable(
+    hit.indices.w,
+    DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET,
+  )) {
     return out;
   }
-  let coverageMeta = textureLoad(ddgiMaterialMapMeta, ddgiMaterialMetaCoord(metaTexel), 0);
+  let coverageMeta = textureLoad(
+    ddgiMaterialMapMeta,
+    ddgiMaterialMetaCoord(hit.indices.w, DDGI_MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET),
+    0,
+  );
   out.mode = u32(max(coverageMeta.x, 0.0) + 0.5);
   if (out.mode == 0u) {
     return out;
@@ -1619,9 +2116,23 @@ fn ddgiMaterialAlphaCoverageForHit(hit: IntersectionResult) -> DdgiAlphaCoverage
     return out;
   }
   let baseColorTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);
-  let baseColorAlpha = select(clamp(baseColorTexel.a, 0.0, 1.0), 1.0, baseColorTexel.x < 0.0);
+  let baseColorAlpha = select(
+    1.0,
+    clamp(baseColorTexel.a, 0.0, 1.0),
+    ddgiMaterialAtlasMapAvailableAtOffset(
+      hit.indices.w,
+      DDGI_MATERIAL_MAP_SLOT_BASE_COLOR * 2u,
+    ),
+  );
   let alphaTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);
-  let alphaMapCoverage = select(clamp(alphaTexel.r, 0.0, 1.0), 1.0, alphaTexel.x < 0.0);
+  let alphaMapCoverage = select(
+    1.0,
+    clamp(alphaTexel.r, 0.0, 1.0),
+    ddgiMaterialAtlasMapAvailableAtOffset(
+      hit.indices.w,
+      DDGI_MATERIAL_MAP_SLOT_ALPHA * 2u,
+    ),
+  );
   let vertexColorAlpha = ddgiSampleVertexColorForHit(hit).a;
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
   out.cutoff = clamp(coverageMeta.z, 0.0, 1.0);
@@ -1658,34 +2169,63 @@ fn ddgiAlphaShadowTransmittanceForHit(hit: IntersectionResult) -> f32 {
 // -----------------------------------------------------------------
 // BVH traversal — merged world BLAS or TLAS+local BLAS (PR-5.2).
 // -----------------------------------------------------------------
-const DDGI_TRI_EPSILON: f32 = 1e-5;
+fn ddgiFiniteF32(v: f32) -> bool {
+  return v == v && abs(v) <= 3.402823e+38;
+}
+
+fn ddgiCanNormalize(v: vec3f) -> bool {
+  let maxComponent = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!ddgiFiniteF32(maxComponent) || !(maxComponent > 0.0)) {
+    return false;
+  }
+  let scaled = v / maxComponent;
+  let scaledLen2 = dot(scaled, scaled);
+  return ddgiFiniteF32(scaledLen2) && scaledLen2 > 0.0;
+}
+
+fn ddgiNormalizeOr(v: vec3f, fallback: vec3f) -> vec3f {
+  if (ddgiCanNormalize(v)) {
+    let scaled = v / max(abs(v.x), max(abs(v.y), abs(v.z)));
+    return scaled * inverseSqrt(dot(scaled, scaled));
+  }
+  if (ddgiCanNormalize(fallback)) {
+    let scaledFallback =
+      fallback /
+      max(abs(fallback.x), max(abs(fallback.y), abs(fallback.z)));
+    return scaledFallback * inverseSqrt(dot(scaledFallback, scaledFallback));
+  }
+  return vec3f(0.0, 1.0, 0.0);
+}
+
+fn ddgiLengthOrZero(v: vec3f) -> f32 {
+  let maxComponent = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!ddgiFiniteF32(maxComponent) || !(maxComponent > 0.0)) {
+    return 0.0;
+  }
+  let scaled = v / maxComponent;
+  let result = maxComponent * sqrt(dot(scaled, scaled));
+  return select(0.0, result, ddgiFiniteF32(result) && result > 0.0);
+}
+
+fn ddgiProbeDistance(normalizedDistance: f32) -> f32 {
+  let distance = gridParams.spacing * normalizedDistance;
+  return select(0.0, distance, ddgiFiniteF32(distance) && distance > 0.0);
+}
 
 fn safe_normalize(v: vec3f) -> vec3f {
-  let len2 = dot(v, v);
-  if (len2 < 1e-20) { return vec3f(0.0, 1.0, 0.0); }
-  return v * inverseSqrt(len2);
+  return ddgiNormalizeOr(v, vec3f(0.0, 1.0, 0.0));
 }
-
-fn bvhCastShadowDisabledForTri(triIdx: u32) -> bool {
-  let matId = bvh_materialId[triIdx];
-  return (materials[matId].flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u;
-}
-
-${BVH_CAST_SHADOW_PREDICATE_WGSL}
 
 fn traceSceneFirstHitDdgi(ray: Ray) -> IntersectionResult {
+  let traceTMin = ddgiProbeDistance(DDGI_TRACE_T_MIN_NORMALIZED);
   if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
     return traceTlasFirstHit(
       ddgiTrace.tlasNodeCount,
       ray,
-      DDGI_TRI_EPSILON,
+      traceTMin,
     );
   }
-  return bvhIntersectFirstHit(ray, DDGI_TRI_EPSILON);
-}
-
-fn bvhTraceFirstHit(ray: Ray) -> IntersectionResult {
-  return traceSceneFirstHitDdgi(ray);
+  return bvhIntersectFirstHit(ray, traceTMin);
 }
 
 fn ddgiAlphaBlendCoverageHash(hit: IntersectionResult, ray: Ray, layer: u32) -> f32 {
@@ -1727,9 +2267,14 @@ fn ddgiMaterialAlphaDiscardedForProbeHit(hit: IntersectionResult, ray: Ray, laye
 fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult {
   var walkRay = ray;
   var traveled = 0.0;
-  let step = max(1e-4, DDGI_TRI_EPSILON * 4.0);
+  let step = ddgiProbeDistance(DDGI_SURFACE_STEP_NORMALIZED);
+  if (!(step > 0.0)) {
+    // Invalid/unrepresentable spacing must not advance through alpha surfaces.
+    return traceSceneFirstHitDdgi(ray);
+  }
+  let surfaceBudget = ddgiWorldSurfaceBudget();
 
-  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
+  for (var layer = 0u; layer < surfaceBudget; layer = layer + 1u) {
     var hit = traceSceneFirstHitDdgi(walkRay);
     if (!hit.didHit) {
       return hit;
@@ -1743,40 +2288,50 @@ fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult {
   }
 
   var exhausted = traceSceneFirstHitDdgi(walkRay);
-  // Conservative overflow: a 33rd layer blocks instead of leaking through.
+  // Conservative world-surface-budget overflow blocks instead of leaking.
   if (exhausted.didHit) {
     exhausted.dist = exhausted.dist + traveled;
   }
   return exhausted;
 }
 
-fn bvhTraceAnyCastShadow(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> bool {
+fn ddgiWorldSurfaceBudget() -> u32 {
+  let triangleCount = arrayLength(&bvh_materialId);
+  if (triangleCount == 0u) { return 1u; }
+  var instanceCount = 1u;
   if (ddgiTrace.bvhMode == 1u && ddgiTrace.tlasNodeCount > 0u) {
-    return traceTlasAnyCastPredicate(
-      ddgiTrace.tlasNodeCount,
-      origin,
-      dir,
-      tMax,
-      DDGI_TRI_EPSILON,
-      skipGlass,
-    );
+    instanceCount = max(tlasBlasRootCount(), 1u);
   }
-  return bvhIntersectAnyAtRootCastPredicate(
-    origin, dir, tMax, DDGI_TRI_EPSILON, skipGlass, 0u,
-  );
+  // A TLAS may place the same BLAS many times. A unique-triangle budget is
+  // therefore not a valid upper bound on the number of world-space surfaces
+  // crossed by a ray. Saturate rather than wrapping hostile scene sizes.
+  if (triangleCount > 0xfffffffeu / instanceCount) {
+    return 0xffffffffu;
+  }
+  return triangleCount * instanceCount + 1u;
 }
 
-fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bool) -> vec3f {
+fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32) -> vec3f {
   var walkRay: Ray;
   walkRay.origin = origin;
   walkRay.direction = dir;
   var traveled = 0.0;
   var visibility = vec3f(1.0);
-  let step = max(1e-4, DDGI_TRI_EPSILON * 4.0);
-  let glassExitStep = max(step, gridParams.spacing * 1e-4);
-  let glassAdvanceStep = max(step, gridParams.spacing * 0.01);
+  let step = ddgiProbeDistance(DDGI_SURFACE_STEP_NORMALIZED);
+  if (!(step > 0.0)) { return vec3f(0.0); }
+  let surfaceBudget = ddgiWorldSurfaceBudget();
 
-  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
+  // Bulk glass is owned by an authored material in one TLAS instance. Beer is
+  // accumulated over the geometric segment between paired boundaries; scalar
+  // transmission is paid only when entering that medium.
+  var mediumMaterial: array<u32, 16>;
+  var mediumTri: array<u32, 16>;
+  var mediumInstance: array<u32, 16>;
+  var mediumColor: array<vec3f, 16>;
+  var mediumDistance: array<f32, 16>;
+  var mediumDepth = 0u;
+
+  for (var layer = 0u; layer < surfaceBudget; layer = layer + 1u) {
     let remaining = tMax - traveled;
     if (remaining <= step || max(max(visibility.x, visibility.y), visibility.z) <= 0.0) {
       return clamp(visibility, vec3f(0.0), vec3f(1.0));
@@ -1784,59 +2339,142 @@ fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32, skipGlass: bo
 
     let hit = traceSceneFirstHitDdgi(walkRay);
     if (!hit.didHit || hit.dist >= remaining) {
+      if (mediumDepth > 0u) {
+        let top = mediumDepth - 1u;
+        let rgbBeer = beerLambertTransmittanceRgb(
+          mediumColor[top],
+          mediumDistance[top],
+          remaining,
+        );
+        visibility = visibility * materialSpectralAttenuation(
+          mediumTri[top],
+          remaining,
+          rgbBeer,
+        );
+      }
       return clamp(visibility, vec3f(0.0), vec3f(1.0));
+    }
+
+    if (mediumDepth > 0u) {
+      let top = mediumDepth - 1u;
+      let rgbBeer = beerLambertTransmittanceRgb(
+        mediumColor[top],
+        mediumDistance[top],
+        hit.dist,
+      );
+      visibility = visibility * materialSpectralAttenuation(
+        mediumTri[top],
+        hit.dist,
+        rgbBeer,
+      );
+      if (max(max(visibility.x, visibility.y), visibility.z) <= 0.0) {
+        return vec3f(0.0);
+      }
     }
 
     let matId = bvh_materialId[hit.indices.w];
     let mat = materials[matId];
-    let hitPos = walkRay.origin + dir * hit.dist;
     let isGlass = (mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u;
-    var advance = step;
     if ((mat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) == 0u) {
-      if (skipGlass && isGlass) {
-        // Let the walk continue through scalar glass, matching the predicate path.
-        advance = glassAdvanceStep;
+      let alphaT = ddgiAlphaShadowTransmittanceForHit(hit);
+      if (!isGlass) {
+        if (alphaT <= 0.0) { return vec3f(0.0); }
+        visibility = visibility * alphaT;
+      } else if (
+        hit.side < 0.0 &&
+        mediumDepth > 0u &&
+        mediumMaterial[mediumDepth - 1u] == matId &&
+        mediumInstance[mediumDepth - 1u] == hit.instanceIndex
+      ) {
+        // An observed entry owns its paired exit even when the exit texel has
+        // different alpha coverage. The bulk segment was already charged
+        // above; only this interface's authored face layer remains.
+        visibility = visibility * ddgiFaceLayerTransmission(
+          ddgiSampleFaceLayerControls(hit.indices.w, false),
+        );
+        mediumDepth = mediumDepth - 1u;
       } else {
-        let alphaT = ddgiAlphaShadowTransmittanceForHit(hit);
-        if (alphaT >= 1.0) {
-          // Fully transparent alpha-tested/alpha-blended blocker.
-          advance = select(step, glassAdvanceStep, isGlass);
-        } else if (alphaT > 0.0) {
-          visibility = visibility * alphaT;
-        } else if (!isGlass) {
-          return vec3f(0.0);
-        }
-
-        if (isGlass && alphaT < 1.0) {
-          var exitRay: Ray;
-          exitRay.origin = hitPos + dir * glassExitStep;
-          exitRay.direction = dir;
-          let exitHit = traceSceneFirstHitDdgi(exitRay);
-          let distToExit = select(mat.thickness, exitHit.dist, exitHit.didHit && exitHit.dist < remaining);
+        let coverage = clamp(1.0 - alphaT, 0.0, 1.0);
+        if (coverage > 0.0) {
+          let layerTransmission = ddgiFaceLayerTransmission(
+            ddgiSampleFaceLayerControls(hit.indices.w, hit.side >= 0.0),
+          );
           let thicknessMap = ddgiSampleThicknessMapFactorForHit(hit);
-          let scalarThicknessLimit = max(mat.thickness, 1e-4);
-          let mappedThicknessLimit = max(mat.thickness * thicknessMap.x, 0.0);
-          let pathLenLimit = select(scalarThicknessLimit, mappedThicknessLimit, thicknessMap.y > 0.5);
-          let pathLen = clamp(distToExit, 0.0, pathLenLimit);
-          let beerAtten = exp(-mat.attenuationColor * (pathLen / max(1e-4, mat.attenuationDistance)));
-          let glassTransmission = ddgiSampleTransmissionMapForHit(hit, mat.transmission);
-          visibility = visibility * glassTransmission * beerAtten;
-          if (max(max(visibility.x, visibility.y), visibility.z) <= 0.0) {
+          let bulkThickness = max(
+            mat.thickness * select(1.0, thicknessMap.x, thicknessMap.y > 0.5),
+            0.0,
+          );
+          let boundaryTransmission = clamp(
+            ddgiSampleTransmissionMapForHit(hit, mat.transmission),
+            0.0,
+            1.0,
+          );
+          let interfaceTransmission =
+            layerTransmission * vec3f(boundaryTransmission);
+
+          if (coverage < 1.0 || bulkThickness <= 0.0) {
+            // Deterministic alpha-blend visibility is the expected mixture of
+            // an uncovered ray and a covered thin interface. Do not place the
+            // entire ray inside a bulk medium for fractional coverage.
+            visibility = visibility * mix(
+              vec3f(1.0),
+              interfaceTransmission,
+              vec3f(coverage),
+            );
+          } else if (hit.side >= 0.0) {
+            if (mediumDepth >= 16u) {
+              return vec3f(0.0);
+            }
+            visibility = visibility * interfaceTransmission;
+            mediumMaterial[mediumDepth] = matId;
+            mediumTri[mediumDepth] = hit.indices.w;
+            mediumInstance[mediumDepth] = hit.instanceIndex;
+            mediumColor[mediumDepth] = clamp(mat.attenuationColor, vec3f(0.0), vec3f(1.0));
+            mediumDistance[mediumDepth] = mat.attenuationDistance;
+            mediumDepth = mediumDepth + 1u;
+          } else if (mediumDepth > 0u) {
+            // A back boundary that does not close the active top medium has
+            // ambiguous ownership. Never invent an absorption segment.
             return vec3f(0.0);
+          } else {
+            // The shadow origin is already inside this medium. No entry was
+            // observed, so pay scalar transmission exactly once at this exit.
+            let rgbBeer = beerLambertTransmittanceRgb(
+              clamp(mat.attenuationColor, vec3f(0.0), vec3f(1.0)),
+              mat.attenuationDistance,
+              hit.dist,
+            );
+            visibility = visibility * interfaceTransmission *
+              materialSpectralAttenuation(
+                hit.indices.w,
+                hit.dist,
+                rgbBeer,
+              );
           }
-          advance = glassAdvanceStep;
         }
       }
     }
 
-    traveled = traveled + hit.dist + advance;
+    if (mediumDepth > 0u) {
+      let top = mediumDepth - 1u;
+      let stepBeer = beerLambertTransmittanceRgb(
+        mediumColor[top],
+        mediumDistance[top],
+        step,
+      );
+      visibility = visibility * materialSpectralAttenuation(
+        mediumTri[top],
+        step,
+        stepBeer,
+      );
+    }
+    traveled = traveled + hit.dist + step;
     walkRay.origin = origin + dir * traveled;
   }
 
-  if (bvhTraceAnyCastShadow(walkRay.origin, dir, max(0.0, tMax - traveled), skipGlass)) {
-    return vec3f(0.0);
-  }
-  return clamp(visibility, vec3f(0.0), vec3f(1.0));
+  // Traversal-budget exhaustion means an unclassified surface remains; never
+  // turn that ambiguity into a light leak.
+  return vec3f(0.0);
 }
 `; }
 
@@ -1851,99 +2489,9 @@ function makeTraceSunVisibilityWGSL(): string { return /* wgsl */`
 // Direct lighting at a hit point
 // -----------------------------------------------------------------
 
-// Glass-aware sun visibility helper (caustic enabler).
-//
-// Returns a per-channel visibility multiplier from origin along sunDir:
-//   - Unobstructed     -> vec3f(1.0)
-//   - Hit opaque       -> vec3f(0.0)
-//   - Hit glass        -> Beer-Lambert transmittance, then continue past the
-//                        slab and recurse (bounded to 3 glass crossings).
-//
-// Beer-Lambert glass attenuation (B5, 2026-06-10). Per glass slab:
-//   visibility *= transmission · exp(-attenuationColor · (t / attenuationDistance))
-// where attenuationColor is the per-channel absorption coefficient σ and the
-// dimensionless optical-depth ratio t/attenuationDistance is the path length in
-// units of the medium e-fold (mean-free) distance — matching the canonical
-// probeRayCast.wgsl in @vitrum/walkaround-rc (which uses the material thickness
-// scalar). HERE we have the actual continuation ray, so we use the TRUE
-// geometric path length through the slab: t = (entry->exit) distance found by
-// continuing the ray inside the medium to its next surface, clamped to the
-// material thickness as an upper bound so a probe ray that grazes a thin
-// pane or misses the far face (open/non-watertight glass) cannot accumulate an
-// unbounded optical depth. This is the documented path-length approximation:
-//   t = clamp(distToExit, 0, thickness)   [exit = next hit along sunDir]
-// Limits: σ→0 OR t→0  ⇒ exp(0)=1 (clear glass passes transmission only);
-//         σ→∞ OR t→∞  ⇒ exp(-∞)=0 (opaque). Reduces to Beer-Lambert exactly.
-// The previous linear-tint form (visibility *= attenuationColor · transmission)
-// did NOT reduce to Beer-Lambert in any limit (no exponential, no thickness).
-//
-// MaterialEntry carries attenuationColor / attenuationDistance / thickness
-// (W2-C5) so no buffer-layout change is needed.
+// Sun rays use the same boundary/medium invariant as finite-light shadows.
 fn traceSunVisibility(origin: vec3f, sunDir: vec3f) -> vec3f {
-  var visibility = vec3f(1.0);
-  var rayOrigin  = origin;
-  // Bounded glass-crossing loop. Upper bound 3 handles single-slab and
-  // edge-case double-slab paths; ≥4 stained-glass panels in series is not
-  // a configuration the walkaround pipeline produces.
-  for (var iter: u32 = 0u; iter < 3u; iter = iter + 1u) {
-    var sRay: Ray;
-    sRay.origin    = rayOrigin;
-    sRay.direction = sunDir;
-    let sHit = bvhTraceFirstHit(sRay);
-    if (!sHit.didHit || sHit.dist >= 1e15) {
-      // Reached sky — sun is unobstructed (modulo accumulated glass tint).
-      return visibility;
-    }
-    let entryPos  = rayOrigin + sunDir * sHit.dist;
-    let sMatId = bvh_materialId[sHit.indices.w];
-    let sMat   = materials[sMatId];
-    if ((sMat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u) {
-      // Primitive castShadow:false: transparent to DDGI shadow/visibility rays.
-      rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
-      continue;
-    }
-    let alphaT = ddgiAlphaShadowTransmittanceForHit(sHit);
-    if (alphaT >= 1.0) {
-      rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
-      continue;
-    }
-    if (alphaT > 0.0) {
-      visibility = visibility * alphaT;
-      if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
-        rayOrigin = entryPos + sunDir * (gridParams.spacing * 1e-4);
-        continue;
-      }
-    } else if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
-      // Opaque occluder — sun is fully blocked.
-      return vec3f(0.0);
-    }
-    // Glass slab — Beer-Lambert transmittance over the geometric path length.
-    // Find the exit point by intersecting the continuation ray just past the
-    // entry face; distToExit is the in-medium path length. Clamp to thickness
-    // (upper bound — guards open/non-watertight glass where the ray would exit
-    // far away or miss the far face entirely).
-    var exitRay: Ray;
-    exitRay.origin    = entryPos + sunDir * (gridParams.spacing * 1e-4);
-    exitRay.direction = sunDir;
-    let exitHit  = bvhTraceFirstHit(exitRay);
-    let distToExit = select(sMat.thickness, exitHit.dist, exitHit.didHit && exitHit.dist < 1e15);
-    let thicknessMap = ddgiSampleThicknessMapFactorForHit(sHit);
-    let scalarThicknessLimit = max(sMat.thickness, 1e-4);
-    let mappedThicknessLimit = max(sMat.thickness * thicknessMap.x, 0.0);
-    let pathLenLimit = select(scalarThicknessLimit, mappedThicknessLimit, thicknessMap.y > 0.5);
-    let pathLen  = clamp(distToExit, 0.0, pathLenLimit);
-    let beerAtten = exp(-sMat.attenuationColor * (pathLen / max(1e-4, sMat.attenuationDistance)));
-    let glassTransmission = ddgiSampleTransmissionMapForHit(sHit, sMat.transmission);
-    visibility = visibility * glassTransmission * beerAtten;
-    let hitPos = entryPos;
-    // M14: step past the slab by 1% of probe spacing so the offset is
-    // proportional to scene scale (replacing the Cornell-specific 0.5 units).
-    // For Cornell spacing ~0.17 → step 0.0017; for a 100-unit building →
-    // step ~3 units, ensuring the continuation ray clears the slab face.
-    rayOrigin  = hitPos + sunDir * (gridParams.spacing * 0.01);
-  }
-  // Loop exhausted (more than 3 glass crossings) — treat as fully attenuated.
-  return vec3f(0.0);
+  return ddgiTraceShadowVisibility(origin, sunDir, 1e15);
 }
 `; }
 
@@ -1971,7 +2519,7 @@ fn ddgiSoftSunDirection(sunBase: vec3f, angularRadius: f32, hitPos: vec3f) -> ve
   if (radius <= 0.0) {
     return sunBase;
   }
-  let quant = vec3i(floor(hitPos / max(gridParams.spacing, 1e-4) * 1024.0));
+  let quant = vec3i(floor(hitPos / gridParams.spacing * 1024.0));
   let seed =
     bitcast<u32>(quant.x) * 0x9E3779B9u ^
     bitcast<u32>(quant.y) * 0x85EBCA6Bu ^
@@ -2022,10 +2570,9 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   // 1 on the axis, cos(angle) at the cone edge. The hard-edge branch avoids
   // smoothstep(edge, edge, x) for penumbra=0.
   // Cheap early-out: fully outside the cone contributes nothing, so skip the ray.
-  let axisLen2 = dot(light.direction, light.direction);
   var coneFalloff = 1.0;
   if (ddgiLightKind(light) == LIGHT_SPOT) {
-    if (!(axisLen2 > 0.0)) { return vec3f(0.0); }
+    if (!ddgiCanNormalize(light.direction)) { return vec3f(0.0); }
     coneFalloff = ddgiSpotConeFalloff(
       light.direction, lightDir, light.innerCone, light.outerCone,
     );
@@ -2037,7 +2584,7 @@ fn evalPointLight(light: DDGILight, hitPos: vec3f, hitNormal: vec3f) -> vec3f {
   var shadowVisibility = vec3f(1.0);
   if (!ddgiLightCastShadowDisabled(light)) {
     let shadowOrig = hitPos + hitNormal * normalBias_p;
-    shadowVisibility = ddgiTraceShadowVisibility(shadowOrig, lightDir, dist - normalBias_p, false);
+    shadowVisibility = ddgiTraceShadowVisibility(shadowOrig, lightDir, dist - normalBias_p);
     if (max(max(shadowVisibility.x, shadowVisibility.y), shadowVisibility.z) <= 0.0) {
       return vec3f(0.0);
     }
@@ -2058,9 +2605,12 @@ fn evalDirectLighting(hitPos: vec3f, hitNormal: vec3f, seed0: u32) -> vec3f {
   let kind = ddgiLightKind(light);
   var result = vec3f(0.0);
   if (kind == LIGHT_SUN) {
-    let axisLen2 = dot(light.direction, light.direction);
-    if (axisLen2 <= 0.0) { return vec3f(0.0); }
-    let dir = ddgiSoftSunDirection(-light.direction * inverseSqrt(axisLen2), light.innerCone, hitPos);
+    if (!ddgiCanNormalize(light.direction)) { return vec3f(0.0); }
+    let dir = ddgiSoftSunDirection(
+      -ddgiNormalizeOr(light.direction, vec3f(0.0, -1.0, 0.0)),
+      light.innerCone,
+      hitPos,
+    );
     result = evalSunLight(
       dir, light.color, light.intensity, hitPos, hitNormal,
       ddgiLightCastShadowDisabled(light));
@@ -2114,7 +2664,9 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, seed0: u32) -> vec3f {
     let nrm = ddgiEmitterTris[base + 3u].xyz;
     let area = ddgiEmitterTris[base + 3u].w;
     let scalarLe = ddgiEmitterTris[base + 4u].xyz;
-    let castShadowDisabled = ddgiEmitterTris[base + 4u].w > 0.5;
+    let emitterFlags = u32(max(ddgiEmitterTris[base + 4u].w, 0.0));
+    let castShadowDisabled = (emitterFlags & 1u) != 0u;
+    let twoSidedEmitter = (emitterFlags & 2u) != 0u;
 
     let s0 = pcgHashToF32Ddgi(sampleSeed ^ 0x243f6a88u);
     let s1 = pcgHashToF32Ddgi(sampleSeed ^ 0xb7e15162u);
@@ -2123,19 +2675,26 @@ fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, seed0: u32) -> vec3f {
     let pos = localBary.x * vA + localBary.y * vB + localBary.z * vC;
     let Le = ddgiSampleEmitterLeAtBary(base, localBary, scalarLe);
 
-    let toL     = pos - hitPos;
-    let dist2   = max(dot(toL, toL), 1e-8);
-    let dist    = sqrt(dist2);
-    let wi      = toL / dist;
+    let toL = pos - hitPos;
+    let dist = ddgiLengthOrZero(toL);
+    if (!(dist > 0.0)) { continue; }
+    let wi = ddgiNormalizeOr(toL, vec3f(0.0, 1.0, 0.0));
+    let dist2 = dist * dist;
+    if (!ddgiFiniteF32(dist2) || !(dist2 > 0.0)) { continue; }
     let cosSurf  = dot(n, wi);
-    let cosLight = dot(nrm, -wi);   // front-face only (one-sided emitter)
+    let signedCosLight = dot(nrm, -wi);
+    let cosLight = select(
+      max(signedCosLight, 0.0),
+      abs(signedCosLight),
+      twoSidedEmitter,
+    );
     if (cosSurf <= 0.0 || cosLight <= 0.0) { continue; }
 
     let G = (cosSurf * cosLight) / dist2;
     var shadowT = vec3f(1.0);
     if (!castShadowDisabled) {
       // Material-aware shadow walk — stop just short of the light sample.
-      shadowT = ddgiTraceShadowVisibility(hitPos + n * normalBias, wi, dist - normalBias, false);
+      shadowT = ddgiTraceShadowVisibility(hitPos + n * normalBias, wi, dist - normalBias);
       if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) { continue; }
     }
 
@@ -2170,14 +2729,25 @@ fn probeWorldPos(probeIdx: u32) -> vec3f {
       ${IRR_PROBE_STATE_LOCAL_Y}u),
   ), 0);
   var normalizedOffset = state.xyz;
-  let offsetLength2 = dot(normalizedOffset, normalizedOffset);
   let maxOffset = ${DDGI_PROBE_MAX_OFFSET_NORMALIZED};
-  if (!(offsetLength2 >= 0.0) || !(offsetLength2 < 1.0e20)) {
+  let offsetMaxComponent = max(
+    abs(normalizedOffset.x),
+    max(abs(normalizedOffset.y), abs(normalizedOffset.z)),
+  );
+  if (!ddgiFiniteF32(offsetMaxComponent)) {
     normalizedOffset = vec3f(0.0);
-  } else if (offsetLength2 > maxOffset * maxOffset) {
-    normalizedOffset =
-      normalizedOffset *
-      ((maxOffset - 1.0e-6) * inverseSqrt(max(offsetLength2, 1.0e-12)));
+  } else if (offsetMaxComponent > 0.0) {
+    let scaledOffset = normalizedOffset / offsetMaxComponent;
+    let scaledOffsetLength = length(scaledOffset);
+    if (
+      !ddgiFiniteF32(scaledOffsetLength) ||
+      !(scaledOffsetLength > 0.0)
+    ) {
+      normalizedOffset = vec3f(0.0);
+    } else if (offsetMaxComponent > maxOffset / scaledOffsetLength) {
+      normalizedOffset =
+        scaledOffset * ((maxOffset - 1.0e-6) / scaledOffsetLength);
+    }
   }
   return
     gridParams.origin +
@@ -2199,7 +2769,7 @@ fn probeWorldPos(probeIdx: u32) -> vec3f {
 //   theta = acos(clamp(lookupDir.y, -1, 1))
 //   u = fract(phi/(2π) + 0.5)        [same as: fract(phi*INV_PI*0.5 + 0.5)]
 //   v = clamp(theta/π, 0, 0.999999)
-//   texel = textureSampleLevel(ddgiEnvMap, ddgiEnvSamp, vec2f(u,v), 0)
+//   texel = ddgiSampleEnvironmentBilinear(vec2f(u,v))
 //   result = texel.rgb * max(envIntensity, 0)
 //
 // When hasEnv == 0u the existing procedural gradient is returned unchanged
@@ -2219,6 +2789,33 @@ fn ddgiEnvRotateYNeg(d: vec3f, rotY: f32) -> vec3f {
   return vec3f(c * d.x - s * d.z, d.y, s * d.x + c * d.z);
 }
 
+fn ddgiWrapEnvironmentX(x: i32, width: i32) -> i32 {
+  var wrapped = x % width;
+  if (wrapped < 0) { wrapped = wrapped + width; }
+  return wrapped;
+}
+
+// Portable bilinear lookup for rgba32float. Equirect U repeats across the seam
+// while V clamps at the poles. Avoiding a sampler binding keeps this path valid
+// without the optional float32-filterable WebGPU feature.
+fn ddgiSampleEnvironmentBilinear(uv: vec2f) -> vec4f {
+  let dims = textureDimensions(ddgiEnvMap, 0);
+  let width = i32(dims.x);
+  let height = i32(dims.y);
+  let coord = uv * vec2f(f32(width), f32(height)) - vec2f(0.5);
+  let base = vec2i(i32(floor(coord.x)), i32(floor(coord.y)));
+  let residual = coord - floor(coord);
+  let x0 = ddgiWrapEnvironmentX(base.x, width);
+  let x1 = ddgiWrapEnvironmentX(base.x + 1, width);
+  let y0 = clamp(base.y, 0, height - 1);
+  let y1 = clamp(base.y + 1, 0, height - 1);
+  let c00 = textureLoad(ddgiEnvMap, vec2i(x0, y0), 0);
+  let c10 = textureLoad(ddgiEnvMap, vec2i(x1, y0), 0);
+  let c01 = textureLoad(ddgiEnvMap, vec2i(x0, y1), 0);
+  let c11 = textureLoad(ddgiEnvMap, vec2i(x1, y1), 0);
+  return mix(mix(c00, c10, residual.x), mix(c01, c11, residual.x), residual.y);
+}
+
 fn sampleSkyColor(dir: vec3f) -> vec3f {
   // HDRI path: sample the equirect map by direction.
   if (frameParams.hasEnv == 1u) {
@@ -2231,8 +2828,11 @@ fn sampleSkyColor(dir: vec3f) -> vec3f {
       let theta = acos(clamp(lookupDir.y, -1.0, 1.0));
       let u = fract(phi * (1.0 / (2.0 * PI)) + 0.5);
       let v = clamp(theta * (1.0 / PI), 0.0, 0.999999);
-      let texel = textureSampleLevel(ddgiEnvMap, ddgiEnvSamp, vec2f(u, v), 0.0);
-      return texel.rgb * max(frameParams.envIntensity, 0.0);
+      let texel = ddgiSampleEnvironmentBilinear(vec2f(u, v));
+      return walkaroundScaleEnvironmentRadiance(
+        texel.rgb,
+        frameParams.envIntensity,
+      );
     }
   }
   // Procedural sky fallback (no HDRI, or degenerate map dims).
@@ -2241,11 +2841,148 @@ fn sampleSkyColor(dir: vec3f) -> vec3f {
   // Above-horizon: lerp from horizon (white/neutral) to zenith tint,
   // then scale by the scene's sky irradiance level.
   let horizon = vec3f(0.9, 0.85, 0.75);           // warm neutral horizon (fixed)
-  let skyColor = mix(horizon, frameParams.skyTint, above) * frameParams.skyIrradiance;
+  let skyColor = walkaroundScaleEnvironmentRadiance(
+    mix(horizon, frameParams.skyTint, above),
+    frameParams.skyIrradiance,
+  );
   // Below-horizon: dark ground, attenuated so it doesn't dominate.
   let ground  = vec3f(0.1, 0.08, 0.06);           // dark earth (fixed)
   let groundColor = mix(horizon, ground, below) * 0.3;
   return mix(skyColor, groundColor, below);
+}
+
+fn ddgiRgbChannel(value: vec3f, channel: u32) -> f32 {
+  if (channel == 0u) { return value.r; }
+  if (channel == 1u) { return value.g; }
+  return value.b;
+}
+
+fn ddgiGlassChannelXi(seed: u32, channel: u32, exitInterface: bool) -> vec2f {
+  let interfaceSalt = select(0x243f6a88u, 0x082efa98u, exitInterface);
+  return vec2f(
+    pcgHashToF32Ddgi(seed ^ interfaceSalt ^ (channel * 0x9e3779b9u)),
+    pcgHashToF32Ddgi(seed ^ 0xb7e15162u ^ (channel * 0x85ebca6bu) ^
+      select(0u, 0xc2b2ae35u, exitInterface)),
+  );
+}
+
+// Trace one DDGI glass channel through a reciprocal thin sheet or through an
+// actual, ownership-paired bulk exit. This is deliberately a one-slab suffix:
+// DDGI stores one-bounce radiance, so encountering a different intervening
+// boundary is ambiguous and fails closed instead of charging the entry medium
+// to an unrelated surface.
+fn ddgiTraceGlassChannel(
+  entryHit: IntersectionResult,
+  entryPos: vec3f,
+  incidentDirection: vec3f,
+  faceNormal: vec3f,
+  entryMaterial: DdgiProbeHitMaterial,
+  attenuationColor: vec3f,
+  attenuationDistance: f32,
+  materialId: u32,
+  channel: u32,
+  seed: u32,
+) -> f32 {
+  let etaTarget = ddgiRgbChannel(entryMaterial.opticalIor, channel);
+  let entryBtdf = ddgiSampleGgxDielectricTransmission(
+    faceNormal,
+    -incidentDirection,
+    entryMaterial.roughness,
+    1.0,
+    etaTarget,
+    ddgiGlassChannelXi(seed, channel, false),
+  );
+  if (entryBtdf.valid == 0u) { return 0.0; }
+
+  if (entryMaterial.bulkThickness <= 0.0) {
+    let reverseLayer = ddgiSampleFaceLayerControls(
+      entryHit.indices.w,
+      entryHit.side < 0.0,
+    );
+    let exitBtdf = ddgiSampleGgxDielectricTransmission(
+      faceNormal,
+      -entryBtdf.direction,
+      ddgiFaceLayerRoughness(entryMaterial.roughness, reverseLayer),
+      etaTarget,
+      1.0,
+      ddgiGlassChannelXi(seed, channel, true),
+    );
+    if (exitBtdf.valid == 0u) { return 0.0; }
+    return ddgiRgbChannel(sampleSkyColor(exitBtdf.direction), channel) *
+      entryBtdf.weight *
+      exitBtdf.weight *
+      ddgiRgbChannel(ddgiFaceLayerTransmission(reverseLayer), channel);
+  }
+
+  // A closed bulk walk must begin at the authored front boundary. hit.normal
+  // is face-forward by construction, so the signed side field is the only
+  // reliable front/back classifier.
+  if (entryHit.side < 0.0) { return 0.0; }
+
+  let boundaryStep =
+    ddgiProbeDistance(DDGI_GLASS_BOUNDARY_STEP_NORMALIZED);
+  if (!(boundaryStep > 0.0)) { return 0.0; }
+  var exitRay: Ray;
+  exitRay.origin = entryPos + entryBtdf.direction * boundaryStep;
+  exitRay.direction = entryBtdf.direction;
+  let exitHit = ddgiTraceFirstHitAlphaMaskTextured(exitRay);
+  if (!exitHit.didHit || exitHit.side >= 0.0) { return 0.0; }
+  let exitMaterialId = bvh_materialId[exitHit.indices.w];
+  if (
+    exitMaterialId != materialId ||
+    exitHit.instanceIndex != entryHit.instanceIndex
+  ) {
+    return 0.0;
+  }
+
+  let exitMat = materials[exitMaterialId];
+  if ((exitMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) { return 0.0; }
+  let exitSmoothNormal = ddgiSmoothShadingNormalForHit(exitHit, exitHit.normal);
+  let exitMappedNormal = ddgiApplyNormalMapForHit(exitHit, exitSmoothNormal);
+  let exitNormalRaw = ddgiApplyBumpMapForHit(exitHit, exitMappedNormal);
+  let exitNormal = select(
+    -exitNormalRaw,
+    exitNormalRaw,
+    dot(entryBtdf.direction, exitNormalRaw) < 0.0,
+  );
+  let exitMaterial = ddgiSampleProbeHitMaterial(
+    exitHit,
+    exitMat.baseColor,
+    exitMat.roughness,
+    exitMat.metalness,
+    exitMat.transmission,
+    exitMat.ior,
+    exitMat.attenuationColor,
+    exitSmoothNormal,
+    exitNormal,
+    -entryBtdf.direction,
+  );
+  let exitBtdf = ddgiSampleGgxDielectricTransmission(
+    exitNormal,
+    -entryBtdf.direction,
+    exitMaterial.roughness,
+    etaTarget,
+    1.0,
+    ddgiGlassChannelXi(seed, channel, true),
+  );
+  if (exitBtdf.valid == 0u) { return 0.0; }
+
+  let pathLength = boundaryStep + exitHit.dist;
+  let rgbBeer = beerLambertTransmittanceRgb(
+    clamp(attenuationColor, vec3f(0.0), vec3f(1.0)),
+    attenuationDistance,
+    pathLength,
+  );
+  let spectralBeer = materialSpectralAttenuation(
+    entryHit.indices.w,
+    pathLength,
+    rgbBeer,
+  );
+  return ddgiRgbChannel(sampleSkyColor(exitBtdf.direction), channel) *
+    entryBtdf.weight *
+    exitBtdf.weight *
+    ddgiRgbChannel(exitMaterial.layerTransmission, channel) *
+    ddgiRgbChannel(spectralBeer, channel);
 }
 
 // -----------------------------------------------------------------
@@ -2457,83 +3194,32 @@ fn probeUpdateRays(
         var radiance = directRadiance + indirectRadiance;
 
         if ((mat.flags & MATERIAL_FLAG_IS_GLASS) != 0u) {
-          // Cross both interfaces of the local thin slab. Each boundary uses
-          // the same exact rough-dielectric BTDF as camera/ReSTIR transport;
-          // the reciprocal exit applies the opposite authored face layer.
+          // Thin sheets use a reciprocal virtual exit. Bulk glass traces and
+          // validates the actual back boundary, so Beer is charged over the
+          // geometric in-medium segment instead of authored thickness.
           let faceNormal = select(-probeNormal, probeNormal, dot(dir, probeNormal) < 0.0);
-          let reverseLayer = ddgiSampleFaceLayerControls(hit.indices.w, hit.side < 0.0);
-          let exitRoughness = ddgiFaceLayerRoughness(probeMat.roughness, reverseLayer);
-          let reverseTransmission = ddgiFaceLayerTransmission(reverseLayer);
           let glassSeed = frameParams.frameIndex ^
             (probeIdx * 0x9e3779b9u) ^ (rayIdx * 0x85ebca6bu);
-
-          let entryR = ddgiSampleGgxDielectricTransmission(
-            faceNormal, -dir, probeMat.roughness, 1.0, probeMat.opticalIor.r,
-            vec2f(
-              pcgHashToF32Ddgi(glassSeed ^ 0x243f6a88u),
-              pcgHashToF32Ddgi(glassSeed ^ 0xb7e15162u),
+          let transmitted = vec3f(
+            ddgiTraceGlassChannel(
+              hit, hitWorldPos, dir, faceNormal, probeMat,
+              mat.attenuationColor, mat.attenuationDistance,
+              matId, 0u, glassSeed,
+            ),
+            ddgiTraceGlassChannel(
+              hit, hitWorldPos, dir, faceNormal, probeMat,
+              mat.attenuationColor, mat.attenuationDistance,
+              matId, 1u, glassSeed,
+            ),
+            ddgiTraceGlassChannel(
+              hit, hitWorldPos, dir, faceNormal, probeMat,
+              mat.attenuationColor, mat.attenuationDistance,
+              matId, 2u, glassSeed,
             ),
           );
-          let entryG = ddgiSampleGgxDielectricTransmission(
-            faceNormal, -dir, probeMat.roughness, 1.0, probeMat.opticalIor.g,
-            vec2f(
-              pcgHashToF32Ddgi(glassSeed ^ 0x13198a2eu),
-              pcgHashToF32Ddgi(glassSeed ^ 0x03707344u),
-            ),
-          );
-          let entryB = ddgiSampleGgxDielectricTransmission(
-            faceNormal, -dir, probeMat.roughness, 1.0, probeMat.opticalIor.b,
-            vec2f(
-              pcgHashToF32Ddgi(glassSeed ^ 0xa4093822u),
-              pcgHashToF32Ddgi(glassSeed ^ 0x299f31d0u),
-            ),
-          );
-          var transmitted = vec3f(0.0);
-          if (entryR.valid != 0u) {
-            let exitR = ddgiSampleGgxDielectricTransmission(
-              faceNormal, -entryR.direction, exitRoughness,
-              probeMat.opticalIor.r, 1.0,
-              vec2f(
-                pcgHashToF32Ddgi(glassSeed ^ 0x082efa98u),
-                pcgHashToF32Ddgi(glassSeed ^ 0xec4e6c89u),
-              ),
-            );
-            if (exitR.valid != 0u) {
-              transmitted.r = sampleSkyColor(exitR.direction).r *
-                entryR.weight * exitR.weight * reverseTransmission.r;
-            }
-          }
-          if (entryG.valid != 0u) {
-            let exitG = ddgiSampleGgxDielectricTransmission(
-              faceNormal, -entryG.direction, exitRoughness,
-              probeMat.opticalIor.g, 1.0,
-              vec2f(
-                pcgHashToF32Ddgi(glassSeed ^ 0x452821e6u),
-                pcgHashToF32Ddgi(glassSeed ^ 0x38d01377u),
-              ),
-            );
-            if (exitG.valid != 0u) {
-              transmitted.g = sampleSkyColor(exitG.direction).g *
-                entryG.weight * exitG.weight * reverseTransmission.g;
-            }
-          }
-          if (entryB.valid != 0u) {
-            let exitB = ddgiSampleGgxDielectricTransmission(
-              faceNormal, -entryB.direction, exitRoughness,
-              probeMat.opticalIor.b, 1.0,
-              vec2f(
-                pcgHashToF32Ddgi(glassSeed ^ 0xbe5466cfu),
-                pcgHashToF32Ddgi(glassSeed ^ 0x34e90c6cu),
-              ),
-            );
-            if (exitB.valid != 0u) {
-              transmitted.b = sampleSkyColor(exitB.direction).b *
-                entryB.weight * exitB.weight * reverseTransmission.b;
-            }
-          }
           radiance = mix(
             radiance,
-            transmitted * probeMat.beerTint,
+            transmitted,
             probeMat.transmission * frameParams.glassMixScale,
           );
         }
@@ -2548,7 +3234,15 @@ fn probeUpdateRays(
           max(mat.emissive.g, 0.0),
           max(mat.emissive.b, 0.0),
         );
-        let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);
+        // Closed transmissive volumes admit their back interface so rays can
+        // exit, but a one-sided emissive material still radiates only through
+        // its authored front orientation.
+        let surfaceEmission = select(
+          vec3f(0.0),
+          ddgiSampleEmissiveMap(hit, scalarSurfaceEmission),
+          hit.side >= 0.0 ||
+            (mat.flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0u,
+        );
         let bakedOutgoing = probeMat.albedo * (1.0 / PI) *
           ddgiSampleLightMapIrradiance(hit);
         radiance = radiance + surfaceEmission + bakedOutgoing;

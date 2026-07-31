@@ -54,7 +54,7 @@ import type {
   MaterialSpec,
   Scene,
   ScenePrimitive,
-  SkinnedMeshPrimitive,
+  ScenePrimitivePatch,
   SceneEmitter,
   SceneEnvironment,
 } from '@vitrum/core';
@@ -66,10 +66,10 @@ import {
   validateScene as validateCoreScene,
 } from '@vitrum/core';
 import type { FrameInput, FrameOutput } from '@vitrum/core';
-import { asBackendTexture } from '@vitrum/core';
+import { asBackendTexture, asBackendTextureFormat } from '@vitrum/core';
 import type { BackendTexture } from '@vitrum/core';
 import { DDGI } from './ddgi/DDGI.js';
-import type { DDGILight } from './ddgi/types.js';
+import { snapshotDdgiLights, type DDGILight } from './ddgi/types.js';
 import {
   WalkaroundGPUPipeline,
   assertHybridDeviceCapableIfReported,
@@ -86,7 +86,6 @@ import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
 import type { PickCamera } from '@vitrum/shared-bvh';
 import {
   fingerprintHybridPipelineRebuildKey,
-  getPreferredSwapChainFormat,
   resolveInternalRenderSize,
   runHybridEngineFrame,
   HYBRID_FRAME_SKIP_OUTPUT,
@@ -95,12 +94,28 @@ import {
   type HybridDenoiserFilterDeps,
 } from './HybridEngineFrameOrchestrator.js';
 import {
+  getPreferredHybridSwapChainFormat,
+  resolveHybridPresentationTarget,
+} from './presentationTarget.js';
+import {
   rebuildEmitterBuffersFromCoreScene,
   rebuildBvhEmissiveLeFromCoreScene,
+  resolveProductionEmissiveMaterialsForCoreScene,
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
 } from './restir/bvhCore.js';
-import type { MaterialTextureAtlasDiagnostic } from './pipeline/materialTextureAtlas.js';
+import {
+  packMaterialTextureAtlas,
+  type MaterialTextureAtlasDiagnostic,
+} from './pipeline/materialTextureAtlas.js';
+import {
+  resolveFrameResourcePlan,
+  type ResolvedFrameResourcePlan,
+} from './pipeline/frameResourcePlan.js';
+import {
+  sceneRequiresExactGiCameraPrefixes,
+  sceneTransitionRequiresGiScaleReplan,
+} from './reservoirScalePolicy.js';
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
 import { solveSkin } from '@vitrum/core';
 import {
@@ -113,6 +128,7 @@ import {
   transformRefit,
   positionsRefit,
   topologyRebuild,
+  wholeSceneRebuild,
   materialPatch,
   materialPatchAffectsDisplacementGeometry,
   skinnedPosePatch,
@@ -133,6 +149,8 @@ import {
 import {
   commitSceneMutations,
   prepareSceneMutations,
+  rethrowWithSceneMutationCleanup,
+  SceneMutationFinalizationError,
   type PreparedSceneMutation,
 } from './SceneMutationTransaction.js';
 import {
@@ -169,6 +187,7 @@ import { GpuSkinningSubsystem, type SkinningBatchUpdate } from './skin/GpuSkinni
 import type { GIStateSnapshot } from './giStateSnapshot.js';
 import { makeGIStateCompatibility } from './giStateCompatibility.js';
 import type {
+  HybridDenoiserTrainingCapture,
   HybridBounceSemanticsStatus,
   HybridRenderLayer,
 } from './HybridEnginePublic.js';
@@ -177,11 +196,18 @@ import {
   type HybridEnvironmentResolverExtensions,
   type HybridResolvedEnvironment,
 } from './environment/resolveHybridEnvironment.js';
-import { exportGIStateImpl, importGIStateImpl } from './HybridEngineGIState.js';
 import {
-  buildDdgiLightingMutationInputs,
-  syncDdgiFromCoreScene,
-} from './HybridEngineDdgiSync.js';
+  assertWalkaroundEnvironmentMaterialEnvelopeF32,
+  assertWalkaroundEnvironmentRgbScaleEnvelopeF32,
+} from './environment/environmentRadianceScale.js';
+import {
+  canonicalizeLightingDirectionF32,
+  packLightingRgbScaleEnvelopeF32,
+  packNonNegativeLightingFloat32,
+  packNonNegativeLightingRgbF32,
+} from './lightingFloat32.js';
+import { exportGIStateImpl, importGIStateImpl } from './HybridEngineGIState.js';
+import { buildDdgiLightingMutationInputs } from './HybridEngineDdgiSync.js';
 import type { NrcDiagnostics } from './neural/nrc/nrcDiagnostics.js';
 import { walkaroundSupportManifest } from './supportManifest.js';
 
@@ -432,7 +458,7 @@ function assertPatchRecord(
 
 function assertKnownPrimitivePatchKeys(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
   id: string,
 ): void {
   const allowed = primitive.kind === 'mesh'
@@ -476,6 +502,19 @@ function assertKnownEmitterPatchKeys(
   );
 }
 
+function assertSceneEmitterRadianceEnvelopes(
+  scene: Scene,
+  method: 'setScene' | 'updateEmitter',
+): void {
+  scene.emitters.forEach((emitter, index) => {
+    packLightingRgbScaleEnvelopeF32(
+      emitter.color,
+      emitter.intensity,
+      `${method} emitters[${index}] (${String(emitter.id)})`,
+    );
+  });
+}
+
 function assertPositiveSafeViewportDimension(value: unknown, label: string): asserts value is number {
   if (typeof value !== 'number') {
     throw new TypeError(`${label} must be a number.`);
@@ -514,6 +553,29 @@ function assertFiniteFrameNumber(value: unknown, label: string): asserts value i
   if (!Number.isFinite(value)) {
     throw new RangeError(
       `HybridEngine.renderFrame: ${label} must be finite (got ${String(value)}).`,
+    );
+  }
+}
+
+function assertNonNegativeFrameFloat32(
+  value: unknown,
+  label: string,
+): asserts value is number {
+  assertFiniteFrameNumber(value, label);
+  if (value < 0) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: ${label} must be >= 0 (got ${String(value)}).`,
+    );
+  }
+  const stored = Math.fround(value);
+  if (!Number.isFinite(stored)) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: ${label} must be representable as a finite float32 (got ${String(value)}).`,
+    );
+  }
+  if (value > 0 && stored === 0) {
+    throw new RangeError(
+      `HybridEngine.renderFrame: ${label} underflows float32 storage (got ${String(value)}).`,
     );
   }
 }
@@ -590,12 +652,7 @@ function validateHybridFrameInput(input: FrameInput): void {
     assertFiniteFrameNumber(quality.resolutionFactor, 'quality.resolutionFactor');
   }
   if (quality.exposure !== undefined) {
-    assertFiniteFrameNumber(quality.exposure, 'quality.exposure');
-    if (quality.exposure < 0) {
-      throw new RangeError(
-        `HybridEngine.renderFrame: quality.exposure must be >= 0 (got ${String(quality.exposure)}).`,
-      );
-    }
+    assertNonNegativeFrameFloat32(quality.exposure, 'quality.exposure');
   }
   if (quality.filteredGlossyFactor !== undefined) {
     assertFiniteFrameNumber(quality.filteredGlossyFactor, 'quality.filteredGlossyFactor');
@@ -744,6 +801,12 @@ export class HybridEngine implements Engine {
   private _internalWidth: number;
   /** Internal render height = `_height × _resolutionFactor`. */
   private _internalHeight: number;
+  /**
+   * Exact resolution-dependent allocation ledger for the live internal
+   * generation. It is resolved before pipeline allocation and replaced only
+   * after a transactional resize succeeds.
+   */
+  private _frameResourceResolution: ResolvedFrameResourcePlan;
   /** Last-seen `FrameInput.quality.resolutionFactor` (clamped to (0,1]).
    *  Default 1.0 (internal == canvas). */
   private _resolutionFactor: number = 1.0;
@@ -994,6 +1057,10 @@ export class HybridEngine implements Engine {
   /** Scene-scale-derived `indirectFireflyClamp` (B15). `null` ⇒ use the
    *  `_cfg.indirectFireflyClamp` baseline. */
   private _scaledIndirectFireflyClamp: readonly [number, number, number] | null = null;
+  /** Scene-diagonal-relative secondary-ray offset. The Cornell baseline is
+   *  1e-3; scene publication and geometry mutations update it transactionally
+   *  with the other scale-aware values. */
+  private _rayOriginBias = 1e-3;
 
   // ── Pipeline state ─────────────────────────────────────────────────────
   private _pipeline: WalkaroundGPUPipeline | null = null;
@@ -1136,6 +1203,15 @@ export class HybridEngine implements Engine {
       restirGiIrrClamp: opts.tuning?.restirGiIrrClamp !== undefined,
       directFireflyClamp: opts.tuning?.directFireflyClamp !== undefined,
       emitterDist2Floor: opts.tuning?.emitterDist2Floor !== undefined,
+      spatialDepthTolFloor: opts.tuning?.spatialDepthTolFloor !== undefined,
+      gtaoDepthThreshold:
+        opts.gtao?.depthThresholdWorldUnits !== undefined ||
+        opts.tuning?.gtaoDepthThreshold !== undefined,
+      gtaoBilateralDepthSigma:
+        opts.gtao?.bilateralDepthSigma !== undefined ||
+        opts.tuning?.gtaoBilateralDepthSigma !== undefined,
+      restirGiSpatialCoplanarTol:
+        opts.tuning?.restirGiSpatialCoplanarTol !== undefined,
       indirectFireflyClamp: opts.indirectFireflyClamp !== undefined,
     };
 
@@ -1204,14 +1280,38 @@ export class HybridEngine implements Engine {
     // (`_applyResolutionFactor`); this is just the starting point so a
     // `qualityTier:'low'` engine boots at 0.5 internal res.
     this._resolutionFactor = cfg.resolutionFactor;
-    this._internalWidth = Math.max(1, Math.round(opts.width * cfg.resolutionFactor));
-    this._internalHeight = Math.max(1, Math.round(opts.height * cfg.resolutionFactor));
+    const requestedInternalWidth = Math.max(
+      1,
+      Math.round(opts.width * cfg.resolutionFactor),
+    );
+    const requestedInternalHeight = Math.max(
+      1,
+      Math.round(opts.height * cfg.resolutionFactor),
+    );
+    this._frameResourceResolution = this._resolveFrameResourceResolution(
+      requestedInternalWidth,
+      requestedInternalHeight,
+    );
+    this._internalWidth = this._frameResourceResolution.effectiveWidth;
+    this._internalHeight = this._frameResourceResolution.effectiveHeight;
     this._skinning = opts.gpuSkinning ? new GpuSkinningSubsystem(opts.device, true) : null;
     this._environmentResolverExtensions = opts.extensions ?? null;
-    this._primaryLightDir = opts.primaryLightDir;
-    this._primaryLightIntensity = opts.primaryLightIntensity;
-    this._skyTint = opts.skyTint;
-    this._skyIrradiance = opts.skyIrradiance;
+    this._primaryLightDir = canonicalizeLightingDirectionF32(
+      opts.primaryLightDir,
+      'options.primaryLightDir',
+    );
+    this._primaryLightIntensity = packNonNegativeLightingFloat32(
+      opts.primaryLightIntensity,
+      'options.primaryLightIntensity',
+    );
+    const packedInitialSky = packLightingRgbScaleEnvelopeF32(
+      opts.skyTint,
+      opts.skyIrradiance,
+      'options sky radiance',
+    );
+    this._skyTint = packedInitialSky.value;
+    this._skyIrradiance = packedInitialSky.scale;
+    this._ctorLights = snapshotDdgiLights(opts.lights ?? []);
     this._isSceneReady = opts.isSceneReady ?? (() => true);
 
     // `_rebuildKeyFingerprintSeen` is the one rebuild-key value that MUTATES
@@ -1234,7 +1334,6 @@ export class HybridEngine implements Engine {
     // infinite-bounce equilibrium (default). Construction-immutable, and the
     // ProbeUpdatePass is created once (never recreated), so one call persists.
     this._ddgi.setIndirectFeedback(this._cfg.maxBounces >= 2);
-    this._ctorLights = opts.lights ?? [];
     if (this._ctorLights.length > 0) {
       this._ddgi.setLights(orientDdgiSunLights(this._ctorLights, this._primaryLightDir));
     }
@@ -1374,6 +1473,31 @@ export class HybridEngine implements Engine {
       getMemoryBreakdown: () => this._pipeline?.getMemoryBreakdown(
         this._rc == null ? {} : { rc: this._rc.gpuMemorySection() },
       ) ?? null,
+      frameResourceResolution: () => ({
+        presentationWidth: this._width,
+        presentationHeight: this._height,
+        requestedInternalWidth:
+          this._frameResourceResolution.requestedWidth,
+        requestedInternalHeight:
+          this._frameResourceResolution.requestedHeight,
+        effectiveInternalWidth:
+          this._frameResourceResolution.effectiveWidth,
+        effectiveInternalHeight:
+          this._frameResourceResolution.effectiveHeight,
+        resolutionDownscale:
+          this._frameResourceResolution.resolutionDownscale,
+        restirDiWidth: this._frameResourceResolution.restirDiWidth,
+        restirDiHeight: this._frameResourceResolution.restirDiHeight,
+        restirGiWidth: this._frameResourceResolution.restirGiWidth,
+        restirGiHeight: this._frameResourceResolution.restirGiHeight,
+        restirReservoirScale:
+          this._frameResourceResolution.restirReservoirScale,
+        persistentBytes: this._frameResourceResolution.persistentBytes,
+        maxPersistentBytes:
+          this._frameResourceResolution.maxPersistentBytes,
+        resizePeakBytes: this._frameResourceResolution.resizePeakBytes,
+        policy: this._frameResourceResolution.policy,
+      }),
       // T3.G click-to-pick: the retained core scene + last-frame camera + canvas
       // size feed the CPU ray-cast in createHybridEngineDebugSurface.
       pickScene: () => this._lastScene,
@@ -1501,15 +1625,18 @@ export class HybridEngine implements Engine {
       throw new Error('HybridEngine.setScene: engine is disposed.');
     }
     validateCoreScene(inputScene);
-    const resolvedEnvironment = resolveHybridEnvironment(
-      inputScene.environment ?? { kind: 'none' },
-      { extensions: this._environmentResolverExtensions },
+    const resolvedEnvironment = this._canonicalResolvedEnvironment(
+      resolveHybridEnvironment(
+        inputScene.environment ?? { kind: 'none' },
+        { extensions: this._environmentResolverExtensions },
+      ),
     );
     const scene = sceneAcceptedByManifest(
       inputScene,
       this._supportManifest,
       'setScene',
     );
+    assertSceneEmitterRadianceEnvelopes(scene, 'setScene');
     assertNoUnconsumedMaterialFields(
       scene.primitives as unknown as ReadonlyArray<{
         readonly id?: string;
@@ -1518,8 +1645,47 @@ export class HybridEngine implements Engine {
       }>,
       'setScene',
     );
+    const requiresExactGiCameraPrefixes =
+      sceneRequiresExactGiCameraPrefixes(scene);
+    if (
+      requiresExactGiCameraPrefixes
+      && this._cfg.restirReservoirScale !== undefined
+      && this._cfg.restirReservoirScale !== 1
+    ) {
+      throw new RangeError(
+        '[HybridEngine] restirReservoirScale > 1 cannot shift camera-' +
+        'transmission GI prefixes. Use scale 1 or omit the override so auto ' +
+        'can lower the complete internal shading resolution.',
+      );
+    }
+    const requestedInternalWidth = Math.max(
+      1,
+      Math.round(this._width * this._resolutionFactor),
+    );
+    const requestedInternalHeight = Math.max(
+      1,
+      Math.round(this._height * this._resolutionFactor),
+    );
+    const sceneResolution = this._resolveFrameResourceResolution(
+      requestedInternalWidth,
+      requestedInternalHeight,
+      // setScene tears the old pipeline down before the asynchronous
+      // replacement allocates, so there is never a two-generation frame graph
+      // here. Keep the public peak ledger equal to the real candidate bytes.
+      0,
+      requiresExactGiCameraPrefixes ? 1 : undefined,
+    );
 
     const renderScene = sceneWithAnalyticMeshFallback(scene);
+    const candidateSky = this._resolvedEnvironmentScalarCandidate(
+      resolvedEnvironment,
+    );
+    this._assertEnvironmentMaterialEnvelope(
+      scene,
+      resolvedEnvironment,
+      candidateSky.skyTint,
+      candidateSky.skyIrradiance,
+    );
     const scaleAwareClamps = deriveScaleAwareClamps(renderScene, {
       baseTunables: this._cfg.tunables,
       baseIndirectFireflyClamp: this._cfg.indirectFireflyClamp,
@@ -1530,6 +1696,9 @@ export class HybridEngine implements Engine {
     this._emitResolvedEnvironmentWarnings(resolvedEnvironment, 'setScene');
     this._lastScene = scene;
     this._renderScene = renderScene;
+    this._internalWidth = sceneResolution.effectiveWidth;
+    this._internalHeight = sceneResolution.effectiveHeight;
+    this._frameResourceResolution = sceneResolution;
     this._resolvedEnvironment = resolvedEnvironment;
     this._applyResolvedEnvironmentScalars(resolvedEnvironment);
 
@@ -1571,16 +1740,22 @@ export class HybridEngine implements Engine {
    *     scaleRatio == 1).
    *   • Host-explicit clamps (`_clampHostExplicit[knob]`) pass through un-scaled.
    *
-   * Called from `setScene` (the only diagonal-changing entry — add/remove/
-   * topology-patch routes all funnel through `setScene`, so a single hook here
-   * keeps the scaled defaults in sync with the live geometry).
+   * Called at scene-publication boundaries after the candidate render scene
+   * has been derived. Transactional callers suppress logging until commit is
+   * globally successful.
    */
   private _publishScaleAwareClamps(
     result: ReturnType<typeof deriveScaleAwareClamps>,
+    emitLog = true,
   ): void {
     this._scaledTunables = result.tunables;
     this._scaledIndirectFireflyClamp = result.indirectFireflyClamp;
-    if (this._cfg.verbose && Math.abs(result.scaleRatio - 1) > 1e-6) {
+    this._rayOriginBias = result.rayOriginBias;
+    if (
+      emitLog
+      && this._cfg.verbose
+      && Math.abs(result.scaleRatio - 1) > 1e-6
+    ) {
       console.log(
         `[HybridEngine] B15 scale-aware clamps: sceneDiagonal=${result.sceneDiagonal.toFixed(3)} ` +
           `(×${result.scaleRatio.toFixed(3)} vs Cornell) → ` +
@@ -1605,15 +1780,15 @@ export class HybridEngine implements Engine {
   //     `indices`) → full-rebuild path (a): re-run
   //     `buildReSTIRSceneBVH`, destroy + reupload all four BVH GPU
   //     buffers, reset the accumulator.
-  //  - `instances` / `params` / `shape` / `fallbackMesh` → route through a
-  //     full `setScene` rebuild (P5 contract-honesty; see the
-  //     `TOPOLOGY_PATCH_WHOLESALE_FIELDS` branch below). A
-  //     geometry/instance change invalidates every cached GI signal on this
-  //     realtime stack anyway, so honoring `incrementalPatchSupport.topology`
-  //     beats throwing "call setScene()" and matches pt-webgl/pt-webgpu.
-  //  - `id` / `kind` are canonical discriminants: changing either throws in
-  //     `patchPrimitiveInScene`; explicitly repeating the current value is
-  //     neutral and does not trigger any rebuild.
+  //  - `instances` / `params` / `shape` / `fallbackMesh` → candidate-first
+  //     whole-scene BVH replacement (see
+  //     `TOPOLOGY_PATCH_WHOLESALE_FIELDS` below). This preserves the live
+  //     generation until DDGI, RC, frame resources, and the final GPU
+  //     submission are all ready.
+  //  - `id` / `kind` are canonical discriminants owned by the method argument
+  //     and current union member. Supplying either field throws in
+  //     `applyPrimitivePatchToScene`, even when the value is unchanged or
+  //     `undefined`.
   //  - skinned definition/pose fields (skin indices/weights, bind matrices,
   //     bones, morph targets, or morph weights) → solve through `solveSkin` and
   //     reuse the positions/normals refit path while preserving authored fields.
@@ -1625,7 +1800,7 @@ export class HybridEngine implements Engine {
   // is the routing dispatcher.
   //
   // Implements `Engine.updatePrimitive(id, patch)` from `@vitrum/core`.
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+  updatePrimitive(id: string, patch: ScenePrimitivePatch): void {
     if (this._state === 'disposed') {
       throw new Error('HybridEngine.updatePrimitive: engine is disposed.');
     }
@@ -1647,8 +1822,11 @@ export class HybridEngine implements Engine {
         `HybridEngine.updatePrimitive("${id}"): primitive id not found in current scene.`,
       );
     }
-    assertKnownPrimitivePatchKeys(this._lastScene.primitives[primIndex]!, patch, id);
+    // Cross the canonical core boundary before any backend-specific inspection.
+    // This rejects unknown/symbol/non-enumerable/accessor fields and forbidden
+    // id/kind properties without invoking host accessors.
     const preflightScene = applyPrimitivePatchToScene(this._lastScene, id, patch);
+    assertKnownPrimitivePatchKeys(this._lastScene.primitives[primIndex]!, patch, id);
     sceneAcceptedByManifest(preflightScene, this._supportManifest, 'updatePrimitive');
     assertNoUnconsumedMaterialFields(
       preflightScene.primitives as unknown as ReadonlyArray<{
@@ -1658,33 +1836,111 @@ export class HybridEngine implements Engine {
       }>,
       'updatePrimitive',
     );
+    this._assertEnvironmentMaterialEnvelope(
+      preflightScene,
+      this._resolvedEnvironment,
+      this._skyTint,
+      this._skyIrradiance,
+    );
 
-    // Canonical preflight above has already rejected changed discriminants.
-    // Equal `id` / `kind` values carry no state change, so remove them before
-    // route selection. This also keeps a meaningful co-patch (for example,
-    // `{ kind: 'mesh', material: ... }`) on its normal fast/rebuild path.
-    const routedPatch = { ...patch };
-    delete (routedPatch as { id?: unknown }).id;
-    delete (routedPatch as { kind?: unknown }).kind;
-    if (!Object.values(routedPatch).some((value) => value !== undefined)) {
+    // Presence and value are distinct: an own `undefined` explicitly clears an
+    // optional primitive field, while omission preserves it.
+    const routedPatch = patch;
+    if (Reflect.ownKeys(routedPatch).length === 0) {
       return;
+    }
+    const requiresGiScaleReplan = sceneTransitionRequiresGiScaleReplan(
+      this._lastScene,
+      preflightScene,
+      this._frameResourceResolution.restirReservoirScale,
+      this._cfg.restirReservoirScale,
+    );
+    let nextFrameResourceResolution: ResolvedFrameResourcePlan | undefined;
+    if (requiresGiScaleReplan) {
+      const nextRequiresExactGiPrefixes =
+        sceneRequiresExactGiCameraPrefixes(preflightScene);
+      if (
+        nextRequiresExactGiPrefixes
+        && this._cfg.restirReservoirScale !== undefined
+        && this._cfg.restirReservoirScale !== 1
+      ) {
+        throw new RangeError(
+          '[HybridEngine] restirReservoirScale > 1 cannot shift camera-' +
+          'transmission GI prefixes. Use scale 1 or omit the override so auto ' +
+          'can lower the complete internal shading resolution.',
+        );
+      }
+      if (this._pipeline == null) {
+        throw new Error(
+          `HybridEngine.updatePrimitive("${id}"): cannot replan ReSTIR ` +
+          'resources without a live pipeline.',
+        );
+      }
+      const requestedInternalWidth = Math.max(
+        1,
+        Math.round(this._width * this._resolutionFactor),
+      );
+      const requestedInternalHeight = Math.max(
+        1,
+        Math.round(this._height * this._resolutionFactor),
+      );
+      nextFrameResourceResolution = this._resolveFrameResourceResolution(
+        requestedInternalWidth,
+        requestedInternalHeight,
+        this._frameResourceResolution.persistentBytes,
+        nextRequiresExactGiPrefixes ? 1 : undefined,
+      );
     }
 
     // Wholesale-replacement patches — `instances` (instanced-mesh
-    // instance-COUNT change), `params` / `shape` (analytic), and
-    // `fallbackMesh` can't be expressed as an in-place packed-buffer edit, so
-    // route them through a full setScene rebuild (the same mutate-Scene → setScene spine addPrimitive /
-    // removePrimitive use). A geometry/instance change invalidates every cached GI
-    // signal anyway, so on this realtime stack the work is a rebuild either way;
-    // the value is honoring incrementalPatchSupport.topology + matching
-    // pt-webgl/pt-webgpu (which absorb the instance-COUNT case) instead of
-    // throwing "call setScene()". P5 contract-honesty.
+    // instance-count change), `params` / `shape` (analytic), and
+    // `fallbackMesh` — require a complete scene repack. Keep that repack in the
+    // same candidate-first transaction as DDGI, RC, the pipeline BVH arena, and
+    // any transmission-driven frame-resource replan. The final pipeline
+    // participant remains the sole queue submission and irreversible boundary.
     if (
       TOPOLOGY_PATCH_WHOLESALE_FIELDS.some(
-        (f) => (routedPatch as Record<string, unknown>)[f] !== undefined,
+        (f) => Object.prototype.hasOwnProperty.call(routedPatch, f),
       )
     ) {
-      this.setScene(preflightScene);
+      const collector = new CollectingBvhUpdateSink();
+      const undo = capturePrimitiveMutationUndo(
+        this._bvhBuffers,
+        id,
+        routedPatch,
+      );
+      let result: PrimitiveUpdateResult;
+      try {
+        const nextRenderScene = sceneWithAnalyticMeshFallback(preflightScene);
+        result = wholeSceneRebuild(
+          preflightScene,
+          nextRenderScene,
+          this._buildPrimitiveUpdateContext(collector),
+        );
+      } catch (error) {
+        undo.restore();
+        throw error;
+      }
+      try {
+        this._commitPrimitiveMutation(
+          result,
+          collector.snapshot(),
+          undo,
+          [],
+          nextFrameResourceResolution,
+          deriveScaleAwareClamps(
+            result.updatedRenderScene ?? preflightScene,
+            {
+              baseTunables: this._cfg.tunables,
+              baseIndirectFireflyClamp: this._cfg.indirectFireflyClamp,
+              hostExplicit: this._clampHostExplicit,
+            },
+          ),
+        );
+      } catch (error) {
+        undo.restore();
+        throw error;
+      }
       return;
     }
 
@@ -1714,15 +1970,19 @@ export class HybridEngine implements Engine {
       // the integration mistake visible through the structured warning channel.
       this._warnUnknownPrimitivePatchFields(
         id,
-        Object.entries(routedPatch as Record<string, unknown>)
-          .filter(([, value]) => value !== undefined)
-          .map(([field]) => field),
+        Object.keys(routedPatch),
       );
       undo.restore();
       return;
     }
     try {
-      this._commitPrimitiveMutation(result, collector.snapshot(), undo);
+      this._commitPrimitiveMutation(
+        result,
+        collector.snapshot(),
+        undo,
+        [],
+        nextFrameResourceResolution,
+      );
     } catch (error) {
       undo.restore();
       throw error;
@@ -1750,10 +2010,11 @@ export class HybridEngine implements Engine {
    */
   private _routePrimitiveUpdate(
     id: string,
-    patch: Partial<ScenePrimitive>,
+    patch: ScenePrimitivePatch,
     ctx: PrimitiveUpdateContext = this._buildPrimitiveUpdateContext(),
   ): PrimitiveUpdateResult | null {
-    const has = (f: string): boolean => (patch as Record<string, unknown>)[f] !== undefined;
+    const has = (f: string): boolean =>
+      Object.prototype.hasOwnProperty.call(patch, f);
     const hasMaterial = has('material');
     const hasSkinnedPose = SKIN_POSE_PATCH_FIELDS.some((f) => has(f));
     const currentPrimitive =
@@ -1767,6 +2028,13 @@ export class HybridEngine implements Engine {
     const hasStructuralTopology = TOPOLOGY_PATCH_FIELDS.some((f) => f !== 'normals' && has(f));
     if (hasStructuralTopology) return topologyRebuild(id, patch, ctx);
     if (hasMaterial && (has('positions') || has('normals') || has('transform'))) {
+      return topologyRebuild(id, patch, ctx);
+    }
+    // The positions refit assumes the already-published transform snapshot.
+    // A co-patched transform (including an explicit undefined clear) must be
+    // rebuilt atomically or the scene snapshot and packed world geometry
+    // diverge.
+    if (has('positions') && has('transform')) {
       return topologyRebuild(id, patch, ctx);
     }
     if (has('positions')) return positionsRefit(id, patch, ctx);
@@ -1817,7 +2085,7 @@ export class HybridEngine implements Engine {
       (candidate) => String(candidate.id) === id && candidate.kind === 'skinned-mesh',
     );
     const solved = localPositions == null ? solveSkin(prim) : null;
-    const patch: Partial<SkinnedMeshPrimitive> = solved == null
+    const patch: ScenePrimitivePatch = solved == null
       ? {
           positions: localPositions!,
           ...(localNormals != null ? { normals: localNormals } : {}),
@@ -1829,7 +2097,7 @@ export class HybridEngine implements Engine {
             prim,
             renderedPrim?.kind === 'skinned-mesh' ? renderedPrim : null,
           ),
-        );
+        ) as ScenePrimitivePatch;
     this.applySkinningBatch([{ id, patch, gpuWritten: false }], null);
   }
 
@@ -2062,10 +2330,20 @@ export class HybridEngine implements Engine {
     mutation: CollectedBvhMutation,
     undo: PrimitiveMutationUndo,
     prefixCommandBuffers: readonly GPUCommandBuffer[] = [],
+    nextFrameResourceResolution?: ResolvedFrameResourcePlan,
+    nextScaleAwareClamps?: ReturnType<typeof deriveScaleAwareClamps>,
   ): void {
     const previousBvh = this._bvhBuffers;
     const previousScene = this._lastScene;
     const previousRenderScene = this._renderScene;
+    const previousInternalWidth = this._internalWidth;
+    const previousInternalHeight = this._internalHeight;
+    const previousFrameResourceResolution =
+      this._frameResourceResolution;
+    const previousScaledTunables = this._scaledTunables;
+    const previousScaledIndirectFireflyClamp =
+      this._scaledIndirectFireflyClamp;
+    const previousRayOriginBias = this._rayOriginBias;
     const nextRenderScene = result.updatedRenderScene ??
       sceneWithAnalyticMeshFallback(result.updatedScene);
     const geometryChanged = result.applySubsystems !== false;
@@ -2076,6 +2354,17 @@ export class HybridEngine implements Engine {
         this._bvhBuffers = result.bvhBuffers;
         this._lastScene = result.updatedScene;
         this._renderScene = nextRenderScene;
+        if (nextFrameResourceResolution !== undefined) {
+          this._internalWidth =
+            nextFrameResourceResolution.effectiveWidth;
+          this._internalHeight =
+            nextFrameResourceResolution.effectiveHeight;
+          this._frameResourceResolution =
+            nextFrameResourceResolution;
+        }
+        if (nextScaleAwareClamps !== undefined) {
+          this._publishScaleAwareClamps(nextScaleAwareClamps, false);
+        }
         stateCommitted = true;
       },
       rollback: () => {
@@ -2084,10 +2373,23 @@ export class HybridEngine implements Engine {
         this._bvhBuffers = previousBvh;
         this._lastScene = previousScene;
         this._renderScene = previousRenderScene;
+        this._internalWidth = previousInternalWidth;
+        this._internalHeight = previousInternalHeight;
+        this._frameResourceResolution =
+          previousFrameResourceResolution;
+        this._scaledTunables = previousScaledTunables;
+        this._scaledIndirectFireflyClamp =
+          previousScaledIndirectFireflyClamp;
+        this._rayOriginBias = previousRayOriginBias;
         stateCommitted = false;
       },
       finalize: () => {
         undo.accept();
+        if (nextScaleAwareClamps !== undefined) {
+          // Emit the optional diagnostic only after every participant committed;
+          // a rolled-back candidate must never be reported as live.
+          this._publishScaleAwareClamps(nextScaleAwareClamps);
+        }
       },
     };
 
@@ -2117,11 +2419,31 @@ export class HybridEngine implements Engine {
       ));
     }
     if (this._pipeline != null) {
-      factories.push(() => this._pipeline!.prepareSceneMutation(
-        mutation,
-        result.bvhBuffers,
-        prefixCommandBuffers,
-      ));
+      const pipeline = this._pipeline;
+      if (nextFrameResourceResolution === undefined) {
+        factories.push(() => pipeline.prepareSceneMutation(
+          mutation,
+          result.bvhBuffers,
+          prefixCommandBuffers,
+        ));
+      } else {
+        // Keep the combined pipeline participant last. It publishes the
+        // reversible frame-resource generation first, prepares geometry/PPG
+        // work against that exact generation, and performs the sole queue
+        // submission as the transaction's final operation.
+        factories.push(() => pipeline.prepareSceneMutationAndResize(
+          mutation,
+          result.bvhBuffers,
+          prefixCommandBuffers,
+          nextFrameResourceResolution.effectiveWidth,
+          nextFrameResourceResolution.effectiveHeight,
+          nextFrameResourceResolution.restirReservoirScale,
+        ));
+      }
+    } else if (nextFrameResourceResolution !== undefined) {
+      throw new Error(
+        '[HybridEngine] frame-resource replan lost its live pipeline before preparation.',
+      );
     }
     this._warnMaterialTextureAtlasDiagnostics(
       result.bvhBuffers.materialTextureAtlas.diagnostics,
@@ -2282,6 +2604,7 @@ export class HybridEngine implements Engine {
       this._supportManifest,
       'updateEmitter',
     );
+    assertSceneEmitterRadianceEnvelopes(nextScene, 'updateEmitter');
     const nextRenderScene = sceneWithAnalyticMeshFallback(nextScene);
 
     const effectivePrimaryLightDir =
@@ -2301,6 +2624,23 @@ export class HybridEngine implements Engine {
       warningPhase: 'mutation' as const,
       warningMethod: 'updateEmitter',
     };
+    const productionEmissiveMaterials =
+      resolveProductionEmissiveMaterialsForCoreScene(
+        nextRenderScene,
+        previousBvh.bvhMode,
+        previousBvh.coreMaterials,
+        emitterOptions,
+      );
+    // Mesh-area emitter updates can replace the scalar Le multiplied by an
+    // existing emissive atlas. Re-run the exact texel/mip envelope before any
+    // mutation is prepared even though the atlas bytes themselves are unchanged.
+    void packMaterialTextureAtlas(
+      previousBvh.coreMaterials,
+      new Uint32Array(previousBvh.triangleMaterialIds.cpuData),
+      previousBvh.bvhBeerColors.count,
+      previousBvh.materialTextureAtlas.triangleUvs,
+      productionEmissiveMaterials,
+    );
     const emitterSlice = rebuildEmitterBuffersFromCoreScene(
       nextRenderScene,
       emitterOptions,
@@ -2375,35 +2715,6 @@ export class HybridEngine implements Engine {
     }
 
     commitSceneMutations(prepareSceneMutations(factories));
-  }
-
-  private _syncDdgiLightsFromCoreScene(): void {
-    if (this._renderScene == null || !this._coreSceneSuppliesMeshes()) return;
-    // Steps 1–4 (sun intensity, lights merge, emitter tris H18, analytic lights H41)
-    // delegated to the shared helper (R3 B-chain step 4). Engine path always
-    // merges lights (setLightsConditional: false = default).
-    syncDdgiFromCoreScene(
-      {
-        ddgi: this._ddgi,
-        pipeline: this._pipeline,
-        ctorLights: this._ctorLights,
-        hostSunWarningState: this._hostSunWarningState,
-        primaryLightIntensity: this._primaryLightIntensity,
-        ...(this._primaryLightDirOverrideActive
-          ? { primaryLightDir: this._primaryLightDir }
-          : {}),
-        onWarning: (warning) => this._warn(warning),
-        ...(this._bvhBuffers?.bvhMode === 'tlas'
-          ? { tlasPrimitiveBindings: this._bvhBuffers.primitiveTlasBindings }
-          : {}),
-      },
-      this._renderScene,
-    );
-    // B3 — push the scene's directional IBL map+CDFs to the pipeline (or reset to
-    // the no-HDRI placeholder). Called here so both the initial scene load and any
-    // emitter/scene fast-update re-resolve the env; no-op before pipeline init.
-    this._applyDirectionalEnvironment(this._resolvedEnvironment);
-    this._ddgi.invalidateProbeCache();
   }
 
   // ── GI state persistence ────────────────────────────────────────────────
@@ -2536,61 +2847,118 @@ export class HybridEngine implements Engine {
     // so enforce this backend's closed vocabulary before changing any live
     // lighting or GPU-facing state.
     assertKnownLightingKeys(opts);
-
-    let changed = false;
-
-    if (opts.primaryLightDir !== undefined) {
-      this._primaryLightDir = opts.primaryLightDir;
-      this._primaryLightDirOverrideActive = true;
-      changed = true;
-      // Republish DDGI sun lights so the probe-update pass follows the same
-      // runtime direction that renderFrame() passes to the shade UBO. With a
-      // core mesh scene this re-merges scene emitters; without one (lights-only
-      // host, or before setScene) fall back to re-orienting the ctor lights —
-      // mirroring the init path (line ~836) so the sun follows primaryLightDir
-      // regardless of whether a mesh scene is present.
-      if (this._renderScene != null && this._coreSceneSuppliesMeshes()) {
-        this._syncDdgiLightsFromCoreScene();
-      } else {
-        this._ddgi.setLights(orientDdgiSunLights(this._ctorLights, this._primaryLightDir));
-      }
-    }
-    if (opts.primaryLightIntensity !== undefined) {
-      this._primaryLightIntensity = opts.primaryLightIntensity;
-      changed = true;
-      // Keep the DDGI ProbeUpdatePass sun-intensity multiplier in sync so the
-      // irradiance atlas re-converges at the correct brightness. Single-count:
-      // when a scene `directional` drives the sun, its `sun` DDGILight already
-      // carries the emitter intensity, so the multiplier stays 1 and config
-      // primaryLightIntensity does NOT additionally scale the DDGI sun (it
-      // still drives the shade-side Lo_emit via the WalkaroundUBO). Absent a
-      // scene directional, the config intensity is the multiplier as before.
-      const sceneForSun =
-        this._coreSceneSuppliesMeshes() && this._renderScene != null ? this._renderScene : null;
-      this._ddgi.setSunIntensityMultiplier(
-        directionalSunMultiplier(sceneForSun, opts.primaryLightIntensity),
-      );
-    }
-    if (opts.skyTint !== undefined) {
-      this._skyTint = opts.skyTint;
-      changed = true;
-    }
-    if (opts.skyIrradiance !== undefined) {
-      this._skyIrradiance = opts.skyIrradiance;
-      changed = true;
-    }
-
+    const changed =
+      opts.primaryLightDir !== undefined ||
+      opts.primaryLightIntensity !== undefined ||
+      opts.skyTint !== undefined ||
+      opts.skyIrradiance !== undefined;
     if (!changed) return;
 
-    this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
+    // Canonicalize every candidate into the exact binary32 identity consumed by
+    // WGSL before preparing any subsystem. Host tuples are snapshotted here so
+    // later caller mutation cannot change the accepted generation.
+    const candidatePrimaryLightDir =
+      opts.primaryLightDir === undefined
+        ? [...this._primaryLightDir] as [number, number, number]
+        : canonicalizeLightingDirectionF32(
+            opts.primaryLightDir,
+            'updateLighting.primaryLightDir',
+          );
+    const candidatePrimaryLightIntensity =
+      opts.primaryLightIntensity === undefined
+        ? this._primaryLightIntensity
+        : packNonNegativeLightingFloat32(
+            opts.primaryLightIntensity,
+            'updateLighting.primaryLightIntensity',
+          );
+    const packedSky = packLightingRgbScaleEnvelopeF32(
+      opts.skyTint ?? this._skyTint,
+      opts.skyIrradiance ?? this._skyIrradiance,
+      'updateLighting sky radiance',
+    );
+    const candidateSkyTint = packedSky.value;
+    const candidateSkyIrradiance = packedSky.scale;
+    const candidatePrimaryLightDirOverrideActive =
+      opts.primaryLightDir !== undefined
+        ? true
+        : this._primaryLightDirOverrideActive;
+    this._assertEnvironmentMaterialEnvelope(
+      this._lastScene,
+      this._resolvedEnvironment,
+      candidateSkyTint,
+      candidateSkyIrradiance,
+    );
 
-    // Invalidate the DDGI probe atlas — re-converges from scratch over the
-    // next STRIDE frames (~8 frames, ~133 ms at 60 FPS).
-    this._ddgi.invalidateProbeCache();
+    const sceneForDdgi =
+      this._renderScene != null && this._coreSceneSuppliesMeshes()
+        ? this._renderScene
+        : null;
+    let candidateDdgiLights: readonly DDGILight[];
+    if (sceneForDdgi == null) {
+      // Preserve the construction/lights-only contract: constructor suns track
+      // the primary fallback direction even before a mesh scene exists.
+      candidateDdgiLights = orientDdgiSunLights(
+        this._ctorLights,
+        candidatePrimaryLightDir,
+      );
+    } else {
+      const merged = mergeDDGILightsDedupSun(
+        this._ctorLights,
+        coreEmittersToDDGILights(sceneForDdgi),
+        {
+          warningState: this._hostSunWarningState,
+          onWarning: (warning) => this._warn(warning),
+        },
+      );
+      candidateDdgiLights = candidatePrimaryLightDirOverrideActive
+        ? orientDdgiSunLights(merged, candidatePrimaryLightDir)
+        : merged;
+    }
+    const ddgiMutation = this._ddgi.prepareRuntimeLightingMutation({
+      lights: candidateDdgiLights,
+      sunIntensityMultiplier: directionalSunMultiplier(
+        sceneForDdgi,
+        candidatePrimaryLightIntensity,
+      ),
+      skyTint: candidateSkyTint,
+      skyIrradiance: candidateSkyIrradiance,
+    });
+
+    const previousPrimaryLightDir = this._primaryLightDir;
+    const previousPrimaryLightDirOverrideActive =
+      this._primaryLightDirOverrideActive;
+    const previousPrimaryLightIntensity = this._primaryLightIntensity;
+    const previousSkyTint = this._skyTint;
+    const previousSkyIrradiance = this._skyIrradiance;
+    let statePublished = false;
+    const stateMutation: PreparedSceneMutation = {
+      commit: () => {
+        if (statePublished) return;
+        this._primaryLightDir = candidatePrimaryLightDir;
+        this._primaryLightDirOverrideActive =
+          candidatePrimaryLightDirOverrideActive;
+        this._primaryLightIntensity = candidatePrimaryLightIntensity;
+        this._skyTint = candidateSkyTint;
+        this._skyIrradiance = candidateSkyIrradiance;
+        statePublished = true;
+      },
+      rollback: () => {
+        if (!statePublished) return;
+        this._primaryLightDir = previousPrimaryLightDir;
+        this._primaryLightDirOverrideActive =
+          previousPrimaryLightDirOverrideActive;
+        this._primaryLightIntensity = previousPrimaryLightIntensity;
+        this._skyTint = previousSkyTint;
+        this._skyIrradiance = previousSkyIrradiance;
+        statePublished = false;
+      },
+      finalize: () => undefined,
+    };
+    commitSceneMutations([ddgiMutation, stateMutation]);
 
     // Reset the temporal accumulator — history discarded, α=1 for next frame.
-    // _pipeline may be null if the engine is still initialising; the flag is
-    // applied as soon as the pipeline exists (set before any renderFrame call).
+    // No environment or analytic-light resource is rebuilt: those generations
+    // are unchanged by primary sun/sky scalar updates.
     this._pipeline?.requestAccumReset();
   }
 
@@ -2678,28 +3046,65 @@ export class HybridEngine implements Engine {
 
     const nextEnv: SceneEnvironment = env ?? { kind: 'none' };
     validateCoreScene({ primitives: [], emitters: [], environment: nextEnv });
-    const resolved = resolveHybridEnvironment(nextEnv, {
-      extensions: this._environmentResolverExtensions,
-    });
+    const resolved = this._canonicalResolvedEnvironment(
+      resolveHybridEnvironment(nextEnv, {
+        extensions: this._environmentResolverExtensions,
+      }),
+    );
+    const candidateSky = this._resolvedEnvironmentScalarCandidate(resolved);
+    this._assertEnvironmentMaterialEnvelope(
+      this._lastScene,
+      resolved,
+      candidateSky.skyTint,
+      candidateSky.skyIrradiance,
+    );
     this._emitResolvedEnvironmentWarnings(resolved, 'updateEnvironment');
+    const candidateLastScene =
+      this._lastScene == null
+        ? null
+        : { ...this._lastScene, environment: nextEnv };
+    const candidateRenderScene =
+      candidateLastScene == null
+        ? this._renderScene
+        : this._renderScene != null
+          ? { ...this._renderScene, environment: nextEnv }
+          : sceneWithAnalyticMeshFallback(candidateLastScene);
+
+    // Stage the provider generation and point DDGI at its already-created
+    // candidate view while the old provider resources are still alive. A clear
+    // gives DDGI null so it publishes its own placeholder before the pipeline's
+    // old map may be retired.
+    const directionalMutation =
+      this._pipeline == null
+        ? null
+        : this._prepareDirectionalEnvironmentToPipeline(
+            this._pipeline,
+            resolved,
+          );
+    try {
+      directionalMutation?.commit();
+      this._ddgi.setSkyParams?.(
+        candidateSky.skyTint,
+        candidateSky.skyIrradiance,
+      );
+    } catch (error) {
+      directionalMutation?.rollback();
+      throw error;
+    }
+
     // Cache on the live scene so a later scene-state read / debug surface sees
     // the current env (parallels pt-webgl/pt-webgpu). `_lastScene` may be null
     // if no setScene() ran yet — still record the sky-scalar change; the next
     // setScene() carries its own environment.
-    if (this._lastScene != null) {
-      this._lastScene = { ...this._lastScene, environment: nextEnv };
-      this._renderScene =
-        this._renderScene != null
-          ? { ...this._renderScene, environment: nextEnv }
-          : sceneWithAnalyticMeshFallback(this._lastScene);
-    }
+    this._lastScene = candidateLastScene;
+    this._renderScene = candidateRenderScene;
     this._resolvedEnvironment = resolved;
 
     // Map the env onto this backend's sky-dome scalars (the only env channel it
     // consumes — there is no IBL baker here). Omitted fields leave the
     // corresponding scalar unchanged.
-    this._applyResolvedEnvironmentScalars(resolved);
-    this._ddgi.setSkyParams?.(this._skyTint, this._skyIrradiance);
+    this._skyTint = candidateSky.skyTint;
+    this._skyIrradiance = candidateSky.skyIrradiance;
 
     // Re-converge the world-space DDGI irradiance atlas (the sky-dome term feeds
     // the probe rays) and discard temporal history so the new sky energy shows
@@ -2712,7 +3117,7 @@ export class HybridEngine implements Engine {
     // B3 — push the directional IBL map+CDFs to the pipeline (or reset to the
     // no-HDRI placeholder). Independent of the sky scalars above, which remain
     // the WGSL fallback when no directional data is present.
-    this._applyDirectionalEnvironment(resolved);
+    directionalMutation?.finalize();
   }
 
   /**
@@ -2735,8 +3140,81 @@ export class HybridEngine implements Engine {
    *    returns scalar skyTint/skyIrradiance as the no-directional fallback.
    */
   private _applyResolvedEnvironmentScalars(resolved: HybridResolvedEnvironment): void {
-    if (resolved.skyTint !== undefined) this._skyTint = resolved.skyTint;
-    if (resolved.skyIrradiance !== undefined) this._skyIrradiance = resolved.skyIrradiance;
+    const candidate = this._resolvedEnvironmentScalarCandidate(resolved);
+    this._skyTint = candidate.skyTint;
+    this._skyIrradiance = candidate.skyIrradiance;
+  }
+
+  private _canonicalResolvedEnvironment(
+    resolved: HybridResolvedEnvironment,
+  ): HybridResolvedEnvironment {
+    return {
+      ...resolved,
+      ...(resolved.skyTint === undefined
+        ? {}
+        : {
+            skyTint: packNonNegativeLightingRgbF32(
+              resolved.skyTint,
+              'resolved environment skyTint',
+            ),
+          }),
+      ...(resolved.skyIrradiance === undefined
+        ? {}
+        : {
+            skyIrradiance: packNonNegativeLightingFloat32(
+              resolved.skyIrradiance,
+              'resolved environment skyIrradiance',
+            ),
+          }),
+    };
+  }
+
+  private _resolvedEnvironmentScalarCandidate(
+    resolved: HybridResolvedEnvironment,
+  ): {
+    readonly skyTint: [number, number, number];
+    readonly skyIrradiance: number;
+  } {
+    const packed = packLightingRgbScaleEnvelopeF32(
+      resolved.skyTint ?? this._skyTint,
+      resolved.skyIrradiance ?? this._skyIrradiance,
+      'resolved environment sky radiance',
+    );
+    return { skyTint: packed.value, skyIrradiance: packed.scale };
+  }
+
+  private _assertEnvironmentMaterialEnvelope(
+    scene: Scene | null,
+    resolved: HybridResolvedEnvironment,
+    skyTint: readonly [number, number, number],
+    skyIrradiance: number,
+  ): void {
+    const packedSky = assertWalkaroundEnvironmentRgbScaleEnvelopeF32(
+      skyTint,
+      skyIrradiance,
+      'scalar-sky radiance',
+    );
+    const materialIntensities = (scene?.primitives ?? []).map(
+      (primitive) => primitive.material.envMapIntensity ?? 1,
+    );
+    if (resolved.directional !== undefined) {
+      assertWalkaroundEnvironmentMaterialEnvelopeF32(
+        resolved.directional.map,
+        resolved.directionalIntensity ?? 1,
+        materialIntensities,
+      );
+      return;
+    }
+    assertWalkaroundEnvironmentMaterialEnvelopeF32(
+      new Float32Array([
+        packedSky.value[0],
+        packedSky.value[1],
+        packedSky.value[2],
+        1,
+      ]),
+      packedSky.scale,
+      materialIntensities,
+    );
   }
 
   /** Emit resolver diagnostics before any scene/lighting state is published. */
@@ -2774,29 +3252,89 @@ export class HybridEngine implements Engine {
     pipeline: WalkaroundGPUPipeline,
     resolved: HybridResolvedEnvironment,
   ): void {
-    if (resolved.directional !== undefined) {
-      pipeline.updateDirectionalEnvironment(
-        resolved.directional,
-        resolved.rotationY ?? 0,
-        resolved.directionalIntensity ?? 1,
-      );
-      // Wave 4 (2026-06-10) — HDRI into DDGI probe misses: hand the equirect
-      // radiance view to the probe-update pass so probe-ray misses sample the
-      // real map / finite procedural-sky bake when a directional env is bound.
-      const envBindings = pipeline.getEnvBindings();
-      if (envBindings != null) {
+    const prepared = this._prepareDirectionalEnvironmentToPipeline(
+      pipeline,
+      resolved,
+    );
+    prepared.commit();
+    prepared.finalize();
+  }
+
+  /**
+   * Prepare the pipeline's provider generation and atomically point DDGI at
+   * its candidate view before publishing or retiring any provider resource.
+   */
+  private _prepareDirectionalEnvironmentToPipeline(
+    pipeline: WalkaroundGPUPipeline,
+    resolved: HybridResolvedEnvironment,
+  ): PreparedSceneMutation {
+    const previousBindings = pipeline.getEnvBindings();
+    const prepared = pipeline.prepareDirectionalEnvironment(
+      resolved.directional ?? null,
+      resolved.rotationY ?? 0,
+      resolved.directional === undefined
+        ? 0
+        : (resolved.directionalIntensity ?? 1),
+    );
+    try {
+      const candidateBindings = prepared.envBindings;
+      if (candidateBindings == null) {
+        this._ddgi.setEnvironment(null, null, 0, 0, false);
+      } else {
         this._ddgi.setEnvironment(
-          envBindings.textureView,
-          envBindings.sampler,
-          resolved.rotationY ?? 0,
-          resolved.directionalIntensity ?? 1,
+          candidateBindings.textureView,
+          candidateBindings.sampler,
+          candidateBindings.rotationY,
+          candidateBindings.intensity,
           true,
         );
       }
-    } else {
-      pipeline.updateDirectionalEnvironment(null, 0, 0);
-      this._ddgi.setEnvironment(null, null, 0, 0, false);
+    } catch (error) {
+      prepared.rollback();
+      throw error;
     }
+
+    let closed = false;
+    return {
+      commit: () => {
+        if (closed) return;
+        prepared.commit();
+      },
+      rollback: () => {
+        if (closed) return;
+        closed = true;
+        // Restore the DDGI consumer before discarding the provider candidate it
+        // may currently borrow.
+        try {
+          if (
+            previousBindings != null &&
+            previousBindings.hasDirectionalEnvironment
+          ) {
+            this._ddgi.setEnvironment(
+              previousBindings.textureView,
+              previousBindings.sampler,
+              previousBindings.rotationY,
+              previousBindings.intensity,
+              true,
+            );
+          } else {
+            this._ddgi.setEnvironment(null, null, 0, 0, false);
+          }
+        } catch (error) {
+          rethrowWithSceneMutationCleanup(
+            error,
+            [() => prepared.rollback()],
+            'directional-environment DDGI restore failed and provider rollback also failed',
+          );
+        }
+        prepared.rollback();
+      },
+      finalize: () => {
+        if (closed) return;
+        prepared.finalize();
+        closed = true;
+      },
+    };
   }
 
   private _applyDirectionalEnvironment(resolved: HybridResolvedEnvironment): void {
@@ -2868,7 +3406,48 @@ export class HybridEngine implements Engine {
     return { width, height, rgba };
   }
 
+  /**
+   * Offline readback of the exact pre-denoise neural inputs produced by the
+   * shipped walkaround renderer. Unlike `captureFrame({colorSpace:'linear'})`,
+   * this returns the raw shade-pass radiance channel plus the matching albedo
+   * and decoded world-normal auxiliaries. The pipeline performs one ordered
+   * three-texture copy and releases all staging resources before resolving.
+   */
+  captureDenoiserTrainingInputs(): Promise<HybridDenoiserTrainingCapture | null> {
+    return this._pipeline?.captureDenoiserTrainingInputs() ?? Promise.resolve(null);
+  }
+
   // ── Resize ─────────────────────────────────────────────────────────────
+
+  private _resolveFrameResourceResolution(
+    requestedWidth: number,
+    requestedHeight: number,
+    currentPersistentBytes = 0,
+    forcedReservoirScale?: number,
+  ): ResolvedFrameResourcePlan {
+    return resolveFrameResourcePlan(
+      this._device,
+      requestedWidth,
+      requestedHeight,
+      {
+        resolutionPolicy: this._cfg.frameResourceResolutionPolicy,
+        maxPersistentBytes: this._cfg.maxPersistentFrameResourceBytes,
+        dimensionAlignment: this._cfg.denoiser === 'neural' ? 8 : 1,
+        gtaoDownscale: this._cfg.gtaoMode === 'quarter' ? 4 : 2,
+        gtaoEnabled: this._cfg.gtaoMode !== 'off',
+        svgfEnabled: this._cfg.denoiser === 'svgf-real',
+        welfordPingPong: true,
+        atrousVarianceEstimate: this._cfg.denoiser === 'atrous-variance',
+        checkerboard: this._cfg.checkerboard,
+        ...(forcedReservoirScale !== undefined
+          ? { reservoirScale: forcedReservoirScale }
+          : this._cfg.restirReservoirScale !== undefined
+            ? { reservoirScale: this._cfg.restirReservoirScale }
+            : {}),
+      },
+      currentPersistentBytes,
+    );
+  }
 
   /**
    * Resize the render surface WITHOUT rebuilding the BVH or recompiling
@@ -2911,16 +3490,47 @@ export class HybridEngine implements Engine {
 
     // Keep every public and internal dimension unchanged until the pipeline has
     // proved that its complete replacement resource set can be published.
-    const internalWidth = Math.max(1, Math.round(width * this._resolutionFactor));
-    const internalHeight = Math.max(1, Math.round(height * this._resolutionFactor));
-    this._pipeline?.resize(internalWidth, internalHeight);
+    const requestedInternalWidth = Math.max(
+      1,
+      Math.round(width * this._resolutionFactor),
+    );
+    const requestedInternalHeight = Math.max(
+      1,
+      Math.round(height * this._resolutionFactor),
+    );
+    const nextResolution = this._resolveFrameResourceResolution(
+      requestedInternalWidth,
+      requestedInternalHeight,
+      this._pipeline == null
+        ? 0
+        : this._frameResourceResolution.persistentBytes,
+      this._lastScene != null
+        && sceneRequiresExactGiCameraPrefixes(this._lastScene)
+        ? 1
+        : undefined,
+    );
+    let resizeFinalizationError: SceneMutationFinalizationError | null = null;
+    try {
+      this._pipeline?.resize(
+        nextResolution.effectiveWidth,
+        nextResolution.effectiveHeight,
+        nextResolution.restirReservoirScale,
+      );
+    } catch (error) {
+      if (!(error instanceof SceneMutationFinalizationError)) throw error;
+      // Publication succeeded; keep engine and pipeline dimensions coherent,
+      // then surface the old-generation retirement failure to the host.
+      resizeFinalizationError = error;
+    }
 
     this._width = width;
     this._height = height;
-    this._internalWidth = internalWidth;
-    this._internalHeight = internalHeight;
+    this._internalWidth = nextResolution.effectiveWidth;
+    this._internalHeight = nextResolution.effectiveHeight;
+    this._frameResourceResolution = nextResolution;
     // No DDGI invalidation — the irradiance atlas is world-space, not
     // screen-space, so it survives a resize unchanged.
+    if (resizeFinalizationError != null) throw resizeFinalizationError;
   }
 
   /**
@@ -2959,10 +3569,34 @@ export class HybridEngine implements Engine {
     });
 
     if (decision.shouldResize) {
-      this._pipeline?.resize(decision.targetW, decision.targetH);
-      this._internalWidth = decision.targetW;
-      this._internalHeight = decision.targetH;
+      const nextResolution = this._resolveFrameResourceResolution(
+        decision.targetW,
+        decision.targetH,
+        this._pipeline == null
+          ? 0
+          : this._frameResourceResolution.persistentBytes,
+        this._lastScene != null
+          && sceneRequiresExactGiCameraPrefixes(this._lastScene)
+          ? 1
+          : undefined,
+      );
+      let resizeFinalizationError: SceneMutationFinalizationError | null = null;
+      try {
+        this._pipeline?.resize(
+          nextResolution.effectiveWidth,
+          nextResolution.effectiveHeight,
+          nextResolution.restirReservoirScale,
+        );
+      } catch (error) {
+        if (!(error instanceof SceneMutationFinalizationError)) throw error;
+        resizeFinalizationError = error;
+      }
+      this._internalWidth = nextResolution.effectiveWidth;
+      this._internalHeight = nextResolution.effectiveHeight;
+      this._frameResourceResolution = nextResolution;
       this._lastResolutionResizeTs = nowMs;
+      this._resolutionFactor = resolutionFactor;
+      if (resizeFinalizationError != null) throw resizeFinalizationError;
     }
     this._resolutionFactor = resolutionFactor;
     return { width: this._internalWidth, height: this._internalHeight };
@@ -3004,10 +3638,20 @@ export class HybridEngine implements Engine {
    */
   renderFrame(input: FrameInput): FrameOutput {
     validateHybridFrameInput(input);
-    const canonicalInput = canonicalizeFrameCamera(
-      input,
+    const presentationTarget = resolveHybridPresentationTarget(
+      input.swapChainFormat,
+      input.quality?.outputColorSpace,
       'HybridEngine.renderFrame',
     );
+    const canonicalInput = {
+      ...canonicalizeFrameCamera(input, 'HybridEngine.renderFrame'),
+      // Normalize the optional opaque core token to one explicit, validated
+      // WebGPU format so every later path (sky-only, throttle, full composite)
+      // observes the same attachment-transfer decision.
+      swapChainFormat: asBackendTextureFormat<'webgpu', GPUTextureFormat>(
+        presentationTarget.format,
+      ),
+    };
     // FrameInput.viewport is the cross-backend resize contract. Keep the
     // explicit setSize method as an eager host hook, while making direct
     // renderFrame callers correct without a ResizeObserver. setSize publishes
@@ -3164,8 +3808,8 @@ export class HybridEngine implements Engine {
             self._skinning.run(self, self._lastScene);
           }
         },
-        presentLastFrame: (view) => {
-          self._pipeline?.presentLastFrame(view);
+        presentLastFrame: (view, format, composite) => {
+          self._pipeline?.presentLastFrame(view, format, composite);
         },
       },
       flags: {
@@ -3179,6 +3823,7 @@ export class HybridEngine implements Engine {
         // B15 — scene-scale-aware tunables (falls back to the Cornell baseline
         // before the first setScene; byte-identical at Cornell scale).
         tunables: self._scaledTunables ?? self._cfg.tunables,
+        rayOriginBias: self._rayOriginBias,
         rcWeight: self._rcWeight,
         causticStrategy: self._causticStrategy,
         mneeMaxIterations: self._cfg.mneeMaxIterations,
@@ -3514,6 +4159,8 @@ export class HybridEngine implements Engine {
   private _initStaticConfig(): HybridInitStaticConfig {
     return {
       device: this._device,
+      maxPersistentFrameResourceBytes:
+        this._cfg.maxPersistentFrameResourceBytes,
       restirBvhModeOverride: this._cfg.restirBvhModeOverride,
       denoiser: this._cfg.denoiser,
       neuralWeights: this._cfg.neuralWeights,
@@ -3572,6 +4219,12 @@ export class HybridEngine implements Engine {
       get height() {
         return self._internalHeight;
       },
+      // The selected scale is resolution- and scene-dependent. In particular,
+      // setScene() can force scale 1 for a transmissive camera prefix after
+      // construction but before the async pipeline generation is created.
+      get restirReservoirScale() {
+        return self._frameResourceResolution.restirReservoirScale;
+      },
       get lastScene() {
         return self._renderScene;
       },
@@ -3591,7 +4244,7 @@ export class HybridEngine implements Engine {
         return self._hostSunWarningState;
       },
       get preferredSwapChainFormat() {
-        return getPreferredSwapChainFormat();
+        return getPreferredHybridSwapChainFormat();
       },
       get currentBvhBuffers() {
         return self._bvhBuffers;

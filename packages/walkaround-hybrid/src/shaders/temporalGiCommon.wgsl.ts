@@ -35,6 +35,6 @@ fn projectToPrevHalfPx(worldPos: vec3f, halfDims: vec2u, fullDims: vec2u) -> vec
   if (any(abs(ndc.xy) > vec2f(1.0))) { return vec2i(-1, -1); }
   let uv = vec2f(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
   let fullPxF = uv * vec2f(f32(fullDims.x), f32(fullDims.y));
-  let halfPxF = fullPxF * 0.5;
+  let halfPxF = fullPxF / f32(restirGiPixelStride());
   return vec2i(floor(halfPxF));
 }`;

@@ -21,6 +21,7 @@ import type {
   Scene,
   SceneEmitter,
   ScenePrimitive,
+  ScenePrimitivePatch,
 } from '@vitrum/core';
 import {
   asBackendTexture,
@@ -49,6 +50,7 @@ import {
   validatePtWebgpuFrameInput,
   validatePtWebgpuPixelSize,
   resolveBdptMaxLightBounces,
+  assertPtWebgpuBdptFrameCameraSupported,
 } from './ptWebgpuValidation.js';
 export { validatePtWebgpuAdvancedOptions } from './ptWebgpuValidation.js';
 import {
@@ -477,8 +479,8 @@ class PTEngineWebGPU implements Engine {
   readonly #debugEnabled: boolean;
 
   // ── SPPM state (A4-progressive, photon-map strategy) ─────────────────────
-  /** Cached initial radius r₀ = max(diagonal/100, 1e-3) from the scene AABB.
-   *  Recomputed on every setScene.  Used as the INITIAL per-pixel R² seed
+  /** Cached initial radius r₀ = diagonal/100 from the scene AABB.
+   *  Recomputed on every setScene. Used as the initial per-pixel linear-R seed
    *  (r₀²) in sppmUpdateProgressiveKind; the per-measure radius then shrinks
    *  progressively via the Hachisuka update rule (A4-progressive). */
   #sppmR0 = 0.017; // 1.7 cm — a safe pre-setScene default (1 m Cornell box)
@@ -669,6 +671,7 @@ class PTEngineWebGPU implements Engine {
       invalidateBindGroups: () => this.#gpu.invalidateBindGroups(),
       supportedAnalyticShapes: () => this.#supportedAnalyticShapes(),
       cameraVisibleEmitters: () => this.#cameraVisibleEmitters,
+      spectralEnabled: () => this.#spectralEnabled,
       stageLiteTextures: (sceneBuffers) =>
         this.#stageLiteTextures(
           sceneBuffers,
@@ -1191,6 +1194,7 @@ class PTEngineWebGPU implements Engine {
     }
     const packed = buildPackedScene(scene, {
       cameraVisibleEmitters: this.#cameraVisibleEmitters,
+      spectralEnabled: this.#spectralEnabled,
       geometryMode: this.#traceTier === 'lite' ? 'merged' : 'tlas',
       includeMneeFacetCandidates:
         this.#causticStrategy === 'manifold-nee' && this.#traceTier === 'full',
@@ -1367,7 +1371,7 @@ class PTEngineWebGPU implements Engine {
     this.#mutationRouter.removePrimitive(id);
   }
 
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+  updatePrimitive(id: string, patch: ScenePrimitivePatch): void {
     this.#mutationRouter.updatePrimitive(id, patch);
   }
 
@@ -1466,7 +1470,7 @@ class PTEngineWebGPU implements Engine {
     // frame (photon pass and megakernel both silently skipped group-3 → photons
     // were never written, gather read nothing, lum=0 gpuErrs=1 on full tier).
     //
-    // Per-pixel (τ, R², N) persists across iterations and resets with temporal
+    // Per-pixel (τ, linear R, N) persists across iterations and resets with temporal
     // accumulation. The hash-grid bucket heads are cleared before every photon
     // pass, then this iteration's unique photon records are published. Gather applies the progressive
     // update rule (N'=N+αM, R'²=R²·N'/(N+M), τ'=(τ+Φ_M)·ratio) instead of the
@@ -1483,7 +1487,7 @@ class PTEngineWebGPU implements Engine {
       }
       // A4-progressive: ensure per-pixel stats buffer at the current render dims.
       // ensureSppmPixelStatsBuffer is idempotent on a cache hit (same W×H); on
-      // a first allocation or dim change it GPU-clears (τ/R²/N → 0) and
+      // a first allocation or dim change it GPU-clears (τ/R/N → 0) and
       // invalidates group-3.  A 64-byte placeholder is already created by
       // ensureSppmBuffers(false) above when SPPM is off, so the else branch below
       // doesn't need to call it separately.
@@ -1790,6 +1794,9 @@ class PTEngineWebGPU implements Engine {
     this.#assertLive('renderFrame');
     validatePtWebgpuFrameInput(input);
     input = canonicalizeFrameCamera(input, 'PTEngineWebGPU.renderFrame');
+    if (this.#bdpt) {
+      assertPtWebgpuBdptFrameCameraSupported(input);
+    }
     const gpu = this.#gpu;
     if (
       this.#causticStrategy === 'photon-map' &&
@@ -2131,7 +2138,7 @@ class PTEngineWebGPU implements Engine {
       renderAndReadback: (width, height, samples) =>
         this.#renderAndReadbackForInverse(width, height, samples),
       patchMaterial: (primitiveId: string, patch: Partial<MaterialSpec>) => {
-        this.updatePrimitive(primitiveId, { material: patch } as Partial<ScenePrimitive>);
+        this.updatePrimitive(primitiveId, { material: patch });
       },
       patchEmitter: (emitterId: string, patch: Partial<SceneEmitter>) => {
         this.updateEmitter(emitterId, patch);

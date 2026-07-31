@@ -107,7 +107,7 @@ fn svgfRealAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
 
   // A zero depth is the no-hit sentinel.  Negative depth is a valid packed
   // glass-primary marker in the walkaround renderer and must still be filtered.
-  if (abs(centerDepth) <= 1e-8) {
+  if (centerDepth == 0.0) {
     textureStore(
       svgfAtrous_output,
       gid.xy,
@@ -127,7 +127,7 @@ fn svgfRealAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
 
   let filteredVariance = svgfPrefilterVariance3x3(gid.xy, dims);
   let luminanceDenominator =
-    max(1e-4, svgfAtrous_ubo.sigmaColor * sqrt(max(filteredVariance, 1e-10)));
+    svgfAtrous_ubo.sigmaColor * sqrt(max(filteredVariance, 0.0));
   let centerLuminance = luminance(centerColor);
   let normalExponent = max(1.0, svgfAtrous_ubo.sigmaNormal);
   let stepWidth = i32(1u << svgfAtrous_ubo.iteration);
@@ -148,13 +148,26 @@ fn svgfRealAtrousMain(@builtin(global_invocation_id) gid: vec3u) {
       let sampleNormal = textureLoad(svgfAtrous_normal, pu, 0).xyz * 2.0 - 1.0;
       let sampleDepth = svgfDepthAt(pu);
 
-      let luminanceDistance =
-        abs(luminance(sampleColor) - centerLuminance) / luminanceDenominator;
+      let luminanceDelta = abs(luminance(sampleColor) - centerLuminance);
+      var luminanceDistance = 0.0;
+      if (luminanceDelta > 0.0) {
+        luminanceDistance = 3.402823466e38;
+        if (luminanceDenominator > 0.0) {
+          luminanceDistance = luminanceDelta / luminanceDenominator;
+        }
+      }
       let projectedDepthGradient =
         abs(dot(depthGradient, vec2f(pixelOffset)));
       let depthDenominator =
-        max(1e-4, svgfAtrous_ubo.sigmaDepth * projectedDepthGradient);
-      let depthDistance = abs(sampleDepth - centerDepth) / depthDenominator;
+        svgfAtrous_ubo.sigmaDepth * projectedDepthGradient;
+      let depthDelta = abs(sampleDepth - centerDepth);
+      var depthDistance = 0.0;
+      if (depthDelta > 0.0) {
+        depthDistance = 3.402823466e38;
+        if (depthDenominator > 0.0) {
+          depthDistance = depthDelta / depthDenominator;
+        }
+      }
       let normalWeight =
         pow(clamp(dot(centerNormal, sampleNormal), 0.0, 1.0), normalExponent);
       let edgeWeight =

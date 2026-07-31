@@ -63,6 +63,8 @@ import {
   type DenoiserInitContext,
   type DenoiserState,
 } from './index.js';
+import type { PreparedSceneMutation } from '../../SceneMutationTransaction.js';
+import { commitPreparedDenoiserResize } from './resizeTransaction.js';
 import { publishFrameState } from '../FramePublication.js';
 import { shouldResetDenoiserHistory } from './historyReset.js';
 
@@ -648,7 +650,7 @@ export class OIDNFinalDenoiser implements Denoiser {
     console.error('[OIDNFinalDenoiser] inference cycle failed:', err);
   }
 
-  resize(width: number, height: number): void {
+  prepareResize(width: number, height: number): PreparedSceneMutation {
     // Allocate before publication so a failed resize leaves the live output
     // texture, dimensions, generation, and in-flight inference state intact.
     const previous = this._denoisedOutputTexture;
@@ -660,20 +662,61 @@ export class OIDNFinalDenoiser implements Denoiser {
       }
     }
 
-    this._width = width;
-    this._height = height;
-    this._resizeGeneration++;
-    this._contentGeneration++;
-    this._pendingReadback = null;
-    this._haveDenoisedOutput = false;
-    this._denoisedOutputTexture = replacement;
-    if (replacement !== previous) {
-      try {
-        previous?.destroy();
-      } catch {
-        // A retired texture must not invalidate the successfully published one.
-      }
-    }
+    const previousWidth = this._width;
+    const previousHeight = this._height;
+    const previousResizeGeneration = this._resizeGeneration;
+    const previousContentGeneration = this._contentGeneration;
+    const previousPendingReadback = this._pendingReadback;
+    const previousHaveDenoisedOutput = this._haveDenoisedOutput;
+    let committed = false;
+    let retired = false;
+    let candidateOwned = replacement !== previous;
+    return {
+      commit: () => {
+        if (committed) return;
+        this._width = width;
+        this._height = height;
+        this._resizeGeneration = previousResizeGeneration + 1;
+        this._contentGeneration = previousContentGeneration + 1;
+        this._pendingReadback = null;
+        this._haveDenoisedOutput = false;
+        this._denoisedOutputTexture = replacement;
+        committed = true;
+      },
+      rollback: () => {
+        if (retired) return;
+        if (committed) {
+          this._width = previousWidth;
+          this._height = previousHeight;
+          this._resizeGeneration = previousResizeGeneration;
+          this._contentGeneration = previousContentGeneration;
+          this._pendingReadback = previousPendingReadback;
+          this._haveDenoisedOutput = previousHaveDenoisedOutput;
+          this._denoisedOutputTexture = previous;
+          committed = false;
+        }
+        if (candidateOwned) {
+          replacement?.destroy();
+          candidateOwned = false;
+        }
+      },
+      finalize: () => {
+        if (!committed || retired) return;
+        retired = true;
+        candidateOwned = false;
+        if (replacement !== previous) {
+          try {
+            previous?.destroy();
+          } catch {
+            // A retired texture must not invalidate the published generation.
+          }
+        }
+      },
+    };
+  }
+
+  resize(width: number, height: number): void {
+    commitPreparedDenoiserResize(this.prepareResize(width, height));
   }
 
   /** Full-res rgba16float owned output texture (STORAGE|TEXTURE|COPY_DST|COPY_SRC).

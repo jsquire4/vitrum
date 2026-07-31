@@ -154,7 +154,7 @@ const KNOWN_SECTION_FLAGS =
  * restore continue the temporal+spatial GI reuse instead of re-converging the
  * high-frequency indirect from scratch.
  *
- * Three half-res reservoir buffers, each the FULL GPU-buffer u32 contents:
+ * Three active-grid reservoir buffers, each the FULL GPU-buffer u32 contents:
  *   - `current`  — `gi-ris` write target / shade read (also the source of the
  *                  end-of-frame copy into `previous`).
  *   - `previous` — the cross-frame temporal-reuse input (`gi-temporal` reads it).
@@ -162,14 +162,18 @@ const KNOWN_SECTION_FLAGS =
  *                  passes). Persisted too so the export→import→export is a complete
  *                  byte-identity round-trip over the reservoir set.
  *
- * `halfW`/`halfH`/`strideU32` are restore-guard metadata (= floor(W/2), floor(H/2),
- * `RESERVOIR_GI_STRIDE`); a restore is rejected if they don't match the live grid.
+ * `halfW`/`halfH`/`strideU32` are restore-guard metadata. The historical
+ * half-resolution field names are retained for wire compatibility; the values
+ * are the active GI reservoir grid
+ * (`floor(internalWidth/(2*reservoirScale))` by
+ * `floor(internalHeight/(2*reservoirScale))`). A restore is rejected if they
+ * don't match the live grid.
  * The arrays themselves are the verbatim GPU-buffer u32 contents (which the engine
  * floors to a 256-byte minimum, so the array length is the true buffer length, NOT
  * necessarily `halfW*halfH*strideU32` — that exact-fit holds only above the floor).
  */
 export interface RestirGISnapshot {
-  /** Half-resolution reservoir grid (= floor(W/2) × floor(H/2)). */
+  /** Active GI reservoir grid; see the compatibility formula above. */
   readonly halfW: number;
   readonly halfH: number;
   /** Per-pixel reservoir stride, in u32 values (RESERVOIR_GI_STRIDE). */

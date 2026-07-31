@@ -16,7 +16,7 @@ import { cachedBindGroup } from '../PipelineResourceCache.js';
  *
  * Reads `gNormalDepth` (the G-buffer normal + linear depth packed into
  * `rgba32float`) and the current/previous view–projection matrices from the
- * WalkaroundUBO, then writes `motionVector` (`rgba32float`, full-res) — the
+ * WalkaroundUBO, then writes `motionVector` (`rg32float`, full-res) — the
  * fractional-pixel displacement between the current and previous frame for
  * each visible surface point.
  */

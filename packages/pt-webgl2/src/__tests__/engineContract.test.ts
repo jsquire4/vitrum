@@ -640,7 +640,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           displacementScale: 0.2,
           displacementBias: -0.1,
         },
-      } as never);
+      });
 
       const fallbackWarnings = structured.filter(
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
@@ -935,7 +935,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     e.renderFrame(frame(16));
     expect(e.renderFrame(frame(16)).samplesAccumulated).toBe(2);
 
-    e.updatePrimitive?.('tri', { material: { roughness: 0.25 } } as never);
+    e.updatePrimitive?.('tri', { material: { roughness: 0.25 } });
     const afterGeo = e._debugGeoPack;
     expect(afterGeo?.bvhNodes).toBe(beforeBvhNodes);
     expect(afterGeo?.positions).toBe(beforePositions);
@@ -974,7 +974,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       const beforePositions = e._debugGeoPack?.positions;
 
       e.updatePrimitive?.('tri', { castShadow: false });
-      e.updatePrimitive?.('tri', { castShadow: true, material: { roughness: 0.2 } } as never);
+      e.updatePrimitive?.('tri', { castShadow: true, material: { roughness: 0.2 } });
 
       expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
       expect(e._debugGeoPack?.positions).toBe(beforePositions);
@@ -989,8 +989,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(
         structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild'),
       ).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBeGreaterThan(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(2);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
       expect(
         warn.mock.calls
           .flat()
@@ -1006,7 +1006,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('updates same-topology primitive geometry patches in place without fallback warnings', async () => {
+  it('updates same-topology primitive geometry with staged textures and no fallback warnings', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -1041,12 +1041,12 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
       );
       expect(fallbackWarnings).toHaveLength(0);
-      expect(firstRefreshUploads - initialTextureUploads).toBe(0);
-      expect(createTexture.mock.calls.length - firstRefreshUploads).toBe(0);
-      expect(firstSubImage2D - initialSubImage2D).toBe(2);
-      expect(firstSubImage3D - initialSubImage3D).toBe(1);
-      expect(texSubImage2D.mock.calls.length - firstSubImage2D).toBe(2);
-      expect(texSubImage3D.mock.calls.length - firstSubImage3D).toBe(1);
+      expect(firstRefreshUploads - initialTextureUploads).toBe(3);
+      expect(createTexture.mock.calls.length - firstRefreshUploads).toBe(3);
+      expect(firstSubImage2D - initialSubImage2D).toBe(0);
+      expect(firstSubImage3D - initialSubImage3D).toBe(0);
+      expect(texSubImage2D.mock.calls.length - firstSubImage2D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - firstSubImage3D).toBe(0);
       expect(e._debugGeoPack?.bvhNodes).not.toBe(beforeBvhNodes);
       expect(e._debugGeoPack?.materials).toEqual(beforeMaterials);
       expect(e._debugGeoPack?.positions[0]).toBeCloseTo(2, 6);
@@ -1071,7 +1071,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('rewrites same-dimension primitive topology patches into resident scene textures', async () => {
+  it('rewrites same-dimension primitive topology through staged scene textures', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -1099,9 +1099,9 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
       );
       expect(fallbackWarnings).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(5);
-      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(6);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(0);
       const scene = e.getScene?.();
       const prim = scene?.primitives[0];
       expect(prim?.kind).toBe('mesh');
@@ -1227,7 +1227,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           roughness: 0.45,
           baseColorMap: { handle },
         },
-      } as never);
+      });
 
       const fallbackWarnings = structured.filter(
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
@@ -1307,7 +1307,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           baseColorMap: { handle: baseMap },
           roughnessMap: { handle: roughnessMap },
         },
-      } as never);
+      });
 
       expect(
         structured.filter((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild'),
@@ -1468,7 +1468,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           roughness: 0.5,
           baseColorMap: { handle: largerMap },
         },
-      } as never);
+      });
 
       const fallbackWarnings = structured.filter(
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
@@ -1548,7 +1548,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           roughnessMap: { handle: roughnessMap },
           metallicMap: { handle: metallicMap },
         },
-      } as never);
+      });
 
       const fallbackWarnings = structured.filter(
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
@@ -1629,7 +1629,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           roughnessMap: undefined,
           metallicMap: undefined,
         },
-      } as never);
+      });
 
       const fallbackWarnings = structured.filter(
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
@@ -1703,7 +1703,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           material: {
             baseColorMap: { handle: unreadableMap },
           },
-        } as never),
+        }),
       ).toThrow(/authored material texture during updatePrimitive is not CPU-readable/);
 
       expect(
@@ -1781,10 +1781,9 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
       );
       expect(fallbackWarnings).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
       const materialRowUploads = texSubImage2D.mock.calls.slice(initialSubImage2D);
-      expect(materialRowUploads.length).toBeGreaterThan(1);
-      expect(materialRowUploads.every((call) => call[5] === 1)).toBe(true);
+      expect(materialRowUploads).toHaveLength(0);
       expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.35);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.handle).toBe(handle);
       expect(e._debugGeoPack?.materials[0]?.baseColorMap?.texCoord).toBe(1);
@@ -1833,7 +1832,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
             roughness: 0.5,
             baseColorMap: { handle: opaqueHandle },
           },
-        } as never),
+        }),
       ).toThrow(/authored material texture during updatePrimitive is not CPU-readable/);
 
       expect(
@@ -1862,7 +1861,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('updates vertex-color material flags and attributes with in-place texture writes', async () => {
+  it('updates vertex-color material flags and attributes with staged texture writes', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -1891,9 +1890,9 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
       );
       expect(fallbackWarnings).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(3);
-      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(4);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(0);
     } finally {
       warn.mockRestore();
     }
@@ -1940,15 +1939,15 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         (w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild',
       );
       expect(fallbackWarnings).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(2);
-      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(3);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(0);
     } finally {
       warn.mockRestore();
     }
   });
 
-  it('rewrites dimension-stable primitive list mutations into resident scene textures', async () => {
+  it('rewrites dimension-stable primitive list mutations through staged scene textures', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -1982,9 +1981,9 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(
         structured.filter((w) => w.code === 'pt-webgl2.primitive-list-fallback-rebuild'),
       ).toHaveLength(0);
-      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(6);
-      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      expect(createTexture.mock.calls.length - initialTextureUploads).toBe(7);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(0);
       expect(
         warn.mock.calls
           .flat()
@@ -2468,10 +2467,10 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     e.updateEmitter?.('point-a', { intensity: 4 });
     expect(e.getScene?.()?.emitters[0]?.intensity).toBe(4);
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
-    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(0);
-    expect(texImage2D.mock.calls.length - initialImage2D).toBe(0);
-    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(1);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(1);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBe(1);
+    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
     const afterEmitterBvhNodes = e._debugGeoPack?.bvhNodes;
     const afterEmitterTextureUploads = createTexture.mock.calls.length;
     const afterEmitterDeletes = deleteTexture.mock.calls.length;
@@ -2511,10 +2510,10 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
     expect(e._debugSceneTex?.envWidth).toBe(1);
     expect(e._debugSceneTex?.envHeight).toBe(1);
-    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(0);
-    expect(texImage2D.mock.calls.length - initialImage2D).toBe(0);
-    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(3);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(2);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(2);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBe(2);
+    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
 
     const afterSameSizeSubImage2D = texSubImage2D.mock.calls.length;
     const afterSameSizeImage2D = texImage2D.mock.calls.length;
@@ -2610,10 +2609,10 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(4);
     expect(e._debugSceneTex?.meshLightCount).toBe(2);
     expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
-    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(0);
-    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(0);
-    expect(texImage2D.mock.calls.length - initialImage2D).toBe(0);
-    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(3);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(3);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(3);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBe(3);
+    expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
   });
 
   it('updatePrimitive material fast path preserves mesh-area folded emissive radiance', async () => {
@@ -2624,7 +2623,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 1, 1]);
     expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(2);
 
-    e.updatePrimitive?.('panel', { material: { roughness: 0.25 } } as never);
+    e.updatePrimitive?.('panel', { material: { roughness: 0.25 } });
 
     expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
     expect(e._debugGeoPack?.positions).toBe(beforePositions);
@@ -2673,7 +2672,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(() =>
         e.updatePrimitive?.('target', {
           material: { roughness: 0.2 },
-        } as never),
+        }),
       ).not.toThrow();
       expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.2);
     } finally {

@@ -160,8 +160,10 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // window in the canonical point/spot helper.
     // Abbe-derived Cauchy IOR is anchored at the authored Fraunhofer d-line,
     // physically floored at one, and accepts every finite-positive Abbe value.
-    expect(digest).toBe('67c51df484fdb78e8944322b8d08538ea8c9cb0608ccab1f7c5ccf65eb975de8');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(214278);
+    // Re-pinned 2026-07-30: lite environment radiance now crosses the same
+    // finite-f32 scaling helper as the full-tier transport paths.
+    expect(digest).toBe('fc2a163b14365a13d9d88f34b675842032de570a59a923e0cffb56698c1d48e2');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(233204);
   });
 });
 
@@ -241,7 +243,10 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dDirAD = textureLoad(liteLightTex, vec2i(i32(dBase), 0), 0);');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dIrrMean = textureLoad(liteLightTex, vec2i(i32(dBase + 1u), 0), 0);');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY))');
+    const code = PT_WEBGPU_TRACE_LITE_WGSL.replace(/\s+/g, ' ');
+    expect(code).toContain(
+      'dirShadowDisabled || !traceAny(shadowRay, ptRayTMin(), INFINITY)',
+    );
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('directLi = directLi + throughput * brdf * nDotL * dirIrrOut;');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('fn sampleSky');
   });
@@ -269,14 +274,17 @@ describe('pt-webgpu lite WGSL contract', () => {
 
   it('suppresses the raw environment miss after an MIS-accounted BSDF connection', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toMatch(
-      /if \(!hit\.didHit\) \{[\s\S]*?if \(!prevSampleAllowsAreaMis\) \{[\s\S]*?radiance = radiance \+ throughput \* envContribution;[\s\S]*?\}\s*break;/,
+      /if \(!hit\.didHit\) \{[\s\S]*?if \(!prevSampleAllowsAreaMis\) \{[\s\S]*?radiance = radiance \+ throughput \*\s*ptScaleEnvironmentRadiance\(envContribution, 1\.0\);[\s\S]*?\}\s*break;/,
     );
     const rawMissAdds = (
       PT_WEBGPU_TRACE_LITE_WGSL.match(
-        /radiance = radiance \+ throughput \* envContribution;/g,
+        /radiance = radiance \+ throughput \*\s*ptScaleEnvironmentRadiance\(envContribution, 1\.0\);/g,
       ) ?? []
     ).length;
     expect(rawMissAdds).toBe(1);
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain(
+      'radiance = radiance + throughput * envContribution;',
+    );
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
       'radiance = radiance + bsdfEnvironmentConnectionContribution(',
     );

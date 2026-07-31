@@ -131,7 +131,8 @@ const PROCEDURAL_SKY_ENVIRONMENT_KEYS = exhaustiveKnownKeys<ProceduralSkyEnviron
 ]);
 const NONE_ENVIRONMENT_KEYS = exhaustiveKnownKeys<NoneEnvironment>()(['kind']);
 
-const MATERIAL_KEYS = exhaustiveKnownKeys<MaterialSpec>()([
+/** @internal Exhaustive material-patch schema shared with patchScene. */
+export const MATERIAL_SPEC_KEYS = exhaustiveKnownKeys<MaterialSpec>()([
   'baseColor', 'roughness', 'metallic', 'emissive', 'emissiveIntensity',
   'shadingModel', 'alphaMode', 'alphaCutoff', 'opacity', 'doubleSided',
   'transmission', 'ior', 'attenuationColor', 'attenuationDistance', 'thickness',
@@ -157,7 +158,9 @@ const TEXTURE_REF_KEYS = exhaustiveKnownKeys<TextureRef>()([
 const UV_TRANSFORM_KEYS = exhaustiveKnownKeys<UvTransform>()([
   'offset', 'scale', 'rotation',
 ]);
-const SURFACE_LAYER_KEYS = exhaustiveKnownKeys<SurfaceAbsorptionLayer>()([
+/** @internal Exhaustive layered-material patch schema shared with patchScene. */
+export const SURFACE_ABSORPTION_LAYER_KEYS =
+  exhaustiveKnownKeys<SurfaceAbsorptionLayer>()([
   'transmission', 'roughness', 'normalMap', 'normalScale',
 ]);
 const THIN_FILM_STACK_KEYS = exhaustiveKnownKeys<ThinFilmStack>()([
@@ -263,6 +266,45 @@ function assertNonNegative(value: unknown, path: string): asserts value is numbe
 function assertPositive(value: unknown, path: string): asserts value is number {
   assertFinite(value, path);
   if (!(value > 0)) failRange(path, `must be > 0 (got ${value})`);
+}
+
+/**
+ * Validate the exact binary32 result of a non-negative RGB×scalar source.
+ *
+ * The individual operands are validated immediately before this helper. That
+ * is not sufficient: two finite, representable operands can still overflow
+ * their product or make a positive non-black source disappear completely when
+ * the renderer publishes it as f32.
+ */
+function assertRgbScaleEnvelopeFloat32(
+  value: readonly [number, number, number],
+  scale: number,
+  path: string,
+): void {
+  const packedValue: readonly [number, number, number] = [
+    Math.fround(value[0]),
+    Math.fround(value[1]),
+    Math.fround(value[2]),
+  ];
+  const packedScale = Math.fround(scale);
+  const scaled: readonly [number, number, number] = [
+    Math.fround(packedValue[0] * packedScale),
+    Math.fround(packedValue[1] * packedScale),
+    Math.fround(packedValue[2] * packedScale),
+  ];
+  if (scaled.some((component) => !Number.isFinite(component))) {
+    failRange(path, 'must remain finite after Float32 RGB×scalar multiplication');
+  }
+  if (
+    packedScale > 0 &&
+    packedValue.some((component) => component > 0) &&
+    scaled.every((component) => component === 0)
+  ) {
+    failRange(
+      path,
+      'must not underflow a positive non-black source completely to zero after Float32 multiplication',
+    );
+  }
 }
 
 function assertComputedPositiveFloat32(value: number, path: string): void {
@@ -562,7 +604,7 @@ function validateTextureRef(texture: TextureRef, path: string): void {
 
 function validateSurfaceLayer(layer: SurfaceAbsorptionLayer, path: string): void {
   assertRecord(layer, path);
-  assertKnownKeys(layer, path, SURFACE_LAYER_KEYS);
+  assertKnownKeys(layer, path, SURFACE_ABSORPTION_LAYER_KEYS);
   assertVecInRange(layer.transmission, 3, `${path}.transmission`, 0, 1);
   if (layer.roughness !== undefined) assertRange(layer.roughness, `${path}.roughness`, 0, 1);
   if (layer.normalMap !== undefined) validateTextureRef(layer.normalMap, `${path}.normalMap`);
@@ -592,13 +634,20 @@ function validateThinFilmStack(stack: ThinFilmStack, path: string): void {
 
 export function validateMaterialSpec(material: MaterialSpec, path = 'material'): void {
   assertRecord(material, path);
-  assertKnownKeys(material, path, MATERIAL_KEYS);
+  assertKnownKeys(material, path, MATERIAL_SPEC_KEYS);
   assertVecInRange(material.baseColor, 3, `${path}.baseColor`, 0, 1);
   assertRange(material.roughness, `${path}.roughness`, 0, 1);
   assertRange(material.metallic, `${path}.metallic`, 0, 1);
   if (material.emissive !== undefined) assertVecNonNegative(material.emissive, 3, `${path}.emissive`);
   if (material.emissiveIntensity !== undefined) {
     assertNonNegative(material.emissiveIntensity, `${path}.emissiveIntensity`);
+  }
+  if (material.emissive !== undefined) {
+    assertRgbScaleEnvelopeFloat32(
+      material.emissive,
+      material.emissiveIntensity ?? 1,
+      `${path}.emissive×emissiveIntensity`,
+    );
   }
   if (material.shadingModel !== undefined) {
     assertEnum(material.shadingModel, `${path}.shadingModel`, ['pbr', 'unlit']);
@@ -1375,6 +1424,11 @@ function validateEmitter(emitter: SceneEmitter, path: string): void {
   assertNodeId(emitter.id, `${path}.id`);
   assertVecNonNegative(emitter.color, 3, `${path}.color`);
   assertNonNegative(emitter.intensity, `${path}.intensity`);
+  assertRgbScaleEnvelopeFloat32(
+    emitter.color,
+    emitter.intensity,
+    `${path}.color×intensity`,
+  );
   if (emitter.castShadow !== undefined) assertBoolean(emitter.castShadow, `${path}.castShadow`);
 
   switch ((emitter as { readonly kind?: unknown }).kind) {

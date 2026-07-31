@@ -100,9 +100,44 @@
 
 export const RESTIR_PT_SHIFT_WGSL = /* wgsl */ `
 fn restirpt_safe_normalize(v: vec3f) -> vec3f {
-  let l = length(v);
-  if (l < 1e-12) { return vec3f(0.0); }
-  return v / l;
+  let scale = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(scale > 0.0) || scale > 3.402823466e38) {
+    return vec3f(0.0);
+  }
+  let scaled = v / scale;
+  return scaled / length(scaled);
+}
+
+fn restirpt_scaled_length(v: vec3f) -> f32 {
+  let scale = max(abs(v.x), max(abs(v.y), abs(v.z)));
+  if (!(scale > 0.0) || scale > 3.402823466e38) { return 0.0; }
+  let result = scale * length(v / scale);
+  if (!(result > 0.0) || result > 3.402823466e38) { return 0.0; }
+  return result;
+}
+
+struct RestirPtLogGeometry {
+  value: f32,
+  valid: bool,
+}
+
+fn restirPtReconnectionLogGeometry(xa: vec3f, xs: vec3f, ns: vec3f) -> RestirPtLogGeometry {
+  var out: RestirPtLogGeometry;
+  out.value = 0.0;
+  out.valid = false;
+  let d = xa - xs;
+  let dist = restirpt_scaled_length(d);
+  if (!(dist > 0.0)) { return out; }
+  let direction = restirpt_safe_normalize(d);
+  let normal = restirpt_safe_normalize(ns);
+  if (all(direction == vec3f(0.0)) || all(normal == vec3f(0.0))) { return out; }
+  let cosOut = abs(dot(normal, direction));
+  if (!(cosOut > 0.0) || cosOut > 3.402823466e38) { return out; }
+  let logGeometry = log(cosOut) - 2.0 * log(dist);
+  if (logGeometry != logGeometry || abs(logGeometry) > 3.402823466e38) { return out; }
+  out.value = logGeometry;
+  out.valid = true;
+  return out;
 }
 
 // G(x_a ↔ x_s) = |cos θ_s(a)| / ‖x_a − x_s‖² — the destination-cosine ("half-G")
@@ -111,12 +146,11 @@ fn restirpt_safe_normalize(v: vec3f) -> vec3f {
 // Term EXACTLY. Returns 0 on a degenerate (coincident) edge or a tangent
 // connection (cos θ_s = 0) so the caller treats the shift as non-invertible there.
 fn restirPtReconnectionGeometryTerm(xa: vec3f, xs: vec3f, ns: vec3f) -> f32 {
-  let d = xa - xs;
-  let dist2 = dot(d, d);
-  if (dist2 <= 0.0) { return 0.0; }
-  let dist = sqrt(dist2);
-  let cosOut = abs(dot(ns, d) / dist);
-  return cosOut / dist2;
+  let logGeometry = restirPtReconnectionLogGeometry(xa, xs, ns);
+  if (!logGeometry.valid) { return 0.0; }
+  let result = exp(logGeometry.value);
+  if (!(result > 0.0) || result > 3.402823466e38) { return 0.0; }
+  return result;
 }
 
 // The reconnection-shift Jacobian |∂T/∂·| = G(target edge) / G(source edge)
@@ -129,10 +163,12 @@ fn restirPtReconnectionGeometryTerm(xa: vec3f, xs: vec3f, ns: vec3f) -> f32 {
 // [0.1,10] for real-time temporal stability; the integrator clamps at the call
 // site if it wants that, this returns the true ratio).
 fn restirPtShiftJacobian(xq: vec3f, xr: vec3f, xs: vec3f, ns: vec3f) -> f32 {
-  let gSource = restirPtReconnectionGeometryTerm(xq, xs, ns);
-  if (gSource <= 0.0) { return 0.0; }
-  let gTarget = restirPtReconnectionGeometryTerm(xr, xs, ns);
-  return gTarget / gSource;
+  let logSource = restirPtReconnectionLogGeometry(xq, xs, ns);
+  let logTarget = restirPtReconnectionLogGeometry(xr, xs, ns);
+  if (!logSource.valid || !logTarget.valid) { return 0.0; }
+  let result = exp(logTarget.value - logSource.value);
+  if (!(result > 0.0) || result > 3.402823466e38) { return 0.0; }
+  return result;
 }
 
 // |dω_a / dA_s| at a pre-reconnection vertex x_a, MEASURED off the shift geometry
@@ -149,12 +185,12 @@ fn restirPtShiftJacobian(xq: vec3f, xr: vec3f, xs: vec3f, ns: vec3f) -> f32 {
 // degenerate edge.
 fn restirPtSolidAngleAreaDeriv(xa: vec3f, xs: vec3f, ts: vec3f, tt: vec3f) -> f32 {
   let d = xs - xa;
-  let dist = length(d);
-  if (dist < 1e-8) { return 0.0; }
-  let w = d / dist;
+  let dist = restirpt_scaled_length(d);
+  if (!(dist > 0.0)) { return 0.0; }
+  let w = restirpt_safe_normalize(d);
   let dw_ds = (ts - w * dot(w, ts)) / dist;
   let dw_dt = (tt - w * dot(w, tt)) / dist;
-  return length(cross(dw_ds, dw_dt));
+  return restirpt_scaled_length(cross(dw_ds, dw_dt));
 }
 `;
 

@@ -57,7 +57,7 @@ export const NEE_RESOLVE_MAIN = /* glsl */ `
 
 	void main() {
 
-		ivec2 pixel = ivec2( gl_FragCoord.xy );
+			ivec2 pixel = ivec2( gl_FragCoord.xy - uTileOrigin );
 		vec4 candidate0 = texelFetch( uNeeCandidate0, pixel, 0 );
 		vec4 candidate1 = texelFetch( uNeeCandidate1, pixel, 0 );
 		vec4 candidate2 = texelFetch( uNeeCandidate2, pixel, 0 );
@@ -91,9 +91,20 @@ export const NEE_RESOLVE_MAIN = /* glsl */ `
 		) return;
 
 		float htScale = float( candidateCount );
+		// A valid NEE proposal belongs to a surface/medium path sample, whose
+		// coverage alpha is one. Match the main pass's straight-alpha running
+		// mean exactly; multiplying by opacity alone would over-weight NEE when
+		// prior samples included a transparent background miss.
+		float historyAlpha = texelFetch(
+			uAccumHistory,
+			ivec2( gl_FragCoord.xy ),
+			0
+		).a;
+		float totalAlpha = historyAlpha * ( 1.0 - opacity ) + opacity;
+		float sampleBlendScale = opacity / max( totalAlpha, 1e-20 );
 		if ( fogPreResolved ) {
 
-			pc_fragColor = vec4( candidate2.rgb * htScale, 0.0 );
+				pc_fragColor = vec4( candidate2.rgb * htScale * sampleBlendScale, 0.0 );
 			return;
 
 		}
@@ -170,7 +181,7 @@ export const NEE_RESOLVE_MAIN = /* glsl */ `
 			wavelengthPdf
             ) * misWeight * htScale / lightPdf;
 		if ( ! neeFiniteVec3( resolved ) ) return;
-		pc_fragColor = vec4( resolved, 0.0 );
+			pc_fragColor = vec4( resolved * sampleBlendScale, 0.0 );
 
 	}
 `;

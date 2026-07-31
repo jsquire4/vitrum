@@ -5,6 +5,8 @@ import type {
   MeshPrimitive,
   InstancedMeshPrimitive,
   SkinnedMeshPrimitive,
+  AnalyticPrimitive,
+  AnalyticShape,
   MaterialSpec,
   Mat4,
 } from '@vitrum/core';
@@ -44,6 +46,22 @@ function emptyScene(prims: Scene['primitives']): Scene {
     primitives: prims,
     emitters: [],
     environment: { kind: 'none' },
+  };
+}
+
+function analytic(
+  id: string,
+  shape: AnalyticShape,
+  params: readonly number[],
+  transform?: Mat4,
+): AnalyticPrimitive {
+  return {
+    kind: 'analytic',
+    id,
+    shape,
+    params: Float32Array.from(params),
+    material: MAT,
+    ...(transform != null ? { transform } : {}),
   };
 }
 
@@ -188,5 +206,64 @@ describe('computeSceneAABB', () => {
     expect(aabb.min).toEqual([-0.5, -0.5, -0.5]);
     expect(aabb.max).toEqual([0.5, 0.5, 0.5]);
     expect(aabb.triangleCount).toBe(12);
+  });
+
+  it.each([
+    {
+      shape: 'sphere',
+      params: [2, -1, 3, 0.5],
+      min: [1.5, -1.5, 2.5],
+      max: [2.5, -0.5, 3.5],
+    },
+    {
+      shape: 'box',
+      params: [-1, 2, 0, 1, 2, 3],
+      min: [-2, 0, -3],
+      max: [0, 4, 3],
+    },
+    {
+      shape: 'capsule',
+      params: [-2, 1, 0, 3, -4, 5, 0.25],
+      min: [-2.25, -4.25, -0.25],
+      max: [3.25, 1.25, 5.25],
+    },
+    {
+      shape: 'cylinder',
+      params: [1, 2, 3, 2, 0.5],
+      min: [-1, 1.5, 1],
+      max: [3, 2.5, 5],
+    },
+    {
+      shape: 'h-channel-came',
+      params: [4, 2, 6, 0.5],
+      min: [-2, -3, -1],
+      max: [2, 3, 1],
+    },
+  ] as const)(
+    'measures a native $shape analytic without requiring fallback geometry',
+    ({ shape, params, min, max }) => {
+      const aabb = computeSceneAABB(
+        emptyScene([analytic(`analytic-${shape}`, shape, params)]),
+      );
+      expect(aabb.min).toEqual(min);
+      expect(aabb.max).toEqual(max);
+      expect(aabb.triangleCount).toBe(0);
+    },
+  );
+
+  it('transforms native analytic bounds into world space', () => {
+    // Scale sphere bounds by (2,3,4), then translate by (10,-5,2).
+    // prettier-ignore
+    const transform = asMat4([
+      2,0,0,0,
+      0,3,0,0,
+      0,0,4,0,
+      10,-5,2,1,
+    ]);
+    const aabb = computeSceneAABB(
+      emptyScene([analytic('scaled-sphere', 'sphere', [0, 0, 0, 1], transform)]),
+    );
+    expect(aabb.min).toEqual([8, -8, -2]);
+    expect(aabb.max).toEqual([12, -2, 6]);
   });
 });

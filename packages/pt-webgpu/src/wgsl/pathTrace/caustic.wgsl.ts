@@ -85,15 +85,28 @@ fn mneeFacetFromIdentity(triIndex: u32, instanceIndex: u32) -> MneeFacetProposal
   let a = materialTexturePointToWorld(positions[tri.x].xyz, instanceIndex);
   let b = materialTexturePointToWorld(positions[tri.y].xyz, instanceIndex);
   let c = materialTexturePointToWorld(positions[tri.z].xyz, instanceIndex);
-  let areaVector = cross(b - a, c - a);
-  let areaVectorLength = length(areaVector);
-  if (!(areaVectorLength > 1e-10)) { return proposal; }
+  let edge1 = b - a;
+  let edge2 = c - a;
+  let areaMeasure = measureAreaVector(edge1, edge2, 0.5);
+  if (areaMeasure.valid == 0u) { return proposal; }
 
   proposal.valid = 1u;
   proposal.triIndex = triIndex;
   proposal.instanceIndex = instanceIndex;
-  proposal.p = (a + b + c) / 3.0;
-  proposal.n = areaVector / areaVectorLength;
+  let positionScale = max(
+    max(abs(a.x), max(abs(a.y), abs(a.z))),
+    max(
+      max(abs(b.x), max(abs(b.y), abs(b.z))),
+      max(abs(c.x), max(abs(c.y), abs(c.z))),
+    ),
+  );
+  proposal.p = vec3f(0.0);
+  if (positionScale > 0.0 && positionScale <= 3.402823e38) {
+    proposal.p =
+      ((a / positionScale) + (b / positionScale) + (c / positionScale)) *
+      (positionScale / 3.0);
+  }
+  proposal.n = areaMeasure.normal;
   return proposal;
 }
 
@@ -822,6 +835,7 @@ struct MneeEmitterSample {
   kind: u32,
   sourceMode: u32,
   shadowDisabled: u32,
+  twoSided: u32,
   position: vec3f,
   towardLight: vec3f,
   radiance: vec3f,
@@ -844,6 +858,7 @@ fn mneeSampleEmitter(
   out.kind = MNEE_EMITTER_POINT;
   out.sourceMode = MNEE_SOURCE_FINITE;
   out.shadowDisabled = 0u;
+  out.twoSided = 0u;
   out.position = vec3f(0.0);
   out.towardLight = vec3f(0.0, 1.0, 0.0);
   out.radiance = vec3f(0.0);
@@ -928,21 +943,23 @@ fn mneeSampleEmitter(
     let radianceAndShape = rectAreaLights[base + 3u];
     let xi = vec2f(rand_f32(rng), rand_f32(rng));
     let isDisc = abs(radianceAndShape.w - 1.0) < 0.5;
+    let areaMeasure = measureAreaVector(
+      u, v, select(4.0, PI, isDisc),
+    );
     if (isDisc) {
       let disc = concentricDiscSample(xi * 2.0 - vec2f(1.0));
       out.position = centerAndShadow.xyz + u * disc.x + v * disc.y;
-      out.area = PI * length(cross(u, v));
     } else {
       out.position = centerAndShadow.xyz +
         u * (xi.x * 2.0 - 1.0) + v * (xi.y * 2.0 - 1.0);
-      out.area = 4.0 * length(cross(u, v));
     }
+    out.area = areaMeasure.area;
     out.kind = MNEE_EMITTER_AREA;
     out.areaU = u;
     out.areaV = v;
     out.radiance = radianceAndShape.rgb;
     out.shadowDisabled = select(0u, 1u, centerAndShadow.w > 0.5);
-    out.valid = select(0u, 1u, out.area > 0.0);
+    out.valid = areaMeasure.valid;
     return out;
   }
   cursor = cursor + rectCount;
@@ -962,14 +979,16 @@ fn mneeSampleEmitter(
   out.position = a * wa + b * wb + c * wc;
   out.areaU = b - a;
   out.areaV = c - a;
-  out.area = 0.5 * length(cross(out.areaU, out.areaV));
+  let areaMeasure = measureAreaVector(out.areaU, out.areaV, 0.5);
+  out.area = areaMeasure.area;
   out.radiance = sampleMeshAreaLightRadiance(
     index, vec3f(wa, wb, wc), out.position,
   );
   out.shadowDisabled = select(
     0u, 1u, meshAreaLights[base + 3u].w > 0.5,
   );
-  out.valid = select(0u, 1u, out.area > 0.0);
+  out.twoSided = select(0u, 1u, meshAreaLightIsTwoSided(index));
+  out.valid = areaMeasure.valid;
   return out;
 }
 
@@ -995,10 +1014,18 @@ fn mneeEmitterScalarFactor(
     );
   }
   if (emitter.kind == MNEE_EMITTER_AREA) {
-    let lightNormal = safe_normalize(cross(emitter.areaU, emitter.areaV));
+    let areaMeasure = measureAreaVector(
+      emitter.areaU, emitter.areaV, 1.0,
+    );
+    if (areaMeasure.valid == 0u) { return 0.0; }
+    let lightNormal = areaMeasure.normal;
+    let signedCosine = dot(
+      lightNormal, safe_normalize(firstVertex - emitter.position),
+    );
     return select(
-      0.0, 1.0,
-      dot(lightNormal, safe_normalize(firstVertex - emitter.position)) > 1e-5,
+      0.0,
+      1.0,
+      select(signedCosine > 1e-5, abs(signedCosine) > 1e-5, emitter.twoSided != 0u),
     );
   }
   return 1.0;
@@ -1390,12 +1417,12 @@ fn manifoldNeeContribution(
 
 // ── SPPM gather (causticStrategy == 2) ────────────────────────────────────────
 // A4-progressive: true Hachisuka & Jensen 2009 SPPM with per-pixel progressive
-// statistics (τ, R², N).  The photon-emission pass (sppmEmitPhotons in
+// statistics (τ, linear R, N). The photon-emission pass (sppmEmitPhotons in
 // sppmBindings.wgsl.ts / the separate sppmPhotonPass pipeline) runs BEFORE the
 // megakernel each frame and re-populates the hash grid with fresh photons.
 // This update calls sppmUpdateSurfaceProgressive which:
-//   (1) reads surface (τ, R², N) from sppmPixelStats[pixelIndex*2],
-//   (2) collects M new photons within the current radius sqrt(R²),
+//   (1) reads surface (τ, R, N) from sppmPixelStats[pixelIndex*2],
+//   (2) collects M new photons within the current radius R,
 //   (3) applies the Hachisuka §4 update: N'=N+αM, ratio=N'/(N+M),
 //       R'²=R²·ratio, τ'=(τ+Φ_M)·ratio,
 //   (4) writes (τ', R'², N') back. Readback is a separate final-kernel step.

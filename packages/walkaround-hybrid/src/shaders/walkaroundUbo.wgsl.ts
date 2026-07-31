@@ -19,7 +19,10 @@ export const WALKAROUND_UBO_WGSL = /* wgsl */ `
 // ============================================================
 const PI = 3.14159265358979;
 const INV_PI = 0.31830988618;
-const INFINITY = 1e20;
+// Largest finite f32. This constant is used both as an open upper bound for
+// finiteness checks and as an effectively unbounded traversal distance; the
+// former 1e20 rejected valid large-world values.
+const INFINITY = 3.402823466e38;
 const BVH_STACK_DEPTH = 60u;
 const LEAFNODE_FLAG = 0xFFFF0000u;
 
@@ -162,7 +165,7 @@ struct WalkaroundUBO {
   // risGiNrc pipeline and allocating its resources at engine construction;
   // no shader ever read the former UBO flag. Keep only an explicit zero ABI
   // pad so the following vec3 remains at its stable offset.
-  _abiPadNrcGate:             u32,     //  offset 364
+  restirReservoirScale:       u32,     //  offset 364
   // ── ReGIR (Boksansky 2021 grid-based reservoirs) — DI light-SELECTION
   // grid that decouples per-pixel cost from light count. The grid is co-located
   // in the SAME @group(3) light-tree storage buffer (RIS stays at 16 storage
@@ -178,9 +181,9 @@ struct WalkaroundUBO {
   regirCandidatesPerCell:     u32,     //  offset 400 — M: WRS candidates per sub-reservoir
   regirSurvivorsPerCell:      u32,     //  offset 404 — K: survivors stored per cell
   regirGridFloatOffset:       u32,     //  offset 408 — float offset of the grid region in the combined buffer
-  // Reserved zero ABI word for the retired GRIS toggle. Generalized
-  // reconnection-shift reuse is the sole live path.
-  _abiPadRetiredGrisToggle:  u32,     //  offset 412 — retired structural toggle
+  // Scale-relative secondary-ray origin offset. Reuses the retired GRIS ABI
+  // word without changing the 432-byte layout.
+  rayOriginBias:             f32,     //  offset 412 — 1e-3 at Cornell scale
   sunAngular:                 vec4f,   //  offset 416 — x = direct sun cone radius in radians; y bits = GRIS history epoch; z = generic refractive-caustic gate; w reserved
 };
 
@@ -190,6 +193,79 @@ struct WalkaroundUBO {
 const SG_FLAG_SUN_CAUSTIC: u32 = 1u;   // bit 0
 const SG_FLAG_SKY_APERTURE: u32 = 2u;  // bit 1
 const SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED: u32 = 4u; // bit 2
+
+fn restirReservoirScaleValue() -> u32 {
+  return max(ubo.restirReservoirScale, 1u);
+}
+
+fn restirDiDimensions() -> vec2u {
+  return max(vec2u(1u), ubo.screenSize / restirReservoirScaleValue());
+}
+
+fn restirGiPixelStride() -> u32 {
+  return 2u * restirReservoirScaleValue();
+}
+
+fn restirGiDimensions() -> vec2u {
+  return max(vec2u(1u), ubo.screenSize / restirGiPixelStride());
+}
+
+fn restirDiFullPixel(coord: vec2u) -> vec2u {
+  return min(ubo.screenSize - vec2u(1u), coord * restirReservoirScaleValue());
+}
+
+fn restirGiFullPixel(coord: vec2u) -> vec2u {
+  let stride = restirGiPixelStride();
+  return min(
+    ubo.screenSize - vec2u(1u),
+    coord * stride + vec2u(stride / 2u),
+  );
+}
+
+fn restirDiCoordForFullPixel(pixel: vec2u) -> vec2u {
+  return min(
+    restirDiDimensions() - vec2u(1u),
+    pixel / restirReservoirScaleValue(),
+  );
+}
+
+fn restirGiCoordForFullPixel(pixel: vec2u) -> vec2u {
+  return min(
+    restirGiDimensions() - vec2u(1u),
+    pixel / restirGiPixelStride(),
+  );
+}
+
+fn restirDiIndexForFullPixel(pixel: vec2u) -> u32 {
+  let dims = restirDiDimensions();
+  let coord = restirDiCoordForFullPixel(pixel);
+  return coord.y * dims.x + coord.x;
+}
+
+fn restirGiIndexForFullPixel(pixel: vec2u) -> u32 {
+  let dims = restirGiDimensions();
+  let coord = restirGiCoordForFullPixel(pixel);
+  return coord.y * dims.x + coord.x;
+}
+
+fn walkaroundRayOriginBias() -> f32 {
+  return max(ubo.rayOriginBias, 1.175494351e-38);
+}
+
+fn walkaroundRayEndMargin() -> f32 {
+  return 2.0 * walkaroundRayOriginBias();
+}
+
+fn walkaroundSceneScale() -> f32 {
+  // rayOriginBias is exactly 1e-3 at the canonical Cornell diagonal.
+  return walkaroundRayOriginBias() * 1000.0;
+}
+
+fn walkaroundReconnectMaxDistance() -> f32 {
+  // Preserve the historical 100-unit proxy at Cornell scale while avoiding a
+  // fixed world-domain truncation in tiny or large scenes.
+  return 100.0 * walkaroundSceneScale();
+}
 
 // Emitter geometry term G with a configurable dist² clamp applied at
 // every call site. Use this everywhere instead of inlining

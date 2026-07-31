@@ -43,12 +43,17 @@ describe('ReSTIR-PT / GRIS reconnection-shift Jacobian (general reconnection ver
   it('exports the destination-cosine half-G + the unclamped shift Jacobian ratio', () => {
     // G(x_a ↔ x_s) = |cos θ_s(a)| / ‖x_a − x_s‖² — cosine at the SHARED x_s normal.
     expect(RESTIR_PT_SHIFT_WGSL).toContain('fn restirPtReconnectionGeometryTerm(');
-    expect(RESTIR_PT_SHIFT_WGSL).toContain('let cosOut = abs(dot(ns, d) / dist)');
-    expect(RESTIR_PT_SHIFT_WGSL).toContain('return cosOut / dist2');
+    expect(RESTIR_PT_SHIFT_WGSL).toContain('let cosOut = abs(dot(normal, direction))');
+    expect(RESTIR_PT_SHIFT_WGSL).toContain(
+      'let logGeometry = log(cosOut) - 2.0 * log(dist)',
+    );
     // |∂T/∂·| = G(target)/G(source); UNCLAMPED (hero-stack form) — the GI special
     // case clamps [0.1,10], this returns the true ratio.
     expect(RESTIR_PT_SHIFT_WGSL).toContain('fn restirPtShiftJacobian(');
-    expect(RESTIR_PT_SHIFT_WGSL).toContain('return gTarget / gSource');
+    expect(RESTIR_PT_SHIFT_WGSL).toContain(
+      'let result = exp(logTarget.value - logSource.value)',
+    );
+    expect(RESTIR_PT_SHIFT_WGSL).not.toContain('dot(d, d)');
     expect(RESTIR_PT_SHIFT_WGSL).not.toContain('clamp('); // unclamped, unlike the GI version
   });
 
@@ -57,7 +62,9 @@ describe('ReSTIR-PT / GRIS reconnection-shift Jacobian (general reconnection ver
     // the actual measure-change the validator FD-confirms (mnee-pdf pattern).
     expect(RESTIR_PT_SHIFT_WGSL).toContain('fn restirPtSolidAngleAreaDeriv(');
     expect(RESTIR_PT_SHIFT_WGSL).toContain('let dw_ds = (ts - w * dot(w, ts)) / dist');
-    expect(RESTIR_PT_SHIFT_WGSL).toContain('return length(cross(dw_ds, dw_dt))');
+    expect(RESTIR_PT_SHIFT_WGSL).toContain(
+      'return restirpt_scaled_length(cross(dw_ds, dw_dt))',
+    );
   });
 
   it('harness composes the core byte-identically + writes [J, gSource, gTarget] and the SA derivs', () => {
@@ -83,6 +90,27 @@ describe('ReSTIR-PT / GRIS reconnection-shift Jacobian (general reconnection ver
       // round trip is 1 (Lin 2022 — the reconnection shift is its own inverse form).
       const jInv = shiftJ(xr, xq, xs, ns);
       expect(j * jInv).toBeCloseTo(1, 10);
+    }
+  });
+
+  it('keeps the reconnection Jacobian invariant across tiny and huge uniform world scales', () => {
+    const ns: V3 = [0, 0, 1];
+    const xq: V3 = [0.5, 0.3, 1.0];
+    const xr: V3 = [-0.4, 0.2, 0.8];
+    const xs: V3 = [0.1, -0.05, 0.02];
+    const expected = shiftJ(xq, xr, xs, ns);
+    const scaled = (value: V3, factor: number): V3 => [
+      value[0] * factor,
+      value[1] * factor,
+      value[2] * factor,
+    ];
+    for (const factor of [1e-20, 1e20]) {
+      expect(shiftJ(
+        scaled(xq, factor),
+        scaled(xr, factor),
+        scaled(xs, factor),
+        ns,
+      )).toBeCloseTo(expected, 12);
     }
   });
 

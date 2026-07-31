@@ -19,6 +19,7 @@
 import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 import { IRR_CELL, VIS_CELL } from '../ddgiAtlasLayout.js';
+import { DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED } from '../probeState.js';
 import { DDGI_SH_WGSL } from './ddgiSH.wgsl.js';
 
 // Common header shared by both shaders. IRR_CELL / VIS_CELL are interpolated
@@ -32,6 +33,8 @@ const RAYS_PER_PROBE: u32 = ${RAYS_PER_PROBE}u;
 const IRR_CELL:       u32 = ${IRR_CELL}u;
 const VIS_CELL:       u32 = ${VIS_CELL}u;
 const DDGI_MISS_DISTANCE: f32 = 1.0e19;
+const DDGI_VISIBILITY_MAX_MOMENT_DISTANCE: f32 = 255.0;
+const DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED: f32 = ${DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED};
 
 struct ProbeRay {
   hitRadiance: vec3f,
@@ -132,11 +135,13 @@ fn probeUpdateBlendIrradiance(
   // dimmed merely because many of its rays were rejected.
   var accum = vec3f(0.0);
   var validRayCount = 0u;
+  let minHitDistance =
+    gridParams.spacing * DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED;
   for (var r = 0u; r < RAYS_PER_PROBE; r = r + 1u) {
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
     let ray = rayResults[rIdx];
-    if (ray.hitDistance < 0.05) { continue; }   // occluded direction -> 0
+    if (ray.hitDistance < minHitDistance) { continue; }
     validRayCount = validRayCount + 1u;
     let Y = ddgiShBasis(ray.direction);
     accum = accum + ray.hitRadiance * Y[k];
@@ -219,6 +224,15 @@ fn probeUpdateBlendVisibility(
   var newDepthSq = 0.0;
   var totalWeight = 0.0;
   var validRayCount = 0u;
+  // Receivers only interpolate the eight probes surrounding their cell. A
+  // finite distance comfortably beyond that neighbourhood represents an open
+  // ray without overflowing rgba16float's second-moment lane.
+  let missDepth = min(
+    DDGI_VISIBILITY_MAX_MOMENT_DISTANCE,
+    gridParams.spacing * 16.0,
+  );
+  let minHitDistance =
+    gridParams.spacing * DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED;
   for (var r = 0u; r < RAYS_PER_PROBE; r = r + 1u) {
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
@@ -235,12 +249,12 @@ fn probeUpdateBlendVisibility(
     // a 0-mean/0-variance entry propagates corrupt depth into trilinear
     // neighbours (the bordered atlas samples in zero corners of an
     // inside-box probe cell). Skip these the same way as the irradiance pass.
-    if (ray.hitDistance < 0.05) { continue; }
-    // Sky misses are encoded by the ray pass as a huge sentinel distance
-    // (~1e20). Treat them as "no occluder sample" for visibility moments:
-    // including them drives mean/depth² to infinity in the rgba16float atlas,
-    // which makes the Chebyshev receiver permanently transparent.
-    if (ray.hitDistance >= DDGI_MISS_DISTANCE) { continue; }
+    if (ray.hitDistance < minHitDistance) { continue; }
+    // Sky misses are valid open-direction observations. Excluding them
+    // conditions mixed hit/miss angular cells only on blockers and
+    // over-occludes silhouettes. Substitute the finite far-open depth above
+    // so both the first and second moments remain representable in f16.
+    let d = select(ray.hitDistance, missDepth, ray.hitDistance >= DDGI_MISS_DISTANCE);
     validRayCount = validRayCount + 1u;
     let w = max(0.0, dot(dir, ray.direction));
     if (w <= 0.0) { continue; }
@@ -248,7 +262,6 @@ fn probeUpdateBlendVisibility(
     // depth/depth² accumulation (Chebyshev shadow visibility). pow(50) was too
     // narrow for a 192-ray budget (most atlas pixels had zero aligned rays).
     let weight  = pow(w, 2.0);
-    let d       = ray.hitDistance;
     newDepth   = newDepth + d * weight;
     newDepthSq = newDepthSq + d * d * weight;
     totalWeight = totalWeight + weight;
@@ -257,10 +270,10 @@ fn probeUpdateBlendVisibility(
     newDepth   = newDepth / totalWeight;
     newDepthSq = newDepthSq / totalWeight;
   } else if (validRayCount > 0u) {
-    // The probe has valid finite geometry, but none of those rays align with
-    // this octahedral cell. Preserve the open-direction sentinel.
-    newDepth = 65504.0;
-    newDepthSq = 65504.0;
+    // The probe has valid observations, but none align with this octahedral
+    // cell. Preserve a finite open-direction moment pair.
+    newDepth = missDepth;
+    newDepthSq = missDepth * missDepth;
   } else {
     // Every ray was invalid/miss/backface. Conservative zero avoids turning an
     // embedded or unclassified probe into a permanently open visibility cell.

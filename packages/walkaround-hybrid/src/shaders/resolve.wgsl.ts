@@ -14,7 +14,7 @@
  *   gap pixel:    (px + py) & 1u != frameParity
  *
  * Motion vector / reprojection:
- *   The shader accepts a motion-vector texture (rgba32float, rg stores
+ *   The shader accepts a motion-vector texture (rg32float stores
  *   previous-minus-current framebuffer-pixel delta). If the binding is present and the motion-vector
  *   magnitude is non-zero, the previous-frame radiance is sampled at
  *   currentPixel + round(motion).

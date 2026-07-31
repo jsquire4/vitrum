@@ -114,8 +114,16 @@ function length3(v: Vec3): number {
 
 /** Mirror of safe_normalize (common.wgsl.ts:56). */
 export function safeNormalize(v: Vec3): Vec3 {
-  const len = length3(v);
-  return len < 1e-8 ? [0, 1, 0] : scale(v, 1 / len);
+  const componentScale = Math.max(Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2]));
+  if (!(componentScale > 0) || componentScale > 3.402823e38) {
+    return [0, 1, 0];
+  }
+  const scaled: Vec3 = [
+    v[0] / componentScale,
+    v[1] / componentScale,
+    v[2] / componentScale,
+  ];
+  return scale(scaled, 1 / length3(scaled));
 }
 
 function maxComp(v: Vec3): number {
@@ -123,17 +131,16 @@ function maxComp(v: Vec3): number {
 }
 
 // ---------------------------------------------------------------------------
-// safeInvDir — mirror of SAFE_INV_DIR_WGSL (shared-bvh, Williams 2005). For an exact-zero
-// d.x, returns +1e30 (matching the WGSL `select(-1e30, 1e30, d.x >= 0.0)`
-// form — `+0 >= 0` is true in IEEE 754). The earlier `Math.sign(x) * 1e30`
-// form returned 0 for x=0, collapsing the slab test and giving false
-// positives for axis-aligned rays whose origin sat outside the parallel slab.
+// safeInvDir — mirror of SAFE_INV_DIR_WGSL (shared-bvh, Williams 2005).
+// Exact zero and reciprocal overflow saturate to signed f32::MAX. This avoids
+// 0*Inf slab NaNs without imposing the old ±1e30 reciprocal ceiling.
 // ---------------------------------------------------------------------------
 
 function safeInvDir(d: Vec3): Vec3 {
+  const maxFiniteF32 = 3.402823e38;
   function safeInv(x: number): number {
-    if (Math.abs(x) < 1e-30) return x >= 0 ? 1e30 : -1e30;
-    return 1.0 / x;
+    if (x === 0) return x >= 0 ? maxFiniteF32 : -maxFiniteF32;
+    return Math.max(-maxFiniteF32, Math.min(maxFiniteF32, 1.0 / x));
   }
   return [safeInv(d[0]), safeInv(d[1]), safeInv(d[2])];
 }
@@ -143,12 +150,12 @@ function safeInvDir(d: Vec3): Vec3 {
 // `mollerTrumboreCore` (shared-bvh/wgsl/bvhIntersect.wgsl.ts, MOLLER_TRUMBORE_WGSL),
 // which pt-webgpu's `intersectTriangle` (common.wgsl.ts) now wraps.
 //
-// Returns { t, u, v } or null on miss. `triEps` is BOTH the coplanarity floor
-// (|det| < triEps ⇒ parallel ⇒ miss) AND the signed barycentric edge tolerance
-// (u/v/w < -triEps ⇒ miss). The earlier mirror used the algebraically-equivalent
+// Returns { t, u, v } or null on miss. Determinant rejection is a normalized
+// angular test, barycentric tolerance is dimensionless, and triEps is solely
+// the caller-owned ray-distance floor. The earlier mirror used the algebraically-equivalent
 // h/s/q factoring with strict u<0||u>1 / v<0||u+v>1 tests; this canonical form
 // uses n = cross(e1,e2); det = -dot(dir,n) and the DAO = cross(AO,dir) barycentric
-// solve with triEps-tolerant edge tests, matching the WGSL it validates.
+// solve with signed edge tolerance, matching the WGSL it validates.
 // Default 1e-5 matches the host's params.triIntersectEpsilon (index.ts:489).
 // ---------------------------------------------------------------------------
 
@@ -162,7 +169,13 @@ function intersectTriangleMT(
   const e2 = sub(v2, v0);
   const n  = cross(e1, e2);
   const det = -dot(rayDir, n);
-  if (Math.abs(det) < triEps) return null;
+  const normalLength = Math.hypot(n[0], n[1], n[2]);
+  const directionLength = Math.hypot(rayDir[0], rayDir[1], rayDir[2]);
+  if (
+    normalLength <= 1e-15 ||
+    directionLength <= 1e-15 ||
+    Math.abs(det) / (normalLength * directionLength) <= 1e-7
+  ) return null;
   const invDet = 1.0 / det;
   const AO  = sub(rayOrigin, v0);
   const DAO = cross(AO, rayDir);
@@ -170,7 +183,13 @@ function intersectTriangleMT(
   const v = -dot(e1, DAO) * invDet;
   const t = dot(AO, n) * invDet;
   const w = 1.0 - u - v;
-  if (u < -triEps || v < -triEps || w < -triEps || t < triEps) return null;
+  const barycentricEpsilon = 1e-6;
+  if (
+    u < -barycentricEpsilon ||
+    v < -barycentricEpsilon ||
+    w < -barycentricEpsilon ||
+    t < Math.max(triEps, 0)
+  ) return null;
   return { t, u, v };
 }
 
@@ -322,9 +341,16 @@ function _schlickFresnel(f0: number, cos: number): number {
 // ---------------------------------------------------------------------------
 
 function _powerHeuristic(a: number, b: number): number {
-  const a2 = a * a;
-  const b2 = b * b;
-  return a2 / Math.max(a2 + b2, 1e-6);
+  if (!(a >= 0) || !(b >= 0) || a > 3.402823466e38 || b > 3.402823466e38) {
+    return 0;
+  }
+  const pdfScale = Math.max(a, b);
+  if (!(pdfScale > 0)) return 0;
+  const scaledA = a / pdfScale;
+  const scaledB = b / pdfScale;
+  const a2 = scaledA * scaledA;
+  const b2 = scaledB * scaledB;
+  return a2 / (a2 + b2);
 }
 
 // ---------------------------------------------------------------------------

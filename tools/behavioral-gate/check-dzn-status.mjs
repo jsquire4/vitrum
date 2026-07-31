@@ -2,6 +2,8 @@
 // @ts-check
 // Verifies committed WSL dzn behavioral-gate status artifacts.
 
+import { validateDznStatusNumericFields } from "./dznStatusNumericValidation.mjs";
+
 /** @typedef {Record<string, any>} JsonRecord */
 /**
  * @typedef {JsonRecord & {
@@ -317,9 +319,10 @@ const EXPECTED = /** @type {ExpectedStatus[]} */ ([
     goldenVariant: "dzn-full",
     verdict: "PASS",
     exitStatus: 0,
-    totalConfigs: 2,
+    totalConfigs: 3,
     failures: 0,
     configs: [
+      { label: "pt/sobol-bdpt", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
       { label: "pt/bdpt", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
       { label: "pt/spectral+bdpt", verdict: "PASS", rawStatus: "OK", tier: "full", minLuminance: 0.005 },
     ],
@@ -571,6 +574,7 @@ const coveredLabels = new Set();
 for (const expected of EXPECTED) {
   const url = new URL(`../../${expected.path}`, import.meta.url);
   const status = JSON.parse(await Deno.readTextFile(url));
+  validateDznStatusNumericFields(status, expected);
 
   if (status.harness !== "behavioral-gate:dzn") fail(`${expected.path}: harness mismatch`);
   if (status.verdict !== expected.verdict) fail(`${expected.path}: verdict must be ${expected.verdict}, got ${status.verdict}`);

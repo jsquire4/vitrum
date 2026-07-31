@@ -210,7 +210,10 @@ fn oitLayerEnvSampleRadiance(
     wo,
     wi,
   );
-  return envRadiance(wi) * max(payload.envMapIntensity, 0.0) * brdf;
+  return walkaroundScaleEnvironmentRadiance(
+    envRadiance(wi),
+    payload.envMapIntensity,
+  ) * brdf;
 }
 
 fn oitFiniteVec3(value: vec3f) -> bool {
@@ -407,11 +410,11 @@ fn oitLayerAreaEmitterNEE(
       let dist = sqrt(dist2);
       let wi = toL / dist;
       let nDotL = max(0.0, dot(normal, wi));
-      let nlDotL = max(0.0, dot(-ls.normal, wi));
+      let nlDotL = emitterTriCosineTowardReceiver(e, -wi);
       if (nDotL <= 0.0 || nlDotL <= 0.0) { continue; }
 
       var shadowT = vec3f(1.0);
-      if (e.castShadowDisabled < 0.5) {
+      if (!emitterTriCastShadowDisabled(e)) {
         let shadowOrigin = oitOffsetRayOrigin(hitPos, geoNormal, wi);
         shadowT = oitShadowTransmittance(
           shadowOrigin,
@@ -469,11 +472,15 @@ fn oitLayerRadiance(
   );
 
   let emitCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
-  let emissive = sampleEmissiveMap(
-    hit.indices.w,
-    hit.uv,
-    uv1,
-    textureLoad(bvh_emissive, vec2i(emitCoord), 0).rgb,
+  let emissive = select(
+    vec3f(0.0),
+    sampleEmissiveMap(
+      hit.indices.w,
+      hit.uv,
+      uv1,
+      textureLoad(bvh_emissive, vec2i(emitCoord), 0).rgb,
+    ),
+    materialEmissionSideAdmittedForHit(hit),
   );
   let bakedIrradiance = sampleLightMap(hit);
   let baked = payload.albedo * INV_PI * bakedIrradiance;

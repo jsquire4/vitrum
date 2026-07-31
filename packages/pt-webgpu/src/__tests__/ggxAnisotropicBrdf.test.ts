@@ -3,11 +3,10 @@
  *
  * Tests three properties of the anisotropic GGX implementation in bsdf.wgsl.ts:
  *
- * 1. SELF-CONSISTENCY (sampler vs PDF): Draw N samples from the anisotropic VNDF.
- *    For a correct sampler, E[1/pdf(wi)] approximates the integral of the solid angle
- *    (which equals ~2π for the upper hemisphere for a well-normalised specular lobe).
- *    We check that the importance-weighted estimator agrees with the analytic directional
- *    pdf to within MC tolerance via: |pdf_analytic - pdf_empirical| / pdf_analytic < tol.
+ * 1. SELF-CONSISTENCY (sampler vs PDF): compare a deterministic empirical
+ *    solid-angle histogram against an independently integrated analytic PDF.
+ *    The comparison includes the probability mass of reflected directions
+ *    below the shading hemisphere. A collapsed sampler cannot pass this test.
  *    Tested at anisotropy ∈ {0, 0.5, 0.9}.
  *
  * 2. WHITE-FURNACE HONESTY: anisotropic VNDF sampling collapses the single-scatter
@@ -141,32 +140,110 @@ function grid2D(N: number): Array<[number, number]> {
   return pts;
 }
 
-// ── Self-consistency test: E[pdf(wi)/p_empirical] ≈ 1 ─────────────────────────
-// For a perfect sampler, if we draw wi ~ p(wi|wo) and evaluate the analytic PDF,
-// the analytic PDF values should have small variance relative to their mean
-// (i.e. the sampler's distribution matches the PDF). We estimate the coefficient
-// of variation: CV = std(pdf) / mean(pdf) and require it to be small.
-// A random/wrong sampler would give CV >> 1; a consistent sampler gives CV ≈ 0.
-function samplerCv(roughness: number, anisotropy: number, nDotV: number, N: number = 40): number {
+const PDF_MU_BINS = 8;
+const PDF_PHI_BINS = 12;
+
+function directionBin(wi: [number, number, number]): number {
+  const mu = Math.min(1, Math.max(0, wi[2]));
+  const phiRaw = Math.atan2(wi[1], wi[0]);
+  const phi = phiRaw < 0 ? phiRaw + 2 * PI : phiRaw;
+  const muBin = Math.min(PDF_MU_BINS - 1, Math.floor(mu * PDF_MU_BINS));
+  const phiBin = Math.min(PDF_PHI_BINS - 1, Math.floor(phi / (2 * PI) * PDF_PHI_BINS));
+  return muBin * PDF_PHI_BINS + phiBin;
+}
+
+interface DirectionDistribution {
+  readonly probabilities: Float64Array;
+  readonly upperHemisphereMass: number;
+  readonly occupiedBins: number;
+}
+
+/**
+ * Empirical conditional distribution of accepted upper-hemisphere directions.
+ * `upperHemisphereMass` retains the unconditional acceptance probability so a
+ * sampler with the right conditional shape but the wrong rejection rate fails.
+ */
+function sampledDirectionDistribution(
+  roughness: number,
+  anisotropy: number,
+  nDotV: number,
+  N: number = 160,
+): DirectionDistribution {
   const [ax, ay] = axAy(roughness, anisotropy);
   const sinV = Math.sqrt(Math.max(0, 1 - nDotV * nDotV));
   const wo: [number, number, number] = [sinV, 0, nDotV];
-
-  const pts = grid2D(N);
-  const pdfValues: number[] = [];
-
-  for (const [u1, u2] of pts) {
+  const counts = new Float64Array(PDF_MU_BINS * PDF_PHI_BINS);
+  let accepted = 0;
+  for (const [u1, u2] of grid2D(N)) {
     const h = sampleVndfAnis(wo, ax, ay, u1, u2);
     const wi = reflect3(scale3(wo, -1), h);
     if (wi[2] <= 1e-5) continue;
-    const p = vndfAnisoPdf(wo, wi, ax, ay);
-    if (p > 0) pdfValues.push(p);
+    counts[directionBin(wi)]! += 1;
+    accepted++;
   }
+  const probabilities = Float64Array.from(
+    counts,
+    (count) => count / Math.max(accepted, 1),
+  );
+  return {
+    probabilities,
+    upperHemisphereMass: accepted / (N * N),
+    occupiedBins: counts.reduce((total, count) => total + (count > 0 ? 1 : 0), 0),
+  };
+}
 
-  if (pdfValues.length < 2) return 999;
-  const mean = pdfValues.reduce((a, b) => a + b, 0) / pdfValues.length;
-  const variance = pdfValues.reduce((a, b) => a + (b - mean) ** 2, 0) / pdfValues.length;
-  return Math.sqrt(variance) / Math.max(mean, 1e-12);
+/**
+ * Independent midpoint integration in (mu=cos(theta), phi), where
+ * dOmega=dmu*dphi. The returned bins are conditional on the upper hemisphere;
+ * `upperHemisphereMass` is the unnormalised integral of the VNDF directional
+ * PDF over that hemisphere.
+ */
+function integratedDirectionDistribution(
+  roughness: number,
+  anisotropy: number,
+  nDotV: number,
+  muSteps: number = 192,
+  phiSteps: number = 384,
+): DirectionDistribution {
+  const [ax, ay] = axAy(roughness, anisotropy);
+  const sinV = Math.sqrt(Math.max(0, 1 - nDotV * nDotV));
+  const wo: [number, number, number] = [sinV, 0, nDotV];
+  const masses = new Float64Array(PDF_MU_BINS * PDF_PHI_BINS);
+  const dMu = 1 / muSteps;
+  const dPhi = 2 * PI / phiSteps;
+  let totalMass = 0;
+  for (let muIndex = 0; muIndex < muSteps; muIndex++) {
+    const mu = (muIndex + 0.5) * dMu;
+    const sinTheta = Math.sqrt(Math.max(0, 1 - mu * mu));
+    for (let phiIndex = 0; phiIndex < phiSteps; phiIndex++) {
+      const phi = (phiIndex + 0.5) * dPhi;
+      const wi: [number, number, number] = [
+        sinTheta * Math.cos(phi),
+        sinTheta * Math.sin(phi),
+        mu,
+      ];
+      const mass = vndfAnisoPdf(wo, wi, ax, ay) * dMu * dPhi;
+      masses[directionBin(wi)]! += mass;
+      totalMass += mass;
+    }
+  }
+  return {
+    probabilities: Float64Array.from(
+      masses,
+      (mass) => mass / Math.max(totalMass, 1e-30),
+    ),
+    upperHemisphereMass: totalMass,
+    occupiedBins: masses.reduce((total, mass) => total + (mass > 0 ? 1 : 0), 0),
+  };
+}
+
+function totalVariationDistance(a: Float64Array, b: Float64Array): number {
+  expect(a.length).toBe(b.length);
+  let absoluteDelta = 0;
+  for (let i = 0; i < a.length; i++) {
+    absoluteDelta += Math.abs(a[i]! - b[i]!);
+  }
+  return 0.5 * absoluteDelta;
 }
 
 // ── Furnace mean ───────────────────────────────────────────────────────────────
@@ -334,42 +411,28 @@ function _isoFurnaceMean(roughness: number, nDotV: number, N: number = 60): numb
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('Item 7 — Anisotropic GGX sampler/PDF self-consistency', () => {
-  // CV (coefficient of variation) of analytic PDF values drawn from the sampler.
-  // For a PERFECT sampler, all samples have the same pdf weight → CV = 0.
-  // For a CONSISTENT sampler, CV is small (< 3 for all cases below).
-  // An incorrect sampler (e.g. wrong stretch) would give CV >> 5.
   const nDotV = 0.7;
 
-  it('anisotropy=0 (isotropic fallthrough): CV of analytic pdf < 3', () => {
-    const cv = samplerCv(0.4, 0.0, nDotV);
-    expect(cv).toBeLessThan(3.0);
+  it.each([
+    ['isotropic fallthrough', 0.0],
+    ['moderate anisotropy', 0.5],
+    ['strong anisotropy', 0.9],
+  ] as const)('%s matches the independently integrated directional PDF', (_label, anisotropy) => {
+    const sampled = sampledDirectionDistribution(0.4, anisotropy, nDotV);
+    const integrated = integratedDirectionDistribution(0.4, anisotropy, nDotV);
+    expect(totalVariationDistance(sampled.probabilities, integrated.probabilities))
+      .toBeLessThan(0.035);
+    expect(Math.abs(sampled.upperHemisphereMass - integrated.upperHemisphereMass))
+      .toBeLessThan(0.006);
+    expect(sampled.occupiedBins).toBeGreaterThan(70);
+    expect(integrated.occupiedBins).toBe(PDF_MU_BINS * PDF_PHI_BINS);
   });
 
-  it('anisotropy=0.5 (moderate): CV of analytic pdf < 3', () => {
-    const cv = samplerCv(0.4, 0.5, nDotV);
-    expect(cv).toBeLessThan(3.0);
-  });
-
-  it('anisotropy=0.9 (strong): CV of analytic pdf < 4', () => {
-    const cv = samplerCv(0.4, 0.9, nDotV);
-    // High anisotropy concentrates the lobe tightly → higher CV is expected
-    expect(cv).toBeLessThan(4.0);
-  });
-
-  it('analytic PDF > 0 for all valid (upper-hemisphere) samples', () => {
-    for (const anisotropy of [0.0, 0.5, 0.9]) {
-      const [ax, ay] = axAy(0.4, anisotropy);
-      const wo: [number, number, number] = [Math.sqrt(1 - 0.7 * 0.7), 0, 0.7];
-      let zeroCount = 0;
-      for (const [u1, u2] of grid2D(20)) {
-        const h = sampleVndfAnis(wo, ax, ay, u1, u2);
-        const wi = reflect3(scale3(wo, -1), h);
-        if (wi[2] <= 1e-5) continue;
-        const p = vndfAnisoPdf(wo, wi, ax, ay);
-        if (p <= 0) zeroCount++;
-      }
-      expect(zeroCount).toBe(0);
-    }
+  it('would reject a sampler collapsed to one direction', () => {
+    const integrated = integratedDirectionDistribution(0.4, 0.5, nDotV);
+    const collapsed = new Float64Array(integrated.probabilities.length);
+    collapsed[directionBin([0, 0, 1])] = 1;
+    expect(totalVariationDistance(collapsed, integrated.probabilities)).toBeGreaterThan(0.9);
   });
 });
 

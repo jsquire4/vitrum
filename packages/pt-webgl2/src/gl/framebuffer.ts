@@ -1,50 +1,49 @@
 // Render-target + framebuffer helpers (plan/three-removal/02-gl-framework.md §4).
 //
-// Formats are VERBATIM from the fork's PathTracingRenderer.js:271-290 — every accumulation
-// RT is RGBA32F (`format RGBAFormat, type FloatType`) with NEAREST min/mag filtering.
-// The optional MRT extras (gNormalDepth @ COLOR_ATTACHMENT1, gAlbedo @ COLOR_ATTACHMENT2)
-// mirror the fork's PhysicalPathTracingMaterial.js:244-245 MRT outputs; on a non-MRT device
-// we attach only attachment 0 and drawBuffers([COLOR_ATTACHMENT0]) — locations 1/2 are
-// "harmlessly ignored" by the shader then (fork comment, plan 02 §4).
+// Progressive radiance and linear depth retain RGBA32F. Bounded albedo and the
+// display-referred present target use RGBA16F. All targets use NEAREST sampling.
+// The optional MRT extras (gNormalDepth @ COLOR_ATTACHMENT1, gAlbedo @
+// COLOR_ATTACHMENT2) mirror the fork's PhysicalPathTracingMaterial.js outputs.
 
-/** Allocate one RGBA32F, NEAREST, CLAMP_TO_EDGE color texture sized w×h (no data upload). */
-function createColorTexture(gl: WebGL2RenderingContext, w: number, h: number): WebGLTexture {
-  return createTexture(gl, w, h, gl.RGBA32F, gl.RGBA, gl.FLOAT);
+import { allocGlTexture } from './texAlloc.js';
+
+export type RenderTargetFormat = 'rgba32f' | 'rgba16f';
+
+/** Allocate one floating-point color texture sized w×h (no data upload). */
+function createColorTexture(
+  gl: WebGL2RenderingContext,
+  w: number,
+  h: number,
+  targetFormat: RenderTargetFormat = 'rgba32f',
+  resourceName = 'render-target',
+): WebGLTexture {
+  return createTexture(
+    gl,
+    w,
+    h,
+    targetFormat === 'rgba16f' ? gl.RGBA16F : gl.RGBA32F,
+    gl.RGBA,
+    targetFormat === 'rgba16f' ? gl.HALF_FLOAT : gl.FLOAT,
+    resourceName,
+  );
 }
 
 /** Internal helper: allocate a 2D texture with the given internalFormat/format/type. */
 function createTexture(
   gl: WebGL2RenderingContext, w: number, h: number,
   internalFormat: number, format: number, type: number,
+  resourceName: string,
 ): WebGLTexture {
-  if (gl.isContextLost()) {
-    throw new Error('pt-webgl2: WebGL context lost — cannot create render-target texture');
-  }
-  if (!Number.isInteger(w) || !Number.isInteger(h) || w <= 0 || h <= 0) {
-    throw new RangeError(`pt-webgl2: render-target dimensions must be positive integers (got ${w}×${h})`);
-  }
-  const maxSize = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
-  if (w > maxSize || h > maxSize) {
-    throw new RangeError(
-      `pt-webgl2: render target needs ${w}×${h}, but this device supports at most ${maxSize}×${maxSize}`,
-    );
-  }
-  const tex = gl.createTexture();
-  if (tex == null) throw new Error('pt-webgl2: failed to create render-target texture');
-  try {
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, null);
-    return tex;
-  } catch (error) {
-    gl.deleteTexture(tex);
-    throw error;
-  } finally {
-    gl.bindTexture(gl.TEXTURE_2D, null);
-  }
+  return allocGlTexture(gl, {
+    kind: 'rect',
+    width: w,
+    height: h,
+    internalFormat,
+    format,
+    type,
+    data: null,
+    resourceName,
+  });
 }
 
 function framebufferStatusName(gl: WebGL2RenderingContext, status: number): string {
@@ -79,6 +78,27 @@ export interface NeeCandidateTarget {
   readonly fbo: WebGLFramebuffer;
   readonly textures: readonly [WebGLTexture, WebGLTexture, WebGLTexture, WebGLTexture];
   readonly drawBuffers: [GLenum, GLenum, GLenum, GLenum];
+  readonly width: number;
+  readonly height: number;
+  destroy(): void;
+}
+
+/**
+ * Two RGBA32F progressive-history colors sharing one full-tier auxiliary pair.
+ *
+ * Each framebuffer owns one history color, while both framebuffers attach the
+ * same normal/depth and albedo textures. The renderer alternates the color
+ * framebuffers so the trace shader can read the previous running mean and write
+ * the next one without retaining a third full-resolution raw-sample texture.
+ */
+export interface ProgressiveTarget {
+  readonly fbos: readonly [WebGLFramebuffer, WebGLFramebuffer];
+  readonly colors: readonly [WebGLTexture, WebGLTexture];
+  /** RGBA32F normal/depth: full range is retained for linear scene depth. */
+  readonly normalDepth: WebGLTexture | null;
+  /** RGBA16F albedo: bounded material reflectance does not require 32-bit storage. */
+  readonly albedo: WebGLTexture | null;
+  readonly drawBuffers: GLenum[];
   readonly width: number;
   readonly height: number;
   destroy(): void;
@@ -183,6 +203,7 @@ export function createRenderTarget(
   w: number,
   h: number,
   withAux: boolean,
+  targetFormat: RenderTargetFormat = 'rgba32f',
 ): RenderTarget {
   const fbo = gl.createFramebuffer();
   if (fbo == null) throw new Error('pt-webgl2: failed to create framebuffer');
@@ -192,10 +213,10 @@ export function createRenderTarget(
   let albedo: WebGLTexture | null = null;
   const drawBuffers: GLenum[] = [gl.COLOR_ATTACHMENT0];
   try {
-    color = createColorTexture(gl, w, h);
+    color = createColorTexture(gl, w, h, targetFormat);
     if (withAux) {
-      normalDepth = createColorTexture(gl, w, h);
-      albedo = createColorTexture(gl, w, h);
+      normalDepth = createColorTexture(gl, w, h, 'rgba32f', 'normal/depth render-target');
+      albedo = createColorTexture(gl, w, h, 'rgba16f', 'albedo render-target');
       drawBuffers.push(gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2);
     }
 
@@ -243,6 +264,135 @@ export function createRenderTarget(
       if (albedo != null) gl.deleteTexture(albedo);
     },
   };
+}
+
+/**
+ * Allocate the compact progressive target transactionally.
+ *
+ * The two RGBA32F colors are the running-mean ping-pong pair. Both FBOs attach
+ * the same auxiliary textures because auxiliaries are last-sample products and
+ * are overwritten on every trace draw.
+ */
+export function createProgressiveTarget(
+  gl: WebGL2RenderingContext,
+  w: number,
+  h: number,
+  withAux: boolean,
+): ProgressiveTarget {
+  const fbos: WebGLFramebuffer[] = [];
+  const colors: WebGLTexture[] = [];
+  let normalDepth: WebGLTexture | null = null;
+  let albedo: WebGLTexture | null = null;
+  const drawBuffers: GLenum[] = [gl.COLOR_ATTACHMENT0];
+  try {
+    for (let i = 0; i < 2; i += 1) {
+      const fbo = gl.createFramebuffer();
+      if (fbo == null) {
+        throw new Error('pt-webgl2: failed to create progressive framebuffer');
+      }
+      fbos.push(fbo);
+      colors.push(
+        createColorTexture(gl, w, h, 'rgba32f', `progressive history ${i}`),
+      );
+    }
+    if (withAux) {
+      normalDepth = createColorTexture(
+        gl,
+        w,
+        h,
+        'rgba32f',
+        'progressive normal/depth',
+      );
+      albedo = createColorTexture(gl, w, h, 'rgba16f', 'progressive albedo');
+      drawBuffers.push(gl.COLOR_ATTACHMENT1, gl.COLOR_ATTACHMENT2);
+    }
+    for (let i = 0; i < 2; i += 1) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbos[i]!);
+      gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        colors[i]!,
+        0,
+      );
+      if (normalDepth != null && albedo != null) {
+        gl.framebufferTexture2D(
+          gl.FRAMEBUFFER,
+          gl.COLOR_ATTACHMENT1,
+          gl.TEXTURE_2D,
+          normalDepth,
+          0,
+        );
+        gl.framebufferTexture2D(
+          gl.FRAMEBUFFER,
+          gl.COLOR_ATTACHMENT2,
+          gl.TEXTURE_2D,
+          albedo,
+          0,
+        );
+      }
+      gl.drawBuffers(drawBuffers);
+      const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (status !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error(
+          `pt-webgl2: progressive framebuffer ${w}×${h} is incomplete ` +
+            `(${framebufferStatusName(gl, status)})`,
+        );
+      }
+    }
+  } catch (error) {
+    for (const texture of colors) gl.deleteTexture(texture);
+    if (normalDepth != null) gl.deleteTexture(normalDepth);
+    if (albedo != null) gl.deleteTexture(albedo);
+    for (const fbo of fbos) gl.deleteFramebuffer(fbo);
+    throw error;
+  } finally {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  }
+  if (fbos.length !== 2 || colors.length !== 2) {
+    throw new Error('pt-webgl2: progressive target allocation did not complete');
+  }
+  const completeFbos = fbos as unknown as [WebGLFramebuffer, WebGLFramebuffer];
+  const completeColors = colors as unknown as [WebGLTexture, WebGLTexture];
+  let destroyed = false;
+  return {
+    fbos: completeFbos,
+    colors: completeColors,
+    normalDepth,
+    albedo,
+    drawBuffers,
+    width: w,
+    height: h,
+    destroy(): void {
+      if (destroyed) return;
+      destroyed = true;
+      for (const fbo of completeFbos) gl.deleteFramebuffer(fbo);
+      for (const color of completeColors) gl.deleteTexture(color);
+      if (normalDepth != null) gl.deleteTexture(normalDepth);
+      if (albedo != null) gl.deleteTexture(albedo);
+    },
+  };
+}
+
+export function bindProgressiveTarget(
+  gl: WebGL2RenderingContext,
+  target: ProgressiveTarget,
+  colorIndex: 0 | 1,
+): void {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbos[colorIndex]);
+  gl.drawBuffers(target.drawBuffers);
+}
+
+export function clearProgressiveTarget(
+  gl: WebGL2RenderingContext,
+  target: ProgressiveTarget,
+): void {
+  for (const fbo of target.fbos) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.drawBuffers(target.drawBuffers);
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
 }
 
 /** Bind a render target's FBO and re-declare its drawBuffers list (MRT-aware). */

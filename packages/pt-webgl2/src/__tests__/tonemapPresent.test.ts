@@ -64,11 +64,20 @@ describe('tonemap_functions.glsl.js — GLSL source guards', () => {
     expect(src).toContain('vec3 vitrumTonemap(vec3 color, int mode, float exposure)');
   });
 
-  it('vitrumTonemap applies exposure BEFORE the operator (x = color * exposure)', () => {
-    // The canonical source (tonemap.wgsl.ts + tonemap.ts) applies exposure first.
-    // Guard: "x = color * exposure" OR "color * exposure" must appear before the
-    // operator dispatch.
-    expect(src).toMatch(/color\s*\*\s*exposure/);
+  it('vitrumTonemap applies bounded exposure BEFORE the operator', () => {
+    expect(src).toContain('vec3 vt_safeExposure(vec3 color, float exposure)');
+    expect(src).toContain('vec3 x = vt_safeExposure(color, exposure);');
+    expect(src).not.toContain('vec3 x = color * exposure;');
+  });
+
+  it('saturates exposure only at finite f32 before the target-specific write', () => {
+    expect(src).not.toContain('VT_MAX_PRESENT_VALUE');
+    expect(src).toContain('const float VT_MAX_FINITE_F32 = 3.402823466e38;');
+    expect(src).toContain(
+      'float magnitude = min(abs(channel) * boundedExposure, VT_MAX_FINITE_F32);',
+    );
+    expect(src).toContain('return channel < 0.0 ? -magnitude : magnitude;');
+    expect(src).toContain('vec3 inv = vec3(1.0) / max(v, vec3(1e-20));');
   });
 
   it('vitrumTonemap dispatches mode==1 to vt_agx', () => {
@@ -115,23 +124,21 @@ describe('present output preserves accumulated background coverage', () => {
   const tonemapGlsl = (TFMod as Record<string, unknown>)['tonemap_functions'] as string;
   const presentSource = buildPresentFragBody(tonemapGlsl);
 
-  it('uses the live accumulator alpha in both sRGB and linear output branches', () => {
+  it('uses live accumulator alpha and clamps the concrete RGBA16F write', () => {
     expect(presentSource).toContain('uniform sampler2D uAlphaTex;');
     expect(presentSource).toContain(
       'float coverageAlpha = texture(uAlphaTex, vUv).a;',
     );
     expect(presentSource).toContain(
-      'pc_fragColor = vec4(vt_linearToSrgb(tonemapped), coverageAlpha);',
+      'presented = vt_linearToSrgb(tonemapped);',
     );
     expect(presentSource).toContain(
-      'pc_fragColor = vec4(tonemapped, coverageAlpha);',
+      'presented = clamp(presented, vec3(0.0), vec3(65504.0));',
     );
-    expect(presentSource).not.toContain(
-      'pc_fragColor = vec4(vt_linearToSrgb(tonemapped), 1.0);',
+    expect(presentSource).toContain(
+      'pc_fragColor = vec4(presented, coverageAlpha);',
     );
-    expect(presentSource).not.toContain(
-      'pc_fragColor = vec4(tonemapped, 1.0);',
-    );
+    expect(presentSource).not.toContain('pc_fragColor = vec4(presented, 1.0);');
   });
 
   it('keeps coverage on the live accumulator when OIDN replaces only RGB', () => {
@@ -184,6 +191,14 @@ describe('TONEMAP_MODE_INDEX consistency with the contract', () => {
     expect(r).toBeCloseTo(2.0, 5);
     expect(g).toBeCloseTo(2.0, 5);
     expect(b).toBeCloseTo(2.0, 5);
+  });
+
+  it('TS none preserves raw HDR above the half-float ceiling before presentation', () => {
+    expect(applyTonemap([65_504, 65_504, 65_504], 'none', 2)).toEqual([
+      131_008,
+      131_008,
+      131_008,
+    ]);
   });
 
   it('TS applyTonemap(linear, exposure=1): clamps to [0,1] (linear+clamp)', () => {

@@ -178,6 +178,109 @@ describe('packAttributesArray — tangent handedness', () => {
     }
   });
 
+  it('derives tangents for a uniformly tiny but full-rank UV island', () => {
+    const prim: MeshPrimitive = {
+      kind: 'mesh',
+      id: 'tiny-uv-island',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      uvs: new Float32Array([0, 0, 1e-8, 0, 0, 1e-8]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: GREY,
+    };
+    const mergedTiny = mergeWorldSpaceFromCore(
+      { primitives: [prim], emitters: [], environment: { kind: 'none' } },
+      { positionStride: 4 },
+    );
+    const gridTiny = packAttributesArray(mergedTiny);
+    const floatsPerLayer = gridTiny.dim * gridTiny.dim * 4;
+    const tangentBase = ATTR_LAYER_TANGENT * floatsPerLayer;
+
+    for (let vertex = 0; vertex < 3; vertex += 1) {
+      const offset = tangentBase + vertex * 4;
+      expect(gridTiny.data[offset]).toBeCloseTo(1, 6);
+      expect(gridTiny.data[offset + 1]).toBeCloseTo(0, 6);
+      expect(gridTiny.data[offset + 2]).toBeCloseTo(0, 6);
+      expect(gridTiny.data[offset + 3]).toBe(1);
+    }
+  });
+
+  it.each([1e-30, 1e30])(
+    'preserves a non-fallback tangent direction for a finite geometry scale of %s',
+    geometryScale => {
+      const prim: MeshPrimitive = {
+        kind: 'mesh',
+        id: `scaled-${geometryScale}`,
+        positions: new Float32Array([
+          0, 0, 0,
+          0, geometryScale, 0,
+          geometryScale, 0, 0,
+        ]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        indices: new Uint32Array([0, 1, 2]),
+        material: GREY,
+      };
+      const scaledMerged = mergeWorldSpaceFromCore(
+        { primitives: [prim], emitters: [], environment: { kind: 'none' } },
+        { positionStride: 4 },
+      );
+      const scaledGrid = packAttributesArray(scaledMerged);
+      const scaledFloatsPerLayer = scaledGrid.dim * scaledGrid.dim * 4;
+      const tangentBase = ATTR_LAYER_TANGENT * scaledFloatsPerLayer;
+
+      for (let vertex = 0; vertex < 3; vertex += 1) {
+        const offset = tangentBase + vertex * 4;
+        expect(scaledGrid.data[offset]).toBeCloseTo(0, 5);
+        expect(scaledGrid.data[offset + 1]).toBeCloseTo(1, 5);
+        expect(scaledGrid.data[offset + 2]).toBeCloseTo(0, 5);
+      }
+    },
+  );
+
+  it('derives the conditioned tangent for a finite near-rank UV parameterization', () => {
+    const prim: MeshPrimitive = {
+      kind: 'mesh',
+      id: 'near-rank-uv',
+      positions: new Float32Array([0, 0, 0, 0, 1, 0, 1, 0, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      uvs: new Float32Array([0, 0, 1, 0, 1, 1e-12]),
+      indices: new Uint32Array([0, 1, 2]),
+      material: GREY,
+    };
+    const nearRankMerged = mergeWorldSpaceFromCore(
+      { primitives: [prim], emitters: [], environment: { kind: 'none' } },
+      { positionStride: 4 },
+    );
+    const nearRankGrid = packAttributesArray(nearRankMerged);
+    const nearRankFloatsPerLayer = nearRankGrid.dim * nearRankGrid.dim * 4;
+    const tangentBase = ATTR_LAYER_TANGENT * nearRankFloatsPerLayer;
+
+    expect(nearRankGrid.data[tangentBase]).toBeCloseTo(0, 5);
+    expect(nearRankGrid.data[tangentBase + 1]).toBeCloseTo(1, 5);
+    expect(nearRankGrid.data[tangentBase + 2]).toBeCloseTo(0, 5);
+  });
+
+  it('honors a finite authored tangent below the former absolute length cutoff', () => {
+    const merged2 = mergeWorldSpaceFromCore(quadScene(), { positionStride: 4 });
+    const tangents = new Float32Array(merged2.vertexCount * 4);
+    for (let vertex = 0; vertex < merged2.vertexCount; vertex += 1) {
+      tangents[vertex * 4 + 1] = 1e-30;
+      tangents[vertex * 4 + 3] = -1;
+    }
+
+    const authoredGrid = packAttributesArray({ ...merged2, tangents });
+    const authoredFloatsPerLayer = authoredGrid.dim * authoredGrid.dim * 4;
+    const tangentBase = ATTR_LAYER_TANGENT * authoredFloatsPerLayer;
+    for (let vertex = 0; vertex < merged2.vertexCount; vertex += 1) {
+      const offset = tangentBase + vertex * 4;
+      expect(authoredGrid.data[offset]).toBeCloseTo(0, 6);
+      expect(authoredGrid.data[offset + 1]).toBeCloseTo(1, 6);
+      expect(authoredGrid.data[offset + 2]).toBeCloseTo(0, 6);
+      expect(authoredGrid.data[offset + 3]).toBe(-1);
+    }
+  });
+
   it('derives negative handedness for mirrored UVs', () => {
     const prim: MeshPrimitive = {
       kind: 'mesh',

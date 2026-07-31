@@ -7,9 +7,18 @@ import {
 import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
 
 function finiteEmitterPmf(powers: readonly number[]): number[] {
-  const finite = powers.map((power) => Number.isFinite(power) ? Math.max(power, 0) : 0);
-  const total = finite.reduce((sum, power) => sum + power, 0);
-  return total > 0 ? finite.map((power) => power / total) : finite.map(() => 0);
+  const logs = powers.map((power) =>
+    Number.isFinite(power) && power > 0
+      ? Math.log2(power)
+      : Number.NEGATIVE_INFINITY,
+  );
+  const maxLog = Math.max(...logs);
+  if (!Number.isFinite(maxLog)) return powers.map(() => 0);
+  const weights = logs.map((logPower) =>
+    Number.isFinite(logPower) ? 2 ** (logPower - maxLog) : 0,
+  );
+  const total = weights.reduce((sum, weight) => sum + weight, 0);
+  return weights.map((weight) => weight / total);
 }
 
 function powerWeights(densities: readonly number[]): number[] {
@@ -42,10 +51,15 @@ describe('production general BDPT estimator', () => {
       expect(power / pmf[index]!).toBeCloseTo(total, 14);
     });
     expect(finiteEmitterPmf([0, 1e-25])).toEqual([0, 1]);
+    expect(finiteEmitterPmf([1e-300, 1e300])).toEqual([0, 1]);
 
-    expect(source).toContain('bdptAnalyticEmitterPower( i )');
-    expect(source).toContain('bdptMeshEmitterPower( i )');
-    expect(source).toContain('bdptEnvironmentEmitterPower()');
+    expect(source).toContain('bdptAnalyticEmitterLogPower( i )');
+    expect(source).toContain('bdptMeshEmitterLogPower( i )');
+    expect(source).toContain('bdptEnvironmentEmitterLogPower()');
+    expect(source).toContain('bdptTotalEmitterScaledWeight');
+    expect(source).toContain('exp2( logPower - maxLogPower )');
+    expect(candidateSource).toContain('bdptCandidateTotalScaledWeight');
+    expect(candidateSource).toContain('bdptCandidateEmitterDiscretePdf');
     expect(source).toContain('finitePositiveLightPower');
     expect(source).not.toContain('max( tmpLight.power, 1e-20 )');
     expect(source).not.toContain('sumPower > 1e-30');
@@ -57,8 +71,11 @@ describe('production general BDPT estimator', () => {
       expect(source).not.toContain('BDPT_LV_POINT_EMITTER_MATID, BDPT_KIND_DELTA');
     expect(source).toContain('BDPT_LV_DIRECTIONAL_EMITTER_MATID');
       expect(source).toContain('BDPT_LV_ENVIRONMENT_EMITTER_MATID');
-      expect(source).toContain('vec4( tri.castShadowDisabled, 1.0, 0.0, 0.0 )');
-      expect(source).toContain('vec4( light.castShadowDisabled, 0.0, 0.0, 0.0 )');
+      expect(source).toContain(
+        'tri.sourceFaceWords.x',
+      );
+      expect(source).toContain('tri.sourceFaceWords.y');
+      expect(source).toContain('vec4( light.castShadowDisabled, 0.0, -1.0, 0.0 )');
   });
 
   it('extends real BSDF subpaths and patches predecessor reverse densities', () => {
@@ -68,7 +85,10 @@ describe('production general BDPT estimator', () => {
     expect(source).toContain('bdptPredecessor0');
     expect(source).toContain('bdptPredecessor2');
     expect(source).toContain(
-      'predecessor2.w = max( reverseScatterPdf, 0.0 ) * p2.w;',
+      'float predecessorReverseDensity = reverseScatterPdf * p2.w;',
+    );
+    expect(source).toContain(
+      'predecessor2.w = predecessorReverseDensity;',
     );
     expect(source.replace(/\s+/g, ' ')).toContain(
       'predecessor2 = texelFetch( lightPathTex, ivec2( vertexCol - 2, 2 ), 0 );',
@@ -129,7 +149,19 @@ describe('production general BDPT estimator', () => {
       expect(source).toContain('#if FEATURE_RUSSIAN_ROULETTE && ! FEATURE_BDPT');
       expect(source).toContain('bool twoSidedEndpoint = lv4.y > 0.5;');
       expect(source).toContain('twoSidedEndpoint ? 2.0 * PI : PI');
-    expect(source).toContain('vec3 eeToPrev = normalize( eyeWo );');
+      expect(source).toContain('bool meshAreaEndpointHasTarget =');
+      expect(source).toContain(
+        'bool surfaceVertexHasTarget = ! lightIsEndpoint && ! lightIsMedium;',
+      );
+      expect(source).toContain(
+        'targetFaceIndex = meshLightSourceFaceIndex( lv4.zw );',
+      );
+      expect(source).toContain(
+        'targetFaceIndex = meshLightSourceFaceIndex( lv7.zw );',
+      );
+    expect(source.replace(/\s+/g, ' ')).toContain(
+      'vec3 eeToPrev = vitrumNormalizeVec3( eyeWo, vec3( 0.0 ) );',
+    );
     expect(source).not.toContain('vec3 eeMinusPos = camPos;');
     expect(source).toContain(
       'if ( bdptLvi + bdptEyeDepth >= bounces ) break;',
@@ -184,7 +216,8 @@ describe('production general BDPT estimator', () => {
     expect(source).toContain(
       'if ( prevMatId == BDPT_LV_ENVIRONMENT_EMITTER_MATID )',
     );
-    expect(source).toContain('scatterThroughput *= newSurf.envMapIntensity;');
+    expect(source).toContain('incomingPathThroughput = finiteEquirectScaledColor(');
+    expect(source).toContain('incomingPathThroughput, newSurf.envMapIntensity');
 
     const noHitStart = source.indexOf('if ( hitType == NO_HIT )');
     const noHitEnd = source.indexOf('uint materialIndex', noHitStart);
@@ -258,7 +291,12 @@ describe('production general BDPT estimator', () => {
     expect(insideSphere([0, 0, 0], translatedCenter, 2)).toBe(false);
     expect(insideSphere(sampledEndpoint, translatedCenter, 2)).toBe(true);
     expect(source).toContain('vec3 endpointLaunchOrigin =');
-    expect(source).toContain('p0.xyz + endpointLaunchDirection * RAY_OFFSET');
+    expect(source.replace(/\s+/g, ' ')).toContain(
+      'stepRayOrigin( p0.xyz, vec3( 0.0 ), endpointLaunchDirection, 0.0 )',
+    );
+    expect(source).not.toContain(
+      'p0.xyz + endpointLaunchDirection * RAY_OFFSET',
+    );
     expect(source).toContain('bvhBuildMediumStack(');
     expect(source).toContain('endpointLaunchOrigin,');
     expect(source).not.toContain('fogRay.origin = vec3( 0.0 );');

@@ -99,14 +99,18 @@ describe('T5 — explicit generic caustics plus stained-glass aperture', () => {
     expect(REFRACTIVE_CAUSTICS_WGSL).toContain('var correction = (estimate - baseline)');
   });
 
-  it('flag-ON math is byte-equivalent to the original inline aperture body', () => {
-    // 5-tap scalar-luminance sky probe → skyTint × skyIrradiance × albedo × INV_PI.
+  it('flag-ON math preserves the aperture model with finite staged sky scaling', () => {
+    // 5-tap scalar-luminance sky probe, then staged sky radiance and Lambert.
     expect(STAINED_GLASS_SHADE_WGSL).toContain(
       'let skyVisScalar = skyAccum / max(weightAccum, 1e-6);',
     );
     expect(STAINED_GLASS_SHADE_WGSL).toContain(
-      'return skyVisAvg * skyTint * skyIrradiance * albedo * INV_PI;',
+      'let scalarSkyRadiance = walkaroundScaleEnvironmentRadiance(',
     );
+    expect(STAINED_GLASS_SHADE_WGSL).toContain(
+      'return skyVisAvg * scalarSkyRadiance * albedo * INV_PI;',
+    );
+    expect(STAINED_GLASS_SHADE_WGSL).not.toContain('skyTint * skyIrradiance');
   });
 });
 

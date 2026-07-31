@@ -15,10 +15,14 @@ import {
   buildCompressedWideBvhFromArrayBvh,
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
+  materialSpecScalarEmissiveLe,
+  materialSpecSkipEmitter,
   packCwbvhBuildBoundsForWgsl,
+  packRadianceRgbScaleF32,
   packSceneFromCore,
   refitTlasTransforms,
   type PrimitiveTlasBinding,
+  type RadianceRgb,
   type ScenePackResult,
 } from '@vitrum/shared-bvh';
 import { buildLightTree, packLightTreeForGPU } from '@vitrum/shared-samplers';
@@ -35,6 +39,7 @@ import {
   type MaterialTextureLayerInfo,
   MATERIAL_TEX_FLOAT_STRIDE,
 } from './materialTextures.js';
+import { resolvePtWebgpuSceneRadius } from './sceneScalePolicy.js';
 import {
   hasActiveMorphTargets,
   solveSkinnedPrimitive,
@@ -49,11 +54,14 @@ import {
   estimateMaterialTextureArrayPeakBytes,
   MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES,
   type MaterialTextureArray,
+  type MaterialTextureRadianceEnvelope,
   type MaterialTextureArrayWarning,
 } from './materialTextureArray.js';
 import { environmentParams } from './environmentPacking.js';
+import { assertPtWebgpuEnvironmentMaterialEnvelopeF32 } from '../environmentRadianceScale.js';
 import {
   buildLightTreeInputForScene,
+  MESH_AREA_LIGHT_FLOAT_STRIDE,
   packEmitterArrays,
   type EnvSummaryForTree,
   type PackedEmitterArrays,
@@ -122,28 +130,70 @@ export function sceneHasMappedAnalytic(scene: Scene): boolean {
   );
 }
 
-function applyAnalyticTextureFallbacks(
+/**
+ * True when at least one analytic is represented by a mesh in the render
+ * snapshot. Incremental mutation routing uses this as a conservative layout
+ * boundary: authored analytic records and generated mesh records do not share
+ * buffer offsets or topology.
+ */
+export function sceneHasAnalyticRenderFallback(scene: Scene): boolean {
+  return scene.primitives.some((primitive) => (
+    primitive.kind === 'analytic' &&
+    (
+      analyticMaterialTextureFields(primitive).length > 0 ||
+      (
+        !materialSpecSkipEmitter(primitive.material) &&
+        materialSpecScalarEmissiveLe(primitive.material) != null
+      )
+    )
+  ));
+}
+
+/**
+ * Build the geometry snapshot actually consumed by the renderer.
+ *
+ * Native analytic intersections have no surface-area proposal implementation.
+ * An emissive analytic is therefore lowered once to the canonical mesh
+ * tessellation, and that same mesh is consumed by both forward intersections
+ * and every light-sampling estimator. Core validation deliberately requires an
+ * explicit `mesh-area` emitter to reference mesh-like geometry, so this
+ * fallback is for material-owned analytic emission rather than an alternate
+ * way to bypass that scene-contract boundary.
+ */
+export function applyAnalyticRenderFallbacks(
   scene: Scene,
   warnings: string[],
 ): Scene {
   let changed = false;
   const primitives = scene.primitives.map((primitive) => {
+    if (primitive.kind !== 'analytic') return primitive;
     const textureFields = analyticMaterialTextureFields(primitive);
-    if (textureFields.length === 0 || primitive.kind !== 'analytic') {
-      return primitive;
-    }
-    if (primitive.fallbackMesh == null) {
-      throw new TypeError(
-        `@vitrum/pt-webgpu: analytic primitive "${primitive.id}" uses material ` +
-          `texture maps [${textureFields.join(', ')}], but native analytic hits ` +
-          'do not expose mesh UVs and no fallbackMesh was supplied.',
+    if (textureFields.length > 0) {
+      if (primitive.fallbackMesh == null) {
+        throw new TypeError(
+          `@vitrum/pt-webgpu: analytic primitive "${primitive.id}" uses material ` +
+            `texture maps [${textureFields.join(', ')}], but native analytic hits ` +
+            'do not expose mesh UVs and no fallbackMesh was supplied.',
+        );
+      }
+      changed = true;
+      warnings.push(
+        `Analytic primitive "${primitive.id}" uses material texture maps ` +
+          `[${textureFields.join(', ')}]; rendering its fallbackMesh so authored ` +
+          'UV streams are sampled.',
       );
+      return analyticPrimitiveToMesh(primitive);
     }
+
+    const hasImplicitMeshEmitter =
+      !materialSpecSkipEmitter(primitive.material) &&
+      materialSpecScalarEmissiveLe(primitive.material) != null;
+    if (!hasImplicitMeshEmitter) return primitive;
+
     changed = true;
     warnings.push(
-      `Analytic primitive "${primitive.id}" uses material texture maps ` +
-        `[${textureFields.join(', ')}]; rendering its fallbackMesh so authored ` +
-        'UV streams are sampled.',
+      `Analytic primitive "${primitive.id}" is emissive analytic geometry; ` +
+        'rendering a mesh fallback so forward-hit geometry and light-sampling support share one surface.',
     );
     return analyticPrimitiveToMesh(primitive);
   });
@@ -538,6 +588,33 @@ function analyticShapeId(shape: string): number {
 }
 
 /**
+ * Pack the public shape-specific scalar tuples into the two-vec4 ABI decoded
+ * by every pt-webgpu analytic consumer.
+ *
+ * Public tuples are intentionally compact (for example box is
+ * [center.xyz, halfExtent.xyz]); the shader ABI groups geometric vectors
+ * instead (box p0=center, p1=halfExtent; capsule p0=a, p1=[b,radius]).
+ * Sequentially copying the public tuple therefore corrupts box/capsule.
+ */
+function packAnalyticParamVec4s(
+  shape: Extract<ScenePrimitive, { kind: 'analytic' }>['shape'],
+  p: Float32Array,
+): readonly number[] {
+  switch (shape) {
+    case 'sphere':
+      return [p[0]!, p[1]!, p[2]!, p[3]!, 0, 0, 0, 0];
+    case 'box':
+      return [p[0]!, p[1]!, p[2]!, 0, p[3]!, p[4]!, p[5]!, 0];
+    case 'capsule':
+      return [p[0]!, p[1]!, p[2]!, 0, p[3]!, p[4]!, p[5]!, p[6]!];
+    case 'cylinder':
+      return [p[0]!, p[1]!, p[2]!, p[3]!, p[4]!, 0, 0, 0];
+    case 'h-channel-came':
+      return [p[0]!, p[1]!, p[2]!, p[3]!, 0, 0, 0, 0];
+  }
+}
+
+/**
  * Backward-compatible name for the full-tier support sets. The sets are
  * derived from the exhaustive backend-local manifest; this file no longer
  * owns a parallel kind list.
@@ -564,6 +641,8 @@ export interface BuildPackedSceneOptions {
    * unrelated or implicit emissive material keeps its authored emission.
    */
   readonly cameraVisibleEmitters?: boolean;
+  /** Include the D65 spectral-emission expansion in environment envelopes. */
+  readonly spectralEnabled?: boolean;
 
   /**
    * Geometry pack shape.
@@ -628,17 +707,18 @@ export function packFoldedMaterialEntry(
   }
   const emitter = matchingEmitters[0];
   if (emitter != null) {
+    const foldedRadiance = packRadianceRgbScaleF32(
+      emitter.color,
+      emitter.intensity,
+      `@vitrum/pt-webgpu emitter "${emitter.id}" camera-visible fold`,
+    ).scaled;
     // Pre-multiply intensity so `emissive · emissiveIntensity` == NEE radiance.
     // Keep the primitive's emissiveMap: both the forward hit and mapped proposal
     // apply that same texture sample to this scalar/base radiance.
     const foldedMat = {
       ...primitive.material,
       emissive: cameraVisibleEmitters
-        ? [
-            emitter.color[0] * emitter.intensity,
-            emitter.color[1] * emitter.intensity,
-            emitter.color[2] * emitter.intensity,
-          ] as [number, number, number]
+        ? foldedRadiance
         : [0, 0, 0] as [number, number, number],
       emissiveIntensity: 1,
     };
@@ -817,10 +897,20 @@ function packMergedMaterial(
   return materialToPackedVec4s(material, { castShadow: material.castShadow });
 }
 
-function finiteRootBoundsFromFloatWords(words: ArrayLike<number>): {
-  readonly center: readonly [number, number, number];
-  readonly radius: number;
-} | null {
+interface FiniteSceneAabb {
+  readonly min: readonly [number, number, number];
+  readonly max: readonly [number, number, number];
+}
+
+interface PackedAnalyticBounds {
+  readonly analyticHeaders: ArrayLike<number>;
+  readonly analyticParams: ArrayLike<number>;
+  readonly analyticLocalToWorld: ArrayLike<number>;
+}
+
+function finiteRootAabbFromFloatWords(
+  words: ArrayLike<number>,
+): FiniteSceneAabb | null {
   if (words.length < BVH_NODE_FLOATS) return null;
   const minX = words[0] ?? 0;
   const minY = words[1] ?? 0;
@@ -829,35 +919,243 @@ function finiteRootBoundsFromFloatWords(words: ArrayLike<number>): {
   const maxY = words[4] ?? 0;
   const maxZ = words[5] ?? 0;
   if (![minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite)) return null;
-  const cx = (minX + maxX) * 0.5;
-  const cy = (minY + maxY) * 0.5;
-  const cz = (minZ + maxZ) * 0.5;
-  const dx = maxX - minX;
-  const dy = maxY - minY;
-  const dz = maxZ - minZ;
+  if (minX > maxX || minY > maxY || minZ > maxZ) return null;
+  return { min: [minX, minY, minZ], max: [maxX, maxY, maxZ] };
+}
+
+function mergeFiniteSceneAabbs(
+  a: FiniteSceneAabb | null,
+  b: FiniteSceneAabb | null,
+): FiniteSceneAabb | null {
+  if (a == null) return b;
+  if (b == null) return a;
   return {
-    center: [cx, cy, cz],
-    radius: Math.max(1e-3, 0.5 * Math.hypot(dx, dy, dz)),
+    min: [
+      Math.min(a.min[0], b.min[0]),
+      Math.min(a.min[1], b.min[1]),
+      Math.min(a.min[2], b.min[2]),
+    ],
+    max: [
+      Math.max(a.max[0], b.max[0]),
+      Math.max(a.max[1], b.max[1]),
+      Math.max(a.max[2], b.max[2]),
+    ],
+  };
+}
+
+function packedAnalyticLocalCenterHalfExtent(
+  shapeId: number,
+  p0: readonly [number, number, number, number],
+  p1: readonly [number, number, number, number],
+): {
+  readonly center: readonly [number, number, number];
+  readonly half: readonly [number, number, number];
+} {
+  switch (shapeId) {
+    case 1:
+      return {
+        center: [p0[0], p0[1], p0[2]],
+        half: [p0[3], p0[3], p0[3]],
+      };
+    case 2:
+      return {
+        center: [p0[0], p0[1], p0[2]],
+        half: [p1[0], p1[1], p1[2]],
+      };
+    case 3: {
+      const center: [number, number, number] = [
+        p0[0] * 0.5 + p1[0] * 0.5,
+        p0[1] * 0.5 + p1[1] * 0.5,
+        p0[2] * 0.5 + p1[2] * 0.5,
+      ];
+      return {
+        center,
+        half: [
+          Math.abs(p1[0] * 0.5 - p0[0] * 0.5) + p1[3],
+          Math.abs(p1[1] * 0.5 - p0[1] * 0.5) + p1[3],
+          Math.abs(p1[2] * 0.5 - p0[2] * 0.5) + p1[3],
+        ],
+      };
+    }
+    case 4:
+      return {
+        center: [p0[0], p0[1], p0[2]],
+        half: [p0[3], p1[0], p0[3]],
+      };
+    case 5:
+      return {
+        center: [0, 0, 0],
+        half: [p0[0] * 0.5, p0[2] * 0.5, p0[1] * 0.5],
+      };
+    default:
+      throw new RangeError(
+        `pt-webgpu packed analytic bounds received unknown shape id ${shapeId}.`,
+      );
+  }
+}
+
+function packedAnalyticSceneAabb(
+  packed: PackedAnalyticBounds,
+): FiniteSceneAabb | null {
+  if (packed.analyticHeaders.length % 4 !== 0) {
+    throw new RangeError('pt-webgpu analytic header buffer is not vec4-aligned.');
+  }
+  const analyticCount = packed.analyticHeaders.length / 4;
+  if (packed.analyticLocalToWorld.length < analyticCount * 16) {
+    throw new RangeError('pt-webgpu analytic transform buffer is truncated.');
+  }
+  let bounds: FiniteSceneAabb | null = null;
+  for (let analyticIndex = 0; analyticIndex < analyticCount; analyticIndex += 1) {
+    const headerBase = analyticIndex * 4;
+    const shapeId = packed.analyticHeaders[headerBase] ?? 0;
+    const paramVec4Offset = packed.analyticHeaders[headerBase + 2] ?? -1;
+    if (
+      !Number.isInteger(shapeId) ||
+      !Number.isInteger(paramVec4Offset) ||
+      paramVec4Offset < 0
+    ) {
+      throw new RangeError('pt-webgpu analytic header contains an invalid shape or parameter offset.');
+    }
+    const paramBase = paramVec4Offset * 4;
+    if (paramBase + 8 > packed.analyticParams.length) {
+      throw new RangeError('pt-webgpu analytic parameter buffer is truncated.');
+    }
+    const p0: [number, number, number, number] = [
+      packed.analyticParams[paramBase] ?? Number.NaN,
+      packed.analyticParams[paramBase + 1] ?? Number.NaN,
+      packed.analyticParams[paramBase + 2] ?? Number.NaN,
+      packed.analyticParams[paramBase + 3] ?? Number.NaN,
+    ];
+    const p1: [number, number, number, number] = [
+      packed.analyticParams[paramBase + 4] ?? Number.NaN,
+      packed.analyticParams[paramBase + 5] ?? Number.NaN,
+      packed.analyticParams[paramBase + 6] ?? Number.NaN,
+      packed.analyticParams[paramBase + 7] ?? Number.NaN,
+    ];
+    const local = packedAnalyticLocalCenterHalfExtent(shapeId, p0, p1);
+    const matrixBase = analyticIndex * 16;
+    const m = (index: number): number =>
+      packed.analyticLocalToWorld[matrixBase + index] ?? Number.NaN;
+    const worldCenter: [number, number, number] = [
+      m(0) * local.center[0] + m(4) * local.center[1] +
+        m(8) * local.center[2] + m(12),
+      m(1) * local.center[0] + m(5) * local.center[1] +
+        m(9) * local.center[2] + m(13),
+      m(2) * local.center[0] + m(6) * local.center[1] +
+        m(10) * local.center[2] + m(14),
+    ];
+    const worldHalf: [number, number, number] = [
+      Math.abs(m(0)) * local.half[0] + Math.abs(m(4)) * local.half[1] +
+        Math.abs(m(8)) * local.half[2],
+      Math.abs(m(1)) * local.half[0] + Math.abs(m(5)) * local.half[1] +
+        Math.abs(m(9)) * local.half[2],
+      Math.abs(m(2)) * local.half[0] + Math.abs(m(6)) * local.half[1] +
+        Math.abs(m(10)) * local.half[2],
+    ];
+    const analyticBounds: FiniteSceneAabb = {
+      min: [
+        worldCenter[0] - worldHalf[0],
+        worldCenter[1] - worldHalf[1],
+        worldCenter[2] - worldHalf[2],
+      ],
+      max: [
+        worldCenter[0] + worldHalf[0],
+        worldCenter[1] + worldHalf[1],
+        worldCenter[2] + worldHalf[2],
+      ],
+    };
+    const boundWords = [...analyticBounds.min, ...analyticBounds.max];
+    if (
+      !boundWords.every(Number.isFinite) ||
+      !boundWords.every((value) => Number.isFinite(Math.fround(value)))
+    ) {
+      throw new RangeError(
+        `pt-webgpu analytic ${analyticIndex} bounds are not representable as finite f32.`,
+      );
+    }
+    bounds = mergeFiniteSceneAabbs(bounds, analyticBounds);
+  }
+  return bounds;
+}
+
+function centerRadiusFromFiniteSceneAabb(bounds: FiniteSceneAabb): {
+  readonly center: readonly [number, number, number];
+  readonly radius: number;
+} {
+  const center: [number, number, number] = [
+    bounds.min[0] * 0.5 + bounds.max[0] * 0.5,
+    bounds.min[1] * 0.5 + bounds.max[1] * 0.5,
+    bounds.min[2] * 0.5 + bounds.max[2] * 0.5,
+  ];
+  const halfX = bounds.max[0] * 0.5 - bounds.min[0] * 0.5;
+  const halfY = bounds.max[1] * 0.5 - bounds.min[1] * 0.5;
+  const halfZ = bounds.max[2] * 0.5 - bounds.min[2] * 0.5;
+  return {
+    center,
+    radius: resolvePtWebgpuSceneRadius(
+      center,
+      Math.hypot(halfX, halfY, halfZ),
+    ),
   };
 }
 
 function sceneCenterRadiusFromPack(
-  pack: Pick<ScenePackResult, 'bvhNodes'> & Partial<Pick<ScenePackResult, 'tlasNodes'>>,
+  pack: Pick<ScenePackResult, 'bvhNodes'> &
+    Partial<Pick<ScenePackResult, 'tlasNodes'>> &
+    Partial<PackedAnalyticBounds>,
 ): {
   readonly center: readonly [number, number, number];
   readonly radius: number;
 } {
+  let meshBounds: FiniteSceneAabb | null = null;
   if (pack.tlasNodes && pack.tlasNodes.length >= BVH_NODE_FLOATS) {
     const tlasWords = new Float32Array(
       pack.tlasNodes.buffer,
       pack.tlasNodes.byteOffset,
       pack.tlasNodes.length,
     );
-    const bounds = finiteRootBoundsFromFloatWords(tlasWords);
-    if (bounds) return bounds;
+    meshBounds = finiteRootAabbFromFloatWords(tlasWords);
   }
-  const bounds = finiteRootBoundsFromFloatWords(pack.bvhNodes);
-  return bounds ?? { center: [0, 0, 0], radius: 1 };
+  if (meshBounds == null) {
+    meshBounds = finiteRootAabbFromFloatWords(pack.bvhNodes);
+  }
+  const analyticBounds = (
+    pack.analyticHeaders != null &&
+    pack.analyticParams != null &&
+    pack.analyticLocalToWorld != null
+  )
+    ? packedAnalyticSceneAabb({
+        analyticHeaders: pack.analyticHeaders,
+        analyticParams: pack.analyticParams,
+        analyticLocalToWorld: pack.analyticLocalToWorld,
+      })
+    : null;
+  const combined = mergeFiniteSceneAabbs(meshBounds, analyticBounds);
+  return combined == null
+    ? { center: [0, 0, 0], radius: 1 }
+    : centerRadiusFromFiniteSceneAabb(combined);
+}
+
+/**
+ * Recompute the combined mesh + analytic scene sphere from the exact packed
+ * arrays consumed by the GPU. Incremental analytic-transform mutations use
+ * this before publication so pseudo-distant launch domains and SPPM never
+ * retain mesh-only/stale bounds.
+ */
+export function sceneCenterRadiusForPackedGeometry(
+  packed: Pick<
+    PackedSceneData,
+    | 'bvhNodes'
+    | 'tlasNodes'
+    | 'analyticHeaders'
+    | 'analyticParams'
+    | 'analyticLocalToWorld'
+  >,
+): {
+  readonly center: readonly [number, number, number];
+  readonly radius: number;
+} {
+  return sceneCenterRadiusFromPack(packed);
 }
 
 interface PackedCwbvhSceneData {
@@ -1093,12 +1391,12 @@ export function buildPackedScene(
       `@vitrum/pt-webgpu: scene contains unsupported content: ${warnings.join(' | ')}`,
     );
   }
-  const textureSafeScene = applyAnalyticTextureFallbacks(filteredScene, warnings);
-  assertThinFilmLayerCapacity(textureSafeScene);
+  const renderFallbackScene = applyAnalyticRenderFallbacks(filteredScene, warnings);
+  assertThinFilmLayerCapacity(renderFallbackScene);
   // Item 1 — apply CPU LBS to skinned-mesh primitives so packSceneFromCore uses
   // solved (deformed) positions instead of rest-pose. morphTargets are also
   // handled by solveSkin (blend applied before LBS).
-  const scene = applySolveSkinToScene(textureSafeScene);
+  const scene = applySolveSkinToScene(renderFallbackScene);
   if (options.includeMneeFacetCandidates) {
     assertMneeInterfaceDomainSupported(scene);
   }
@@ -1143,17 +1441,10 @@ export function buildPackedScene(
       }
       const invTransform = asMat4(maybeInvTransform ?? IDENTITY_MAT4);
       const paramsOffset = Math.floor(analyticParams.length / 4);
-      const p = primitive.params;
-      analyticParams.push(
-        p[0] ?? 0,
-        p[1] ?? 0,
-        p[2] ?? 0,
-        p[3] ?? 0,
-        p[4] ?? 0,
-        p[5] ?? 0,
-        p[6] ?? 0,
-        p[7] ?? 0,
-      );
+      analyticParams.push(...packAnalyticParamVec4s(
+        primitive.shape,
+        primitive.params,
+      ));
       analyticHeaders.push(shapeId, matId, paramsOffset, 0);
       analyticLocalToWorld.push(...transform);
       analyticWorldToLocal.push(...invTransform);
@@ -1247,6 +1538,9 @@ export function buildPackedScene(
   if (mneeFacetCandidateRecords != null) {
     packedAnalyticParams.set(mneeFacetCandidateRecords, analyticParams.length);
   }
+  const packedAnalyticHeaders = new Float32Array(analyticHeaders);
+  const packedAnalyticLocalToWorld = new Float32Array(analyticLocalToWorld);
+  const packedAnalyticWorldToLocal = new Float32Array(analyticWorldToLocal);
   const analyticIds = new Set(
     scene.primitives
       .filter((primitive) => primitive.kind === 'analytic')
@@ -1277,6 +1571,12 @@ export function buildPackedScene(
     materialIdByPrimitive: emitterMaterialIds,
   });
   const environment = environmentParams(scene);
+  assertPtWebgpuEnvironmentMaterialEnvelopeF32(
+    environment.hdriTexels,
+    environment.hdriIntensity,
+    materialSpecs.map((material) => material.envMapIntensity ?? 1),
+    options.spectralEnabled === true,
+  );
   // RGB thin-film LUTs are a sparse tail after all fixed material records.
   // `matId * MATERIAL_FLOAT_STRIDE` therefore remains valid, and non-film
   // scenes retain the exact pre-thin-film buffer size. Vec4 #28.z stores the
@@ -1307,7 +1607,12 @@ export function buildPackedScene(
     ...structuredEnvironmentWarnings(scene, environment, options),
     ...texCollection.unsupportedTexCoordWarnings,
   ];
-  const sceneBounds = sceneCenterRadiusFromPack(geo);
+  const sceneBounds = sceneCenterRadiusFromPack({
+    ...geo,
+    analyticHeaders: packedAnalyticHeaders,
+    analyticParams: packedAnalyticParams,
+    analyticLocalToWorld: packedAnalyticLocalToWorld,
+  });
   warnings.push(...environment.warnings);
   warnings.push(...emitArrays.warnings);
 
@@ -1373,10 +1678,10 @@ export function buildPackedScene(
     tlasInstanceWorldToLocal: geo.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: geo.tlasInstanceLocalToWorld,
     primitiveTlasBindings: geo.primitiveTlasBindings,
-    analyticHeaders: new Float32Array(analyticHeaders),
+    analyticHeaders: packedAnalyticHeaders,
     analyticParams: packedAnalyticParams,
-    analyticLocalToWorld: new Float32Array(analyticLocalToWorld),
-    analyticWorldToLocal: new Float32Array(analyticWorldToLocal),
+    analyticLocalToWorld: packedAnalyticLocalToWorld,
+    analyticWorldToLocal: packedAnalyticWorldToLocal,
     triangleCount: geo.triangleCount,
     analyticCount: Math.floor(analyticHeaders.length / 4),
     warnings,
@@ -2062,7 +2367,12 @@ export function scenePackGeometryMutationPatch(
   uvsOverride?: Float32Array,
 ): SceneBufferMutationPatch {
   const cwbvh = buildPackedCwbvhSceneData(pack);
-  const bounds = sceneCenterRadiusFromPack(pack);
+  const bounds = sceneCenterRadiusFromPack({
+    ...pack,
+    analyticHeaders: sb.analyticHeaders,
+    analyticParams: sb.analyticParams,
+    analyticLocalToWorld: sb.analyticLocalToWorld,
+  });
   const next: SceneBufferMutationPatch = {
     positions: pack.positions,
     normals: pack.normals,
@@ -2134,6 +2444,9 @@ export function scenePackTlasMutationPatch(
   const bounds = sceneCenterRadiusFromPack({
     bvhNodes: sb.bvhNodes,
     tlasNodes: pack.tlasNodes,
+    analyticHeaders: sb.analyticHeaders,
+    analyticParams: sb.analyticParams,
+    analyticLocalToWorld: sb.analyticLocalToWorld,
   });
   return {
     tlasNodes: pack.tlasNodes,
@@ -2342,6 +2655,72 @@ export function uploadPackedScene(
   }
 }
 
+function pushUniqueRadianceFactor(
+  factors: RadianceRgb[],
+  factor: RadianceRgb,
+): void {
+  if (factors.some((candidate) =>
+    candidate[0] === factor[0] &&
+    candidate[1] === factor[1] &&
+    candidate[2] === factor[2]
+  )) {
+    return;
+  }
+  factors.push(factor);
+}
+
+function materialTextureRadianceEnvelope(
+  packed: PackedSceneData,
+): MaterialTextureRadianceEnvelope {
+  const materialCount = Math.floor(
+    packed.materialTexDescriptors.length / MATERIAL_TEX_FLOAT_STRIDE,
+  );
+  const emissiveMap: RadianceRgb[][] = Array.from(
+    { length: materialCount },
+    () => [],
+  );
+  const lightMap: RadianceRgb[][] = Array.from(
+    { length: materialCount },
+    () => [],
+  );
+  for (let materialId = 0; materialId < materialCount; materialId += 1) {
+    const materialBase = materialId * MATERIAL_FLOAT_STRIDE;
+    pushUniqueRadianceFactor(emissiveMap[materialId]!, [
+      packed.materials[materialBase + 4] ?? 0,
+      packed.materials[materialBase + 5] ?? 0,
+      packed.materials[materialBase + 6] ?? 0,
+    ]);
+    const descriptorBase = materialId * MATERIAL_TEX_FLOAT_STRIDE;
+    const lightMapIntensity = packed.materialTexDescriptors[descriptorBase + 17] ?? 0;
+    pushUniqueRadianceFactor(lightMap[materialId]!, [
+      lightMapIntensity,
+      lightMapIntensity,
+      lightMapIntensity,
+    ]);
+  }
+  for (
+    let base = 0;
+    base + MESH_AREA_LIGHT_FLOAT_STRIDE <= packed.meshAreaLightsData.length;
+    base += MESH_AREA_LIGHT_FLOAT_STRIDE
+  ) {
+    const materialIdPlusOne = packed.meshAreaLightsData[base + 22] ?? 0;
+    if (
+      !Number.isInteger(materialIdPlusOne) ||
+      materialIdPlusOne <= 0 ||
+      materialIdPlusOne > materialCount
+    ) {
+      continue;
+    }
+    const materialId = materialIdPlusOne - 1;
+    pushUniqueRadianceFactor(emissiveMap[materialId]!, [
+      packed.meshAreaLightsData[base + 24] ?? 0,
+      packed.meshAreaLightsData[base + 25] ?? 0,
+      packed.meshAreaLightsData[base + 26] ?? 0,
+    ]);
+  }
+  return { emissiveMap, lightMap };
+}
+
 function uploadPackedSceneInner(
   device: GPUDevice,
   packed: PackedSceneData,
@@ -2386,6 +2765,7 @@ function uploadPackedSceneInner(
         `${MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES}-byte budget before GPU allocation.`,
     );
   }
+  const radianceEnvelope = materialTextureRadianceEnvelope(packed);
 
   const materialTextureArray = trackMaterialArray(createMaterialTextureArray(
     device,
@@ -2401,6 +2781,7 @@ function uploadPackedSceneInner(
     'rgba8unorm',
     packed.materialTextureLinearSourceInfos,
     forbiddenResources,
+    radianceEnvelope,
   ));
   // Dedicated HDR emissive array. Integer/external sources are sRGB-decoded on
   // upload while raw-float sources retain linear radiance above one.
@@ -2410,6 +2791,7 @@ function uploadPackedSceneInner(
     'rgba16float',
     packed.materialTextureEmissiveSourceInfos,
     forbiddenResources,
+    radianceEnvelope,
   ));
   applyMaterialTextureUvFitScales(
     packed.materialTexDescriptors,

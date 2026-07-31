@@ -163,7 +163,6 @@ export function dispatchProbeUpdateRaysPass(
     gpu.rayResultsBuf,
     gpu.activeProbesBuf,
     gpu.envMapView,
-    gpu.envSamplerForProbe,
   ], () => gpu.device.createBindGroup({
     layout: gpu.raysPipeline.getBindGroupLayout(2),
     entries: [
@@ -178,7 +177,6 @@ export function dispatchProbeUpdateRaysPass(
       // always valid; the WGSL sampleSkyColor gates on frameParams.hasEnv
       // before sampling, so the placeholder is never actually read.
       { binding: 6, resource: gpu.envMapView },
-      { binding: 7, resource: gpu.envSamplerForProbe },
       { binding: 8, resource: visReadTex.createView() },
     ],
   }));

@@ -32,6 +32,31 @@ const D65_Y_INTEGRAL = (() => {
   return n;
 })();
 
+function wgslF32Literal(value: number): number {
+  return Math.fround(Number(value.toFixed(8)));
+}
+
+/**
+ * Maximum multiplier produced by `heroSampleD65Normalised` using the exact
+ * decimal-literal and binary32 staging emitted below. Environment range
+ * preflights consume this value instead of maintaining a parallel magic bound.
+ */
+export const HERO_D65_MAX_NORMALISED_F32 = (() => {
+  const yIntegral = wgslF32Literal(Y_CMF_INTEGRAL);
+  const d65YIntegral = wgslF32Literal(D65_Y_INTEGRAL);
+  const normalisation = Math.fround(
+    yIntegral / Math.max(d65YIntegral, Math.fround(1e-9)),
+  );
+  let maximum = 0;
+  for (const sample of CIE_D65_TABLE) {
+    maximum = Math.max(
+      maximum,
+      Math.fround(wgslF32Literal(sample) * normalisation),
+    );
+  }
+  return maximum;
+})();
+
 function tableToWgslConst(name: string, table: Readonly<Float32Array | Float64Array>): string {
   // Derive the WGSL fixed-size-array length from the actual table length so the
   // declared size always matches the initializer count. The three CMF tables

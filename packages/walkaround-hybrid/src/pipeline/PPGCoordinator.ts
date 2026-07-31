@@ -112,10 +112,12 @@ function ppgResourceBuffers(ppg: PPGFrameResources): readonly GPUBuffer[] {
 
 function assertCandidatePPGResources(
   candidate: PPGFrameResources,
-  live: PPGFrameResources,
+  live: FrameResources['ppg'],
 ): void {
   const candidateBuffers = ppgResourceBuffers(candidate);
-  const liveBuffers = new Set(ppgResourceBuffers(live));
+  const liveBuffers = new Set(
+    isPPGAllocated(live) ? ppgResourceBuffers(live) : [],
+  );
   if (
     new Set(candidateBuffers).size !== candidateBuffers.length ||
     candidateBuffers.some((buffer) => liveBuffers.has(buffer))
@@ -128,9 +130,11 @@ function assertCandidatePPGResources(
 
 function destroyCandidatePPGResources(
   candidate: PPGFrameResources,
-  live: PPGFrameResources,
+  live: FrameResources['ppg'],
 ): void {
-  const liveBuffers = new Set(ppgResourceBuffers(live));
+  const liveBuffers = new Set(
+    isPPGAllocated(live) ? ppgResourceBuffers(live) : [],
+  );
   for (const buffer of new Set(ppgResourceBuffers(candidate))) {
     if (liveBuffers.has(buffer)) continue;
     try { buffer.destroy(); } catch { /* release every isolated candidate buffer */ }
@@ -385,9 +389,40 @@ export class PPGCoordinator implements PipelineSubsystem {
     frameResources: FrameResources,
     width: number,
     height: number,
-    _frameCount: number,
+    frameCount: number,
   ): void {
-    if (!this._enabled) return;
+    const mutation = this.prepareResize(
+      frameResources,
+      width,
+      height,
+      frameCount,
+    );
+    try {
+      mutation.commit();
+    } catch (error) {
+      rethrowWithSceneMutationCleanup(
+        error,
+        [() => mutation.rollback()],
+        'PPG resize publication failed and rollback also failed',
+      );
+    }
+    mutation.finalize();
+  }
+
+  /**
+   * Prepare resolution-dependent PPG resources without publishing coordinator
+   * lifecycle state. This lets the outer pipeline stage PPG before asking the
+   * active denoiser to resize: a later denoiser failure can then roll the PPG
+   * candidate back without leaving dimensions or generations split.
+   */
+  prepareResize(
+    frameResources: FrameResources,
+    width: number,
+    height: number,
+    _frameCount: number,
+  ): PreparedSceneMutation {
+    if (!this._enabled) return NOOP_MUTATION;
+    const previous = frameResources.ppg;
     // Forward the same maxSpatialCells cap used at initialize() time so a
     // tree that has grown past the default 1024-cell cap doesn't overflow
     // the re-allocated buffer on resize.
@@ -398,27 +433,74 @@ export class PPGCoordinator implements PipelineSubsystem {
       this._allocationOptions(),
     );
     try {
+      assertCandidatePPGResources(candidate, previous);
       this._uploadTreeModel(candidate, this._sTree!);
       this._writeUpdateUBOForResources(candidate, width, height);
     } catch (error) {
-      destroyPPGResources(candidate);
+      destroyCandidatePPGResources(candidate, previous);
       throw error;
     }
-    const previous = frameResources.ppg;
+
+    const oldGeneration = this._frameResourcesGeneration;
+    const oldReadbackInFlight = this._fluxReadbackInFlight;
+    const oldEpochState = this._trainingEpochState;
+    const oldReadbackFailures = this._trainingReadbackFailures;
+    const oldDispatchesSinceRefine = this._trainingDispatchesSinceRefine;
+    const oldReadbackError = this._lastTrainingReadbackErrorMessage;
+    const oldWidth = this._width;
+    const oldHeight = this._height;
+    let committed = false;
+    let closed = false;
+
+    // Resource publication into the caller-owned candidate frame set is part
+    // of preparation. No render path can observe that frame set until the
+    // outer pipeline commits it.
     frameResources.ppg = candidate;
-    // Bump the generation so any in-flight readback chain that captured the
-    // old frameResources knows its resource references are now stale.
-    this._frameResourcesGeneration = nextCoordinatorGeneration(
-      this._frameResourcesGeneration,
-    );
-    this._discardReadbackBuffers();
-    this._fluxReadbackInFlight = false;
-    this._trainingEpochState = 'collecting';
-    this._trainingReadbackFailures = 0;
-    this._trainingDispatchesSinceRefine = 0;
-    this._width = width;
-    this._height = height;
-    if (isPPGAllocated(previous)) destroyPPGResources(previous);
+    return {
+      commit: () => {
+        if (closed || committed) return;
+        // Keep readback buffers alive until finalize. A later participant can
+        // still fail synchronously and roll this publication back.
+        this._frameResourcesGeneration = nextCoordinatorGeneration(oldGeneration);
+        this._fluxReadbackInFlight = false;
+        this._trainingEpochState = 'collecting';
+        this._trainingReadbackFailures = 0;
+        this._trainingDispatchesSinceRefine = 0;
+        this._lastTrainingReadbackErrorMessage = null;
+        this._width = width;
+        this._height = height;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        closed = true;
+        frameResources.ppg = previous;
+        if (committed) {
+          // Commit/rollback execute in one synchronous transaction, so an
+          // existing promise callback cannot observe the temporary generation.
+          this._frameResourcesGeneration = oldGeneration;
+          this._fluxReadbackInFlight = oldReadbackInFlight;
+          this._trainingEpochState = oldEpochState;
+          this._trainingReadbackFailures = oldReadbackFailures;
+          this._trainingDispatchesSinceRefine = oldDispatchesSinceRefine;
+          this._lastTrainingReadbackErrorMessage = oldReadbackError;
+          this._width = oldWidth;
+          this._height = oldHeight;
+        }
+        destroyCandidatePPGResources(candidate, previous);
+      },
+      finalize: () => {
+        if (closed) return;
+        closed = true;
+        if (!committed) {
+          frameResources.ppg = previous;
+          destroyCandidatePPGResources(candidate, previous);
+          return;
+        }
+        this._discardReadbackBuffers();
+        if (isPPGAllocated(previous)) destroyPPGResources(previous);
+      },
+    };
   }
 
   /**

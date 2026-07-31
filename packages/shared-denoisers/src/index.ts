@@ -119,6 +119,7 @@ export {
   SVGF_REAL_DEFAULT_SIGMA_NORMAL,
   SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
   SVGF_REAL_MAX_ATROUS_ITERATIONS,
+  SVGF_REAL_MAX_HISTORY_LENGTH,
 } from './svgfRealConstants.js';
 // Bindings + packer:
 export {
@@ -225,6 +226,7 @@ export type {
 // index. The walkaround-hybrid OIDNFinalDenoiser previously inlined its own
 // copies; route through these canonicals now.
 export {
+  FLOAT16_MAX_FINITE,
   float16BitsToFloat32,
   float32ToFloat16Bits,
 } from './halfFloat.js';

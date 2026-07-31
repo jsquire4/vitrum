@@ -29,9 +29,6 @@ export const SCENE_TRAVERSAL_WGSL = /* wgsl */ `// =============================
 //   - The canonical return type is IntersectionResult (superset). The
 //     pre-canonical HitResult is gone; its bary field is now barycoord,
 //     and triIndex is now indices.w (matches DDGI / RC conventions).
-//   - intersectTriangle now returns IntersectionResult (not f32). The
-//     one remaining inline caller (bvhTraceTintedVisibility in
-//     surfaceTextures.wgsl) unwraps .dist / .didHit at the call site.
 //   - Cast-mask-aware any-hit traversal carries both skipGlass and packed
 //     cast-shadow/alpha flags. Tinted transmission uses the dedicated
 //     per-channel visibility walk in surfaceTextures.wgsl.
@@ -145,18 +142,22 @@ fn smoothShadingNormal(
     hit.barycoord.x * n0 +
     hit.barycoord.y * n1 +
     hit.barycoord.z * n2;
-  let len = length(blended);
-  if (len < 1e-6) { return geoNormal; }
-  var n = blended / len;
+  let blendedScale = max(abs(blended.x), max(abs(blended.y), abs(blended.z)));
+  if (!(blendedScale > 0.0) || blendedScale > 3.402823466e38) {
+    return geoNormal;
+  }
+  var n = safe_normalize(blended);
   if (isTlas) {
     let worldN = tlasTransformNormalFromLocalCols(w2l0, w2l1, w2l2, n);
-    let wl = length(worldN);
-    if (wl < 1e-6) { return geoNormal; }
+    let worldScale = max(abs(worldN.x), max(abs(worldN.y), abs(worldN.z)));
+    if (!(worldScale > 0.0) || worldScale > 3.402823466e38) {
+      return geoNormal;
+    }
     // hit.side is world-winding parity corrected by TLAS traversal. Apply
     // the transform parity to the authored local normal before multiplying by
     // that side so the final shading normal remains face-forward on mirrored
     // instances as well as non-mirrored ones.
-    n = (worldN / wl) * tlasLinearOrientationSign(w2l0, w2l1, w2l2);
+    n = safe_normalize(worldN) * tlasLinearOrientationSign(w2l0, w2l1, w2l2);
   }
   return n * hit.side;
 }

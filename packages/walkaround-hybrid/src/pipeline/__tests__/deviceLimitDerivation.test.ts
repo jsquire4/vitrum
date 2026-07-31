@@ -177,7 +177,7 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
     expect(peaks).toEqual({
       storageBuffers: 8,
       storageTextures: 7,
-      sampledTextures: 16,
+      sampledTextures: 17,
       samplers: 2,
       uniformBuffers: 4,
       bindGroups: 4,
@@ -186,7 +186,11 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
       'ppg-update',
       'regir-build',
     ]));
-    expect(maxBindingsPerBindGroup).toBe(15);
+    expect(
+      pipelines.find((pipeline) => pipeline.label === 'transparentOit')
+        ?.counts.sampledTextures,
+    ).toBe(peaks.sampledTextures);
+    expect(maxBindingsPerBindGroup).toBe(16);
     expect(HYBRID_WEBGPU_REQUIRED_LIMITS).toEqual({
       maxStorageBuffersPerShaderStage: peaks.storageBuffers,
       maxStorageTexturesPerShaderStage: peaks.storageTextures,
@@ -207,7 +211,7 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
     expect(peaks.storageBuffers).toBe(8);
     expect(peaks.bindGroups).toBe(4);
     expect(peaks.storageTextures).toBe(7);
-    expect(peaks.sampledTextures).toBe(16);
+    expect(peaks.sampledTextures).toBe(17);
     expect(pipelines.map((pipeline) => pipeline.label)).toEqual(expect.arrayContaining([
       'ppg-update',
       'regir-build',

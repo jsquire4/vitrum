@@ -16,7 +16,9 @@ import type {
   TextureRef,
   TextureWrapMode,
 } from '@vitrum/core';
+import { packNonNegativeRadianceScalarF32 } from '@vitrum/shared-bvh';
 import type { MaterialTextureLayerUvScale } from './materialTextureArray.js';
+import { assertPtWebgpuEnvironmentScaleF32 } from '../environmentRadianceScale.js';
 
 /**
  * vec4s per material in the descriptor buffer (MUST match the WGSL
@@ -584,9 +586,15 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     descriptors[b + 14] = indexOfLinear(m.lightMap, mi, 'lightMap');
     descriptors[b + 15] = indexOfLinear(m.bumpMap, mi, 'bumpMap');
     descriptors[b + 16] = m.aoMapIntensity ?? 1;
-    descriptors[b + 17] = m.lightMapIntensity ?? 1;
+    descriptors[b + 17] = packNonNegativeRadianceScalarF32(
+      m.lightMapIntensity ?? 1,
+      `@vitrum/pt-webgpu material ${mi} lightMapIntensity`,
+    );
     descriptors[b + 18] = m.bumpScale ?? 1;
-    descriptors[b + 19] = m.envMapIntensity ?? 1;
+    descriptors[b + 19] = assertPtWebgpuEnvironmentScaleF32(
+      m.envMapIntensity ?? 1,
+      `material ${mi} envMapIntensity`,
+    );
     // D3 — vec4 #5: anisotropy scalars + optional KHR_materials_anisotropy map.
     descriptors[b + 20] = m.anisotropy ?? 0;
     descriptors[b + 21] = m.anisotropyRotation ?? 0;

@@ -364,13 +364,19 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let a = meshAreaLights[mb].xyz;');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let mr = sampleMeshAreaLightRadiance(');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('mi, vec3f(uu, vv, ww), lpos,');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let area = 0.5 * length(cross(b - a, c - a));');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (dist2 <= 0.0 || area <= 0.0) { continue; }');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'let areaMeasure = measureAreaVector(b - a, c - a, 0.5);',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'if (!(dist > 0.0) || areaMeasure.valid == 0u) { continue; }',
+    );
+    expect(codeOnly(RESTIR_PT_PRODUCER_WGSL).replace(/\s+/g, ' ')).toContain(
+      'meshAreaLights[mb + 3u].w > 0.5 || !traceAny(',
+    );
   });
 
   it('uses packed N-directional RGB records in suffix direct lighting', () => {
-    const code = codeOnly(RESTIR_PT_PRODUCER_WGSL);
+    const code = codeOnly(RESTIR_PT_PRODUCER_WGSL).replace(/\s+/g, ' ');
     expect(code).toContain('for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {');
     expect(code).toContain('let dDirAD = directionalLights[dBase];');
     expect(code).toContain('let dIrrMean = directionalLights[dBase + 1u];');
@@ -384,15 +390,23 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
   });
 
   it('honors packed emitter castShadow flags in suffix direct lighting where those lanes are available', () => {
+    const code = codeOnly(RESTIR_PT_PRODUCER_WGSL).replace(/\s+/g, ' ');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY, rng)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let rectShadowDisabled = rectAreaLights[rb].w > 0.5;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let ptShadowDisabled = ptExtra.z > 0.5;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let spShadowDisabled = spExtra.z > 0.5;');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny');
+    for (const flag of [
+      'dirShadowDisabled ||',
+      'rectShadowDisabled ||',
+      'ptShadowDisabled ||',
+      'spShadowDisabled ||',
+    ]) {
+      expect(code).toContain(flag);
+    }
+    expect(code).toContain('!traceAny(shadowRay, ptRayTMin(), INFINITY, rng)');
+    expect(code.match(/ptFiniteSegmentTMax\(dist\)/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(code).not.toContain('max(dist - 2e-3, 1e-3)');
+    expect(code).toContain('meshAreaLights[mb + 3u].w > 0.5 || !traceAny(');
   });
 
   it('admits finite glossy reflection without a maturity switch and excludes transmission', () => {
@@ -562,7 +576,8 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);',
       'let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);',
       'let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);',
-      'let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envMapIntensity;',
+      'let envColorOut = ptScaleEnvironmentRadiance(',
+      'envMapIntensity,',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
     }
@@ -571,12 +586,13 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
   it('mirrors megakernel environment intensity and spectral handling in suffix paths', () => {
     for (const line of [
       'envMapIntensity: f32,',
-      'let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envMapIntensity;',
+      'let envColorOut = ptScaleEnvironmentRadiance(',
       'sm.envMapIntensity,',
       'let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);',
       'let envNeePdf = environmentNeeProposalPdf(nextDir, normal);',
       'let escapeMisWeight = powerHeuristic(cosSample.pdf, envNeePdf);',
-      'Lo = Lo + suffixThroughput * envContribution * sm.envMapIntensity * escapeMisWeight;',
+      'let receiverEnvironment = ptScaleEnvironmentRadiance(',
+      'Lo = Lo + suffixThroughput * receiverEnvironment * escapeMisWeight;',
       '// would estimate the same direct path a second time. An empty producer',
     ]) {
       expect(RESTIR_PT_PRODUCER_WGSL).toContain(line);
@@ -608,7 +624,10 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (surfaceHitCount >= surfaceHitLimit) {');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('valid = false;');
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);');
-    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let nextTrace = rptTraceClosestAfterAlpha(Ray(pos + normal * 1e-3, nextDir), rng);');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain('let nextTrace = rptTraceClosestAfterAlpha(');
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'Ray(pos + normal * ptRayOriginBias(), nextDir)',
+    );
     expect(RESTIR_PT_PRODUCER_WGSL).toContain('if (!nextTrace.valid) { return rptInvalidSuffixEstimate(); }');
 
     const reconTraceIdx = RESTIR_PT_PRODUCER_WGSL.indexOf('let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);');

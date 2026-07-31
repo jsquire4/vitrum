@@ -423,7 +423,7 @@ describe('H12: lite-tier capabilities truth', () => {
           displacementScale: 0.2,
           displacementBias: -0.1,
         },
-      } as never);
+      });
     } catch {
       /* GPU stubs may throw after the warn — that's expected */
     }

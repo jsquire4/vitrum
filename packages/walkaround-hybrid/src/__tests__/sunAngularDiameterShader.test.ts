@@ -28,6 +28,8 @@ describe('walkaround directional angularDiameter shader plumbing', () => {
     const ddgiProbeUpdate = makeProbeUpdateRaysWGSL(4);
     expect(ddgiProbeUpdate).toContain('fn ddgiSoftSunDirection');
     expect(ddgiProbeUpdate).toContain('light.innerCone');
-    expect(ddgiProbeUpdate).toContain('ddgiSoftSunDirection(-light.direction * inverseSqrt(axisLen2), light.innerCone, hitPos)');
+    expect(ddgiProbeUpdate).toMatch(
+      /ddgiSoftSunDirection\(\s*-ddgiNormalizeOr\(light\.direction, vec3f\(0\.0, -1\.0, 0\.0\)\),\s*light\.innerCone,\s*hitPos,\s*\)/,
+    );
   });
 });

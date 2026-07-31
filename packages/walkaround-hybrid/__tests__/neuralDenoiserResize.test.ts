@@ -417,7 +417,9 @@ describe('NeuralDenoiser WGSL extraction byte-identity (Issue 2)', () => {
     expect(NEURAL_PACK_WGSL).toMatch(/fn\s+main\s*\(/);
     expect(NEURAL_PACK_WGSL).toMatch(/noisyOut\[base/);
     // Runtime normals are already signed world-space vectors.
-    expect(NEURAL_PACK_WGSL).toMatch(/return\s+normalize\s*\(\s*safe\s*\)/);
+    expect(NEURAL_PACK_WGSL).toMatch(
+      /let\s+scale\s*=\s*max\([\s\S]*let\s+scaled\s*=\s*finiteValue\s*\/\s*scale;[\s\S]*return\s+scaled\s*\/\s*length\(scaled\);/,
+    );
   });
 
   it('NEURAL_UNPACK_WGSL contains the unpack entry-point declaration', () => {

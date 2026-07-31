@@ -80,6 +80,26 @@ function expectNoIndexedUvWrap(mesh: MeshPrimitive): void {
   }
 }
 
+function meshOutputBytes(mesh: MeshPrimitive): number {
+  let bytes = mesh.positions.byteLength + mesh.normals.byteLength;
+  if (mesh.uvs != null) bytes += mesh.uvs.byteLength;
+  if (mesh.uv1 != null) bytes += mesh.uv1.byteLength;
+  if (mesh.uvSets != null) {
+    for (const stream of Object.values(mesh.uvSets)) {
+      if (stream != null) bytes += stream.byteLength;
+    }
+  }
+  if (mesh.tangents != null) bytes += mesh.tangents.byteLength;
+  if (mesh.colors != null) bytes += mesh.colors.byteLength;
+  if (mesh.colorSets != null) {
+    for (const stream of Object.values(mesh.colorSets)) {
+      if (stream != null) bytes += stream.byteLength;
+    }
+  }
+  if (mesh.indices != null) bytes += mesh.indices.byteLength;
+  return bytes;
+}
+
 function meshFor(shape: AnalyticPrimitive['shape'], params: readonly number[], options?: AnalyticPrimitiveToMeshOptions): MeshPrimitive {
   return analyticPrimitiveToMesh(analytic(shape, params), options);
 }
@@ -156,6 +176,33 @@ describe('analyticPrimitiveToMesh', () => {
     expectBounds(mesh, [-5, -2, -1], [5, 2, 1]);
     expectUnitNormals(mesh);
     expectUVsInRange(mesh);
+  });
+
+  it('preserves every positive authored f32 dimension below the former tessellation floor', () => {
+    const tiny = 1e-9;
+    const cases = [
+      meshFor('sphere', [0, 0, 0, tiny], { segments: 8, rings: 4 }),
+      meshFor('box', [0, 0, 0, tiny, tiny * 2, tiny * 3]),
+      meshFor('cylinder', [0, 0, 0, tiny, tiny * 2], { segments: 8 }),
+      meshFor('h-channel-came', [tiny * 4, tiny, tiny * 2, tiny * 0.4]),
+    ];
+
+    for (const mesh of cases) {
+      const maxCoordinate = Math.max(...mesh.positions.map(Math.abs));
+      expect(maxCoordinate).toBeGreaterThan(0);
+      expect(maxCoordinate).toBeLessThan(1e-7);
+      expectUnitNormals(mesh);
+    }
+
+    const shortCapsule = meshFor(
+      'capsule',
+      [0, 0, 0, 0, tiny * 10, 0, tiny],
+      { segments: 8, rings: 4 },
+    );
+    expect(shortCapsule.positions.length / 3).toBe(38);
+    expect(Math.max(...shortCapsule.positions)).toBeGreaterThan(tiny * 9);
+    expect(Math.max(...shortCapsule.positions.map(Math.abs))).toBeLessThan(1e-7);
+    expectUnitNormals(shortCapsule);
   });
 
   it('uses and clones a supplied fallbackMesh by default', () => {
@@ -241,6 +288,94 @@ describe('analyticPrimitiveToMesh', () => {
     expect(mesh.positions.length / 3).toBe(24);
     expect(mesh.indices).toHaveLength(36);
     expectBounds(mesh, [-1, -1, -1], [1, 1, 1]);
+  });
+
+  it('enforces an output-allocation budget before generating geometry', () => {
+    const prim = analytic('sphere', [0, 0, 0, 1]);
+    const options = {
+      segments: 8,
+      rings: 4,
+      maxOutputBytes: 1_503,
+    } as AnalyticPrimitiveToMeshOptions;
+
+    expect(() => analyticPrimitiveToMesh(prim, options)).toThrow(/1,504 bytes.*output allocation.*budget.*1,503 bytes/i);
+  });
+
+  it('preflights exact generated output sizes for every analytic shape formula', () => {
+    const cases: ReadonlyArray<{
+      shape: AnalyticPrimitive['shape'];
+      params: readonly number[];
+      options: AnalyticPrimitiveToMeshOptions;
+    }> = [
+      { shape: 'sphere', params: [0, 0, 0, 1], options: { segments: 3, rings: 2 } },
+      { shape: 'sphere', params: [0, 0, 0, 1], options: { segments: 7, rings: 5 } },
+      { shape: 'box', params: [0, 0, 0, 1, 1, 1], options: { segments: 91, rings: 73 } },
+      { shape: 'capsule', params: [0, 0, 0, 0, 1, 0, 0.5], options: { segments: 3, rings: 2 } },
+      { shape: 'capsule', params: [0, 0, 0, 0, 1, 0, 0.5], options: { segments: 7, rings: 5 } },
+      { shape: 'capsule', params: [0, 0, 0, 0, 0, 0, 0.5], options: { segments: 3, rings: 2 } },
+      { shape: 'capsule', params: [0, 0, 0, 0, 0, 0, 0.5], options: { segments: 7, rings: 5 } },
+      { shape: 'cylinder', params: [0, 0, 0, 1, 1], options: { segments: 3, rings: 99 } },
+      { shape: 'h-channel-came', params: [2, 1, 1, 0.25], options: { segments: 91, rings: 73 } },
+    ];
+
+    for (const { shape, params, options } of cases) {
+      const mesh = meshFor(shape, params, options);
+      const exactBytes = meshOutputBytes(mesh);
+      expect(() => meshFor(shape, params, { ...options, maxOutputBytes: exactBytes }))
+        .not.toThrow();
+      expect(() => meshFor(shape, params, { ...options, maxOutputBytes: exactBytes - 1 }))
+        .toThrow(/output allocation/);
+    }
+  });
+
+  it('rejects huge segment/ring products before entering tessellation loops', () => {
+    expect(() => meshFor(
+      'sphere',
+      [0, 0, 0, 1],
+      { segments: Number.MAX_SAFE_INTEGER, rings: Number.MAX_SAFE_INTEGER },
+    )).toThrow(/output allocation.*budget/);
+    expect(() => meshFor(
+      'cylinder',
+      [0, 0, 0, 1, 1],
+      { segments: Number.MAX_VALUE },
+    )).toThrow(/output allocation.*budget/);
+  });
+
+  it('budgets every typed-array clone in an authored fallback mesh', () => {
+    const positions = new Float32Array(9);
+    const normals = new Float32Array(9);
+    const uvs = new Float32Array(6);
+    const uv1 = new Float32Array(6);
+    const tangents = new Float32Array(12);
+    const colors = new Float32Array(9);
+    const color1 = new Float32Array(12);
+    const indices = new Uint16Array([0, 1, 2]);
+    const prim = analytic('box', [0, 0, 0, 1, 1, 1], {
+      fallbackMesh: {
+        positions,
+        normals,
+        uvs,
+        uv1,
+        uvSets: [uvs, uv1],
+        tangents,
+        colors,
+        colorSets: [colors, color1],
+        indices,
+      },
+    });
+    const exactBytes = 342;
+
+    expect(() => analyticPrimitiveToMesh(prim, { maxOutputBytes: exactBytes - 1 }))
+      .toThrow(/342 bytes.*output allocation.*341 bytes/i);
+    expect(meshOutputBytes(analyticPrimitiveToMesh(prim, { maxOutputBytes: exactBytes })))
+      .toBe(exactBytes);
+  });
+
+  it('rejects invalid maxOutputBytes overrides', () => {
+    for (const maxOutputBytes of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(() => meshFor('box', [0, 0, 0, 1, 1, 1], { maxOutputBytes }))
+        .toThrow(/maxOutputBytes must be a non-negative safe integer/);
+    }
   });
 
   it('rejects analytic params with the wrong shape length', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Scene, ScenePrimitive, SceneEmitter } from '@vitrum/core';
+import { asMat4, type Scene, type ScenePrimitive, type SceneEmitter } from '@vitrum/core';
 import type { ScenePackResult } from '@vitrum/shared-bvh';
 import { SceneMutationRouter, type MutationHost } from '../sceneMutationRouter.js';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
@@ -70,8 +70,7 @@ function makeHost(over: Partial<HostState> = {}) {
     validatePrimitiveCandidate: vi.fn<[Scene, string], void>(),
     validateEmitterCandidate: vi.fn<[Scene, string], void>(),
     validateEnvironmentCandidate: vi.fn<[Scene['environment']], void>(),
-    validateEmittersCandidate:
-      vi.fn<[readonly SceneEmitter[], readonly ScenePrimitive[]], void>(),
+    validateEmittersCandidate: vi.fn<[readonly SceneEmitter[], readonly ScenePrimitive[]], void>(),
     setGeoPack: vi.fn<[ScenePackResult], void>((g) => {
       state.geoPack = g;
     }),
@@ -164,25 +163,75 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     expect(calls.invalidateBindGroups).not.toHaveBeenCalled();
   });
 
+  it('updatePrimitive: own undefined clears an optional field instead of becoming a no-op', () => {
+    const scene = baseScene();
+    const primitive = scene.primitives[0]!;
+    if (primitive.kind !== 'mesh') throw new Error('expected mesh primitive');
+    const transformedScene: Scene = {
+      ...scene,
+      primitives: [
+        {
+          ...primitive,
+          transform: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 0, 0, 1])),
+        },
+      ],
+    };
+    const { host, calls } = makeHost({
+      scene: transformedScene,
+      sceneBuffers: null,
+      geoPack: null,
+    });
+    const router = new SceneMutationRouter(host);
+
+    router.updatePrimitive('a', { transform: undefined });
+
+    expect(calls.validatePrimitiveCandidate).toHaveBeenCalledTimes(1);
+    expect(calls.setScene).toHaveBeenCalledTimes(1);
+    const [nextScene] = calls.setScene.mock.calls[0]!;
+    const nextPrimitive = nextScene.primitives[0];
+    expect(nextPrimitive?.kind).toBe('mesh');
+    if (nextPrimitive?.kind === 'mesh') expect(nextPrimitive.transform).toBeUndefined();
+  });
+
+  it('updatePrimitive: rejects every own id/kind field before no-op routing', () => {
+    const { host, calls } = makeHost({ sceneBuffers: null, geoPack: null });
+    const router = new SceneMutationRouter(host);
+
+    expect(() =>
+      router.updatePrimitive('a', {
+        id: 'a',
+      } as never),
+    ).toThrow(/id cannot be changed or supplied/);
+    expect(() =>
+      router.updatePrimitive('a', {
+        kind: undefined,
+      } as never),
+    ).toThrow(/kind cannot change or be supplied/);
+    expect(calls.validatePrimitiveCandidate).not.toHaveBeenCalled();
+    expect(calls.setScene).not.toHaveBeenCalled();
+  });
+
   it('updatePrimitive: mapped analytics conservatively full-repack their fallback mesh layout', () => {
     const mappedAnalytic: Scene = {
-      primitives: [{
-        kind: 'analytic',
-        id: 'mapped-sphere',
-        shape: 'sphere',
-        params: new Float32Array([0, 0, 0, 1]),
-        fallbackMesh: {
-          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+      primitives: [
+        {
+          kind: 'analytic',
+          id: 'mapped-sphere',
+          shape: 'sphere',
+          params: new Float32Array([0, 0, 0, 1]),
+          fallbackMesh: {
+            positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+            normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+            uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+          },
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.4,
+            metallic: 0,
+            baseColorMap: { handle: { id: 'albedo' } },
+          },
         },
-        material: {
-          baseColor: [1, 1, 1],
-          roughness: 0.4,
-          metallic: 0,
-          baseColorMap: { handle: { id: 'albedo' } },
-        },
-      }],
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -212,14 +261,16 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     });
     const router = new SceneMutationRouter(host);
     const previous = state.scene;
-    expect(() => router.updatePrimitive('a', {
-      material: {
-        ...previous!.primitives[0]!.material,
-        thinFilmStack: {
-          layers: [{ ior: 1.4, thicknessNm: -1 }],
+    expect(() =>
+      router.updatePrimitive('a', {
+        material: {
+          ...previous!.primitives[0]!.material,
+          thinFilmStack: {
+            layers: [{ ior: 1.4, thicknessNm: -1 }],
+          },
         },
-      },
-    })).toThrow(/thinFilmStack\.layers\[0\]\.thicknessNm must be > 0/);
+      }),
+    ).toThrow(/thinFilmStack\.layers\[0\]\.thicknessNm must be > 0/);
     expect(state.scene).toBe(previous);
     expect(calls.setScene).not.toHaveBeenCalled();
     expect(calls.reset).not.toHaveBeenCalled();
@@ -227,16 +278,18 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     // A coherent stack overrides the RGB-only iridescence model and now
     // participates in the authored rough/metallic finite BSDF instead of
     // requiring a smooth, fully transmissive special case.
-    expect(() => router.updatePrimitive('a', {
-      material: {
-        ...previous!.primitives[0]!.material,
-        iridescence: 1,
-        thinFilmStack: {
-          layers: [{ ior: 1.4, thicknessNm: 320 }],
-          angleDependent: true,
+    expect(() =>
+      router.updatePrimitive('a', {
+        material: {
+          ...previous!.primitives[0]!.material,
+          iridescence: 1,
+          thinFilmStack: {
+            layers: [{ ior: 1.4, thicknessNm: 320 }],
+            angleDependent: true,
+          },
         },
-      },
-    })).not.toThrow();
+      }),
+    ).not.toThrow();
     expect(calls.setScene).toHaveBeenCalledTimes(1);
     const [accepted] = calls.setScene.mock.calls[0]!;
     expect(accepted.primitives[0]!.material.iridescence).toBe(1);
@@ -244,7 +297,6 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     expect(accepted.primitives[0]!.material.metallic).toBe(0.1);
     expect(accepted.primitives[0]!.material.thinFilmStack?.layers).toHaveLength(1);
     expect(calls.reset).not.toHaveBeenCalled();
-
   });
 
   it('rejects invalid volume mutations before incremental publication', () => {
@@ -253,13 +305,15 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     const router = new SceneMutationRouter(host);
     const previous = state.scene;
 
-    expect(() => router.updatePrimitive('a', {
-      material: {
-        ...previous!.primitives[0]!.material,
-        transmission: 1,
-        scatteringCoefficientRGB: [0.1, -0.2, 0.3],
-      },
-    })).toThrow(/scatteringCoefficientRGB/);
+    expect(() =>
+      router.updatePrimitive('a', {
+        material: {
+          ...previous!.primitives[0]!.material,
+          transmission: 1,
+          scatteringCoefficientRGB: [0.1, -0.2, 0.3],
+        },
+      }),
+    ).toThrow(/scatteringCoefficientRGB/);
 
     expect(state.scene).toBe(previous);
     expect(calls.setScene).not.toHaveBeenCalled();
@@ -288,5 +342,43 @@ describe('SceneMutationRouter — routing contract (pt-webgpu Task 4.3)', () => 
     const [nextScene] = calls.setScene.mock.calls[0]!;
     // null env normalizes to { kind: 'none' } before the setScene fall-through.
     expect(nextScene.environment).toEqual({ kind: 'none' });
+  });
+
+  it('updateEnvironment: validates its candidate before deriving unrelated geometry', () => {
+    const poisonedScene: Scene = {
+      primitives: [
+        {
+          kind: 'analytic',
+          id: 'poisoned-analytic',
+          shape: 'sphere',
+          params: new Float32Array([0, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+            baseColorMap: { handle: { id: 'missing-fallback-map' } },
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host, calls } = makeHost({
+      scene: poisonedScene,
+      sceneBuffers: null,
+    });
+    calls.validateEnvironmentCandidate.mockImplementation(() => {
+      throw new TypeError('malformed environment candidate');
+    });
+    const router = new SceneMutationRouter(host);
+
+    expect(() =>
+      router.updateEnvironment({
+        kind: 'hdri',
+        hdri: {},
+      }),
+    ).toThrow('malformed environment candidate');
+    expect(calls.validateEnvironmentCandidate).toHaveBeenCalledTimes(1);
+    expect(calls.setScene).not.toHaveBeenCalled();
   });
 });

@@ -131,9 +131,10 @@ describe('packDDGIProbeLights — sun light', () => {
     // intensity (multiplied by sunIntensityMul=1 here) → slot +7.
     expect(f32[base + 7]).toBeCloseTo(5, 5);
     // direction → slots +8,+9,+10 (WGSL reads light.direction.xyz, negates for toward-light).
-    expect(f32[base + 8]).toBeCloseTo(0.1, 5);
-    expect(f32[base + 9]).toBeCloseTo(-0.9, 5);
-    expect(f32[base + 10]).toBeCloseTo(0.2, 5);
+    const directionLength = Math.hypot(0.1, -0.9, 0.2);
+    expect(f32[base + 8]).toBeCloseTo(0.1 / directionLength, 5);
+    expect(f32[base + 9]).toBeCloseTo(-0.9 / directionLength, 5);
+    expect(f32[base + 10]).toBeCloseTo(0.2 / directionLength, 5);
     // innerCone defaults to sun angular radius = 0; outerCone is unused for sun.
     expect(f32[base + 11]).toBe(0);
     expect(f32[base + 15]).toBe(0);
@@ -231,7 +232,9 @@ describe('probeUpdateRays soft-sun shader plumbing', () => {
     const evalDirectLighting = functionBody(shader, 'evalDirectLighting');
     expect(shader).toContain('fn ddgiSoftSunDirection');
     expect(shader).toContain('let radius = max(angularRadius, 0.0);');
-    expect(evalDirectLighting).toContain('ddgiSoftSunDirection(-light.direction * inverseSqrt(axisLen2), light.innerCone, hitPos)');
+    expect(evalDirectLighting).toMatch(
+      /ddgiSoftSunDirection\(\s*-ddgiNormalizeOr\(light\.direction, vec3f\(0\.0, -1\.0, 0\.0\)\),\s*light\.innerCone,\s*hitPos,\s*\)/,
+    );
     expect(evalDirectLighting).toContain('evalSunLight(');
   });
 });
@@ -488,6 +491,120 @@ describe('packDDGIProbeLights — inactive lights', () => {
     expect(() => packDDGIProbeLights([unknown], 1)).toThrowError(
       /kind must be 'sun', 'fixture', or 'teaLight'/,
     );
+  });
+});
+
+describe('packDDGIProbeLights — Float32 publication envelope', () => {
+  const f32Max = Math.fround(3.4028234663852886e38);
+  const f32MinSubnormal = Math.fround(1.401298464324817e-45);
+
+  it('normalizes Number-range and subnormal directions without overflow/collapse', () => {
+    const huge = decode(packDDGIProbeLights([{
+      kind: 'sun',
+      on: true,
+      intensity: 1,
+      direction: {
+        x: Number.MAX_VALUE,
+        y: Number.MAX_VALUE,
+        z: Number.MAX_VALUE,
+      },
+    }], 1)).f32;
+    const hugeBase = lightBase(0);
+    expect(Math.hypot(
+      huge[hugeBase + 8]!,
+      huge[hugeBase + 9]!,
+      huge[hugeBase + 10]!,
+    )).toBeCloseTo(1, 6);
+
+    const tiny = decode(packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: 1,
+      spotAxis: { x: Number.MIN_VALUE, y: 0, z: 0 },
+      spotCosInner: 0.9,
+      spotCosOuter: 0.8,
+    }], 1)).f32;
+    expect(Array.from(tiny.slice(hugeBase + 8, hugeBase + 11)))
+      .toEqual([1, 0, 0]);
+  });
+
+  it('rejects scalar overflow and positive-underflow before writing a record', () => {
+    expect(() => packDDGIProbeLights([{
+      kind: 'sun',
+      on: true,
+      intensity: f32Max,
+    }], 2)).toThrow(/sun intensity×multiplier.*finite/);
+    expect(() => packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: Number.MIN_VALUE,
+    }], 1)).toThrow(/intensity.*remain positive/);
+    expect(() => packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: 1,
+      distance: Number.MIN_VALUE,
+    }], 1)).toThrow(/distance.*remain positive/);
+  });
+
+  it('rejects overflowing coordinates but permits harmless per-lane underflow', () => {
+    expect(() => packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: 1,
+      position: { x: Number.MAX_VALUE, y: 0, z: 0 },
+    }], 1)).toThrow(/position\.x.*remain finite/);
+
+    const packed = decode(packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: 1,
+      position: { x: Number.MIN_VALUE, y: 2, z: 0 },
+      color: { r: Number.MIN_VALUE, g: 1, b: 0 },
+    }], 1)).f32;
+    const base = lightBase(0);
+    expect(packed[base + 4]).toBe(0);
+    expect(packed[base + 5]).toBe(2);
+    expect(packed[base + 12]).toBe(0);
+    expect(packed[base + 13]).toBe(1);
+  });
+
+  it('rejects complete color and emitted-signal collapse/overflow', () => {
+    expect(() => packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: 1,
+      color: {
+        r: Number.MIN_VALUE,
+        g: Number.MIN_VALUE,
+        b: Number.MIN_VALUE,
+      },
+    }], 1)).toThrow(/color.*collapse completely/);
+    expect(() => packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: f32MinSubnormal,
+      color: { r: f32MinSubnormal, g: 0, b: 0 },
+    }], 1)).toThrow(/color×intensity.*underflow completely/);
+    expect(() => packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: f32Max,
+      color: { r: 2, g: 0, b: 0 },
+    }], 1)).toThrow(/color×intensity.*finite/);
+  });
+
+  it('keeps host-only alias weights in f64 for maximum finite f32 radiance', () => {
+    const packed = decode(packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: f32Max,
+      color: { r: 1, g: 1, b: 1 },
+    }], 1));
+    const alias = packed.u32[2]!;
+    expect(packed.f32[lightBase(0) + 7]).toBe(f32Max);
+    expect(packed.f32[alias]).toBe(1);
+    expect(packed.f32[alias + 2]).toBe(1);
   });
 });
 

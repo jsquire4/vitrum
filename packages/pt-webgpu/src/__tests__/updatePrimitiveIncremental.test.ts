@@ -1383,7 +1383,7 @@ describe('pt-webgpu incremental primitive updates', () => {
     const buffersBefore = createBuffer.mock.calls.length;
 
     expect(() =>
-      engine.updatePrimitive?.('mesh-a', { kind: 'analytic' }),
+      engine.updatePrimitive?.('mesh-a', { kind: 'analytic' } as never),
     ).toThrow(/kind cannot change/);
     // The throw happens in the shared preamble BEFORE any fast path or setScene,
     // so no buffer is recreated.

@@ -104,6 +104,7 @@ export class BdptSubpathBuilder {
     // The light-subpath pass shares the eye program; flip the pass flag + upload the
     // per-pass scalars. The scene textures (BVH/materials/lights) are bound below.
     prog.setInt('seed', seed);
+    prog.setVec2('uTileOrigin', 0, 0);
     prog.setInt('uBdptLightSubpathPass', 1);
     prog.setInt('uBdptMaxLightBounces', cols);
     // The light subpath traces scene rays → needs the same per-frame transforms the
@@ -116,6 +117,7 @@ export class BdptSubpathBuilder {
     prog.setInt('materialLodDepth', frame.materialLodDepth);
     prog.setInt('uSpectralRendering', frame.spectralEnabled ? 1 : 0);
     prog.setFloat('environmentIntensity', frame.environmentIntensity);
+    prog.setFloat('uRayOriginBias', frame.rayOriginBias);
     prog.setMat4('environmentRotation', frame.environmentRotation);
     prog.setMat4('cameraWorldMatrix', frame.cameraWorldMatrix);
     prog.setMat4('invProjectionMatrix', frame.invProjectionMatrix);

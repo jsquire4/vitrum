@@ -53,6 +53,8 @@ struct PresentParams {
 
 ${tonemapWgsl()}
 
+const PT_PRESENT_RGBA16F_MAX: f32 = 65504.0;
+
 @compute @workgroup_size(8, 8, 1)
 fn presentMain(@builtin(global_invocation_id) gid: vec3u) {
   let dims = textureDimensions(accumTex);
@@ -71,6 +73,17 @@ fn presentMain(@builtin(global_invocation_id) gid: vec3u) {
     // linear: skip the OETF — write raw tonemapped linear values.
     outColor = vec4f(tonemapped, 1.0);
   }
+  // The operator evaluates exposure in f32 so none+linear can preserve raw HDR
+  // on wider targets. This backend's concrete output is rgba16float, therefore
+  // clamp only at the final store boundary to prevent +Inf publication.
+  outColor = vec4f(
+    clamp(
+      outColor.rgb,
+      vec3f(0.0),
+      vec3f(PT_PRESENT_RGBA16F_MAX),
+    ),
+    outColor.a,
+  );
   textureStore(presentTex, px, outColor);
 }
 `;

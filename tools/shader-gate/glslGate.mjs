@@ -53,31 +53,17 @@ async function findGlslangValidator() {
 const glslangBin = await findGlslangValidator();
 if (!glslangBin) {
   console.error("[glsl-gate] ERROR: glslangValidator not found in PATH.");
-  console.error(
-    "  Install it with:  sudo apt-get install -y glslang-tools",
-  );
-  console.error(
-    "  (On macOS:        brew install glslang)",
-  );
+  console.error("  Install it with:  sudo apt-get install -y glslang-tools");
+  console.error("  (On macOS:        brew install glslang)");
   Deno.exit(1);
 }
 
 // ── Import the production pt-webgl2 GLSL machinery ───────────────────────────
 // These imports use the @vitrum/* mappings from deno.json in this directory.
 // --sloppy-imports lets Deno load the .ts files without a build step.
-import {
-  composeNeeCandidateGlsl,
-  composeNeeResolveGlsl,
-  composeTraceGlsl,
-} from "../../packages/pt-webgl2/src/glsl/composeTraceGlsl.ts";
-import {
-  buildVertexSource,
-  buildFragmentSource,
-} from "../../packages/pt-webgl2/src/gl/glProgram.ts";
-import {
-  DEFAULT_TRACE_FEATURES,
-  featureDefines,
-} from "../../packages/pt-webgl2/src/featureTypes.ts";
+import { composeNeeCandidateGlsl, composeNeeResolveGlsl, composeTraceGlsl } from "../../packages/pt-webgl2/src/glsl/composeTraceGlsl.ts";
+import { buildFragmentSource, buildVertexSource } from "../../packages/pt-webgl2/src/gl/glProgram.ts";
+import { DEFAULT_TRACE_FEATURES, featureDefines } from "../../packages/pt-webgl2/src/featureTypes.ts";
 import { FULLSCREEN_VERT } from "../../packages/pt-webgl2/src/gl/fullscreenQuad.ts";
 
 // ── Production-reachable feature-combination matrix ──────────────────────────
@@ -169,11 +155,15 @@ const COMBOS = [
   },
 ];
 
+// Every invocation owns a private workspace. The shader gate is routinely run
+// alongside its self-test in CI, so process-global /tmp filenames would let one
+// invocation overwrite or delete another invocation's sources mid-validation.
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** Write src to a temp file and return the path. */
-async function writeTmp(name, src) {
-  const path = `/tmp/glsl-gate-${name}.glsl`;
+async function writeTmp(name, src, extension = "glsl") {
+  const path = `${tempDir}/${name}.${extension}`;
   await Deno.writeTextFile(path, src);
   return path;
 }
@@ -204,8 +194,38 @@ async function validateGlsl(stageName, src, tmpName) {
   const { success, stdout, stderr } = await cmd.output();
   const output = (new TextDecoder().decode(stdout) + new TextDecoder().decode(stderr)).trim();
   // Clean up temp file
-  try { await Deno.remove(tmpPath); } catch { /* ignore */ }
+  try {
+    await Deno.remove(tmpPath);
+  } catch {
+    /* ignore */
+  }
   return { ok: success, output };
+}
+
+async function validateProgramLink(vertSrc, fragSrc, tmpName) {
+  const vertPath = await writeTmp(`${tmpName}-link`, vertSrc, "vert");
+  const fragPath = await writeTmp(`${tmpName}-link`, fragSrc, "frag");
+  try {
+    const cmd = new Deno.Command(glslangBin, {
+      args: ["-l", vertPath, fragPath],
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const { success, stdout, stderr } = await cmd.output();
+    const output = (new TextDecoder().decode(stdout) + new TextDecoder().decode(stderr)).trim();
+    return { ok: success, output };
+  } finally {
+    try {
+      await Deno.remove(vertPath);
+    } catch {
+      /* ignore */
+    }
+    try {
+      await Deno.remove(fragPath);
+    } catch {
+      /* ignore */
+    }
+  }
 }
 
 // ── Shader inventory ──────────────────────────────────────────────────────────
@@ -249,7 +269,8 @@ if (selfTest) {
   // glslangValidator must report an error. The error is injected AFTER the normal
   // composeTraceGlsl body so the preamble structure is unchanged — we're testing
   // that the gate detects errors anywhere in the composed output.
-  const brokenFragBody = `
+  const brokenFragBody =
+    `
 // SELF-TEST: intentional type error injected by --self-test.
 // 'absolutely_undefined_glsl_identifier' is not declared — glslangValidator must reject.
 void __selfTestBrokenChunk() {
@@ -263,79 +284,103 @@ void __selfTestBrokenChunk() {
     name: "__self-test/intentionally-broken",
     vertSrc: brokenVertSrc,
     fragSrc: brokenFragSrc,
-    expectError: true,
+    expectedFailure: "compile",
   });
-  console.log("[glsl-gate] --self-test: added 1 intentionally-broken shader");
+
+  const linkMismatchVertSrc = `#version 300 es
+precision highp float;
+out vec3 vSelfTestLink;
+void main() {
+  vSelfTestLink = vec3(1.0);
+  gl_Position = vec4(0.0, 0.0, 0.0, 1.0);
+}`;
+  const linkMismatchFragSrc = `#version 300 es
+precision highp float;
+in vec2 vSelfTestLink;
+out vec4 outColor;
+void main() {
+  outColor = vec4(vSelfTestLink, 0.0, 1.0);
+}`;
+  shaders.push({
+    name: "__self-test/intentionally-link-incompatible",
+    vertSrc: linkMismatchVertSrc,
+    fragSrc: linkMismatchFragSrc,
+    expectedFailure: "link",
+  });
+  console.log("[glsl-gate] --self-test: added compile-failure and link-failure shaders");
 }
 
 // ── Compile loop ──────────────────────────────────────────────────────────────
-let passed = 0;
-let failed = 0;
-const errors = [];
+const tempDir = await Deno.makeTempDir({ prefix: "vitrum-glsl-gate-" });
+let gateExitCode = 1;
+try {
+  let passed = 0;
+  let failed = 0;
+  const errors = [];
 
-for (const entry of shaders) {
-  const { name, vertSrc, fragSrc, expectError } = entry;
-  const safeName = name.replace(/\//g, "-").replace(/[^a-zA-Z0-9_-]/g, "_");
+  for (const entry of shaders) {
+    const { name, vertSrc, fragSrc, expectedFailure } = entry;
+    const safeName = name.replace(/\//g, "-").replace(/[^a-zA-Z0-9_-]/g, "_");
 
-  // Validate vertex + fragment. In production both must compile together; we
-  // validate them independently because glslangValidator's -l (link) mode
-  // requires matching in/out varyings which we do not need to enforce here —
-  // we care about GLSL parse + type errors, not link-time interface matching.
-  const vertResult = await validateGlsl("vert", vertSrc, `${safeName}-vert`);
-  const fragResult = await validateGlsl("frag", fragSrc, `${safeName}-frag`);
-  const ok = vertResult.ok && fragResult.ok;
+    // Compile each stage first so diagnostics identify the failing shader, then
+    // link the pair so interface mismatches fail the production gate as well.
+    const vertResult = await validateGlsl("vert", vertSrc, `${safeName}-vert`);
+    const fragResult = await validateGlsl("frag", fragSrc, `${safeName}-frag`);
+    const stagesOk = vertResult.ok && fragResult.ok;
+    const linkResult = stagesOk ? await validateProgramLink(vertSrc, fragSrc, safeName) : { ok: false, output: "link skipped because a stage did not compile" };
+    const ok = stagesOk && linkResult.ok;
 
-  if (expectError) {
-    // In self-test mode we expect this specific shader to fail.
-    if (ok) {
-      console.error(`[glsl-gate] --self-test FAIL: ${name} was expected to error but compiled OK.`);
-    } else {
-      console.log(`[glsl-gate] --self-test: ${name} correctly detected as broken.`);
+    if (expectedFailure) {
+      const detected = expectedFailure === "compile" ? !stagesOk : stagesOk && !linkResult.ok;
+      if (!detected) {
+        console.error(`[glsl-gate] --self-test FAIL: ${name} did not produce its expected ${expectedFailure} failure.`);
+      } else {
+        console.log(`[glsl-gate] --self-test: ${name} correctly produced a ${expectedFailure} failure.`);
+      }
+      errors.push({ name, expectedFailure, selfTestDetected: detected });
+      continue;
     }
-    errors.push({ name, ok, expectError });
-    continue;
+
+    if (!ok) {
+      failed++;
+      const out = [vertResult.ok ? "" : `  [vert]\n${vertResult.output}`, fragResult.ok ? "" : `  [frag]\n${fragResult.output}`, stagesOk && !linkResult.ok ? `  [link]\n${linkResult.output}` : ""].filter(Boolean).join("\n");
+      const errMsg = `[glsl-gate] FAIL  ${name}\n${out}`;
+      console.error(errMsg);
+      errors.push({ name, messages: out });
+    } else {
+      passed++;
+      console.log(`[glsl-gate] OK    ${name}`);
+    }
   }
 
-  if (!ok) {
-    failed++;
-    const out = [vertResult.ok ? "" : `  [vert]\n${vertResult.output}`, fragResult.ok ? "" : `  [frag]\n${fragResult.output}`]
-      .filter(Boolean)
-      .join("\n");
-    const errMsg = `[glsl-gate] FAIL  ${name}\n${out}`;
-    console.error(errMsg);
-    errors.push({ name, messages: out });
+  // ── Summary ─────────────────────────────────────────────────────────────────
+  const total = passed + failed;
+  console.log("");
+  console.log(`[glsl-gate] ${total} shader combination(s) compiled and linked — ${passed} OK, ${failed} FAILED`);
+
+  if (selfTest) {
+    let injectedFailuresDetected = true;
+    for (const name of ["__self-test/intentionally-broken", "__self-test/intentionally-link-incompatible"]) {
+      const selfTestEntry = errors.find((e) => e.name === name);
+      if (!selfTestEntry?.selfTestDetected) {
+        console.error(`[glsl-gate] --self-test FAILED: ${name} was not detected.`);
+        injectedFailuresDetected = false;
+      }
+    }
+    const realFailures = errors.filter((e) => e.expectedFailure == null);
+    if (realFailures.length > 0) {
+      console.error("[glsl-gate] --self-test ABORTED: production shaders also failed:");
+      for (const e of realFailures) console.error(`  ${e.name}`);
+    }
+    if (injectedFailuresDetected && realFailures.length === 0) {
+      console.log("[glsl-gate] --self-test PASSED: compile and link failures were correctly detected.");
+      gateExitCode = 0;
+    }
   } else {
-    passed++;
-    console.log(`[glsl-gate] OK    ${name}`);
+    gateExitCode = failed > 0 ? 1 : 0;
   }
+} finally {
+  await Deno.remove(tempDir, { recursive: true }).catch(() => {});
 }
 
-// ── Summary ───────────────────────────────────────────────────────────────────
-const total = passed + failed;
-console.log("");
-console.log(`[glsl-gate] ${total} shader combination(s) compiled — ${passed} OK, ${failed} FAILED`);
-
-if (selfTest) {
-  const selfTestEntry = errors.find((e) => e.name === "__self-test/intentionally-broken");
-  if (!selfTestEntry) {
-    console.error("[glsl-gate] --self-test FAILED: injected broken shader not processed.");
-    Deno.exit(1);
-  }
-  if (selfTestEntry.ok) {
-    console.error("[glsl-gate] --self-test FAILED: injected broken shader was NOT detected!");
-    Deno.exit(1);
-  }
-  const realFailures = errors.filter((e) => e.name !== "__self-test/intentionally-broken" && !e.expectError);
-  if (realFailures.length > 0) {
-    console.error("[glsl-gate] --self-test ABORTED: production shaders also failed:");
-    for (const e of realFailures) console.error(`  ${e.name}`);
-    Deno.exit(1);
-  }
-  console.log("[glsl-gate] --self-test PASSED: injected error was correctly detected.");
-  Deno.exit(0);
-}
-
-if (failed > 0) {
-  Deno.exit(1);
-}
-Deno.exit(0);
+Deno.exit(gateExitCode);

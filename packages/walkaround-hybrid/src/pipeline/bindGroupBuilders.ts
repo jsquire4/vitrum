@@ -149,6 +149,7 @@ interface SceneBindGroupResources {
   envMapTextureView: GPUTextureView;
   envMarginalTextureView: GPUTextureView;
   envConditionalTextureView: GPUTextureView;
+  envPdfTextureView: GPUTextureView;
   envParamsBuffer: GPUBuffer;
 }
 
@@ -165,9 +166,10 @@ export function buildSceneBindGroup(
     r.bvhEmissiveTextureView,                       // 12 camera-visible emitters: per-tri HDR emissive Le
     r.analyticLightsTextureView,                    // 13 analytic point/spot lights
     r.bvhRoughMetalTextureView,                     // 14 B1 per-tri roughness+metalness (r32uint texture)
-    r.envMapTextureView,                            // 15 B3 directional IBL radiance + per-texel pdf
+    r.envMapTextureView,                            // 15 B3 directional IBL radiance
     r.envMarginalTextureView,                       // 16 B3 marginal inverse-CDF
     r.envConditionalTextureView,                    // 17 B3 conditional inverse-CDF
+    r.envPdfTextureView,                            // 18 B3 per-texel solid-angle density
     { buffer: r.envParamsBuffer },                  // 19 B3 EnvParams uniform
     r.materialTextureAtlasView,                     // 20 Phase-3D material-map texture_2d_array
     r.baseColorMapMetaTextureView,                  // 21 Phase-3D per-triangle map metadata
@@ -559,7 +561,7 @@ export function buildSampleBudgetBindGroup(
 ): GPUBindGroup {
   return buildBindGroupFromTable(device, 'sampleBudget', getSampleBudgetBindGroupLayout(device, cache), [
     { buffer: budgetUbo },        // 0
-    varianceView,                 // 1 welford variance source (rgba32float)
+    varianceView,                 // 1 welford variance source (rg32float)
     tierWriteView,                // 2 tier output (r32uint)
     { buffer: sampleCountUbo },   // 3
   ]);

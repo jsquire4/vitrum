@@ -39,13 +39,13 @@ describe('pt-webgpu double-sided traversal contract', () => {
   it('records geometric winding independently of authored shading normals', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('frontFace: bool,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let geometricNormal = cross(b - a, c - a);',
+      'var shadeNormal = triHit.normal;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let frontFace = dot(ray.direction, geometricNormal) < 0.0;',
+      'let frontFace = triHit.det > 0.0;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let orientationPreserving = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz) >= 0.0;',
+      'let orientationPreserving = transformLinearOrientationSign(l2w0, l2w1, l2w2) > 0.0;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       '(*hit).frontFace = select(!localHit.frontFace, localHit.frontFace, orientationPreserving);',

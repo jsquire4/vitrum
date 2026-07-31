@@ -34,6 +34,13 @@ import { createPTEngine_WebGL2 } from '@vitrum/pt-webgl2';
 import type { FrameStats, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
 import { createCornellScene } from '@vitrum-examples/cornell-scene';
+import {
+  CORNELL_CAMERA_POSITION,
+  createAxisAlignedView,
+  createPerspectiveProjection,
+  syncCanvasToDisplaySize,
+  writePerspectiveProjection,
+} from '../../shared/exampleHost.js';
 
 // ── URL params ────────────────────────────────────────────────────────────────
 const params = new URLSearchParams(location.search);
@@ -64,6 +71,7 @@ const frameSeedOffset = Number(params.get('vitrumFrameSeedOffset')) >>> 0;
 // ── Canvas + WebGL2 context ───────────────────────────────────────────────────
 const canvas   = document.getElementById('vitrum-canvas') as HTMLCanvasElement;
 const sppLabel = document.getElementById('spp') as HTMLDivElement;
+const initialViewport = syncCanvasToDisplaySize(canvas);
 
 // HOST owns the WebGL2RenderingContext — pass it to the factory, never destroy it.
 // The guard throws at module scope; the non-null assertion satisfies TypeScript
@@ -71,6 +79,8 @@ const sppLabel = document.getElementById('spp') as HTMLDivElement;
 const glOrNull = canvas.getContext('webgl2');
 if (glOrNull == null) {
   sppLabel.textContent = 'WebGL2 unavailable';
+  (globalThis as Record<string, unknown>).VITRUM_CAPTURE_ERROR =
+    'WebGL2 is not available in this browser';
   throw new Error('[pt-webgl2-direct] WebGL2 is not available in this browser.');
 }
 const gl: WebGL2RenderingContext = glOrNull;
@@ -109,24 +119,10 @@ if (captureMode) {
 }
 
 // ── Camera (static Cornell-box view) ──────────────────────────────────────────
-const viewMatrix = asMat4(new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0,-1,-4, 1,
-]));
-
-const aspect = canvas.clientWidth / Math.max(canvas.clientHeight, 1);
-const fovY   = Math.PI / 3;
-const near   = 0.1;
-const far    = 100;
-const f = 1 / Math.tan(fovY / 2);
-const projMatrix = asMat4(new Float32Array([
-  f / aspect, 0, 0,                               0,
-  0,          f, 0,                               0,
-  0,          0, (far + near) / (near - far),   -1,
-  0,          0, (2 * far * near) / (near - far), 0,
-]));
+const viewMatrix = asMat4(createAxisAlignedView(CORNELL_CAMERA_POSITION));
+const projMatrix = asMat4(
+  createPerspectiveProjection(initialViewport.width, initialViewport.height),
+);
 
 // ── Scene ─────────────────────────────────────────────────────────────────────
 const scene = createFidelityScene(fidelityScenario);
@@ -150,7 +146,13 @@ async function main(): Promise<void> {
   captureDiagnostics.engineCreated = true;
   if (captureMode) console.debug('[pt-webgl2-direct] capture milestone: engine-created');
 
-  await engine.setScene(scene);
+  try {
+    await engine.setScene(scene);
+    engine.setSize?.(initialViewport.width, initialViewport.height);
+  } catch (error) {
+    try { engine.dispose(); } catch { /* initialization rollback is best-effort */ }
+    throw error;
+  }
   captureDiagnostics.sceneUploaded = true;
   if (captureMode) console.debug('[pt-webgl2-direct] capture milestone: scene-uploaded');
 
@@ -184,18 +186,19 @@ async function main(): Promise<void> {
   let rafHandle = 0;
   let firstNonzeroSpp: number | null = null;
 
-  (globalThis as Record<string, unknown>).VITRUM_DISPOSE = () => {
+  const dispose = (): void => {
     if (disposed) return;
     disposed = true;
     if (rafHandle !== 0) cancelAnimationFrame(rafHandle);
     engine.dispose();
   };
+  (globalThis as Record<string, unknown>).VITRUM_DISPOSE = dispose;
 
   const reportTickError = (error: unknown): void => {
     const message = String(error instanceof Error ? error.stack ?? error.message : error);
     console.error('[pt-webgl2-direct] render loop failed:', error);
     (globalThis as Record<string, unknown>).VITRUM_CAPTURE_ERROR = message;
-    disposed = true;
+    dispose();
   };
 
   // FrameStats (frameTimeMs, spp) come from the engine.onFrame subscription,
@@ -210,12 +213,10 @@ async function main(): Promise<void> {
   async function tick(): Promise<void> {
     if (disposed) return;
     // Sync backing store to CSS size (host responsibility in direct mode).
-    const width  = Math.max(1, canvas.clientWidth);
-    const height = Math.max(1, canvas.clientHeight);
-    if (canvas.width !== width || canvas.height !== height) {
-      canvas.width  = width;
-      canvas.height = height;
-    }
+    const viewport = syncCanvasToDisplaySize(canvas);
+    const { width, height, devicePixelRatio } = viewport;
+    writePerspectiveProjection(projMatrix, width, height);
+    if (viewport.resized) engine.setSize?.(width, height);
 
     if (captureMode) {
       console.debug(
@@ -226,8 +227,8 @@ async function main(): Promise<void> {
     const output = engine.renderFrame({
       viewMatrix,
       projMatrix,
-      cameraPosition: [0, 1, 4],
-      viewport:  { width, height, devicePixelRatio: 1 },
+      cameraPosition: CORNELL_CAMERA_POSITION,
+      viewport: { width, height, devicePixelRatio },
       quality: { samplesTarget: targetSpp, bounces: maxBounces },
       frameIndex,
       frameSeed:
@@ -310,7 +311,10 @@ async function main(): Promise<void> {
       }
     }
 
-    if (!disposed && !captureSignalled) {
+    // Keep the host loop alive after convergence: renderFrame's converged
+    // fast-out is cheap, while a later resize still needs a new backing store,
+    // projection, and accumulation reset.
+    if (!disposed) {
       rafHandle = requestAnimationFrame(() => { void tick().catch(reportTickError); });
     }
   }

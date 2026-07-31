@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
-import { buildReSTIRSceneBVHForCoreScene } from '../bvhCore.js';
+import {
+  buildReSTIRSceneBVHForCoreScene,
+  rebuildBvhEmissiveLeFromCoreScene,
+} from '../bvhCore.js';
 import type { ReSTIRBvhMode } from '../bvhTypes.js';
 import { MATERIAL_MAP_META_TEXEL_OFFSETS } from '../../bvh/materialTextureAtlasPack.js';
 
@@ -208,6 +211,85 @@ describe('ReSTIR bvhCore material resolver', () => {
       [0, 1, 0],
     ]);
   });
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'keeps a mesh-area emitter override owned by its primitive in %s mode',
+    (bvhMode) => {
+      const sharedMaterial = material([0.5, 0.5, 0.5]);
+      const sourceScene: Scene = {
+        primitives: [
+          triangle('emitter-panel', 0, sharedMaterial),
+          triangle('ordinary-panel', 2, sharedMaterial),
+        ],
+        emitters: [{
+          kind: 'mesh-area',
+          id: 'panel-light',
+          meshId: 'emitter-panel',
+          color: [1, 0.5, 0.25],
+          intensity: 4,
+        }],
+        environment: { kind: 'none' },
+      };
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, { bvhMode });
+      const rows = emissiveRows(buffers.bvhEmissiveLe.cpuData);
+      const emittingRows = rows.filter((row) =>
+        row[0] > 0 || row[1] > 0 || row[2] > 0
+      );
+      expect(emittingRows).toHaveLength(1);
+      expect(emittingRows[0]!.slice(0, 3)).toEqual([4, 2, 1]);
+      expect(buffers.emitterCount).toBe(1);
+      expect(new Set(new Uint32Array(
+        buffers.triangleMaterialIds.cpuData,
+      )).size).toBe(2);
+    },
+  );
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'moves mesh-area ownership without rebuilding triangle material ids in %s mode',
+    (bvhMode) => {
+      const sharedMaterial = material([0.5, 0.5, 0.5]);
+      const primitives = [
+        triangle('panel-a', 0, sharedMaterial),
+        triangle('panel-b', 2, sharedMaterial),
+      ];
+      const initialScene: Scene = {
+        primitives,
+        emitters: [{
+          kind: 'mesh-area',
+          id: 'panel-light',
+          meshId: 'panel-a',
+          color: [1, 0.5, 0.25],
+          intensity: 4,
+        }],
+        environment: { kind: 'none' },
+      };
+      const movedScene: Scene = {
+        ...initialScene,
+        emitters: [{
+          kind: 'mesh-area',
+          id: 'panel-light',
+          meshId: 'panel-b',
+          color: [1, 0.5, 0.25],
+          intensity: 4,
+        }],
+      };
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(initialScene, { bvhMode });
+      const originalMaterialIds = [
+        ...new Uint32Array(buffers.triangleMaterialIds.cpuData),
+      ];
+      const rebuilt = rebuildBvhEmissiveLeFromCoreScene(movedScene, buffers);
+      const rebuiltRows = emissiveRows(rebuilt.cpuData);
+
+      expect(new Set(originalMaterialIds).size).toBe(2);
+      expect([
+        ...new Uint32Array(buffers.triangleMaterialIds.cpuData),
+      ]).toEqual(originalMaterialIds);
+      expect(rebuiltRows[0]).toEqual([0, 0, 0, 0]);
+      expect(rebuiltRows[1]).toEqual([4, 2, 1, 0]);
+    },
+  );
 
   it('rejects duplicate mesh-like primitive ids instead of reusing the first material slot', () => {
     const duplicateScene = scene([

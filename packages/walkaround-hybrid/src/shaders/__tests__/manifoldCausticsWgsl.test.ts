@@ -24,6 +24,15 @@ describe('walkaround bounded manifold caustics WGSL', () => {
     expect(MANIFOLD_CAUSTICS_WGSL).toContain('out.endpointPdf = 1.0;');
   });
 
+  it('routes scalar environment availability and sampling through the fail-closed scaler', () => {
+    expect(MANIFOLD_CAUSTICS_WGSL.match(
+      /walkaroundScaleEnvironmentRadiance\(/g,
+    )).toHaveLength(2);
+    expect(MANIFOLD_CAUSTICS_WGSL).not.toContain(
+      'ubo.skyTint * ubo.skyIrradiance',
+    );
+  });
+
   it('pins the complete joint proposal density and exact represented PMFs', () => {
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('facet.pairPmf = pairPmf;');
     expect(MANIFOLD_SMS_SOLVER_WGSL).not.toContain('proposalPmf / facet.area');
@@ -147,10 +156,13 @@ describe('walkaround bounded manifold caustics WGSL', () => {
       'materialMask, materialMaskWidth, bvh_beer, false',
     );
     expect(SURFACE_TEXTURES_WGSL).toContain(
-      'if (!blockMaterialTransmission || !hasMaterialTransmission)',
+      '} else if (blockMaterialTransmission) {',
     );
     expect(SURFACE_TEXTURES_WGSL).toContain(
-      'materialShadowTransmittanceForHit(\n      hit,\n      word,\n      !blockMaterialTransmission',
+      'tau = tau * vec3f(1.0 - coverage);',
+    );
+    expect(SURFACE_TEXTURES_WGSL).toContain(
+      'let alphaT = materialShadowTransmittanceForHit(hit, word, false);',
     );
   });
 

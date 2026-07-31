@@ -12,4 +12,5 @@ export class TemporalReservoirPass extends SharedBindGroupPass {
   readonly id = 'temporal' as const;
   readonly dependencies: readonly string[] = ['ris'];
   readonly passLabels: readonly PassLabel[] = ['temporal'];
+  protected override readonly restirDi = true;
 }

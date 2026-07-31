@@ -22,6 +22,23 @@
  */
 
 import { createCommonFrameResources } from './frameResources/createCommonFrameResources.js';
+import {
+  assertFrameResourcePlanSupported,
+  planFrameResources,
+} from './frameResourcePlan.js';
+export {
+  DEFAULT_FRAME_RESOURCE_BUDGET_BYTES,
+  assertFrameResourceReservoirScale,
+  assertFrameResourcePlanSupported,
+  planFrameResources,
+  resolveFrameResourcePlan,
+  type FrameResourceAllocation,
+  type FrameResourceFootprint,
+  type FrameResourcePlanningOptions,
+  type FrameResourceResolutionOptions,
+  type FrameResourceResolutionPolicy,
+  type ResolvedFrameResourcePlan,
+} from './frameResourcePlan.js';
 
 // `buildDDGIPlaceholderUBO` is re-exported here because two pipeline-side
 // consumers (frameResources/createDdgiFrameResources.ts, OptionalSubsystemBindingState.ts)
@@ -459,7 +476,7 @@ export function createVarianceBuffer(device: GPUDevice, w: number, h: number): G
   return device.createTexture({
     label: 'welford-variance',
     size: [w, h],
-    format: 'rgba32float',
+    format: 'rg32float',
     usage:
       GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
   });
@@ -491,6 +508,14 @@ export interface FrameResourceOptions {
   readonly atrousVarianceEstimate?: boolean;
   /** Allocate the full-resolution checkerboard reconstruction snapshot. */
   readonly checkerboard?: boolean;
+  /** Allocate GTAO targets at their configured resolution. When false, both
+   *  targets are seeded 1x1 neutral placeholders and the gated passes never
+   *  dispatch against them. */
+  readonly gtaoEnabled?: boolean;
+  /** Optional host-owned steady-state frame-resource budget. */
+  readonly maxPersistentBytes?: number;
+  /** Integer ReSTIR reservoir-grid scale relative to shading resolution. */
+  readonly reservoirScale?: number;
 }
 
 /**
@@ -509,6 +534,8 @@ export function createFrameResources(
   H: number,
   options?: FrameResourceOptions,
 ): FrameResources {
+  const plan = planFrameResources(W, H, options);
+  assertFrameResourcePlanSupported(device, plan, options);
   const created: DestroyableResource[] = [];
   const trackedDevice = new Proxy(device, {
     get(target, property) {
@@ -540,9 +567,26 @@ export function createFrameResources(
         options?.atrousVarianceEstimate ?? options?.welfordPingPong ?? true,
       checkerboardSnapshot: options?.checkerboard === true,
     });
-    const restirDI = createRestirDIFrameResources(trackedDevice, W, H);
-    const restirGI = createRestirGIFrameResources(trackedDevice, W, H);
-    const gtao = createGtaoFrameResources(trackedDevice, W, H, options?.gtaoDownscale ?? 2);
+    const reservoirScale = options?.reservoirScale ?? 1;
+    const restirDI = createRestirDIFrameResources(
+      trackedDevice,
+      W,
+      H,
+      reservoirScale,
+    );
+    const restirGI = createRestirGIFrameResources(
+      trackedDevice,
+      W,
+      H,
+      reservoirScale,
+    );
+    const gtao = createGtaoFrameResources(
+      trackedDevice,
+      W,
+      H,
+      options?.gtaoDownscale ?? 2,
+      options?.gtaoEnabled ?? true,
+    );
     const ddgi = createDdgiFrameResources(trackedDevice);
     const svgf = createSvgfFrameResources(trackedDevice, W, H, options?.svgfEnabled ?? true);
 
@@ -648,7 +692,10 @@ function buildDestroyQueue(r: FrameResources): DestroyableResource[] {
  * same sequence of `.destroy()` calls (see `buildDestroyQueue`).
  */
 export function destroyFrameResources(r: FrameResources): void {
+  const destroyed = new Set<DestroyableResource>();
   for (const res of buildDestroyQueue(r)) {
+    if (destroyed.has(res)) continue;
+    destroyed.add(res);
     try {
       res.destroy();
     } catch {

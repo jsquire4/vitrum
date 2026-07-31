@@ -4,10 +4,10 @@
  *
  * Phase 0 widened the per-pixel GI reservoir from 20 u32 (80 bytes) to 28 u32
  * (112 bytes) by APPENDING the GRIS reconnection-shift cache at indices
- * [20..27]. The CONTRACT is that the existing [0..19] layout is byte-identical
- * to the pre-GRIS ReservoirGI, so every current temporal/spatial/shade read of
- * the reservoir is provably unaffected and rendered output stays bit-identical
- * in Phase 0 (the new fields are written-but-unread).
+ * [20..27]. The CONTRACT is that the existing [0..19] word layout remains
+ * byte-compatible with the pre-GRIS ReservoirGI. Word 3 was later promoted
+ * from inert padding to a u32 receiver-domain key without changing stride or
+ * any subsequent field offset.
  *
  * These tests pin that contract by parsing the WGSL load/store helper bodies in
  * `reservoirGi.wgsl.ts` and asserting each field's `buf[b + N]` u32 index
@@ -28,11 +28,12 @@ import {
 
 // ── FROZEN GOLDEN — the original Sprint-16 ReservoirGI 80-byte layout ─────────
 // Field name → u32 index within the reservoir. Transcribed by hand from the
-// pre-GRIS layout (xv 0..2, _pad0 3, nv 4..6, W 7, xs 8..10, w_sum 11, ns 12..14,
+// pre-GRIS layout (xv 0..2, former padding/current key 3, nv 4..6, W 7,
+// xs 8..10, w_sum 11, ns 12..14,
 // M 15, Lo 16..18, lightId 19). The GRIS widening MUST NOT change any of these.
 const GOLDEN_SHARED_FIELD_INDEX: Record<string, number> = {
   'r.xv.x': 0, 'r.xv.y': 1, 'r.xv.z': 2,
-  'r._pad0': 3,
+  'r.receiverMaterialKey': 3,
   'r.nv.x': 4, 'r.nv.y': 5, 'r.nv.z': 6,
   'r.W': 7,
   'r.xs.x': 8, 'r.xs.y': 9, 'r.xs.z': 10,
@@ -107,14 +108,17 @@ describe('H24 — the sole live reservoir layout carries generalized-reuse metad
   });
 });
 
-describe('GRIS Phase-0 — shared fields [0..19] are byte-identical to old ReservoirGI', () => {
+describe('GRIS Phase-0 — shared fields [0..19] preserve the old word layout', () => {
   const store = fnBody(RESERVOIR_GI_WGSL, 'packReservoirGI');
   const load = fnBody(RESERVOIR_GI_WGSL, 'unpackReservoirGI');
 
   it('store helper writes every shared field at its golden u32 index', () => {
-    // f32 fields go through bitcast<u32>(...); u32 fields (M, lightId) are raw.
+    // f32 fields go through bitcast<u32>(...); u32 fields are raw.
     for (const [field, idx] of Object.entries(GOLDEN_SHARED_FIELD_INDEX)) {
-      const isRawU32 = field === 'r.M' || field === 'r.lightId';
+      const isRawU32 =
+        field === 'r.M'
+        || field === 'r.lightId'
+        || field === 'r.receiverMaterialKey';
       const escaped = field.replace(/\./g, '\\.');
       const pat = isRawU32
         ? new RegExp(`words\\[${idx}u\\]\\s*=\\s*${escaped};`)
@@ -129,7 +133,7 @@ describe('GRIS Phase-0 — shared fields [0..19] are byte-identical to old Reser
       // Build the expected component-index map per vec3 / scalar.
       const checks: { lhs: string; indices: number[]; raw: boolean }[] = [
         { lhs: 'r.xv', indices: [0, 1, 2], raw: false },
-        { lhs: 'r._pad0', indices: [3], raw: false },
+        { lhs: 'r.receiverMaterialKey', indices: [3], raw: true },
         { lhs: 'r.nv', indices: [4, 5, 6], raw: false },
         { lhs: 'r.W', indices: [7], raw: false },
         { lhs: 'r.xs', indices: [8, 9, 10], raw: false },
@@ -187,7 +191,7 @@ describe('GRIS Phase-0 — emptyReservoirGI matches old empty on shared fields +
 
   it('shared-field initialisers are unchanged from the original empty constructor', () => {
     // Original initialisers (Sprint-16): all positions/Lo zero, normals (0,1,0),
-    // W/w_sum 0, M/lightId 0u, _pad0 0.
+    // W/w_sum 0, M/lightId/key 0u.
     expect(empty).toContain('r.xv = vec3f(0.0);');
     expect(empty).toContain('r.nv = vec3f(0,1,0);');
     expect(empty).toContain('r.xs = vec3f(0.0);');
@@ -197,7 +201,7 @@ describe('GRIS Phase-0 — emptyReservoirGI matches old empty on shared fields +
     expect(empty).toContain('r.w_sum = 0.0;');
     expect(empty).toContain('r.M = 0u;');
     expect(empty).toContain('r.lightId = 0u;');
-    expect(empty).toContain('r._pad0 = 0.0;');
+    expect(empty).toContain('r.receiverMaterialKey = 0u;');
   });
 
   it('every appended GRIS field is zero-initialised', () => {

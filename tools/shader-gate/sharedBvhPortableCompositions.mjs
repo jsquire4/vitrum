@@ -79,7 +79,7 @@ fn cwbvhGateMain() {
   ray.origin = vec3f(0.0, 0.0, 1.0);
   ray.direction = vec3f(0.0, 0.0, -1.0);
   let closest = cwbvhIntersectFirstHitRangeFromRoot(
-    ray, 1e-5, 1e-5, 1e20, 0u, 0u, false,
+    ray, 1e-5, 1e20, 0u, 0u, false,
   );
   cwbvhGateOut[0] = closest.status * 2u + select(0u, 1u, closest.didHit);
 }

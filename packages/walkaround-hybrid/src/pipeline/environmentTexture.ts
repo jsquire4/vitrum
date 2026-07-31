@@ -10,6 +10,10 @@
  */
 
 import type { DirectionalEnvData } from '../environment/equirectDirectional.js';
+import {
+  assertWalkaroundEnvironmentMapScaleEnvelopeF32,
+  packWalkaroundEnvironmentRotationF32,
+} from '../environment/environmentRadianceScale.js';
 
 /** GPUTextureUsage.TEXTURE_BINDING | COPY_DST (literals — Node vitest has no globals). */
 const TEX_BINDING = 0x04;
@@ -24,6 +28,7 @@ const ENV_PARAMS_BYTES = 32;
 
 export interface EnvironmentTextures {
   map: GPUTexture;
+  pdf: GPUTexture;
   marginal: GPUTexture;
   conditional: GPUTexture;
   sampler: GPUSampler;
@@ -53,6 +58,31 @@ function createTex(
   });
 }
 
+function reportedTextureDimensionLimit(device: GPUDevice): number | undefined {
+  const raw = (
+    device.limits as unknown as Record<string, unknown> | undefined
+  )?.maxTextureDimension2D;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
+    ? raw
+    : undefined;
+}
+
+function assertFinitePayload(
+  values: Float32Array,
+  label: string,
+  nonNegative: boolean,
+): void {
+  for (let index = 0; index < values.length; index += 1) {
+    const value = values[index]!;
+    if (!Number.isFinite(value) || (nonNegative && value < 0)) {
+      throw new RangeError(
+        `environment ${label}[${index}] must be finite` +
+        `${nonNegative ? ' and non-negative' : ''}; got ${String(value)}`,
+      );
+    }
+  }
+}
+
 /** Write the EnvParams uniform. */
 function writeParams(
   device: GPUDevice,
@@ -79,8 +109,10 @@ export function createPlaceholderEnvironment(device: GPUDevice): EnvironmentText
   const textures: GPUTexture[] = [];
   let paramsBuffer: GPUBuffer | null = null;
   try {
-    const map = createTex(device, 'vitrum.env.map.placeholder', 1, 1, 'rgba16float');
+    const map = createTex(device, 'vitrum.env.map.placeholder', 1, 1, 'rgba32float');
     textures.push(map);
+    const pdf = createTex(device, 'vitrum.env.pdf.placeholder', 1, 1, 'r32float');
+    textures.push(pdf);
     const marginal = createTex(device, 'vitrum.env.marginal.placeholder', 1, 1, 'r32float');
     textures.push(marginal);
     const conditional = createTex(device, 'vitrum.env.conditional.placeholder', 1, 1, 'r32float');
@@ -94,6 +126,7 @@ export function createPlaceholderEnvironment(device: GPUDevice): EnvironmentText
     writeParams(device, paramsBuffer, false, 0, 0, 0, 0);
     return {
       map,
+      pdf,
       marginal,
       conditional,
       sampler,
@@ -103,18 +136,37 @@ export function createPlaceholderEnvironment(device: GPUDevice): EnvironmentText
       hasDirectionalEnvironment: false,
     };
   } catch (error) {
-    for (const texture of textures) texture.destroy();
-    paramsBuffer?.destroy();
+    for (const texture of textures) {
+      try {
+        texture.destroy();
+      } catch {
+        // Preserve the allocation/write failure that triggered cleanup.
+      }
+    }
+    try {
+      paramsBuffer?.destroy();
+    } catch {
+      // Preserve the allocation/write failure that triggered cleanup.
+    }
     throw error;
   }
 }
 
-type EnvironmentTextureSet = Pick<EnvironmentTextures, 'map' | 'marginal' | 'conditional'>;
+type EnvironmentTextureSet = Pick<EnvironmentTextures, 'map' | 'pdf' | 'marginal' | 'conditional'>;
 
 function destroyTextureSet(set: EnvironmentTextureSet): void {
-  set.map.destroy();
-  set.marginal.destroy();
-  set.conditional.destroy();
+  for (const texture of [
+    set.map,
+    set.pdf,
+    set.marginal,
+    set.conditional,
+  ]) {
+    try {
+      texture.destroy();
+    } catch {
+      // Resource retirement is best-effort and must not mask an upload error.
+    }
+  }
 }
 
 function createEnvironmentTextureSet(
@@ -126,8 +178,10 @@ function createEnvironmentTextureSet(
   const suffix = placeholder ? '.placeholder' : '';
   const textures: GPUTexture[] = [];
   try {
-    const map = createTex(device, `vitrum.env.map${suffix}`, width, height, 'rgba16float');
+    const map = createTex(device, `vitrum.env.map${suffix}`, width, height, 'rgba32float');
     textures.push(map);
+    const pdf = createTex(device, `vitrum.env.pdf${suffix}`, width, height, 'r32float');
+    textures.push(pdf);
     const marginal = createTex(device, `vitrum.env.marginal${suffix}`, height, 1, 'r32float');
     textures.push(marginal);
     const conditional = createTex(
@@ -138,16 +192,22 @@ function createEnvironmentTextureSet(
       'r32float',
     );
     textures.push(conditional);
-    return { map, marginal, conditional };
+    return { map, pdf, marginal, conditional };
   } catch (error) {
-    for (const texture of textures) texture.destroy();
+    for (const texture of textures) {
+      try {
+        texture.destroy();
+      } catch {
+        // Preserve the allocation failure that triggered cleanup.
+      }
+    }
     throw error;
   }
 }
 
 /** Transactionally replace directional environment texture content.
  *
- * All three candidate textures are allocated and every queue write is validated
+ * All four candidate textures are allocated and every queue write is validated
  * before the live texture set is retired. This intentionally replaces even a
  * same-sized environment: preserving an old texture identity is not worth
  * exposing a partially updated map/CDF set when a later upload fails.
@@ -165,30 +225,53 @@ export function uploadEnvironment(
       `environment dimensions must be positive safe integers; got ${width}x${height}`,
     );
   }
-  if (!Number.isFinite(rotationY) || !Number.isFinite(intensity) || intensity < 0) {
-    throw new RangeError('environment rotation must be finite and intensity finite/non-negative');
-  }
+  const packedRotationY = packWalkaroundEnvironmentRotationF32(
+    rotationY,
+    'environment rotation',
+  );
+  const packedIntensity =
+    assertWalkaroundEnvironmentMapScaleEnvelopeF32(data.map, intensity);
   const pixels = width * height;
   if (
     data.map.length !== pixels * 4 ||
+    data.pdf.length !== pixels ||
     data.marginal.length !== height * 4 ||
     data.conditional.length !== pixels * 4
   ) {
     throw new RangeError('environment map/CDF payload lengths do not match its dimensions');
   }
+  const maxDimension = reportedTextureDimensionLimit(device);
+  if (
+    maxDimension !== undefined
+    && (width > maxDimension || height > maxDimension)
+  ) {
+    throw new RangeError(
+      `environment ${width}x${height} exceeds device ` +
+      `maxTextureDimension2D=${maxDimension}; no textures were allocated`,
+    );
+  }
+  assertFinitePayload(data.map, 'radiance', true);
+  assertFinitePayload(data.pdf, 'pdf', true);
+  assertFinitePayload(data.marginal, 'marginal CDF', false);
+  assertFinitePayload(data.conditional, 'conditional CDF', false);
   const next = createEnvironmentTextureSet(device, width, height, false);
-  const mapHalf = float32ArrayToFloat16(data.map);
   const marginalR = extractR(data.marginal, height);
   const conditionalR = extractR(data.conditional, pixels);
 
   try {
-    // env_map: rgba16float ← Float32 RGBA. WebGPU writeTexture accepts a Float32
-    // source for rgba16float? No — the bytes must already be half-float. We convert
-    // the radiance + pdf to Float16 on the CPU.
+    // Keep radiance and its importance density in independent full-range
+    // textures. A half-float combined payload silently turns bright HDR texels
+    // and narrow-lobe PDFs into infinity, invalidating both MIS and radiometry.
     device.queue.writeTexture(
       { texture: next.map },
-      mapHalf.buffer,
-      { bytesPerRow: width * 4 * 2, rowsPerImage: height },
+      data.map.buffer,
+      { bytesPerRow: width * 4 * 4, rowsPerImage: height },
+      { width, height, depthOrArrayLayers: 1 },
+    );
+    device.queue.writeTexture(
+      { texture: next.pdf },
+      data.pdf.buffer,
+      { bytesPerRow: width * 4, rowsPerImage: height },
       { width, height, depthOrArrayLayers: 1 },
     );
 
@@ -211,7 +294,15 @@ export function uploadEnvironment(
       { width, height, depthOrArrayLayers: 1 },
     );
 
-    writeParams(device, prev.paramsBuffer, true, width, height, rotationY, intensity);
+    writeParams(
+      device,
+      prev.paramsBuffer,
+      true,
+      width,
+      height,
+      packedRotationY,
+      packedIntensity,
+    );
   } catch (error) {
     destroyTextureSet(next);
     throw error;
@@ -221,10 +312,38 @@ export function uploadEnvironment(
     ...next,
     sampler: prev.sampler,
     paramsBuffer: prev.paramsBuffer,
-    rotationY,
-    intensity,
+    rotationY: packedRotationY,
+    intensity: packedIntensity,
     hasDirectionalEnvironment: true,
   };
+}
+
+/**
+ * Build a complete environment generation without touching any live
+ * generation. The returned set owns its texture set, sampler, and params
+ * buffer; callers may therefore stage texture views and dependent DDGI state
+ * before publishing it with a pointer swap.
+ */
+export function createEnvironmentCandidate(
+  device: GPUDevice,
+  data: DirectionalEnvData | null,
+  rotationY: number,
+  intensity: number,
+): EnvironmentTextures {
+  const placeholder = createPlaceholderEnvironment(device);
+  if (data == null) return placeholder;
+  try {
+    return uploadEnvironment(
+      device,
+      placeholder,
+      data,
+      rotationY,
+      intensity,
+    );
+  } catch (error) {
+    disposeEnvironment(placeholder);
+    throw error;
+  }
 }
 
 /** Reset a resource set back to the no-HDRI placeholder (hasEnv=0). */
@@ -251,10 +370,23 @@ export function clearEnvironment(
 }
 
 export function disposeEnvironment(env: EnvironmentTextures): void {
-  env.map.destroy();
-  env.marginal.destroy();
-  env.conditional.destroy();
-  env.paramsBuffer.destroy();
+  // Retirement is deliberately non-throwing. A hostile/mock destroy must not
+  // mask the mutation's primary failure or prevent the remaining generation
+  // resources from being released.
+  const resources: readonly { destroy(): void }[] = [
+    env.map,
+    env.pdf,
+    env.marginal,
+    env.conditional,
+    env.paramsBuffer,
+  ];
+  for (const resource of resources) {
+    try {
+      resource.destroy();
+    } catch {
+      // Continue best-effort retirement.
+    }
+  }
 }
 
 /** Extract the .r channel from an interleaved RGBA Float32Array into a packed

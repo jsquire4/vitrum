@@ -30,7 +30,7 @@ export interface LightsTextureData extends TexelGrid {
   readonly lightCount: number;
 }
 
-/** Output of the equirect env-map importance-sampling build (plan 03 §6). */
+/** Output of the equirect env-map forward-CDF importance build (plan 03 §6). */
 export interface EnvTextureData {
   readonly map: { data: Float32Array; width: number; height: number } | null;
   readonly marginal: { data: Float32Array; width: number; height: number } | null;
@@ -58,7 +58,7 @@ export interface UploadedSceneTextures {
   /** Authored TextureRef.texCoord -> dense attributesArray layer. Optional only
    *  for legacy test/mocked bundles; real uploads always populate it. */
   readonly uvLayerByTexCoord?: ReadonlyMap<number, number>;
-  /** Allocated attributesArray layer count, used to guard in-place subuploads. */
+  /** Allocated attributesArray layer count, used to guard staged replacement compatibility. */
   readonly attributeLayerCount?: number;
   // lights (sampler2D, 6px/light)
   readonly lights: WebGLTexture;
@@ -72,6 +72,7 @@ export interface UploadedSceneTextures {
   readonly totalEmissivePower: number;
   // environment importance-sampling (optional — null for non-HDRI scenes)
   readonly envMap: WebGLTexture | null;
+  /** @deprecated Marginal CDF is packed into envConditional.g; always null. */
   readonly envMarginal: WebGLTexture | null;
   readonly envConditional: WebGLTexture | null;
   readonly envTotalSum: number;

@@ -75,7 +75,13 @@ import {
   readbackBgra8,
 } from "../lib/whHarness.mjs";
 // GPU readback + pixel stats (D17-1).
-import { readbackAsRgba8, meanLuminance, hasNaN } from "../lib/readback.mjs";
+import {
+  assertFloatTextureFinite,
+  FloatTextureNonFiniteError,
+  meanLuminance,
+  readbackAsRgba8,
+  scanFloatTextureNonFinite,
+} from "../lib/readback.mjs";
 import {
   SWEEP_MAPS,
   makeSweepGltf,
@@ -84,24 +90,21 @@ import {
 import { GLTF_MATERIAL_SWEEP_BEHAVIORAL_PROOF } from "../gltf-material-sweep/proofs.mjs";
 import { REAL_GLTF_BEHAVIORAL_PROOFS } from "../gltf-real-asset-sweep/proofs.mjs";
 import { GLTF_TOPOLOGY_BEHAVIORAL_PROOFS } from "../gltf-topology-proofs/proofs.mjs";
+import {
+  configMatchesBehavioralFilter,
+  readOptionalNonEmptyFlagValue,
+} from "./selectorValidation.mjs";
 
 // ── CLI flags ─────────────────────────────────────────────────────────────────
 const selfTest = Deno.args.includes("--self-test");
 const updateGoldens = Deno.args.includes("--update-goldens");
 const requireFullTier = Deno.args.includes("--require-full-tier");
-function readFlagValue(name) {
-  const eq = Deno.args.find((a) => a.startsWith(`${name}=`));
-  if (eq) return eq.slice(name.length + 1);
-  const i = Deno.args.indexOf(name);
-  if (i >= 0) return Deno.args[i + 1] ?? "";
-  return "";
-}
-const labelFilter = readFlagValue("--filter");
-const goldenVariant = readFlagValue("--golden-variant") || Deno.env.get("VITRUM_BEHAVIORAL_GOLDEN_VARIANT") || "";
+const labelFilter = readOptionalNonEmptyFlagValue(Deno.args, "--filter");
+const goldenVariant = readOptionalNonEmptyFlagValue(Deno.args, "--golden-variant") || Deno.env.get("VITRUM_BEHAVIORAL_GOLDEN_VARIANT") || "";
 // Machine-readable results sidecar (D17-9). When set, gate writes a structured
 // JSON of the run to this path so consumers (run-gate.mjs) read it directly
 // instead of regex-scraping the human log. The human stdout log is unchanged.
-const jsonSidecarPath = readFlagValue("--json");
+const jsonSidecarPath = readOptionalNonEmptyFlagValue(Deno.args, "--json");
 
 // ── Expectation table ─────────────────────────────────────────────────────────
 // keyed by config label; missing entry defaults to { expected: 'ok' }.
@@ -1911,7 +1914,8 @@ async function acquirePtDevice(wantsFullTier) {
 // therefore requests the same floor as production without a duplicated number.
 
 // ── Readback helpers ──────────────────────────────────────────────────────────
-// readbackAsRgba8 / meanLuminance / hasNaN now live in tools/lib/readback.mjs
+// Float-domain finiteness, rgba8 readback, and luminance helpers live in
+// tools/lib/readback.mjs.
 // (D17-1); readbackBgra8 in tools/lib/whHarness.mjs. All imported at the top.
 
 const BEHAVIORAL_GOLDENS = {
@@ -2241,6 +2245,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   let mutation = null;
   let cwbvhParity = null;
   let cwbvhPerf = null;
+  let nonFiniteStats = null;
 
   async function renderFramesAndReadback() {
     let frameOutput = null;
@@ -2263,6 +2268,7 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
     const renderMs = performance.now() - renderStart;
     const memory = summarizeGpuMemory(engine?.debug?.estimatedGpuMemoryBytes?.() ?? null);
     if (frameOutput?.kind !== "rendered") return { pixels: null, renderMs, memory };
+    await assertFloatTextureFinite(device, frameOutput.primaryRadiance, W, H);
     const pixels = await readbackAsRgba8(device, frameOutput.primaryRadiance, W, H);
     return { pixels, renderMs, memory };
   }
@@ -2323,7 +2329,12 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
       }
     }
   } catch (e) {
-    errorMsg = e.message;
+    if (e instanceof FloatTextureNonFiniteError) {
+      nonFiniteStats = e.stats;
+      errorMsg = e.message;
+    } else {
+      errorMsg = e.message;
+    }
   } finally {
     unpatch();
     try { engine?.dispose(); } catch { /* best-effort cleanup — ignore */ }
@@ -2339,10 +2350,23 @@ async function runPtConfig(label, engineOpts, sceneOpts) {
   if (valErr) errCount++;
   device.destroy();
 
+  if (nonFiniteStats) {
+    return {
+      label,
+      rawStatus: "NON-FINITE",
+      lum: 0,
+      errCount,
+      nans: true,
+      errorMsg,
+      gpuErrorMsg,
+      nonFiniteStats,
+      traceTier,
+    };
+  }
   if (errorMsg) return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg, gpuErrorMsg };
   if (!pixels)  return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg: "no pixels", gpuErrorMsg };
 
-  const nans = hasNaN(pixels);
+  const nans = false;
   const lum  = meanLuminance(pixels);
   const wrongTier = wantsFullTier && traceTier !== "full";
   const mutationThreshold = sceneOpts.mutation ? MUTATION_DELTA_THRESHOLDS[sceneOpts.mutation] : null;
@@ -2399,6 +2423,7 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
   let swapTex  = null;
   let errorMsg = null;
   let mutation = null;
+  let nonFiniteStats = null;
 
   async function renderFramesAndReadback() {
     const swapView = swapTex.createView();
@@ -2419,6 +2444,7 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
     }
 
     if (frameOutput?.kind !== "rendered") return null;
+    await assertFloatTextureFinite(device, frameOutput.primaryRadiance, W, H);
     return await readbackBgra8(device, swapTex, W, H);
   }
 
@@ -2465,7 +2491,12 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
       }
     }
   } catch (e) {
-    errorMsg = e.message;
+    if (e instanceof FloatTextureNonFiniteError) {
+      nonFiniteStats = e.stats;
+      errorMsg = e.message;
+    } else {
+      errorMsg = e.message;
+    }
   } finally {
     try { swapTex?.destroy(); } catch { /* best-effort cleanup — ignore */ }
     try { engine?.dispose();  } catch { /* best-effort cleanup — ignore */ }
@@ -2481,10 +2512,22 @@ async function runWhConfig(label, engineOpts, sceneOpts) {
   if (valErr) errCount++;
   device.destroy();
 
+  if (nonFiniteStats) {
+    return {
+      label,
+      rawStatus: "NON-FINITE",
+      lum: 0,
+      errCount,
+      nans: true,
+      errorMsg,
+      gpuErrorMsg,
+      nonFiniteStats,
+    };
+  }
   if (errorMsg) return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg, gpuErrorMsg };
   if (!pixels)  return { label, rawStatus: "ERROR", lum: 0, errCount, nans: false, errorMsg: "no pixels", gpuErrorMsg };
 
-  const nans = hasNaN(pixels);
+  const nans = false;
   const lum  = meanLuminance(pixels);
   const mutationThreshold = sceneOpts.mutation ? MUTATION_DELTA_THRESHOLDS[sceneOpts.mutation] : null;
   const mutationFailed =
@@ -2518,6 +2561,48 @@ async function runSelfTestConfig() {
     errCount: 0,
     nans: false,
   };
+}
+
+async function runFloatDomainNonFiniteSelfTest() {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (!adapter) throw new Error("float-domain self-test could not acquire a WebGPU adapter");
+  const device = await adapter.requestDevice();
+  const texture = device.createTexture({
+    label: "behavioral-gate-non-finite-self-test",
+    size: [1, 1, 1],
+    format: "rgba32float",
+    usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+  });
+  const writePixel = (values) => {
+    device.queue.writeTexture(
+      { texture },
+      new Float32Array(values),
+      { bytesPerRow: 16, rowsPerImage: 1 },
+      { width: 1, height: 1, depthOrArrayLayers: 1 },
+    );
+  };
+  try {
+    writePixel([0, 1, -1, 0.5]);
+    const finite = await scanFloatTextureNonFinite(device, texture, 1, 1);
+    if (finite.hasNonFinite) {
+      throw new Error("float-domain scanner rejected a finite rgba32float texel");
+    }
+
+    writePixel([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1]);
+    const nonFinite = await scanFloatTextureNonFinite(device, texture, 1, 1);
+    if (!nonFinite.hasNonFinite ||
+        nonFinite.nanComponentCount !== 1 ||
+        nonFinite.infiniteComponentCount !== 2 ||
+        nonFinite.nonFinitePixelCount !== 1) {
+      throw new Error(
+        `float-domain scanner did not preserve NaN/Inf evidence: ${JSON.stringify(nonFinite)}`,
+      );
+    }
+    return nonFinite;
+  } finally {
+    texture.destroy();
+    device.destroy();
+  }
 }
 
 function formatGolden(golden) {
@@ -2567,24 +2652,15 @@ if (labelFilter) console.log(`Filter: ${labelFilter}`);
 console.log("");
 
 const results = [];
-function configMatchesFilter(cfg, filter, focused = false) {
-  if (!filter) return true;
-  if (!cfg.label.includes(filter)) return false;
-  // CWBVH promotion lanes may contain ordinary fixture names such as `gltf` or
-  // `material-lobes`, but they require full-tier adapters and are selected
-  // explicitly via `--filter cwbvh...`.
-  if (focused && cfg.label.startsWith("pt/cwbvh-") && !filter.includes("cwbvh")) {
-    return false;
-  }
-  return true;
-}
 const ptConfigs = labelFilter
   ? [
-      ...PT_CONFIGS.filter((cfg) => configMatchesFilter(cfg, labelFilter)),
-      ...PT_FOCUSED_CONFIGS.filter((cfg) => configMatchesFilter(cfg, labelFilter, true)),
+      ...PT_CONFIGS.filter((cfg) => configMatchesBehavioralFilter(cfg.label, labelFilter)),
+      ...PT_FOCUSED_CONFIGS.filter((cfg) => configMatchesBehavioralFilter(cfg.label, labelFilter, true)),
     ]
   : PT_CONFIGS;
-const whConfigs = labelFilter ? WH_CONFIGS.filter((cfg) => configMatchesFilter(cfg, labelFilter)) : WH_CONFIGS;
+const whConfigs = labelFilter
+  ? WH_CONFIGS.filter((cfg) => configMatchesBehavioralFilter(cfg.label, labelFilter))
+  : WH_CONFIGS;
 if (labelFilter && ptConfigs.length + whConfigs.length === 0) {
   console.error(`No behavioral-gate configs matched --filter=${labelFilter}`);
   Deno.exit(1);
@@ -2644,6 +2720,20 @@ if (selfTest) {
     console.log("  PASS | __self-test/always-black correctly detected as FAIL");
   } else {
     console.error("  FAIL | __self-test/always-black was NOT detected (gate broken)");
+    Deno.exit(1);
+  }
+
+  try {
+    const nonFinite = await runFloatDomainNonFiniteSelfTest();
+    console.log(
+      `  PASS | float-domain scanner detected ${nonFinite.nanComponentCount} NaN and ` +
+      `${nonFinite.infiniteComponentCount} Inf components before byte conversion`,
+    );
+  } catch (error) {
+    console.error(
+      `  FAIL | float-domain NaN/Inf self-test failed: ` +
+      `${error instanceof Error ? error.message : String(error)}`,
+    );
     Deno.exit(1);
   }
 

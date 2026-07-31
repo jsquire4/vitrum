@@ -89,4 +89,22 @@ describe('foldMeshAreaEmittersIntoMaterials', () => {
     )
       .toBeUndefined();
   });
+
+  it('makes an explicit emitter authoritative over the implicit-only skipEmitter hint', () => {
+    const sourceMaterial: MaterialSpec = {
+      baseColor: [0, 0, 0],
+      roughness: 1,
+      metallic: 0,
+      extensions: { skipEmitter: true, preserved: 7 },
+    };
+    const scene: Scene = {
+      primitives: [quad('light', sourceMaterial)],
+      emitters: [meshAreaEmitter('light', [1, 1, 1], 2)],
+      environment: { kind: 'none' },
+    };
+
+    const folded = foldMeshAreaEmittersIntoMaterials(scene);
+    expect(folded.primitives[0]!.material.extensions).toEqual({ preserved: 7 });
+    expect(sourceMaterial.extensions).toEqual({ skipEmitter: true, preserved: 7 });
+  });
 });

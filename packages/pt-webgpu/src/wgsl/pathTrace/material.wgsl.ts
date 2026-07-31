@@ -114,6 +114,12 @@ struct FrameParams {
   // Inverse path replay uses mode 1 so the forward baseline matches the adjoint
   // pass's deterministic direct-light domain.
   directLightingMode: u32,
+  // Scene-relative secondary-ray origin offset. Uses the struct's existing tail
+  // padding, so adding this field does not enlarge FrameParams.
+  rayOriginBias: f32,
+  // Integrated luminance of the intensity-scaled HDRI. This is distinct from
+  // environmentMapCdf[last], which is always the normalized value one.
+  environmentDistantPower: f32,
 };
 
 @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
@@ -132,6 +138,137 @@ struct FrameParams {
 @group(0) @binding(11) var varianceTexture: texture_storage_2d<r32float, write>;${extraBindings}
 
 const INVALID_TLAS_INSTANCE_INDEX = 0xffffffffu;
+
+fn ptRayOriginBias() -> f32 {
+  return max(params.rayOriginBias, 1.175494351e-38);
+}
+
+fn ptRayTMin() -> f32 {
+  return max(ptRayOriginBias() * 0.1, 1.175494351e-38);
+}
+
+fn ptRayEndMargin() -> f32 {
+  return ptRayOriginBias() * 2.0;
+}
+
+fn ptFiniteSegmentTMax(distance: f32) -> f32 {
+  return max(distance - ptRayEndMargin(), ptRayTMin());
+}
+
+const PT_F32_MAX: f32 = 3.402823466e38;
+
+fn ptFiniteNonNegativeRadianceLaneProduct(left: f32, right: f32) -> f32 {
+  if (
+    !(left >= 0.0 && left <= PT_F32_MAX) ||
+    !(right >= 0.0 && right <= PT_F32_MAX) ||
+    left == 0.0 ||
+    right == 0.0
+  ) {
+    return 0.0;
+  }
+  // Cap the second operand before multiplication. This is deterministic for
+  // opaque host-owned textures whose exact texels cannot be inspected during
+  // setScene, and prevents NaN/+Inf radiance from reaching accumulation.
+  return left * min(right, PT_F32_MAX / left);
+}
+
+fn ptFiniteNonNegativeRadianceProduct(left: vec3f, right: vec3f) -> vec3f {
+  return vec3f(
+    ptFiniteNonNegativeRadianceLaneProduct(left.r, right.r),
+    ptFiniteNonNegativeRadianceLaneProduct(left.g, right.g),
+    ptFiniteNonNegativeRadianceLaneProduct(left.b, right.b),
+  );
+}
+
+fn ptFiniteNonNegativeRadianceLaneSum(left: f32, right: f32) -> f32 {
+  if (
+    !(left >= 0.0 && left <= PT_F32_MAX) ||
+    !(right >= 0.0 && right <= PT_F32_MAX)
+  ) {
+    return 0.0;
+  }
+  return left + min(right, PT_F32_MAX - left);
+}
+
+fn ptFiniteNonNegativeRadianceSum(left: vec3f, right: vec3f) -> vec3f {
+  return vec3f(
+    ptFiniteNonNegativeRadianceLaneSum(left.r, right.r),
+    ptFiniteNonNegativeRadianceLaneSum(left.g, right.g),
+    ptFiniteNonNegativeRadianceLaneSum(left.b, right.b),
+  );
+}
+
+// A cone narrower than this has a uniform solid-angle density beyond the
+// useful f32 range and its stable 1-cos half-angle falls below the normal f32
+// domain. Treat that limiting case as the corresponding delta directional.
+const PT_DIRECTIONAL_CONE_MIN_SIN_QUARTER = 7.666467e-20;
+
+fn ptDirectionalConeIsDelta(angularDiameter: f32) -> bool {
+  if (!(angularDiameter > 0.0)) {
+    return true;
+  }
+  return
+    sin(angularDiameter * 0.25) <
+    PT_DIRECTIONAL_CONE_MIN_SIN_QUARTER;
+}
+
+fn ptDirectionalConePdf(angularDiameter: f32) -> f32 {
+  if (ptDirectionalConeIsDelta(angularDiameter)) {
+    return 1.0;
+  }
+  let sinQuarter = sin(angularDiameter * 0.25);
+  // log(1 / (4π sin²(d/4))) avoids both the sin² underflow and reciprocal
+  // overflow paths of the direct expression.
+  return exp(-log(4.0 * PI) - 2.0 * log(sinQuarter));
+}
+
+// Returns (sin(theta), cos(theta)) for a uniform-solid-angle cone draw. Forming
+// sin(theta) from q=1-cos(theta), rather than subtracting two near-one cosines,
+// preserves authored narrow cones that are still representable as non-delta.
+fn ptDirectionalConeSinCos(
+  angularDiameter: f32,
+  xiCenter: f32,
+) -> vec2f {
+  let sinQuarter = sin(angularDiameter * 0.25);
+  let oneMinusCosHalf = (2.0 * sinQuarter) * sinQuarter;
+  let q = (1.0 - clamp(xiCenter, 0.0, 1.0)) * oneMinusCosHalf;
+  let sinTheta = sqrt(max(q * (2.0 - q), 0.0));
+  let cosTheta = sqrt(max(1.0 - sinTheta * sinTheta, 0.0));
+  return vec2f(sinTheta, cosTheta);
+}
+
+fn ptAreaToSolidAnglePdf(
+  distance: f32,
+  cosine: f32,
+  areaMeasure: AreaVectorMeasure,
+) -> f32 {
+  if (
+    !(distance > 0.0) || !(cosine > 0.0) ||
+    areaMeasure.valid == 0u || !(areaMeasure.edgeScale > 0.0)
+  ) {
+    return 0.0;
+  }
+  let normalizedArea =
+    (areaMeasure.area / areaMeasure.edgeScale) /
+    areaMeasure.edgeScale;
+  let distanceOverEdge = distance / areaMeasure.edgeScale;
+  if (
+    !(normalizedArea > 0.0) ||
+    normalizedArea > 3.402823466e38 ||
+    !(distanceOverEdge > 0.0) ||
+    distanceOverEdge > 3.402823466e38
+  ) {
+    return 0.0;
+  }
+  let pdf =
+    (distanceOverEdge * distanceOverEdge) /
+    (cosine * normalizedArea);
+  return select(
+    0.0,
+    pdf,
+    pdf > 0.0 && pdf <= 3.402823466e38,
+  );
+}
 `;
 }
 
@@ -772,9 +909,12 @@ fn materialTextureWorldFootprint(tri: vec4u, baryVW: vec2f, instanceIndex: u32) 
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
-  let worldArea = 0.5 * length(cross(pb - pa, pc - pa));
+  let worldArea = measureAreaVector(pb - pa, pc - pa, 0.5).area;
   let worldHitPos = pa * u + pb * v + pc * w;
-  let cameraDistance = max(length(worldHitPos - params.cameraPos.xyz), 1e-3);
+  let cameraDistance = max(
+    safe_length(worldHitPos - params.cameraPos.xyz),
+    ptRayTMin(),
+  );
   return vec2f(worldArea, cameraDistance);
 }
 
@@ -955,8 +1095,8 @@ fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSl
           let l2w1 = tlasInstanceLocalToWorld[m + 1u];
           let l2w2 = tlasInstanceLocalToWorld[m + 2u];
           tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);
-          let linearDeterminant = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz);
-          instanceHandedness = select(-1.0, 1.0, linearDeterminant >= 0.0);
+          instanceHandedness =
+            transformLinearOrientationSign(l2w0, l2w1, l2w2);
         }
       }
       tangent = tangent - normal * dot(normal, tangent);
@@ -978,11 +1118,22 @@ fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSl
   let uv0 = materialUvForVertex(tri.x, gpuUvSlot);
   let duv1 = materialUvForVertex(tri.y, gpuUvSlot) - uv0;
   let duv2 = materialUvForVertex(tri.z, gpuUvSlot) - uv0;
-  let det = duv1.x * duv2.y - duv2.x * duv1.y;
-  if (abs(det) < 1e-10) { return frame; }
+  let uvScale = max(
+    max(abs(duv1.x), abs(duv1.y)),
+    max(abs(duv2.x), abs(duv2.y)),
+  );
+  if (!(uvScale > 0.0) || uvScale > 3.402823e38) { return frame; }
+  let normalizedDuv1 = duv1 / uvScale;
+  let normalizedDuv2 = duv2 / uvScale;
+  let det =
+    normalizedDuv1.x * normalizedDuv2.y -
+    normalizedDuv2.x * normalizedDuv1.y;
+  if (!(abs(det) > 1e-7)) { return frame; }
   let f = 1.0 / det;
-  var tangent = f * (duv2.y * e1 - duv1.y * e2);
-  var bitangent = f * (-duv2.x * e1 + duv1.x * e2);
+  var tangent =
+    f * (normalizedDuv2.y * e1 - normalizedDuv1.y * e2);
+  var bitangent =
+    f * (-normalizedDuv2.x * e1 + normalizedDuv1.x * e2);
   if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u) {
     let m = instanceIndex * 4u;
     if (m + 3u < arrayLength(&tlasInstanceLocalToWorld)) {
@@ -1140,8 +1291,9 @@ fn sampleLightMapRadiance(matId: u32, triIndex: u32, baryVW: vec2f, instanceInde
   if (base + 16u >= arrayLength(&materialTexDescriptors)) { return vec3f(0.0); }
   let lmIdx = i32(materialTexDescriptors[base + 3u].z);
   if (lmIdx < 0) { return vec3f(0.0); }
-  let intensity = max(materialTexDescriptors[base + 4u].y, 0.0);
-  return sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_LIGHT, materialTexDescriptors[base + 10u].xy, materialTexDescriptors[base + 16u].xy, MATERIAL_TEX_MIP_LIGHT).rgb * intensity;
+  let intensity = materialTexDescriptors[base + 4u].y;
+  let texel = sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_LIGHT, materialTexDescriptors[base + 10u].xy, materialTexDescriptors[base + 16u].xy, MATERIAL_TEX_MIP_LIGHT).rgb;
+  return ptFiniteNonNegativeRadianceProduct(texel, vec3f(intensity));
 }
 
 // Per-material environment-map intensity scale — descriptor vec4[4].w (default 1).
@@ -1391,13 +1543,26 @@ fn pointSpotDistanceAttenuation(
   cutoffDistance: f32,
   decay: f32,
 ) -> f32 {
-  let safeDistance = max(distance, 1e-4);
+  if (!(distance > 0.0) || distance > 3.402823466e38) {
+    return 0.0;
+  }
   var attenuation = 1.0;
   if (decay > 0.01) {
-    attenuation = 1.0 / max(pow(safeDistance, decay), 1e-8);
+    let denominator = pow(distance, decay);
+    if (!(denominator > 0.0)) {
+      attenuation = 3.402823466e38;
+    } else if (denominator > 3.402823466e38) {
+      return 0.0;
+    } else {
+      attenuation = min(1.0 / denominator, 3.402823466e38);
+    }
   }
   if (cutoffDistance > 0.0) {
-    let window = clamp(1.0 - pow(safeDistance / cutoffDistance, 4.0), 0.0, 1.0);
+    let window = clamp(
+      1.0 - pow(distance / cutoffDistance, 4.0),
+      0.0,
+      1.0,
+    );
     attenuation = attenuation * window;
   }
   return attenuation;
@@ -1407,9 +1572,26 @@ fn pointSpotDistanceAttenuation(
 // spreading through their solid-angle-to-area measure. Multiply by this ratio
 // to replace that physical spreading with the authored decay/cutoff law.
 fn pointSpotPathMeasureScale(distance: f32, cutoffDistance: f32, decay: f32) -> f32 {
-  let safeDistance = max(distance, 1e-4);
-  return pointSpotDistanceAttenuation(safeDistance, cutoffDistance, decay) *
-    safeDistance * safeDistance;
+  if (!(distance > 0.0) || distance > 3.402823466e38) {
+    return 0.0;
+  }
+  var window = 1.0;
+  if (cutoffDistance > 0.0) {
+    window = clamp(
+      1.0 - pow(distance / cutoffDistance, 4.0),
+      0.0,
+      1.0,
+    );
+  }
+  let distancePower = pow(
+    distance,
+    select(2.0, 2.0 - decay, decay > 0.01),
+  );
+  return select(
+    0.0,
+    distancePower * window,
+    distancePower >= 0.0 && distancePower <= 3.402823466e38,
+  );
 }
 `;
 
@@ -1892,9 +2074,19 @@ fn ggxD(nDotH: f32, alpha: f32) -> f32 {
 ${roughDielectricSmithG1Wgsl('smithG1')}
 
 fn powerHeuristic(pdfA: f32, pdfB: f32) -> f32 {
-  let a2 = pdfA * pdfA;
-  let b2 = pdfB * pdfB;
-  return a2 / max(a2 + b2, 1e-6);
+  if (
+    !(pdfA >= 0.0) || !(pdfB >= 0.0) ||
+    pdfA > 3.402823466e38 || pdfB > 3.402823466e38
+  ) {
+    return 0.0;
+  }
+  let scale = max(pdfA, pdfB);
+  if (!(scale > 0.0)) { return 0.0; }
+  let a = pdfA / scale;
+  let b = pdfB / scale;
+  let a2 = a * a;
+  let b2 = b * b;
+  return a2 / (a2 + b2);
 }
 
 // ── B9 — GGX multiple-scattering energy compensation (Kulla-Conty 2017) ───────

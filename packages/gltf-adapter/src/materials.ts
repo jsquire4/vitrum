@@ -288,7 +288,6 @@ function _parseClearcoatExt(
     | undefined;
   if (!ccExt) return {};
   const clearcoat = ccExt.clearcoatFactor ?? 0;
-  if (clearcoat <= 0) return {};
   const clearcoatRoughness = ccExt.clearcoatRoughnessFactor ?? 0;
   const clearcoatMap = resolveMaterialTextureRef(
     ccExt.clearcoatTexture,
@@ -356,7 +355,6 @@ function _parseIridescenceExt(
     | undefined;
   if (!iridExt) return {};
   const iridescence = iridExt.iridescenceFactor ?? 0;
-  if (iridescence <= 0) return {};
   const iridescenceIor = iridExt.iridescenceIor ?? 1.3;
   const iridescenceThicknessRange: readonly [number, number] = [
     iridExt.iridescenceThicknessMinimum ?? 100,

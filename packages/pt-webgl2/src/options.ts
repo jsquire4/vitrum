@@ -98,8 +98,12 @@ export interface PTEngineWebGL2Options extends EngineOptions {
    */
   readonly cameraType?: 'perspective' | 'orthographic' | 'equirectangular';
   /**
-   * Thin-lens depth of field (flag-plumbing audit 2026-06-10). When set, enables
-   * the GLSL FEATURE_DOF aperture sampler and uploads these PhysicalCamera
+   * Thin-lens depth of field (flag-plumbing audit 2026-06-10). The aperture
+   * sampler activates only when `bokehSize > 0` after float32 packing. Active
+   * thin-lens DOF is incompatible with `cameraType:'equirectangular'`, which has
+   * no coherent full-sphere focal plane. A DOF object with `bokehSize:0` remains
+   * an exact pinhole and is valid
+   * for every camera type. The object carries PhysicalCamera
    * uniforms. Omitted (default) → pinhole camera, byte-identical to the prior
    * fixed FEATURE_DOF=0 path. All distances are in scene units; `bokehSize` is the
    * aperture diameter in millimetres (matches the fork's `bokehSize·0.5·1e-3` scale).

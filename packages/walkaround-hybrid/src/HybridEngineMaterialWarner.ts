@@ -37,6 +37,7 @@ type WarnMethod = 'setScene' | 'updatePrimitive';
 interface AtlasDiagnosticArm {
   readonly warningCode:
     | 'walkaround-hybrid.ambiguous-material-texture-stride'
+    | 'walkaround-hybrid.invalid-material-texture-payload'
     | 'walkaround-hybrid.invalid-material-texture-transform'
     | 'walkaround-hybrid.unreadable-material-texture-map';
   readonly fallback: string;
@@ -70,6 +71,16 @@ const ATLAS_DIAGNOSTIC_TABLE: Readonly<
       `has non-finite texture transform component(s) ` +
       `${d.transformComponents?.join(', ') ?? '(unknown)'}; invalid components are replaced ` +
       `with the identity texture transform fallback and the map remains atlas-backed.`,
+  },
+  'invalid-material-texture-payload': {
+    warningCode: 'walkaround-hybrid.invalid-material-texture-payload',
+    fallback: 'map ignored',
+    message: (d, method, suffix) =>
+      `[vitrum/walkaround-hybrid] ${method}: ${d.field} on material slot ` +
+      `${d.materialIndex}${suffix} has an invalid raw pixel payload ` +
+      `(${d.valueCount ?? 0} values; expected ${d.expectedValueCount ?? 'an exact integral pixel stride'}); ` +
+      `${d.reason ?? 'the payload shape is inconsistent with its declared dimensions'}. ` +
+      `The map is ignored instead of reading truncated or extra texels.`,
   },
   'unreadable-material-texture-map': {
     warningCode: 'walkaround-hybrid.unreadable-material-texture-map',
@@ -146,7 +157,8 @@ export class MaterialApproximationWarner {
         `${diagnostic.colorSpace}:${sourcePath ?? ''}:${diagnostic.texCoord ?? ''}:` +
         `${diagnostic.transformComponents?.join(',') ?? ''}:` +
         `${diagnostic.magFilter ?? ''}:${diagnostic.minFilter ?? ''}:${diagnostic.mipFilter ?? ''}:` +
-        `${diagnostic.pixelStride ?? ''}:${diagnostic.valueCount ?? ''}`;
+        `${diagnostic.pixelStride ?? ''}:${diagnostic.valueCount ?? ''}:` +
+        `${diagnostic.expectedValueCount ?? ''}:${diagnostic.reason ?? ''}`;
       if (this._warnedMaterialTextureAtlasDiagnostics.has(key)) continue;
       this._warnedMaterialTextureAtlasDiagnostics.add(key);
 
@@ -165,6 +177,10 @@ export class MaterialApproximationWarner {
           ...(diagnostic.texCoord !== undefined ? { texCoord: diagnostic.texCoord } : {}),
           ...(diagnostic.pixelStride !== undefined ? { pixelStride: diagnostic.pixelStride } : {}),
           ...(diagnostic.valueCount !== undefined ? { valueCount: diagnostic.valueCount } : {}),
+          ...(diagnostic.expectedValueCount !== undefined
+            ? { expectedValueCount: diagnostic.expectedValueCount }
+            : {}),
+          ...(diagnostic.reason !== undefined ? { reason: diagnostic.reason } : {}),
           ...(diagnostic.width !== undefined ? { width: diagnostic.width } : {}),
           ...(diagnostic.height !== undefined ? { height: diagnostic.height } : {}),
           ...(diagnostic.transformComponents !== undefined

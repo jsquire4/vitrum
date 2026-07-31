@@ -9,7 +9,6 @@ import {
 } from './composeTraceGlsl.js';
 import { NEE_RESOLVE_MAIN } from './neeResolveMain.glsl.js';
 import { RENDER_MAIN } from './renderMain.glsl.js';
-import { BLEND_FRAG } from '../gl/blendFrag.js';
 import * as DirectLightSource from './render/direct_light_contribution_function.glsl.js';
 import * as SurfaceRecordSource from './render/get_surface_record_function.glsl.js';
 
@@ -201,14 +200,17 @@ describe('separate NEE estimator', () => {
     expect(RENDER_MAIN).toContain('state.wavelengthPdf = uBdptSharedWavelengthPdf;');
   });
 
-  it('preserves finite-light measure so non-BDPT NEE and forward BSDF weights are complementary', () => {
+  it('preserves finite-light measure except when shadow-disabled NEE has no forward competitor', () => {
     const nonBdptBranchStart = directLightSource.indexOf('#else');
     const nonBdptBranch = directLightSource.slice(
       nonBdptBranchStart,
       directLightSource.indexOf('#endif', nonBdptBranchStart),
     );
     expect(nonBdptBranch.replace(/\s+/g, ' ')).toContain(
-      'lightSample.delta = lightRec.type == DIR_LIGHT_TYPE ? 1.0 : lightRec.delta;',
+      'lightSample.delta = lightRec.castShadowDisabled > 0.5 ? 1.0 : lightRec.type == DIR_LIGHT_TYPE ? 1.0 : lightRec.delta;',
+    );
+    expect(nonBdptBranch.replace(/\s+/g, ' ')).toContain(
+      'lightSample.delta = lightRec.castShadowDisabled > 0.5 ? 1.0 : lightRec.delta;',
     );
     expect(nonBdptBranch).toContain('lightSample.delta = 0.0;');
 
@@ -256,34 +258,59 @@ describe('separate NEE estimator', () => {
     );
   });
 
-  it('accumulates the completed main-plus-NEE sample once without a hidden clamp', () => {
+  it('weights main and NEE with one unclamped straight-alpha running mean', () => {
     expect(RENDER_MAIN).not.toContain('float sampleLuminance');
-    expect(BLEND_FRAG).not.toContain('radianceClamp');
-    expect(BLEND_FRAG).not.toContain('sampleLuminance');
-    const runningMeanAt = BLEND_FRAG.indexOf('float invOpacity');
-    expect(runningMeanAt).toBeGreaterThanOrEqual(0);
-    expect(BLEND_FRAG).not.toContain('color2.a =');
+    expect(RENDER_MAIN).not.toContain('radianceClamp');
+    expect(RENDER_MAIN).toContain('vec4 historyColor = texelFetch(');
+    expect(RENDER_MAIN).toContain('opacity * pc_fragColor.a / totalAlpha');
+    const compactResolve = NEE_RESOLVE_MAIN.replace(/\s+/g, ' ');
+    expect(compactResolve).toContain(
+      'float totalAlpha = historyAlpha * ( 1.0 - opacity ) + opacity;',
+    );
+    expect(compactResolve).toContain(
+      'float sampleBlendScale = opacity / max( totalAlpha, 1e-20 );',
+    );
+    expect(compactResolve).not.toContain('radianceClamp');
   });
 
-  it('always resolves ordinary NEE before the running-mean composite', () => {
+  it('applies background coverage only until the first accepted primary vertex', () => {
+    const compactMain = RENDER_MAIN.replace(/\s+/g, ' ');
+    expect(compactMain).toContain(
+      'if ( ! gbufWritten ) { pc_fragColor.a = backgroundAlpha; }',
+    );
+    expect(compactMain.indexOf('gbufWritten = true;')).toBeLessThan(
+      compactMain.indexOf('neeCandidateCount ++;'),
+    );
+  });
+
+  it('resolves tiled NEE after the main history write and before history publication', () => {
+    const mainDraw = glResourcesSource.indexOf(
+      'prog.bindTexture(\'uAccumHistory\'',
+    );
     const candidateDraw = glResourcesSource.indexOf(
-      'const candidateProgram = this.#neeCandidateProgram;',
+      'this.#bindSceneTextures(candidateProgram',
+      mainDraw,
     );
     const resolveDraw = glResourcesSource.indexOf(
-      'const resolveProgram = this.#neeResolveProgram;',
+      'this.#bindSceneTextures(resolveProgram',
       candidateDraw,
     );
-    const composite = glResourcesSource.indexOf('this.#compositeBlendStep(', resolveDraw);
+    const publish = glResourcesSource.indexOf(
+      'this.#historyReadIndex = writeIndex;',
+      resolveDraw,
+    );
     expect(glResourcesSource).not.toContain('#debugMode');
+    expect(mainDraw).toBeGreaterThanOrEqual(0);
     expect(candidateDraw).toBeGreaterThanOrEqual(0);
     expect(resolveDraw).toBeGreaterThan(candidateDraw);
-    expect(composite).toBeGreaterThan(resolveDraw);
-    expect(glResourcesSource.slice(candidateDraw, composite)).toContain(
+    expect(publish).toBeGreaterThan(resolveDraw);
+    expect(glResourcesSource.slice(candidateDraw, publish)).toContain(
       'gl.blendFunc(gl.ONE, gl.ONE);',
     );
-    expect(glResourcesSource).toContain(
-      'this.#compositeBlendStep();',
+    expect(glResourcesSource.slice(candidateDraw, publish)).toContain(
+      'resolveProgram.bindTexture(\'uAccumHistory\'',
     );
+    expect(glResourcesSource).not.toContain('#compositeBlendStep');
   });
 
   it('reconstructs an already-accepted transparent candidate without a second opacity draw', () => {
@@ -310,9 +337,7 @@ describe('separate NEE estimator', () => {
   });
 
   it('forms light proposals at the geometric hit and applies one light-hemisphere offset', () => {
-    const geometricPoint = RENDER_MAIN.indexOf(
-      'vec3 geometricHitPoint =\n\t\t\t\t\t\t\t\tray.origin + ray.direction * surfaceHit.dist;',
-    );
+    const geometricPoint = RENDER_MAIN.indexOf('vec3 geometricHitPoint =');
     const continuationPoint = RENDER_MAIN.indexOf('vec3 hitPoint = stepRayOrigin(', geometricPoint);
     const proposal = RENDER_MAIN.indexOf('sampleDirectLight(', continuationPoint);
     const prepare = RENDER_MAIN.indexOf('prepareDirectLightSample(', proposal);

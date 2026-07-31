@@ -33,6 +33,16 @@ export {
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
 export * from './emitterClassify.js';
+export * from './radianceFloat32.js';
+export {
+  halfToFloat,
+  makeChannelDecoder,
+  resolveReadableTexture,
+  srgbToLinear,
+  type DecodableTextureHandle,
+  type ResolvedReadableTexture,
+  type TextureDecodeHint,
+} from './textureDecode.js';
 export {
   mergeWorldSpaceFromCore,
   mergeUvSetFromCore,
@@ -79,6 +89,7 @@ export * from './wgsl/bvhCastShadowMask.wgsl.js';
 export * from './wgsl/materialAtlasOffsets.wgsl.js';
 export * from './wgsl/materialOptics.wgsl.js';
 export * from './wgsl/materialTransmission.wgsl.js';
+export * from './wgsl/beerLambert.wgsl.js';
 export {
   fingerprintBuffer,
   fingerprintBufferExact,

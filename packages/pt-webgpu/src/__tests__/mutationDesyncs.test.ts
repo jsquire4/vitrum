@@ -18,10 +18,7 @@ import {
   materialPatchRepackFields,
 } from '../scene/incrementalPatch.js';
 import { hasMeshAreaEmitterForPrimitive } from '../scene/emitterPacking.js';
-import {
-  buildPackedScene,
-  scenePackResultFromPacked,
-} from '../scene/uploadSceneBuffers.js';
+import { buildPackedScene, scenePackResultFromPacked } from '../scene/uploadSceneBuffers.js';
 import { SceneMutationRouter } from '../sceneMutationRouter.js';
 import { GpuResources } from '../gpuResources.js';
 import type { MutationHost } from '../sceneMutationRouter.js';
@@ -38,9 +35,7 @@ interface StubGpuBuffer {
 
 describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setScene', () => {
   it('accepts a scalar-only material patch', () => {
-    expect(
-      canFastPathMaterialPatch({ material: { roughness: 0.5, metallic: 0.1 } } as never),
-    ).toBe(true);
+    expect(canFastPathMaterialPatch({ material: { roughness: 0.5, metallic: 0.1 } })).toBe(true);
   });
 
   it('rejects a patch containing baseColorMap (TextureRef)', () => {
@@ -48,7 +43,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     expect(
       canFastPathMaterialPatch({
         material: { roughness: 0.5, baseColorMap: asTextureRef(handle) },
-      } as never),
+      }),
     ).toBe(false);
   });
 
@@ -56,7 +51,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     expect(
       canFastPathMaterialPatch({
         material: { normalMap: asTextureRef({}) },
-      } as never),
+      }),
     ).toBe(false);
   });
 
@@ -64,7 +59,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     expect(
       canFastPathMaterialPatch({
         material: { emissive: [1, 0, 0], emissiveMap: asTextureRef({}) },
-      } as never),
+      }),
     ).toBe(false);
   });
 
@@ -72,7 +67,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     expect(
       canFastPathMaterialPatch({
         material: { thickness: 0.25, thicknessMap: asTextureRef({}) },
-      } as never),
+      }),
     ).toBe(false);
   });
 
@@ -80,13 +75,13 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     expect(
       canFastPathMaterialPatch({
         material: { emissive: [1, 0.5, 0], emissiveIntensity: 2 },
-      } as never),
+      }),
     ).toBe(true);
   });
 
   it('rejects when non-material facets are also touched (baseline check)', () => {
     expect(
-      canFastPathMaterialPatch({ material: { roughness: 0.2 }, positions: new Float32Array(9) } as never),
+      canFastPathMaterialPatch({ material: { roughness: 0.2 }, positions: new Float32Array(9) }),
     ).toBe(false);
   });
 
@@ -98,7 +93,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
           opacity: 0.5,
           frontLayer: { normalMap: asTextureRef({}), normalScale: 0.25 },
         },
-      } as never),
+      }),
     ).toEqual({
       textureFields: ['baseColorMap'],
       descriptorScalarFields: ['opacity'],
@@ -115,16 +110,12 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
           displacementBias: -0.1,
           displacementSubdivisions: 3,
         },
-      } as never),
+      }),
     ).toEqual({
       textureFields: [],
       descriptorScalarFields: [],
       layerDescriptorFields: [],
-      geometryFields: [
-        'displacementBias',
-        'displacementScale',
-        'displacementSubdivisions',
-      ],
+      geometryFields: ['displacementBias', 'displacementScale', 'displacementSubdivisions'],
     });
     expect(
       canFastPathMaterialPatch({
@@ -133,7 +124,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
           displacementBias: -0.1,
           displacementSubdivisions: 3,
         },
-      } as never),
+      }),
     ).toBe(false);
   });
 
@@ -144,7 +135,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
           frontLayer: { normalMap: undefined, normalScale: undefined },
           backLayer: undefined,
         },
-      } as never),
+      }),
     ).toEqual({
       textureFields: [],
       descriptorScalarFields: [],
@@ -159,7 +150,7 @@ describe('canFastPathMaterialPatch — Item 2a: TextureRef fields route to setSc
     expect(
       canFastPathMaterialPatch({
         material: { frontLayer: { normalMap: undefined } },
-      } as never),
+      }),
     ).toBe(false);
   });
 });
@@ -203,29 +194,14 @@ describe('canFastPathGeometryPatch — sparse semantic sets', () => {
       material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
     };
 
-    expect(canFastPathGeometryPatch(
-      primitive,
-      { colors: new Float32Array(12) },
-    )).toBe(true);
-    expect(canFastPathGeometryPatch(
-      primitive,
-      { colorSets },
-    )).toBe(true);
-    expect(canFastPathGeometryPatch(
-      primitive,
-      { vertexColorSet: 0 },
-    )).toBe(true);
+    expect(canFastPathGeometryPatch(primitive, { colors: new Float32Array(12) })).toBe(true);
+    expect(canFastPathGeometryPatch(primitive, { colorSets })).toBe(true);
+    expect(canFastPathGeometryPatch(primitive, { vertexColorSet: 0 })).toBe(true);
 
-    expect(canFastPathGeometryPatch(
-      primitive,
-      { colors: new Float32Array(8) },
-    )).toBe(false);
+    expect(canFastPathGeometryPatch(primitive, { colors: new Float32Array(8) })).toBe(false);
     const invalidColorSets: Array<Float32Array | undefined> = [];
     invalidColorSets[3] = new Float32Array(10);
-    expect(canFastPathGeometryPatch(
-      primitive,
-      { colorSets: invalidColorSets },
-    )).toBe(false);
+    expect(canFastPathGeometryPatch(primitive, { colorSets: invalidColorSets })).toBe(false);
   });
 });
 
@@ -314,23 +290,23 @@ function makeHostWithEmissiveScene(scene: Scene): {
   const geoPack = scenePackResultFromPacked(packed);
   const meshAreaLightsData = new Float32Array(packed.meshAreaLightsData);
   const meshAreaLightsWriteCalls: Float32Array[] = [];
-  const writeBuffer = vi.fn((
-    buf: unknown,
-    _byteOffset: number,
-    data: ArrayBuffer,
-    srcOffset = 0,
-    length?: number,
-  ) => {
-    if ((buf as StubGpuBuffer | undefined)?.label === 'vitrum.pt-webgpu.scene.meshAreaLights') {
-      const byteLength = length ?? data.byteLength - srcOffset;
-      meshAreaLightsWriteCalls.push(new Float32Array(data, srcOffset, Math.floor(byteLength / 4)));
-    }
-  });
-  const createBuffer = vi.fn((desc: { label?: string; size?: number } | undefined): StubGpuBuffer => ({
-    label: desc?.label ?? '',
-    size: desc?.size ?? 16,
-    destroy: vi.fn(),
-  }));
+  const writeBuffer = vi.fn(
+    (buf: unknown, _byteOffset: number, data: ArrayBuffer, srcOffset = 0, length?: number) => {
+      if ((buf as StubGpuBuffer | undefined)?.label === 'vitrum.pt-webgpu.scene.meshAreaLights') {
+        const byteLength = length ?? data.byteLength - srcOffset;
+        meshAreaLightsWriteCalls.push(
+          new Float32Array(data, srcOffset, Math.floor(byteLength / 4)),
+        );
+      }
+    },
+  );
+  const createBuffer = vi.fn(
+    (desc: { label?: string; size?: number } | undefined): StubGpuBuffer => ({
+      label: desc?.label ?? '',
+      size: desc?.size ?? 16,
+      destroy: vi.fn(),
+    }),
+  );
 
   const buffer = (label: string, data?: ArrayBufferView): StubGpuBuffer => ({
     label,
@@ -339,46 +315,110 @@ function makeHostWithEmissiveScene(scene: Scene): {
   });
 
   const meshAreaLightsBuffer = buffer('vitrum.pt-webgpu.scene.meshAreaLights', meshAreaLightsData);
-  const copyBufferToBuffer = vi.fn((
-    _source: unknown,
-    _sourceOffset: number,
-    destination: unknown,
-  ) => {
-    if (destination === meshAreaLightsBuffer) {
-      meshAreaLightsWriteCalls.push(new Float32Array());
-    }
-  });
+  const copyBufferToBuffer = vi.fn(
+    (_source: unknown, _sourceOffset: number, destination: unknown) => {
+      if (destination === meshAreaLightsBuffer) {
+        meshAreaLightsWriteCalls.push(new Float32Array());
+      }
+    },
+  );
 
-  const sceneBuffers: UploadedSceneBuffers = {
+  const sceneBuffers = {
     ...packed,
     meshAreaLightsData,
     meshAreaLightsBuffer: meshAreaLightsBuffer as unknown as GPUBuffer,
-    positionsBuffer: buffer('vitrum.pt-webgpu.scene.positions', packed.positions) as unknown as GPUBuffer,
+    positionsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.positions',
+      packed.positions,
+    ) as unknown as GPUBuffer,
     normalsBuffer: buffer('vitrum.pt-webgpu.scene.normals', packed.normals) as unknown as GPUBuffer,
     indicesBuffer: buffer('vitrum.pt-webgpu.scene.indices', packed.indices) as unknown as GPUBuffer,
-    triMaterialIdsBuffer: buffer('vitrum.pt-webgpu.scene.triMaterialIds', packed.triMaterialIds) as unknown as GPUBuffer,
-    materialsBuffer: buffer('vitrum.pt-webgpu.scene.materials', packed.materials) as unknown as GPUBuffer,
-    bvhNodesBuffer: buffer('vitrum.pt-webgpu.scene.bvhNodes', packed.bvhNodes) as unknown as GPUBuffer,
-    analyticHeadersBuffer: buffer('vitrum.pt-webgpu.scene.analyticHeaders', packed.analyticHeaders) as unknown as GPUBuffer,
-    analyticParamsBuffer: buffer('vitrum.pt-webgpu.scene.analyticParams', packed.analyticParams) as unknown as GPUBuffer,
-    analyticLocalToWorldBuffer: buffer('vitrum.pt-webgpu.scene.analyticLocalToWorld', packed.analyticLocalToWorld) as unknown as GPUBuffer,
-    analyticWorldToLocalBuffer: buffer('vitrum.pt-webgpu.scene.analyticWorldToLocal', packed.analyticWorldToLocal) as unknown as GPUBuffer,
-    environmentMapTexelsBuffer: buffer('vitrum.pt-webgpu.scene.environmentMapTexels', packed.environmentMapTexels) as unknown as GPUBuffer,
-    environmentMapCdfBuffer: buffer('vitrum.pt-webgpu.scene.environmentMapCdf', packed.environmentMapCdf) as unknown as GPUBuffer,
-    directionalLightsBuffer: buffer('vitrum.pt-webgpu.scene.directionalLights', packed.directionalLightsData) as unknown as GPUBuffer,
-    pointLightsBuffer: buffer('vitrum.pt-webgpu.scene.pointLights', packed.pointLightsData) as unknown as GPUBuffer,
-    spotLightsBuffer: buffer('vitrum.pt-webgpu.scene.spotLights', packed.spotLightsData) as unknown as GPUBuffer,
-    rectAreaLightsBuffer: buffer('vitrum.pt-webgpu.scene.rectAreaLights', packed.rectAreaLightsData) as unknown as GPUBuffer,
-    lightTreeBuffer: buffer('vitrum.pt-webgpu.scene.lightTree', packed.lightTreeNodes) as unknown as GPUBuffer,
-    tlasNodesBuffer: buffer('vitrum.pt-webgpu.scene.tlasNodes', packed.tlasNodes) as unknown as GPUBuffer,
-    tlasInstanceIndicesBuffer: buffer('vitrum.pt-webgpu.scene.tlasInstanceIndices', packed.tlasInstanceIndices) as unknown as GPUBuffer,
-    tlasBlasRootsBuffer: buffer('vitrum.pt-webgpu.scene.tlasBlasRoots', packed.tlasBlasRoots) as unknown as GPUBuffer,
-    tlasInstanceWorldToLocalBuffer: buffer('vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal', packed.tlasInstanceWorldToLocal) as unknown as GPUBuffer,
-    tlasInstanceLocalToWorldBuffer: buffer('vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld', packed.tlasInstanceLocalToWorld) as unknown as GPUBuffer,
+    triMaterialIdsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.triMaterialIds',
+      packed.triMaterialIds,
+    ) as unknown as GPUBuffer,
+    materialsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.materials',
+      packed.materials,
+    ) as unknown as GPUBuffer,
+    bvhNodesBuffer: buffer(
+      'vitrum.pt-webgpu.scene.bvhNodes',
+      packed.bvhNodes,
+    ) as unknown as GPUBuffer,
+    analyticHeadersBuffer: buffer(
+      'vitrum.pt-webgpu.scene.analyticHeaders',
+      packed.analyticHeaders,
+    ) as unknown as GPUBuffer,
+    analyticParamsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.analyticParams',
+      packed.analyticParams,
+    ) as unknown as GPUBuffer,
+    analyticLocalToWorldBuffer: buffer(
+      'vitrum.pt-webgpu.scene.analyticLocalToWorld',
+      packed.analyticLocalToWorld,
+    ) as unknown as GPUBuffer,
+    analyticWorldToLocalBuffer: buffer(
+      'vitrum.pt-webgpu.scene.analyticWorldToLocal',
+      packed.analyticWorldToLocal,
+    ) as unknown as GPUBuffer,
+    environmentMapTexelsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.environmentMapTexels',
+      packed.environmentMapTexels,
+    ) as unknown as GPUBuffer,
+    environmentMapCdfBuffer: buffer(
+      'vitrum.pt-webgpu.scene.environmentMapCdf',
+      packed.environmentMapCdf,
+    ) as unknown as GPUBuffer,
+    directionalLightsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.directionalLights',
+      packed.directionalLightsData,
+    ) as unknown as GPUBuffer,
+    pointLightsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.pointLights',
+      packed.pointLightsData,
+    ) as unknown as GPUBuffer,
+    spotLightsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.spotLights',
+      packed.spotLightsData,
+    ) as unknown as GPUBuffer,
+    rectAreaLightsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.rectAreaLights',
+      packed.rectAreaLightsData,
+    ) as unknown as GPUBuffer,
+    lightTreeBuffer: buffer(
+      'vitrum.pt-webgpu.scene.lightTree',
+      packed.lightTreeNodes,
+    ) as unknown as GPUBuffer,
+    tlasNodesBuffer: buffer(
+      'vitrum.pt-webgpu.scene.tlasNodes',
+      packed.tlasNodes,
+    ) as unknown as GPUBuffer,
+    tlasInstanceIndicesBuffer: buffer(
+      'vitrum.pt-webgpu.scene.tlasInstanceIndices',
+      packed.tlasInstanceIndices,
+    ) as unknown as GPUBuffer,
+    tlasBlasRootsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.tlasBlasRoots',
+      packed.tlasBlasRoots,
+    ) as unknown as GPUBuffer,
+    tlasInstanceWorldToLocalBuffer: buffer(
+      'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal',
+      packed.tlasInstanceWorldToLocal,
+    ) as unknown as GPUBuffer,
+    tlasInstanceLocalToWorldBuffer: buffer(
+      'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld',
+      packed.tlasInstanceLocalToWorld,
+    ) as unknown as GPUBuffer,
     uvsBuffer: buffer('vitrum.pt-webgpu.scene.uvs', packed.uvs) as unknown as GPUBuffer,
-    tangentsBuffer: buffer('vitrum.pt-webgpu.scene.tangents', packed.tangents) as unknown as GPUBuffer,
+    tangentsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.tangents',
+      packed.tangents,
+    ) as unknown as GPUBuffer,
     colorsBuffer: buffer('vitrum.pt-webgpu.scene.colors', packed.colors) as unknown as GPUBuffer,
-    materialTexDescriptorsBuffer: buffer('vitrum.pt-webgpu.scene.materialTexDescriptors', packed.materialTexDescriptors) as unknown as GPUBuffer,
+    materialTexDescriptorsBuffer: buffer(
+      'vitrum.pt-webgpu.scene.materialTexDescriptors',
+      packed.materialTexDescriptors,
+    ) as unknown as GPUBuffer,
     materialTexture: {} as GPUTexture,
     materialTextureView: {} as GPUTextureView,
     materialTextureSampler: {} as GPUSampler,
@@ -408,19 +448,32 @@ function makeHostWithEmissiveScene(scene: Scene): {
     validateEnvironmentCandidate: vi.fn(),
     validateEmittersCandidate: vi.fn(),
     getScene: () => sceneRef.current,
-    setSceneState: vi.fn((s: Scene) => { sceneRef.current = s; }),
+    setSceneState: vi.fn((s: Scene) => {
+      sceneRef.current = s;
+    }),
     getSceneBuffers: () => sceneBuffers,
     getGeoPack: () => geoPack,
     setGeoPack: vi.fn(),
     invalidateBindGroups: vi.fn(),
     supportedAnalyticShapes: () => new Set<string>(),
     cameraVisibleEmitters: () => false,
-    repackScene: vi.fn((s: Scene) => { sceneRef.current = s; }),
-    setScene: vi.fn((s: Scene) => { sceneRef.current = s; }),
+    repackScene: vi.fn((s: Scene) => {
+      sceneRef.current = s;
+    }),
+    setScene: vi.fn((s: Scene) => {
+      sceneRef.current = s;
+    }),
     reset: vi.fn(),
   };
 
-  return { host, sceneRef, sceneBuffers, meshAreaLightsWriteCalls, writeBuffer, copyBufferToBuffer };
+  return {
+    host,
+    sceneRef,
+    sceneBuffers,
+    meshAreaLightsWriteCalls,
+    writeBuffer,
+    copyBufferToBuffer,
+  };
 }
 
 describe('SceneMutationRouter — Item 2c: emissive-field material patch triggers emitter re-pack', () => {
@@ -447,8 +500,14 @@ describe('SceneMutationRouter — Item 2c: emissive-field material patch trigger
 
     // Patch emissiveIntensity — triggers Item 2c path.
     router.updatePrimitive('glow-mesh', {
-      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, emissive: [2, 2, 2], emissiveIntensity: 3 },
-    } as never);
+      material: {
+        baseColor: [1, 1, 1],
+        roughness: 0.5,
+        metallic: 0,
+        emissive: [2, 2, 2],
+        emissiveIntensity: 3,
+      },
+    });
 
     // meshAreaLightsBuffer should have been written (emitter re-pack ran).
     expect(meshAreaLightsWriteCalls.length).toBeGreaterThan(0);
@@ -476,12 +535,65 @@ describe('SceneMutationRouter — Item 2c: emissive-field material patch trigger
 
     const router = new SceneMutationRouter(host);
     router.updatePrimitive('glow-mesh', {
-      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, emissive: [0, 0, 0], emissiveIntensity: 1 },
-    } as never);
+      material: {
+        baseColor: [1, 1, 1],
+        roughness: 0.5,
+        metallic: 0,
+        emissive: [0, 0, 0],
+        emissiveIntensity: 1,
+      },
+    });
 
     expect(sceneBuffers.meshAreaLightCount).toBe(0);
     expect(sceneBuffers.meshAreaLightsData.length).toBe(0);
     expect(host.invalidateBindGroups).toHaveBeenCalled();
+  });
+
+  it('doubleSided patch refreshes emissive-mesh sidedness and light-tree cone state', () => {
+    const emissiveScene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'sided-emitter',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+            emissive: [2, 2, 2],
+            doubleSided: false,
+          },
+        },
+        {
+          kind: 'mesh',
+          id: 'other-emitter',
+          positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+            emissive: [1, 1, 1],
+          },
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host, sceneBuffers, meshAreaLightsWriteCalls } =
+      makeHostWithEmissiveScene(emissiveScene);
+    const previousLightTree = Array.from(sceneBuffers.lightTreeNodes);
+    expect(sceneBuffers.meshAreaLightsData[27]).toBe(0);
+
+    const router = new SceneMutationRouter(host);
+    router.updatePrimitive('sided-emitter', {
+      material: { doubleSided: true },
+    });
+
+    expect(meshAreaLightsWriteCalls.length).toBeGreaterThan(0);
+    expect(sceneBuffers.meshAreaLightsData[27]).toBe(1);
+    expect(Array.from(sceneBuffers.lightTreeNodes)).not.toEqual(previousLightTree);
   });
 
   it('non-emissive material patch (roughness only) does NOT trigger emitter re-pack for non-emissive mesh', () => {
@@ -506,7 +618,7 @@ describe('SceneMutationRouter — Item 2c: emissive-field material patch trigger
 
     router.updatePrimitive('plain', {
       material: { baseColor: [1, 1, 1], roughness: 0.9, metallic: 0 },
-    } as never);
+    });
 
     expect(meshAreaLightsWriteCalls.length).toBe(0);
   });
@@ -614,7 +726,7 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directional stora
       rectAreaLightsData: packed.rectAreaLightsData,
       meshAreaLightsData: packed.meshAreaLightsData,
     };
-    const sceneBuffers: UploadedSceneBuffers = {
+    const sceneBuffers = {
       ...packed,
       ...sbState,
       positionsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
@@ -622,7 +734,10 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directional stora
       indicesBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       triMaterialIdsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       materialsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-      bvhNodesBuffer: { size: Math.max(16, packed.bvhNodes.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
+      bvhNodesBuffer: {
+        size: Math.max(16, packed.bvhNodes.byteLength),
+        destroy: vi.fn(),
+      } as unknown as GPUBuffer,
       analyticHeadersBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       analyticParamsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       analyticLocalToWorldBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
@@ -630,15 +745,33 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directional stora
       environmentMapTexelsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       environmentMapCdfBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       pointLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-      spotLightsBuffer: { size: Math.max(16, packed.spotLightsData.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
+      spotLightsBuffer: {
+        size: Math.max(16, packed.spotLightsData.byteLength),
+        destroy: vi.fn(),
+      } as unknown as GPUBuffer,
       rectAreaLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       meshAreaLightsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       lightTreeBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
-      tlasNodesBuffer: { size: Math.max(16, packed.tlasNodes.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-      tlasInstanceIndicesBuffer: { size: Math.max(16, packed.tlasInstanceIndices.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-      tlasBlasRootsBuffer: { size: Math.max(16, packed.tlasBlasRoots.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-      tlasInstanceWorldToLocalBuffer: { size: Math.max(16, packed.tlasInstanceWorldToLocal.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
-      tlasInstanceLocalToWorldBuffer: { size: Math.max(16, packed.tlasInstanceLocalToWorld.byteLength), destroy: vi.fn() } as unknown as GPUBuffer,
+      tlasNodesBuffer: {
+        size: Math.max(16, packed.tlasNodes.byteLength),
+        destroy: vi.fn(),
+      } as unknown as GPUBuffer,
+      tlasInstanceIndicesBuffer: {
+        size: Math.max(16, packed.tlasInstanceIndices.byteLength),
+        destroy: vi.fn(),
+      } as unknown as GPUBuffer,
+      tlasBlasRootsBuffer: {
+        size: Math.max(16, packed.tlasBlasRoots.byteLength),
+        destroy: vi.fn(),
+      } as unknown as GPUBuffer,
+      tlasInstanceWorldToLocalBuffer: {
+        size: Math.max(16, packed.tlasInstanceWorldToLocal.byteLength),
+        destroy: vi.fn(),
+      } as unknown as GPUBuffer,
+      tlasInstanceLocalToWorldBuffer: {
+        size: Math.max(16, packed.tlasInstanceLocalToWorld.byteLength),
+        destroy: vi.fn(),
+      } as unknown as GPUBuffer,
       uvsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       materialTexDescriptorsBuffer: { size: 16, destroy: vi.fn() } as unknown as GPUBuffer,
       materialTexture: {} as GPUTexture,
@@ -674,15 +807,21 @@ describe('SceneMutationRouter — Item 2d: updateEmitter syncs directional stora
       validateEnvironmentCandidate: vi.fn(),
       validateEmittersCandidate: vi.fn(),
       getScene: () => sceneRef.current,
-      setSceneState: vi.fn((s: Scene) => { sceneRef.current = s; }),
+      setSceneState: vi.fn((s: Scene) => {
+        sceneRef.current = s;
+      }),
       getSceneBuffers: () => sceneBuffers,
       getGeoPack: () => geoPack,
       setGeoPack: vi.fn(),
       invalidateBindGroups: vi.fn(),
       supportedAnalyticShapes: () => new Set<string>(),
       cameraVisibleEmitters: () => false,
-      repackScene: vi.fn((s: Scene) => { sceneRef.current = s; }),
-      setScene: vi.fn((s: Scene) => { sceneRef.current = s; }),
+      repackScene: vi.fn((s: Scene) => {
+        sceneRef.current = s;
+      }),
+      setScene: vi.fn((s: Scene) => {
+        sceneRef.current = s;
+      }),
       reset: vi.fn(),
     };
 
@@ -724,10 +863,14 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
 
     router.updatePrimitive('floor', {
       material: {
-        baseColorMap: asTextureRef({ width: 1, height: 1, data: new Uint8Array([255, 255, 255, 255]) }),
+        baseColorMap: asTextureRef({
+          width: 1,
+          height: 1,
+          data: new Uint8Array([255, 255, 255, 255]),
+        }),
         opacity: 0.75,
       },
-    } as never);
+    });
 
     expect(hostWithWarnings.setScene).toHaveBeenCalledTimes(1);
     expect(hostWithWarnings.setSceneState).not.toHaveBeenCalled();
@@ -775,10 +918,7 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
         hdri: {
           width: 2,
           height: 1,
-          data: new Float32Array([
-            1, 0.5, 0.25,
-            0.25, 0.5, 1,
-          ]),
+          data: new Float32Array([1, 0.5, 0.25, 0.25, 0.5, 1]),
         },
         intensity: 0.75,
       },
@@ -796,9 +936,7 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
     const staging = writeBuffer.mock.calls[0]?.[0] as StubGpuBuffer;
     expect(staging.label).toBe('vitrum.pt-webgpu.scene.incremental-staging');
     const encodedCopies = copyBufferToBuffer.mock.calls.slice(copiesBefore);
-    expect(encodedCopies.some(
-      (call) => call[2] === sceneBuffers.pointLightsBuffer,
-    )).toBe(true);
+    expect(encodedCopies.some((call) => call[2] === sceneBuffers.pointLightsBuffer)).toBe(true);
     for (const [source, sourceOffset, , destinationOffset, size] of encodedCopies) {
       expect(source).toBe(staging);
       expect(Number(sourceOffset) % 4).toBe(0);
@@ -807,12 +945,8 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
     }
     expect(sceneBuffers.pointLightCount).toBe(1);
     const freshPacked = buildPackedScene(sceneRef.current, {});
-    expect(sceneBuffers.environmentLightTreePower).toBe(
-      retainedEnvironmentPower,
-    );
-    expect(Array.from(sceneBuffers.lightTreeNodes)).toEqual(
-      Array.from(freshPacked.lightTreeNodes),
-    );
+    expect(sceneBuffers.environmentLightTreePower).toBe(retainedEnvironmentPower);
+    expect(Array.from(sceneBuffers.lightTreeNodes)).toEqual(Array.from(freshPacked.lightTreeNodes));
     expect(host.setSceneState).toHaveBeenCalledTimes(1);
     expect(host.setScene).not.toHaveBeenCalled();
     expect(host.reset).toHaveBeenCalledTimes(1);
@@ -823,8 +957,12 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
       width: 2,
       height: 1,
       data: new Float32Array([
-        1 * scale, 0.5 * scale, 0.25 * scale,
-        0.25 * scale, 0.5 * scale, 1 * scale,
+        1 * scale,
+        0.5 * scale,
+        0.25 * scale,
+        0.25 * scale,
+        0.5 * scale,
+        1 * scale,
       ]),
     });
     const scene: Scene = {
@@ -857,10 +995,7 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
       intensity: 0.4,
       rotationY: 0.25,
     };
-    const expectedPacked = buildPackedScene(
-      { ...scene, environment: nextEnvironment },
-      {},
-    );
+    const expectedPacked = buildPackedScene({ ...scene, environment: nextEnvironment }, {});
     writeBuffer.mockClear();
     const copiesBefore = copyBufferToBuffer.mock.calls.length;
 
@@ -870,12 +1005,12 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
     const staging = writeBuffer.mock.calls[0]?.[0] as StubGpuBuffer;
     expect(staging.label).toBe('vitrum.pt-webgpu.scene.incremental-staging');
     const encodedCopies = copyBufferToBuffer.mock.calls.slice(copiesBefore);
-    expect(encodedCopies.some(
-      (call) => call[2] === sceneBuffers.environmentMapTexelsBuffer,
-    )).toBe(true);
-    expect(encodedCopies.some(
-      (call) => call[2] === sceneBuffers.environmentMapCdfBuffer,
-    )).toBe(false);
+    expect(encodedCopies.some((call) => call[2] === sceneBuffers.environmentMapTexelsBuffer)).toBe(
+      true,
+    );
+    expect(encodedCopies.some((call) => call[2] === sceneBuffers.environmentMapCdfBuffer)).toBe(
+      false,
+    );
     for (const [source, sourceOffset, , destinationOffset, size] of encodedCopies) {
       expect(source).toBe(staging);
       expect(Number(sourceOffset) % 4).toBe(0);
@@ -885,9 +1020,7 @@ describe('SceneMutationRouter — Phase 5C mutation observability', () => {
     expect(sceneBuffers.hasEnvironmentMap).toBe(true);
     expect(sceneBuffers.environmentHdriIntensity).toBe(Math.fround(0.4));
     expect(sceneBuffers.environmentHdriRotationY).toBe(0.25);
-    expect(sceneBuffers.environmentLightTreePower).toBe(
-      expectedPacked.environmentLightTreePower,
-    );
+    expect(sceneBuffers.environmentLightTreePower).toBe(expectedPacked.environmentLightTreePower);
     expect(Array.from(sceneBuffers.lightTreeNodes)).toEqual(
       Array.from(expectedPacked.lightTreeNodes),
     );
@@ -917,18 +1050,8 @@ describe('SceneMutationRouter — cached bind-group invalidation for reallocatin
     const router = new SceneMutationRouter(host);
 
     router.updatePrimitive('resizable', {
-      positions: new Float32Array([
-        -0.5, -0.5, 0,
-         0.5, -0.5, 0,
-         0.5,  0.5, 0,
-        -0.5,  0.5, 0,
-      ]),
-      normals: new Float32Array([
-        0, 0, 1,
-        0, 0, 1,
-        0, 0, 1,
-        0, 0, 1,
-      ]),
+      positions: new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1]),
       indices: new Uint32Array([0, 1, 2, 0, 2, 3]),
     });
 
@@ -950,7 +1073,7 @@ describe('SceneMutationRouter — cached bind-group invalidation for reallocatin
           material: { baseColor: [1, 0, 0], roughness: 0.5, metallic: 0 },
           instances: [
             asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5, 0, 0, 1])),
-            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0,  0.5, 0, 0, 1])),
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0, 0, 1])),
           ],
         },
       ],
@@ -961,9 +1084,7 @@ describe('SceneMutationRouter — cached bind-group invalidation for reallocatin
     const router = new SceneMutationRouter(host);
 
     router.updatePrimitive('instanced', {
-      instances: [
-        asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5, 0, 0, 1])),
-      ],
+      instances: [asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5, 0, 0, 1]))],
     });
 
     expect(host.invalidateBindGroups).toHaveBeenCalledTimes(1);

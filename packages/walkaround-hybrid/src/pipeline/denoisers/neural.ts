@@ -28,6 +28,8 @@ import { buildNeuralPackWgsl } from '../../shaders/neuralPack.wgsl.js';
 import { buildNeuralUnpackWgsl } from '../../shaders/neuralUnpack.wgsl.js';
 import { preprocessingContractForCheckpoint } from '../../neural/preprocessing.js';
 import { withNeuralGpuErrorScopes } from '../../neural/gpuValidation.js';
+import type { PreparedSceneMutation } from '../../SceneMutationTransaction.js';
+import { commitPreparedDenoiserResize } from './resizeTransaction.js';
 import {
   WALKAROUND_NEURAL_DENOISER_SHAPE_REQUIREMENT,
   assertWalkaroundNeuralDenoiserShape,
@@ -398,7 +400,59 @@ export class NeuralDenoiser implements Denoiser {
     return tb.outputTex;
   }
 
+  prepareResize(w: number, h: number): PreparedSceneMutation {
+    const previous = {
+      width: this._width,
+      height: this._height,
+      resizeFailure: this._resizeFailure,
+      loggedSizeMismatch: this._loggedSizeMismatch,
+      loggedDispatchFailure: this._loggedDispatchFailure,
+      loggedGraphReinitFailure: this._loggedGraphReinitFailure,
+      loggedUnsupportedShape: this._loggedUnsupportedShape,
+      graphReinitGeneration: this._graphReinitGeneration,
+      graphReinitPromise: this._graphReinitPromise,
+      graphReinitChain: this._graphReinitChain,
+      graphReinitReason: this._graphReinitReason,
+      lifecycleState: this._lifecycleState,
+      failureReason: this._failureReason,
+      lastFallbackReason: this._lastFallbackReason,
+    };
+    let committed = false;
+    return {
+      commit: () => {
+        if (committed) return;
+        this._applyResize(w, h);
+        committed = true;
+      },
+      rollback: () => {
+        if (!committed) return;
+        // Any resize chain scheduled by _applyResize captured a generation
+        // newer than the restored one and will fail its publication guard.
+        this._width = previous.width;
+        this._height = previous.height;
+        this._resizeFailure = previous.resizeFailure;
+        this._loggedSizeMismatch = previous.loggedSizeMismatch;
+        this._loggedDispatchFailure = previous.loggedDispatchFailure;
+        this._loggedGraphReinitFailure = previous.loggedGraphReinitFailure;
+        this._loggedUnsupportedShape = previous.loggedUnsupportedShape;
+        this._graphReinitGeneration = previous.graphReinitGeneration;
+        this._graphReinitPromise = previous.graphReinitPromise;
+        this._graphReinitChain = previous.graphReinitChain;
+        this._graphReinitReason = previous.graphReinitReason;
+        this._lifecycleState = previous.lifecycleState;
+        this._failureReason = previous.failureReason;
+        this._lastFallbackReason = previous.lastFallbackReason;
+        committed = false;
+      },
+      finalize: () => undefined,
+    };
+  }
+
   resize(w: number, h: number): void {
+    commitPreparedDenoiserResize(this.prepareResize(w, h));
+  }
+
+  private _applyResize(w: number, h: number): void {
     if (this._lifecycleState === 'disposed') return;
     this._width = w;
     this._resizeFailure = null;

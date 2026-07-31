@@ -74,9 +74,9 @@ export class RISPass implements Pass {
       // RIS-only DI light-selection tree bound at slot 3 (NOT the hybrid-layers
       // group — RIS uses its own group(3) light-tree layout).
       extraGroups: [{ slot: 3, group: ctx.lightTreeBindGroup }],
-      ...(ctx.checkerboardOn
+      ...(ctx.checkerboardOn && ctx.restirReservoirScale === 1
         ? { dispatchOverride: { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY } }
-        : {}),
+        : { restirDi: true }),
     });
   }
 

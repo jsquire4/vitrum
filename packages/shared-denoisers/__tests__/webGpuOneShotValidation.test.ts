@@ -8,6 +8,7 @@ import {
   runSVGFRealWebGPU,
 } from '../src/svgfRealWebGPU.js';
 import {
+  assertFiniteFloat16Slice,
   assertOneShotDeviceLimits,
   assertOneShotDimensions,
 } from '../src/webGpuOneShotValidation.js';
@@ -103,6 +104,80 @@ describe('one-shot input preflight', () => {
       height: 1,
       reprojUniforms: { alphaMin: 1.1 },
     })).rejects.toThrow(/alphaMin must be <= 1/);
+    expect(device.createTexture).not.toHaveBeenCalled();
+  });
+
+  it('requires matching previous albedo for demodulated previous radiance', () => {
+    expect(() => assertSVGFRealWebGPUInputs({
+      rgb: new Float32Array(3),
+      width: 1,
+      height: 1,
+      albedoRgb: new Float32Array([0.5, 0.5, 0.5]),
+      prevRadianceRgb: new Float32Array([1, 1, 1]),
+    })).toThrow(/prevAlbedoRgb.*required/);
+
+    expect(() => assertSVGFRealWebGPUInputs({
+      rgb: new Float32Array(3),
+      width: 1,
+      height: 1,
+      albedoRgb: new Float32Array([0.5, 0.5, 0.5]),
+      prevRadianceRgb: new Float32Array([1, 1, 1]),
+      prevAlbedoRgb: new Float32Array([0.25, 0.25, 0.25]),
+    })).not.toThrow();
+  });
+
+  it('requires matching BMFR history albedo before device acquisition', async () => {
+    const device = { createTexture: vi.fn() } as unknown as GPUDevice;
+    const base = {
+      device,
+      rgb: new Float32Array([1, 1, 1]),
+      worldPosRgb: new Float32Array([0, 0, 1]),
+      width: 1,
+      height: 1,
+    };
+
+    await expect(runBmfrWebGPU({
+      ...base,
+      albedoRgb: new Float32Array([0.5, 0.5, 0.5]),
+      historyRgb: new Float32Array([0.25, 0.25, 0.25]),
+    })).rejects.toThrow(/historyAlbedoRgb.*required/);
+
+    await expect(runBmfrWebGPU({
+      ...base,
+      historyAlbedoRgb: new Float32Array([0.25, 0.25, 0.25]),
+    })).rejects.toThrow(/historyAlbedoRgb requires albedoRgb/);
+
+    await expect(runBmfrWebGPU({
+      ...base,
+      albedoRgb: new Float32Array([0.5, 0.5, 0.5]),
+      historyAlbedoRgb: new Float32Array([0.25, 0.25, 0.25]),
+    })).rejects.toThrow(/historyAlbedoRgb requires historyRgb/);
+
+    expect(device.createTexture).not.toHaveBeenCalled();
+  });
+
+  it('rejects finite float32 values that overflow the float16 upload domain', async () => {
+    expect(() => assertFiniteFloat16Slice(
+      'test',
+      'rgb',
+      new Float32Array([65504, -65504]),
+      2,
+    )).not.toThrow();
+    expect(() => assertFiniteFloat16Slice(
+      'test',
+      'rgb',
+      new Float32Array([65520]),
+      1,
+    )).toThrow(/rgb\[0\].*finite float16/);
+
+    const device = { createTexture: vi.fn() } as unknown as GPUDevice;
+    await expect(runSVGFRealWebGPU({
+      device,
+      rgb: new Float32Array([100, 100, 100]),
+      albedoRgb: new Float32Array([0, 0, 0]),
+      width: 1,
+      height: 1,
+    })).rejects.toThrow(/rgbForChain\[0\].*finite float16/);
     expect(device.createTexture).not.toHaveBeenCalled();
   });
 });

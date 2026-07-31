@@ -58,8 +58,16 @@ const SHAPE_CYLINDER = 4u;
 const SHAPE_H_CHANNEL_CAME = 5u;
 
 fn transformPointCols(c0: vec4f, c1: vec4f, c2: vec4f, c3: vec4f, p: vec3f) -> vec3f {
-  let r = c0 * p.x + c1 * p.y + c2 * p.z + c3;
-  return r.xyz / max(abs(r.w), 1e-8);
+  let raw = c0 * p.x + c1 * p.y + c2 * p.z + c3;
+  let scale = max(max(abs(raw.x), abs(raw.y)), max(abs(raw.z), abs(raw.w)));
+  if (!(scale > 0.0) || scale > 3.402823e38) { return vec3f(0.0); }
+  let r = raw / scale;
+  if (r.w == 0.0) { return vec3f(0.0); }
+  let point = r.xyz / r.w;
+  if (!all(point == point) || any(abs(point) > vec3f(3.402823e38))) {
+    return vec3f(0.0);
+  }
+  return point;
 }
 
 fn transformDirectionCols(c0: vec4f, c1: vec4f, c2: vec4f, d: vec3f) -> vec3f {
@@ -75,6 +83,24 @@ fn transformNormalFromWorldToLocalCols(w2l0: vec4f, w2l1: vec4f, w2l2: vec4f, nL
     dot(w2l1.xyz, nLocal),
     dot(w2l2.xyz, nLocal),
   ));
+}
+
+fn transformLinearOrientationSign(c0: vec4f, c1: vec4f, c2: vec4f) -> f32 {
+  let scale0 = max(abs(c0.x), max(abs(c0.y), abs(c0.z)));
+  let scale1 = max(abs(c1.x), max(abs(c1.y), abs(c1.z)));
+  let scale2 = max(abs(c2.x), max(abs(c2.y), abs(c2.z)));
+  if (
+    !(scale0 > 0.0) || scale0 > 3.402823e38 ||
+    !(scale1 > 0.0) || scale1 > 3.402823e38 ||
+    !(scale2 > 0.0) || scale2 > 3.402823e38
+  ) {
+    return 1.0;
+  }
+  let determinant = dot(
+    cross(c0.xyz / scale0, c1.xyz / scale1),
+    c2.xyz / scale2,
+  );
+  return select(-1.0, 1.0, determinant >= 0.0);
 }
 
 fn intersectAabbDetailed(ray: Ray, bmin: vec3f, bmax: vec3f, tMin: f32, tMax: f32, nOut: ptr<function, vec3f>) -> f32 {
@@ -95,19 +121,18 @@ fn intersectAabbDetailed(ray: Ray, bmin: vec3f, bmax: vec3f, tMin: f32, tMax: f3
     fromFar = true;
   }
   var n = vec3f(0.0);
-  let eps = 1e-4;
   if (!fromFar) {
-    if (abs(tHit - tsm.x) < eps) {
+    if (tHit == tsm.x) {
       n = vec3f(select(1.0, -1.0, ray.direction.x > 0.0), 0.0, 0.0);
-    } else if (abs(tHit - tsm.y) < eps) {
+    } else if (tHit == tsm.y) {
       n = vec3f(0.0, select(1.0, -1.0, ray.direction.y > 0.0), 0.0);
     } else {
       n = vec3f(0.0, 0.0, select(1.0, -1.0, ray.direction.z > 0.0));
     }
   } else {
-    if (abs(tHit - tbg.x) < eps) {
+    if (tHit == tbg.x) {
       n = vec3f(select(-1.0, 1.0, ray.direction.x > 0.0), 0.0, 0.0);
-    } else if (abs(tHit - tbg.y) < eps) {
+    } else if (tHit == tbg.y) {
       n = vec3f(0.0, select(-1.0, 1.0, ray.direction.y > 0.0), 0.0);
     } else {
       n = vec3f(0.0, 0.0, select(-1.0, 1.0, ray.direction.z > 0.0));
@@ -119,17 +144,31 @@ fn intersectAabbDetailed(ray: Ray, bmin: vec3f, bmax: vec3f, tMin: f32, tMax: f3
 
 fn intersectSphereLocal(ray: Ray, center: vec3f, radius: f32, nOut: ptr<function, vec3f>) -> f32 {
   let oc = ray.origin - center;
-  let a = dot(ray.direction, ray.direction);
-  let b = 2.0 * dot(oc, ray.direction);
-  let c = dot(oc, oc) - radius * radius;
-  let disc = b * b - 4.0 * a * c;
+  let rayLengthSquared = dot(ray.direction, ray.direction);
+  let spatialScale = max(
+    max(abs(oc.x), max(abs(oc.y), abs(oc.z))),
+    abs(radius),
+  );
+  if (
+    !(radius > 0.0) ||
+    !(rayLengthSquared > 0.0) || rayLengthSquared > 3.402823e38 ||
+    !(spatialScale > 0.0) ||
+    spatialScale > 3.402823e38
+  ) {
+    return INFINITY;
+  }
+  let scaledOc = oc / spatialScale;
+  let scaledRadius = radius / spatialScale;
+  let b = dot(scaledOc, ray.direction);
+  let c = dot(scaledOc, scaledOc) - scaledRadius * scaledRadius;
+  let disc = b * b - rayLengthSquared * c;
   if (disc < 0.0) { return INFINITY; }
   let s = sqrt(disc);
-  let t0 = (-b - s) / (2.0 * a);
-  let t1 = (-b + s) / (2.0 * a);
+  let t0 = ((-b - s) / rayLengthSquared) * spatialScale;
+  let t1 = ((-b + s) / rayLengthSquared) * spatialScale;
   var t = t0;
-  if (t < 1e-5) { t = t1; }
-  if (t < 1e-5) { return INFINITY; }
+  if (!(t > 0.0)) { t = t1; }
+  if (!(t > 0.0)) { return INFINITY; }
   let p = ray.origin + ray.direction * t;
   *nOut = safe_normalize(p - center);
   return t;
@@ -137,45 +176,73 @@ fn intersectSphereLocal(ray: Ray, center: vec3f, radius: f32, nOut: ptr<function
 
 fn intersectCylinderLocal(ray: Ray, center: vec3f, radius: f32, halfHeight: f32, nOut: ptr<function, vec3f>) -> f32 {
   let ro = ray.origin - center;
+  let spatialScale = max(
+    max(abs(ro.x), max(abs(ro.y), abs(ro.z))),
+    max(abs(radius), abs(halfHeight)),
+  );
+  if (
+    !(radius > 0.0) || !(halfHeight > 0.0) ||
+    !(spatialScale > 0.0) || spatialScale > 3.402823e38
+  ) {
+    return INFINITY;
+  }
+  let scaledRo = ro / spatialScale;
+  let scaledRadius = radius / spatialScale;
+  let scaledHalfHeight = halfHeight / spatialScale;
   let rd = ray.direction;
   let a = rd.x * rd.x + rd.z * rd.z;
-  let b = 2.0 * (ro.x * rd.x + ro.z * rd.z);
-  let c = ro.x * ro.x + ro.z * ro.z - radius * radius;
+  let b = 2.0 * (scaledRo.x * rd.x + scaledRo.z * rd.z);
+  let c =
+    scaledRo.x * scaledRo.x +
+    scaledRo.z * scaledRo.z -
+    scaledRadius * scaledRadius;
   var bestT = INFINITY;
   var bestN = vec3f(0.0, 1.0, 0.0);
   let disc = b * b - 4.0 * a * c;
-  if (disc >= 0.0 && abs(a) > 1e-8) {
+  if (disc >= 0.0 && a > 0.0) {
     let s = sqrt(disc);
-    let t0 = (-b - s) / (2.0 * a);
-    let t1 = (-b + s) / (2.0 * a);
-    if (t0 > 1e-5) {
-      let y = ro.y + rd.y * t0;
-      if (abs(y) <= halfHeight) {
+    let t0Scaled = (-b - s) / (2.0 * a);
+    let t1Scaled = (-b + s) / (2.0 * a);
+    let t0 = t0Scaled * spatialScale;
+    let t1 = t1Scaled * spatialScale;
+    if (t0 > 0.0) {
+      let y = scaledRo.y + rd.y * t0Scaled;
+      if (abs(y) <= scaledHalfHeight) {
         bestT = t0;
-        bestN = safe_normalize(vec3f(ro.x + rd.x * t0, 0.0, ro.z + rd.z * t0));
+        bestN = safe_normalize(vec3f(
+          scaledRo.x + rd.x * t0Scaled,
+          0.0,
+          scaledRo.z + rd.z * t0Scaled,
+        ));
       }
     }
-    if (t1 > 1e-5 && t1 < bestT) {
-      let y = ro.y + rd.y * t1;
-      if (abs(y) <= halfHeight) {
+    if (t1 > 0.0 && t1 < bestT) {
+      let y = scaledRo.y + rd.y * t1Scaled;
+      if (abs(y) <= scaledHalfHeight) {
         bestT = t1;
-        bestN = safe_normalize(vec3f(ro.x + rd.x * t1, 0.0, ro.z + rd.z * t1));
+        bestN = safe_normalize(vec3f(
+          scaledRo.x + rd.x * t1Scaled,
+          0.0,
+          scaledRo.z + rd.z * t1Scaled,
+        ));
       }
     }
   }
-  if (abs(rd.y) > 1e-8) {
-    let topT = (halfHeight - ro.y) / rd.y;
-    if (topT > 1e-5 && topT < bestT) {
-      let p = ro + rd * topT;
-      if (p.x * p.x + p.z * p.z <= radius * radius) {
+  if (rd.y != 0.0) {
+    let topTScaled = (scaledHalfHeight - scaledRo.y) / rd.y;
+    let topT = topTScaled * spatialScale;
+    if (topT > 0.0 && topT < bestT) {
+      let p = scaledRo + rd * topTScaled;
+      if (p.x * p.x + p.z * p.z <= scaledRadius * scaledRadius) {
         bestT = topT;
         bestN = vec3f(0.0, 1.0, 0.0);
       }
     }
-    let bottomT = (-halfHeight - ro.y) / rd.y;
-    if (bottomT > 1e-5 && bottomT < bestT) {
-      let p = ro + rd * bottomT;
-      if (p.x * p.x + p.z * p.z <= radius * radius) {
+    let bottomTScaled = (-scaledHalfHeight - scaledRo.y) / rd.y;
+    let bottomT = bottomTScaled * spatialScale;
+    if (bottomT > 0.0 && bottomT < bestT) {
+      let p = scaledRo + rd * bottomTScaled;
+      if (p.x * p.x + p.z * p.z <= scaledRadius * scaledRadius) {
         bestT = bottomT;
         bestN = vec3f(0.0, -1.0, 0.0);
       }
@@ -186,79 +253,177 @@ fn intersectCylinderLocal(ray: Ray, center: vec3f, radius: f32, halfHeight: f32,
 }
 
 fn intersectCapsuleLocal(ray: Ray, pa: vec3f, pb: vec3f, radius: f32, nOut: ptr<function, vec3f>) -> f32 {
-  let ba = pb - pa;
-  let oa = ray.origin - pa;
+  let rawBa = pb - pa;
+  let rawOa = ray.origin - pa;
+  let spatialScale = max(
+    max(
+      max(abs(rawBa.x), max(abs(rawBa.y), abs(rawBa.z))),
+      max(abs(rawOa.x), max(abs(rawOa.y), abs(rawOa.z))),
+    ),
+    abs(radius),
+  );
+  if (
+    !(radius > 0.0) ||
+    !(spatialScale > 0.0) || spatialScale > 3.402823e38
+  ) {
+    return INFINITY;
+  }
+  let ba = rawBa / spatialScale;
+  let oa = rawOa / spatialScale;
+  let scaledRadius = radius / spatialScale;
   let baba = dot(ba, ba);
+  if (!(baba > 0.0)) {
+    return intersectSphereLocal(ray, pa, radius, nOut);
+  }
   let bard = dot(ba, ray.direction);
   let baoa = dot(ba, oa);
+  let rdrd = dot(ray.direction, ray.direction);
+  if (!(rdrd > 0.0) || rdrd > 3.402823e38) {
+    return INFINITY;
+  }
   let rdoa = dot(ray.direction, oa);
   let oaoa = dot(oa, oa);
-  let a = baba - bard * bard;
+  let a = baba * rdrd - bard * bard;
   let b = baba * rdoa - baoa * bard;
-  let c = baba * oaoa - baoa * baoa - radius * radius * baba;
+  let c = baba * oaoa - baoa * baoa - scaledRadius * scaledRadius * baba;
   let h = b * b - a * c;
   var bestT = INFINITY;
   var bestN = vec3f(0.0, 1.0, 0.0);
-  if (h >= 0.0 && abs(a) > 1e-8) {
-    let t = (-b - sqrt(h)) / a;
-    let y = baoa + t * bard;
-    if (t > 1e-5 && y > 0.0 && y < baba) {
-      let p = oa + ray.direction * t - ba * (y / baba);
-      bestT = t;
+  if (h >= 0.0 && a > 0.0) {
+    let sqrtH = sqrt(h);
+    let tBodyNearScaled = (-b - sqrtH) / a;
+    let tBodyNear = tBodyNearScaled * spatialScale;
+    let yBodyNear = baoa + tBodyNearScaled * bard;
+    if (tBodyNear > 0.0 && yBodyNear > 0.0 && yBodyNear < baba) {
+      let p = oa + ray.direction * tBodyNearScaled - ba * (yBodyNear / baba);
+      bestT = tBodyNear;
+      bestN = safe_normalize(p);
+    }
+    let tBodyFarScaled = (-b + sqrtH) / a;
+    let tBodyFar = tBodyFarScaled * spatialScale;
+    let yBodyFar = baoa + tBodyFarScaled * bard;
+    if (tBodyFar > 0.0 && tBodyFar < bestT && yBodyFar > 0.0 && yBodyFar < baba) {
+      let p = oa + ray.direction * tBodyFarScaled - ba * (yBodyFar / baba);
+      bestT = tBodyFar;
       bestN = safe_normalize(p);
     }
   }
-  let ocA = ray.origin - pa;
+  let ocA = oa;
   let bA = dot(ocA, ray.direction);
-  let cA = dot(ocA, ocA) - radius * radius;
-  let hA = bA * bA - cA;
-  if (hA > 0.0) {
-    let tA = -bA - sqrt(hA);
-    if (tA > 1e-5 && tA < bestT) {
-      bestT = tA;
-      bestN = safe_normalize((ray.origin + ray.direction * tA) - pa);
+  let cA = dot(ocA, ocA) - scaledRadius * scaledRadius;
+  let hA = bA * bA - rdrd * cA;
+  if (hA >= 0.0) {
+    let sqrtHA = sqrt(hA);
+    let tANearScaled = (-bA - sqrtHA) / rdrd;
+    let tANear = tANearScaled * spatialScale;
+    let capPointA = ocA + ray.direction * tANearScaled;
+    if (tANear > 0.0 && tANear < bestT && dot(capPointA, ba) <= 0.0) {
+      bestT = tANear;
+      bestN = safe_normalize(capPointA);
+    }
+    let tAFarScaled = (-bA + sqrtHA) / rdrd;
+    let tAFar = tAFarScaled * spatialScale;
+    let capPointAFar = ocA + ray.direction * tAFarScaled;
+    if (tAFar > 0.0 && tAFar < bestT && dot(capPointAFar, ba) <= 0.0) {
+      bestT = tAFar;
+      bestN = safe_normalize(capPointAFar);
     }
   }
-  let ocB = ray.origin - pb;
+  let ocB = oa - ba;
   let bB = dot(ocB, ray.direction);
-  let cB = dot(ocB, ocB) - radius * radius;
-  let hB = bB * bB - cB;
-  if (hB > 0.0) {
-    let tB = -bB - sqrt(hB);
-    if (tB > 1e-5 && tB < bestT) {
-      bestT = tB;
-      bestN = safe_normalize((ray.origin + ray.direction * tB) - pb);
+  let cB = dot(ocB, ocB) - scaledRadius * scaledRadius;
+  let hB = bB * bB - rdrd * cB;
+  if (hB >= 0.0) {
+    let sqrtHB = sqrt(hB);
+    let tBNearScaled = (-bB - sqrtHB) / rdrd;
+    let tBNear = tBNearScaled * spatialScale;
+    let capPointB = ocB + ray.direction * tBNearScaled;
+    if (tBNear > 0.0 && tBNear < bestT && dot(capPointB, ba) >= 0.0) {
+      bestT = tBNear;
+      bestN = safe_normalize(capPointB);
+    }
+    let tBFarScaled = (-bB + sqrtHB) / rdrd;
+    let tBFar = tBFarScaled * spatialScale;
+    let capPointBFar = ocB + ray.direction * tBFarScaled;
+    if (tBFar > 0.0 && tBFar < bestT && dot(capPointBFar, ba) >= 0.0) {
+      bestT = tBFar;
+      bestN = safe_normalize(capPointBFar);
     }
   }
   *nOut = bestN;
   return bestT;
 }
 
+fn hChannelContainsLocal(p: vec3f, hx: f32, hy: f32, hz: f32, t: f32) -> bool {
+  let inTop = all(p >= vec3f(-hx, hy - t, -hz)) &&
+    all(p <= vec3f(hx, hy, hz));
+  let inBottom = all(p >= vec3f(-hx, -hy, -hz)) &&
+    all(p <= vec3f(hx, -hy + t, hz));
+  let inWeb = all(p >= vec3f(-hx, -hy + t, -t)) &&
+    all(p <= vec3f(hx, hy - t, t));
+  return inTop || inBottom || inWeb;
+}
+
 fn intersectHChannelLocal(ray: Ray, lengthX: f32, railWidth: f32, blockHeight: f32, webThickness: f32, nOut: ptr<function, vec3f>) -> f32 {
-  let hx = max(lengthX * 0.5, 1e-4);
-  let hy = max(blockHeight * 0.5, 1e-4);
-  let hz = max(railWidth * 0.5, 1e-4);
-  let t = max(min(webThickness * 0.5, hy), 1e-4);
-  var bestT = INFINITY;
-  var bestN = vec3f(0.0, 1.0, 0.0);
-  var n: vec3f;
-  let railTop = intersectAabbDetailed(ray, vec3f(-hx, hy - t, -hz), vec3f(hx, hy, hz), 1e-4, INFINITY, &n);
-  if (railTop < bestT) {
-    bestT = railTop;
-    bestN = n;
+  if (
+    !(lengthX > 0.0) || !(railWidth > 0.0) ||
+    !(blockHeight > 0.0) || !(webThickness > 0.0) ||
+    webThickness >= min(railWidth, blockHeight)
+  ) {
+    return INFINITY;
   }
-  let railBottom = intersectAabbDetailed(ray, vec3f(-hx, -hy, -hz), vec3f(hx, -hy + t, hz), 1e-4, INFINITY, &n);
-  if (railBottom < bestT) {
-    bestT = railBottom;
-    bestN = n;
+  let hx = lengthX * 0.5;
+  let hy = blockHeight * 0.5;
+  let hz = railWidth * 0.5;
+  let t = webThickness * 0.5;
+  let featureScale = min(min(hx, hy), min(hz, t));
+  let boundaryProbe = featureScale * 1e-5;
+  var advancedT = 0.0;
+  var scanRay = ray;
+  for (var boundary = 0u; boundary < 6u; boundary = boundary + 1u) {
+    var bestT = INFINITY;
+    var bestN = vec3f(0.0, 1.0, 0.0);
+    var candidateN: vec3f;
+    let railTop = intersectAabbDetailed(
+      scanRay, vec3f(-hx, hy - t, -hz), vec3f(hx, hy, hz),
+      0.0, INFINITY, &candidateN,
+    );
+    if (railTop < bestT) {
+      bestT = railTop;
+      bestN = candidateN;
+    }
+    let railBottom = intersectAabbDetailed(
+      scanRay, vec3f(-hx, -hy, -hz), vec3f(hx, -hy + t, hz),
+      0.0, INFINITY, &candidateN,
+    );
+    if (railBottom < bestT) {
+      bestT = railBottom;
+      bestN = candidateN;
+    }
+    let web = intersectAabbDetailed(
+      scanRay, vec3f(-hx, -hy + t, -t), vec3f(hx, hy - t, t),
+      0.0, INFINITY, &candidateN,
+    );
+    if (web < bestT) {
+      bestT = web;
+      bestN = candidateN;
+    }
+    if (bestT >= INFINITY) {
+      return INFINITY;
+    }
+    let absoluteT = advancedT + bestT;
+    let beforePoint = ray.origin + ray.direction * max(0.0, absoluteT - boundaryProbe);
+    let afterPoint = ray.origin + ray.direction * (absoluteT + boundaryProbe);
+    let insideBefore = hChannelContainsLocal(beforePoint, hx, hy, hz, t);
+    let insideAfter = hChannelContainsLocal(afterPoint, hx, hy, hz, t);
+    if (insideBefore != insideAfter) {
+      *nOut = bestN;
+      return absoluteT;
+    }
+    advancedT = absoluteT + 2.0 * boundaryProbe;
+    scanRay.origin = ray.origin + ray.direction * advancedT;
   }
-  let web = intersectAabbDetailed(ray, vec3f(-hx, -hy + t, -t), vec3f(hx, hy - t, t), 1e-4, INFINITY, &n);
-  if (web < bestT) {
-    bestT = web;
-    bestN = n;
-  }
-  *nOut = bestN;
-  return bestT;
+  return INFINITY;
 }
 
 // SHADOW-01 — primitive castShadow. Material vec4 #25 .w (the former pad lane)
@@ -338,7 +503,15 @@ fn traceMeshBvh(
         let a = positions[tri.x].xyz;
         let b = positions[tri.y].xyz;
         let c = positions[tri.z].xyz;
-        let hitT = intersectTriangle(ray.origin, ray.direction, a, b, c);
+        let triHit = mollerTrumboreCore(
+          ray.origin,
+          ray.direction,
+          a,
+          b,
+          c,
+          tMin,
+        );
+        let hitT = triHit.t;
         // LIVE upper bound — in closest mode compare against the RUNNING
         // nearest (*hit).dist (initialized to tMaxBound above), re-read every
         // iteration. A per-leaf snapshot here made the accept last-writer-wins
@@ -355,36 +528,22 @@ fn traceMeshBvh(
             }
             return true;
           }
-          var shadeNormal = vec3f(0.0, 1.0, 0.0);
-          let geometricNormal = cross(b - a, c - a);
-          let frontFace = dot(ray.direction, geometricNormal) < 0.0;
-          // baryVW (v,w) of the hit — captured with the shading normal so the
-          // kernel can interpolate per-vertex UVs. Defaults to 0 (→ vertex-0 UV)
-          // for any-hit traversals that skip shading details. (P2)
-          var shadeBaryVW = vec2f(0.0);
+          var shadeNormal = triHit.normal;
+          let frontFace = triHit.det > 0.0;
+          // Carry canonical (v,w) weights into texture and smooth-normal
+          // interpolation. Re-solving this payload from the hit point loses
+          // precision independently of the intersection that accepted it.
+          let shadeBaryVW = vec2f(triHit.bary.y, triHit.bary.z);
           if (captureShadingDetails) {
-            let p = ray.origin + ray.direction * hitT;
-            let ab = b - a;
-            let ac = c - a;
-            let ap = p - a;
-            let d00 = dot(ab, ab);
-            let d01 = dot(ab, ac);
-            let d11 = dot(ac, ac);
-            let d20 = dot(ap, ab);
-            let d21 = dot(ap, ac);
-            shadeNormal = safe_normalize(cross(ab, ac));
-            let denom = d00 * d11 - d01 * d01;
-            if (denom > 0.0) {
-              let v = clamp((d11 * d20 - d01 * d21) / denom, 0.0, 1.0);
-              let w = clamp((d00 * d21 - d01 * d20) / denom, 0.0, 1.0);
-              let u = max(0.0, 1.0 - v - w);
-              shadeBaryVW = vec2f(v, w);
-              if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
-                let na = normals[tri.x].xyz;
-                let nb = normals[tri.y].xyz;
-                let nc = normals[tri.z].xyz;
-                shadeNormal = safe_normalize(na * u + nb * v + nc * w);
-              }
+            if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
+              let na = normals[tri.x].xyz;
+              let nb = normals[tri.y].xyz;
+              let nc = normals[tri.z].xyz;
+              shadeNormal = safe_normalize(
+                na * triHit.bary.x +
+                nb * triHit.bary.y +
+                nc * triHit.bary.z
+              );
             }
           }
           (*hit).didHit = true;

@@ -9,6 +9,11 @@ import {
 } from '../frameParamsPacker.js';
 import { FrameParamsSlot } from '../scene/frameParamsLayout.js';
 import { invertMat4, multiplyMat4 } from '../math/mat4.js';
+import {
+  ptWebgpuRayOriginBias,
+  ptWebgpuRayTMin,
+  resolvePtWebgpuSceneRadius,
+} from '../scene/sceneScalePolicy.js';
 
 /**
  * GOLDEN / byte-identity test for the extracted FrameParamsPacker (Task 4.3).
@@ -39,6 +44,10 @@ function reconstructExpected(
   const vp = multiplyMat4(input.projMatrix, input.viewMatrix);
   const invVp = invertMat4(asMat4(vp));
   if (invVp == null) throw new Error('non-invertible vp');
+  const sceneRadius = resolvePtWebgpuSceneRadius(
+    sb.sceneCenter,
+    sb.sceneRadius,
+  );
   const ab = new ArrayBuffer(FRAME_PARAMS_BUFFER_ALLOC_BYTES);
   const u = new Uint32Array(ab);
   const f = new Float32Array(ab);
@@ -67,7 +76,8 @@ function reconstructExpected(
         : 0;
   u[FrameParamsSlot.environmentMapWidth] = sb.environmentMapWidth >>> 0;
   u[FrameParamsSlot.environmentMapHeight] = sb.environmentMapHeight >>> 0;
-  f[FrameParamsSlot.triIntersectEpsilon] = 1e-5;
+  f[FrameParamsSlot.triIntersectEpsilon] =
+    ptWebgpuRayTMin(sceneRadius);
   u[FrameParamsSlot.tlasNodeCount] = sb.tlasNodeCount >>> 0;
   u[FrameParamsSlot.spectralEnabled] = config.spectralEnabled ? 1 : 0;
   f[FrameParamsSlot.heroLambdaNm] = 550.0;
@@ -85,9 +95,13 @@ function reconstructExpected(
   f[FrameParamsSlot.sceneCenterX] = sb.sceneCenter[0];
   f[FrameParamsSlot.sceneCenterY] = sb.sceneCenter[1];
   f[FrameParamsSlot.sceneCenterZ] = sb.sceneCenter[2];
-  f[FrameParamsSlot.sceneRadius] = Math.max(1e-3, sb.sceneRadius);
+  f[FrameParamsSlot.sceneRadius] = sceneRadius;
   u[FrameParamsSlot.directLightingMode] =
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
+  f[FrameParamsSlot.rayOriginBias] =
+    ptWebgpuRayOriginBias(sceneRadius, sb.sceneCenter);
+  f[FrameParamsSlot.environmentDistantPower] =
+    sb.environmentLightTreePower;
   // H14-E: map-backed environment intensity occupies its own stable slot 31.
   f[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   const cameraPosition = resolveFrameCameraPosition(input);
@@ -129,6 +143,7 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     sceneRadius: 7,
     environmentTint: [0.95, 0.97, 1.0],
     environmentHdriIntensity: 1.0,
+    environmentLightTreePower: 2.5,
     environmentHdriRotationY: 0,
     ...over,
   };
@@ -358,6 +373,8 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
       300,
     ));
     expect(FrameParamsSlot.directLightingMode).toBe(89);
+    expect(FrameParamsSlot.rayOriginBias).toBe(90);
+    expect(FrameParamsSlot.environmentDistantPower).toBe(91);
     expect(sampled[FrameParamsSlot.directLightingMode]).toBe(0);
     expect(summed[FrameParamsSlot.directLightingMode]).toBe(1);
   });
@@ -399,7 +416,10 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(u[FrameParamsSlot.causticStrategy]).toBe(0);
     expect(u[FrameParamsSlot.environmentMapWidth]).toBe(1024);
     expect(u[FrameParamsSlot.environmentMapHeight]).toBe(512);
-    expect(f[FrameParamsSlot.triIntersectEpsilon]).toBeCloseTo(1e-5, 10);
+    expect(f[FrameParamsSlot.triIntersectEpsilon]).toBeCloseTo(
+      ptWebgpuRayTMin(7),
+      10,
+    );
     expect(u[FrameParamsSlot.tlasNodeCount]).toBe(7);
     expect(u[FrameParamsSlot.spectralEnabled]).toBe(0);
     expect(f[FrameParamsSlot.heroLambdaNm]).toBe(550);
@@ -416,6 +436,11 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     expect(f[FrameParamsSlot.sceneCenterZ]).toBe(6);
     expect(f[FrameParamsSlot.sceneRadius]).toBe(7);
     expect(u[FrameParamsSlot.directLightingMode]).toBe(0);
+    expect(f[FrameParamsSlot.rayOriginBias]).toBeCloseTo(
+      ptWebgpuRayOriginBias(7, [4, 5, 6]),
+      9,
+    );
+    expect(f[FrameParamsSlot.environmentDistantPower]).toBe(2.5);
     expect(f[FrameParamsSlot.cameraPos]).toBe(2);
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);

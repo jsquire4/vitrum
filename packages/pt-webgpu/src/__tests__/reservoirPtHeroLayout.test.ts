@@ -252,7 +252,8 @@ describe('ReSTIR-PT empty reservoir', () => {
   it('does not synthesize an unstored prefix gate and empties invalid one-edge paths', () => {
     expect(RESERVOIR_PT_HERO_WGSL).not.toContain('prefixVertexCount');
     const refresh = fnBody(RESERVOIR_PT_HERO_WGSL, 'refreshReconnectionStatePT');
-    expect(refresh).toContain('!rptFinitePositive(dRecon) || dRecon <= 1e-6');
+    expect(refresh).toContain('!rptFinitePositive(reconScale)');
+    expect(refresh).not.toContain('dRecon <= 1e-6');
     expect(refresh).toContain('(*r).M = 0u;');
     expect(refresh).toContain('(*r).logW = RPT_LOG_ZERO;');
     expect(refresh).toContain('(*r).logWeightSum = RPT_LOG_ZERO;');

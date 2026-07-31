@@ -41,6 +41,7 @@
  */
 
 import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
+import { SVGF_REAL_MAX_HISTORY_LENGTH } from '../svgfRealConstants.js';
 import {
   STANDALONE_DEPTH_TEXTURE_LAYOUT,
   normalDepthWgslDepthComponent,
@@ -129,7 +130,7 @@ fn tapValid(
 
   // Depth test — relative deviation (Schied Eq. 2, first clause).
   // Use max(z,zPrev) in denominator so the test is symmetric.
-  if (abs(zCurr - zPrev) > sigmaDepth * max(zCurr, zPrev) + 1e-4) { return false; }
+  if (abs(zCurr - zPrev) > sigmaDepth * max(zCurr, zPrev)) { return false; }
 
   // Normal test — dot-product threshold (Eq. 2, second clause).
   if (dot(nCurr, nPrev) < sigmaNormal) { return false; }
@@ -226,7 +227,10 @@ fn svgfReprojMain(@builtin(global_invocation_id) gid: vec3u) {
     accHistory *= invW;
 
     // Eq. 3 — history increment.
-    newHistory = u32(accHistory) + 1u;
+    newHistory = min(
+      u32(accHistory) + 1u,
+      ${SVGF_REAL_MAX_HISTORY_LENGTH}u,
+    );
     // Eq. 4 — EMA alpha clamp.
     alpha = max(alphaMin, 1.0 / f32(newHistory));
   } else {

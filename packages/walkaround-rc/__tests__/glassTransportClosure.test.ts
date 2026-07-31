@@ -112,6 +112,27 @@ function mergeResolvedCascade(
 }
 
 describe('RC bounded dielectric transport closure', () => {
+  it('keeps ordered shadow visibility medium-aware across alpha and inside starts', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let surfaceBudget = rcWorldSurfaceBudget();',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let coverage = clamp(1.0 - alphaT, 0.0, 1.0);',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'mediumMaterial[mediumDepth - 1u] == matId',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'visibility = visibility * mix(',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'visibility = visibility * interfaceTransmission *',
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toContain(
+      'exp(-mat.attenuationColor',
+    );
+  });
+
   it('uses channel-separated exact transport and no legacy one-hit continuation', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcTraceTransmittedChannel(');
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcDielectricInterfaceTransmissionRgb(');

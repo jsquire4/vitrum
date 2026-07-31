@@ -15,8 +15,8 @@ import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js
  *     (byte-identical — shade / DDGI / RC unchanged),
  *   - the two textured first-hit alpha-mask walk-wrappers were templated
  *     (byte-identical — MATERIAL_ATLAS_WGSL unchanged),
- *   - the barycentric+Beer-tint decode was hoisted into `_bvhBeerTintFactor`
- *     (SURFACE_TEXTURES_WGSL golden-refreshed; naga-validated via shader-gate).
+ *   - transparent visibility now uses one ordered, instance-owned medium walk
+ *     with actual entry/exit Beer distance (SURFACE_TEXTURES_WGSL refreshed).
  *
  * Packed-scene-arena refresh (2026-07-22): scene storage moved behind the
  * three-arena value-return loader ABI. The semantic binding/traversal suites
@@ -74,6 +74,25 @@ import { makeProbeUpdateRaysWGSL } from '../../ddgi/wgsl/probeUpdateRays.wgsl.js
  * KHR punctual-range closure (2026-07-29): every walkaround punctual-light
  * route now shares the unsquared KHR range window. Shade and DDGI probe-update
  * bytes intentionally changed; RIS-GI already consumed the canonical helper.
+ *
+ * Final completeness closure (2026-07-29): material-presence flags and
+ * one-/two-sided emissive transport changed the atlas decoder and all roots
+ * that consume it. Semantic sidedness/alias tests and the shader gate remain
+ * mandatory; these hashes only pin the reviewed composed bytes.
+ *
+ * Transport/material ABI closure (2026-07-30): compact material ABI v2,
+ * authored atlas addressing, ordered glass-medium ownership, finite DDGI miss
+ * observations, and canonical Beer attenuation intentionally changed these
+ * reviewed fragments and roots.
+ *
+ * Finite-f32 environment and runtime-light closure (2026-07-30) changed the
+ * shared composed roots and DDGI probe shader intentionally. These values are
+ * captured from the live generators and remain paired with semantic tests.
+ *
+ * Material-atlas radiance closure (2026-07-30) adds a finite/non-negative
+ * fail-dark boundary to emissive/light-map shader products. Focused
+ * radiometric tests and the complete 78-module WGSL compiler gate passed
+ * before the fragment and its two composed consumers were re-pinned.
  */
 function sha(s: string): string {
   return createHash('sha256').update(s, 'utf8').digest('hex');
@@ -82,15 +101,15 @@ function sha(s: string): string {
 describe('material-atlas decode ABI composed byte identity', () => {
   it('pins the MATERIAL_ATLAS_WGSL fragment (offset ABI + alpha-mask walkers)', () => {
     expect({ length: MATERIAL_ATLAS_WGSL.length, sha256: sha(MATERIAL_ATLAS_WGSL) }).toEqual({
-      length: 54493,
-      sha256: '427a90f73f786fee62b0cabc01b65e3622226d7c1a17e7838c44ca94d338f02d',
+      length: 67631,
+      sha256: '5fbec4c3554d6b9dbd25d61183d244e8efa9ecb68480df7518a23a0d5900d0bd',
     });
   });
 
-  it('pins the SURFACE_TEXTURES_WGSL fragment (Beer-tint helper)', () => {
+  it('pins the SURFACE_TEXTURES_WGSL fragment (ordered medium visibility)', () => {
     expect({ length: SURFACE_TEXTURES_WGSL.length, sha256: sha(SURFACE_TEXTURES_WGSL) }).toEqual({
-      length: 23985,
-      sha256: 'a304ad3c99c3d43513c3228518808ed87da570c4abd16212c90af6a3b24661c4',
+      length: 14950,
+      sha256: 'fee326a72a2ec1294388c945ce5a3403295c7254b225008c1cd9fa11c51c734a',
     });
   });
 
@@ -99,21 +118,21 @@ describe('material-atlas decode ABI composed byte identity', () => {
     const risGi = composeWgsl(RIS_GI_MODULE, WGSL_MODULES);
     const shadeDigest = { length: shade.length, sha256: sha(shade) };
     expect(shadeDigest, `shade current=${JSON.stringify(shadeDigest)}`).toEqual({
-      length: 382511,
-      sha256: 'eff07b5eca0ca635975a42b0e194f90201c825e478063cdd63bc72ff473f6f1d',
+      length: 425891,
+      sha256: '0a7f744eeef5a80046fdc25903f226cc85671d972e993dcb47db6b39145b1f6d',
     });
     const risGiDigest = { length: risGi.length, sha256: sha(risGi) };
     expect(risGiDigest, `risGi current=${JSON.stringify(risGiDigest)}`).toEqual({
-      length: 259801,
-      sha256: 'f5d0e7459eb04e1336c28fcb0336bb5a28d908df45829a42102ad800af4316f5',
+      length: 282999,
+      sha256: '2f70a979fda64ca5e611174a2cc092ee80ba6ed5bd97bfa70f2a55080a64a717',
     });
   });
 
   it('pins probeUpdateRays for representative maxMaterials (DDGI offset ABI)', () => {
     const cases: Array<[number, number, string]> = [
-      [1, 154955, '0a26fcae2069ef1bc6fbada88440bed0c7a9aba0d3c48e329d60f42c2562f476'],
-      [8, 154955, '9adf3538ab3819b9185657bb12312f9a0eff8d8793eb02f5e211ba02d685d058'],
-      [64, 154956, '128a2fecef8ed29bae8f91395e090fb2bd21292575281372417732a9195439fa'],
+      [1, 168778, '460ce7988153ceb985d6729a7fbe639af370a8d1e688ceb358ce15368489f920'],
+      [8, 168778, 'a6777955eea58f8ec1d768d571d9100832259dc2da057603b9a75586acdd57c3'],
+      [64, 168779, '6cbbe93b37950c9495d85926529adfde119865ddedb7702dba7815dd5efcb66b'],
     ];
     const current = cases.map(([m]) => {
       const wgsl = makeProbeUpdateRaysWGSL(m);

@@ -9,16 +9,19 @@
 // row CDF + per-row conditional column CDF). Layout spec:
 // plan/three-removal/03-scene-bvh-packers.md §6.
 //
-// Outputs (mapping a uniform random number → a centred equirect texel):
-//   marginal     1×height : random → row-centre v  (which row to sample)
-//   conditional  width×height : random → column-centre u (which column, per row)
-//   map          width×height : the equirect radiance (RGB, .a unused here)
+// Outputs:
+//   marginal     height×1 : forward row CDF in .r
+//   conditional  width×height : forward per-row column CDF in .r, with the
+//                                forward row CDF repeated in .g
+//   map          width×height : equirect radiance in RGB and the realized
+//                                Float32-CDF solid-angle density in alpha
 //   totalSum     unnormalized luminance integral over all pixels
 //
-// The per-pixel importance weight includes the equirectangular texel
-// solid-angle term sin(theta). The GLSL decoder's
-// returned PDF cancels that same factor back to a per-steradian density so the
-// sample CDF and MIS PDF stay measure-consistent.
+// The per-pixel importance weight includes the exact equirectangular texel
+// solid angle. The GLSL decoder inverts the uploaded forward
+// CDFs, reuses each inversion residual to sample continuously inside the chosen
+// cell, and returns map alpha. This keeps the sampled distribution and every MIS
+// PDF in the same realized Float32 measure.
 
 import type { EngineWarning, SceneEnvironment } from '@vitrum/core';
 import {
@@ -27,6 +30,10 @@ import {
   type EnvironmentMapHandleHint,
   type EnvironmentMapPixels,
 } from '@vitrum/shared-samplers';
+import {
+  multiplyNonNegativeFloat32,
+  requireNonNegativeFloat32,
+} from './float32Policy.js';
 import type { EnvTextureData } from './sceneTextures.js';
 
 interface EquirectSource {
@@ -46,14 +53,12 @@ function hdriPayloadError(
   options: EquirectInfoBuildOptions | undefined,
   reason: string,
 ): Error {
-  const operation = options?.warningMethod != null
-    ? ` during ${options.warningMethod}`
-    : '';
+  const operation = options?.warningMethod != null ? ` during ${options.warningMethod}` : '';
   return new Error(
     `[pt-webgl2] authored HDRI${operation} is not CPU-readable: ${reason}. ` +
-    'Provide one coherent raw { width, height, data } or DataTexture-shaped image ' +
-    'with exact RGB/RGBA typed-array pixels. ' +
-    `Handle type: ${handle == null ? 'null' : Object.prototype.toString.call(handle)}`,
+      'Provide one coherent raw { width, height, data } or DataTexture-shaped image ' +
+      'with exact RGB/RGBA typed-array pixels. ' +
+      `Handle type: ${handle == null ? 'null' : Object.prototype.toString.call(handle)}`,
   );
 }
 
@@ -77,13 +82,7 @@ type HdriHandle = HdriPayload & {
   readonly colorSpace?: unknown;
 };
 
-const HDRI_DATA_TYPES = new Set([
-  'uint8',
-  'uint16',
-  'float16',
-  'half-float',
-  'float32',
-]);
+const HDRI_DATA_TYPES = new Set(['uint8', 'uint16', 'float16', 'half-float', 'float32']);
 const HDRI_CPU_FLOAT_BUDGET = (512 * 1024 * 1024) / 4;
 
 function strictHdriPixels(
@@ -148,29 +147,25 @@ function strictHdriPixels(
     throw hdriPayloadError(
       handle,
       options,
-        `channels must be 3 (RGB) or 4 (RGBA), received ${describePayloadValue(hintedChannels)}`,
-      );
-    }
-    if (
-      hintedDataType != null &&
-      (typeof hintedDataType !== 'string' || !HDRI_DATA_TYPES.has(hintedDataType))
-    ) {
-      throw hdriPayloadError(
-        handle,
-        options,
-        `dataType "${describePayloadValue(hintedDataType)}" is unsupported`,
-      );
+      `channels must be 3 (RGB) or 4 (RGBA), received ${describePayloadValue(hintedChannels)}`,
+    );
   }
   if (
-    hintedColorSpace != null &&
-    hintedColorSpace !== 'linear' &&
-    hintedColorSpace !== 'srgb'
+    hintedDataType != null &&
+    (typeof hintedDataType !== 'string' || !HDRI_DATA_TYPES.has(hintedDataType))
   ) {
-      throw hdriPayloadError(
-        handle,
-        options,
-        `colorSpace "${describePayloadValue(hintedColorSpace)}" is unsupported`,
-      );
+    throw hdriPayloadError(
+      handle,
+      options,
+      `dataType "${describePayloadValue(hintedDataType)}" is unsupported`,
+    );
+  }
+  if (hintedColorSpace != null && hintedColorSpace !== 'linear' && hintedColorSpace !== 'srgb') {
+    throw hdriPayloadError(
+      handle,
+      options,
+      `colorSpace "${describePayloadValue(hintedColorSpace)}" is unsupported`,
+    );
   }
 
   let channels: 3 | 4;
@@ -214,18 +209,18 @@ function strictHdriPixels(
     }
   }
   const compatibleBacking =
-    (dataType === 'uint8' && (
-      backingType === '[object Uint8Array]' || backingType === '[object Uint8ClampedArray]'
-    )) ||
+    (dataType === 'uint8' &&
+      (backingType === '[object Uint8Array]' || backingType === '[object Uint8ClampedArray]')) ||
     ((dataType === 'uint16' || dataType === 'float16' || dataType === 'half-float') &&
       backingType === '[object Uint16Array]') ||
     (dataType === 'float32' && backingType === '[object Float32Array]');
   if (!compatibleBacking) {
-    const expected = dataType === 'uint8'
-      ? 'Uint8Array or Uint8ClampedArray'
-      : dataType === 'float32'
-        ? 'Float32Array'
-        : 'Uint16Array';
+    const expected =
+      dataType === 'uint8'
+        ? 'Uint8Array or Uint8ClampedArray'
+        : dataType === 'float32'
+          ? 'Float32Array'
+          : 'Uint16Array';
     throw hdriPayloadError(
       handle,
       options,
@@ -267,34 +262,10 @@ function colorToLuminance(r: number, g: number, b: number): number {
   return 0.2126 * r + 0.7152 * g + 0.0722 * b;
 }
 
-function equirectTexelSolidAngleWeight(y: number, height: number): number {
-  const theta = ((y + 0.5) / height) * Math.PI;
-  return Math.max(0, Math.sin(theta));
-}
-
-/**
- * Find the smallest index in `array[offset .. offset+count)` whose value is
- * `>= targetValue`, returned relative to `offset`. The array slice must be
- * non-decreasing (a CDF). Verbatim port of the fork's
- * `binarySearchFindClosestIndexOf`.
- */
-function binarySearchFindClosestIndexOf(
-  array: Float32Array,
-  targetValue: number,
-  offset = 0,
-  count = array.length,
-): number {
-  let lower = offset;
-  let upper = offset + count - 1;
-  while (lower < upper) {
-    const mid = (lower + upper) >> 1;
-    if (array[mid]! < targetValue) {
-      lower = mid + 1;
-    } else {
-      upper = mid;
-    }
-  }
-  return lower - offset;
+function equirectTexelSolidAngle(y: number, width: number, height: number): number {
+  const theta0 = (y / height) * Math.PI;
+  const theta1 = ((y + 1) / height) * Math.PI;
+  return ((2 * Math.PI) / width) * Math.max(0, Math.cos(theta0) - Math.cos(theta1));
 }
 
 const EMPTY_ENV: EnvTextureData = {
@@ -316,6 +287,14 @@ export function buildEquirectInfo(
   if (env.kind === 'none') {
     return EMPTY_ENV;
   }
+
+  const hdriIntensity =
+    env.kind === 'hdri'
+      ? requireNonNegativeFloat32(
+          env.intensity ?? 1,
+          'pt-webgl2 HDRI environment intensity',
+        )
+      : 1;
 
   let source: EquirectSource;
   if (env.kind === 'procedural-sky') {
@@ -359,12 +338,30 @@ export function buildEquirectInfo(
       const g = Number(src[base + 1] ?? 0);
       const b = Number(src[base + 2] ?? 0);
 
+      if (env.kind === 'hdri') {
+        multiplyNonNegativeFloat32(
+          r,
+          hdriIntensity,
+          `pt-webgl2 HDRI realized radiance pixel ${i} color[0] * intensity`,
+        );
+        multiplyNonNegativeFloat32(
+          g,
+          hdriIntensity,
+          `pt-webgl2 HDRI realized radiance pixel ${i} color[1] * intensity`,
+        );
+        multiplyNonNegativeFloat32(
+          b,
+          hdriIntensity,
+          `pt-webgl2 HDRI realized radiance pixel ${i} color[2] * intensity`,
+        );
+      }
+
       map[i * 4 + 0] = r;
       map[i * 4 + 1] = g;
       map[i * 4 + 2] = b;
       map[i * 4 + 3] = 0;
 
-      const weight = colorToLuminance(r, g, b) * equirectTexelSolidAngleWeight(y, height);
+      const weight = colorToLuminance(r, g, b) * equirectTexelSolidAngle(y, width, height);
       cumulativeRowWeight += weight;
       totalSumValue += weight;
 
@@ -375,6 +372,13 @@ export function buildEquirectInfo(
     if (cumulativeRowWeight !== 0) {
       for (let i = y * width, lEnd = y * width + width; i < lEnd; i += 1) {
         cdfConditional[i] = cdfConditional[i]! / cumulativeRowWeight;
+      }
+      cdfConditional[y * width + width - 1] = 1;
+    } else {
+      // A zero-probability row is skipped by the marginal search. Keep its
+      // conditional table total for synthetic boundary/debug callers.
+      for (let x = 0; x < width; x += 1) {
+        cdfConditional[y * width + x] = (x + 1) / width;
       }
     }
 
@@ -387,25 +391,45 @@ export function buildEquirectInfo(
     for (let i = 0, lEnd = cdfMarginal.length; i < lEnd; i += 1) {
       cdfMarginal[i] = cdfMarginal[i]! / cumulativeWeightMarginal;
     }
+    cdfMarginal[height - 1] = 1;
   }
 
-  // Sampled inverse-CDF tables: random ∈ [0,1] → centred texel coordinate.
-  // marginal: 1×height, RedFormat in GL but RGBA32F here (value in .r).
+  // Forward marginal CDF, packed RGBA32F for the CPU/public staging shape.
   const marginalData = new Float32Array(height * 4);
-  for (let i = 0; i < height; i += 1) {
-    const dist = (i + 1) / height;
-    const row = binarySearchFindClosestIndexOf(cdfMarginal, dist);
-    marginalData[i * 4 + 0] = (row + 0.5) / height; // half-texel recentre
+  for (let y = 0; y < height; y += 1) {
+    marginalData[y * 4] = cdfMarginal[y]!;
   }
 
-  // conditional: width×height, value in .r.
+  // Packed distribution: conditional forward CDF in .r, marginal forward CDF
+  // repeated per row in .g. Keeping both searches in one texture saves one
+  // fragment sampler in the maximum BDPT + Sobol + mapped-material graph,
+  // preserving the WebGL2 minimum of 16 texture-image units after progressive
+  // history became a shader input.
   const conditionalData = new Float32Array(pixelCount * 4);
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
-      const dist = (x + 1) / width;
-      const col = binarySearchFindClosestIndexOf(cdfConditional, dist, y * width, width);
-      conditionalData[i * 4 + 0] = (col + 0.5) / width; // half-texel recentre
+      conditionalData[i * 4] = cdfConditional[i]!;
+      conditionalData[i * 4 + 1] = cdfMarginal[y]!;
+    }
+  }
+
+  // The shader samples the uploaded Float32 CDFs. Derive map alpha from those
+  // exact adjacent intervals so flattened bins are both unsampleable and
+  // reported with zero density. Each selected cell is sampled uniformly in
+  // solid angle by the GLSL inversion residuals.
+  const deltaPhi = (2 * Math.PI) / width;
+  for (let y = 0; y < height; y += 1) {
+    const theta0 = (y / height) * Math.PI;
+    const theta1 = ((y + 1) / height) * Math.PI;
+    const cellSolidAngle = deltaPhi * (Math.cos(theta0) - Math.cos(theta1));
+    const priorMarginal = y === 0 ? 0 : cdfMarginal[y - 1]!;
+    const rowPmf = cdfMarginal[y]! - priorMarginal;
+    for (let x = 0; x < width; x += 1) {
+      const i = y * width + x;
+      const priorConditional = x === 0 ? 0 : cdfConditional[i - 1]!;
+      const columnPmf = cdfConditional[i]! - priorConditional;
+      map[i * 4 + 3] = cellSolidAngle > 0 ? (rowPmf * columnPmf) / cellSolidAngle : 0;
     }
   }
 
@@ -413,6 +437,9 @@ export function buildEquirectInfo(
     map: { data: map, width, height },
     marginal: { data: marginalData, width: height, height: 1 },
     conditional: { data: conditionalData, width, height },
-    totalSum: totalSumValue,
+    totalSum: requireNonNegativeFloat32(
+      totalSumValue,
+      'pt-webgl2 environment importance mass',
+    ),
   };
 }

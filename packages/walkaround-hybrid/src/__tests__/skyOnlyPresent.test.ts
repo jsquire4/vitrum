@@ -12,7 +12,11 @@
  * the empty-scene branch is exercised deterministically (no async init timing).
  */
 import { describe, expect, it, vi } from 'vitest';
-import type { FrameInput, Scene } from '@vitrum/core';
+import {
+  asBackendTextureFormat,
+  type FrameInput,
+  type Scene,
+} from '@vitrum/core';
 import { applyTonemap, linearToSrgb } from '@vitrum/shared-samplers';
 import {
   runHybridEngineFrame,
@@ -125,13 +129,18 @@ function makeDeps(
   } as unknown as HybridEngineFrameDeps;
 }
 
-function frameInput(withSwapView: boolean): FrameInput {
+function frameInput(
+  withSwapView: boolean,
+  swapChainFormat: GPUTextureFormat = 'bgra8unorm',
+): FrameInput {
   return {
     viewMatrix: new Float32Array(16),
     projMatrix: new Float32Array(16),
     cameraPosition: [0, 0, 0],
     frameSeed: 1,
     viewport: { width: 64, height: 64 },
+    swapChainFormat:
+      asBackendTextureFormat<'webgpu', GPUTextureFormat>(swapChainFormat),
     ...(withSwapView ? { swapChainView: {} as GPUTextureView } : {}),
   } as unknown as FrameInput;
 }
@@ -172,6 +181,132 @@ describe('H20-A sky-only present', () => {
     expect(record.clears[0]?.r).toBeCloseTo(expected[0], 7);
     expect(record.clears[0]?.g).toBeCloseTo(expected[1], 7);
     expect(record.clears[0]?.b).toBeCloseTo(expected[2], 7);
+  });
+
+  it('uses the shader-mirrored f32 sky product while preserving surviving channels', () => {
+    const record = { clears: [] as RecordedClear[], submits: 0 };
+    const deps = makeDeps(
+      makeDeviceStub(record),
+      emptyScene(),
+      [1, 1, 2 ** -149],
+      0.5,
+    );
+    const input = frameInput(true, 'rgba32float');
+    (input as { quality?: FrameInput['quality'] }).quality = {
+      tonemap: 'none',
+      exposure: 1,
+      outputColorSpace: 'linear',
+    };
+
+    runHybridEngineFrame(deps, input);
+
+    expect(record.clears[0]).toEqual({ r: 0.5, g: 0.5, b: 0, a: 1 });
+  });
+
+  it('passes linear tonemapped values to an sRGB attachment for one hardware OETF', () => {
+    const record = { clears: [] as RecordedClear[], submits: 0 };
+    const deps = makeDeps(
+      makeDeviceStub(record),
+      emptyScene(),
+      [0.25, 0.5, 0.75],
+      2,
+    );
+    const input = frameInput(true, 'bgra8unorm-srgb');
+    (input as { quality?: FrameInput['quality'] }).quality = {
+      tonemap: 'linear',
+      exposure: 1,
+      outputColorSpace: 'srgb',
+    };
+
+    runHybridEngineFrame(deps, input);
+
+    // clearValue is interpreted as linear for an sRGB render attachment; the
+    // output merger performs the sole OETF.
+    expect(record.clears[0]).toEqual({ r: 0.5, g: 1, b: 1, a: 1 });
+  });
+
+  it('quantizes sky-only exposure to the same f32 value written to the UBO', () => {
+    const record = { clears: [] as RecordedClear[], submits: 0 };
+    const deps = makeDeps(
+      makeDeviceStub(record),
+      emptyScene(),
+      [0.5, 0.5, 0.5],
+      1,
+    );
+    const input = frameInput(true);
+    const halfwayAboveOne = 1 + 2 ** -24;
+    expect(Math.fround(halfwayAboveOne)).toBe(1);
+    (input as { quality?: FrameInput['quality'] }).quality = {
+      tonemap: 'none',
+      exposure: halfwayAboveOne,
+      outputColorSpace: 'linear',
+    };
+
+    runHybridEngineFrame(deps, input);
+
+    expect(record.clears[0]).toEqual({ r: 0.5, g: 0.5, b: 0.5, a: 1 });
+  });
+
+  it.each([
+    ['rgba32float', 131_008],
+    ['rgba16float', 65_504],
+    ['rg11b10ufloat', 64_512],
+  ] as const)(
+    'clamps none+linear sky output at the concrete %s target boundary',
+    (format, expectedBlue) => {
+      const record = { clears: [] as RecordedClear[], submits: 0 };
+      const deps = makeDeps(
+        makeDeviceStub(record),
+        emptyScene(),
+        [65_504, 65_504, 65_504],
+        1,
+      );
+      const input = frameInput(true, format);
+      (input as { quality?: FrameInput['quality'] }).quality = {
+        tonemap: 'none',
+        exposure: 2,
+        outputColorSpace: 'linear',
+      };
+
+      runHybridEngineFrame(deps, input);
+
+      expect(record.clears[0]?.r).toBe(
+        format === 'rg11b10ufloat' ? 65_024 : expectedBlue,
+      );
+      expect(record.clears[0]?.g).toBe(
+        format === 'rg11b10ufloat' ? 65_024 : expectedBlue,
+      );
+      expect(record.clears[0]?.b).toBe(expectedBlue);
+    },
+  );
+
+  it('rejects linear output on an sRGB target before encoder, submit, or debug mutation', () => {
+    const record = { clears: [] as RecordedClear[], submits: 0 };
+    const device = makeDeviceStub(record);
+    const deps = makeDeps(device, emptyScene(), [1, 1, 1], 1);
+    const dbg = {
+      initStart: 0,
+      initCount: 0,
+      disposeCount: 0,
+      skipNoPipeline: 0,
+      skipNoBvh: 0,
+      skipNoSwapView: 0,
+      skipFrameInterval: 0,
+      framesDispatched: 0,
+      lastReportTs: 0,
+    };
+    (deps.telemetry as { dbg: typeof dbg | null }).dbg = dbg;
+    const input = frameInput(true, 'rgba8unorm-srgb');
+    (input as { quality?: FrameInput['quality'] }).quality = {
+      outputColorSpace: 'linear',
+    };
+
+    expect(() => runHybridEngineFrame(deps, input)).toThrow(
+      /outputColorSpace 'linear' is incompatible/,
+    );
+    expect(device.createCommandEncoder).not.toHaveBeenCalled();
+    expect(record.submits).toBe(0);
+    expect(dbg.framesDispatched).toBe(0);
   });
 
   it('empty-scene-ready WITHOUT a swap-chain view skips (no present possible)', () => {

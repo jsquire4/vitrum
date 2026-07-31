@@ -17,6 +17,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL } from '../wgsl/pathTrace/material.wgsl.js';
 
 // ---------------------------------------------------------------------------
 // Geometry helpers
@@ -43,9 +44,19 @@ function normalize3(v: Vec3): Vec3 {
 
 /** Mirror of powerHeuristic (WGSL line 332). β=2. */
 function powerHeuristic(pdfA: number, pdfB: number): number {
-  const a2 = pdfA * pdfA;
-  const b2 = pdfB * pdfB;
-  return a2 / Math.max(a2 + b2, 1e-6);
+  if (
+    !Number.isFinite(pdfA) || !Number.isFinite(pdfB) ||
+    pdfA < 0 || pdfB < 0
+  ) {
+    return 0;
+  }
+  const scale = Math.max(pdfA, pdfB);
+  if (!(scale > 0)) return 0;
+  const a = pdfA / scale;
+  const b = pdfB / scale;
+  const a2 = a * a;
+  const b2 = b * b;
+  return a2 / (a2 + b2);
 }
 
 /** Mirror of ggxD (WGSL line 296). Retained for specular MIS tests. */
@@ -248,5 +259,58 @@ describe('T1.D2 — 2-light sum-MIS correctness (Item 15)', () => {
     // MIS weight should be close to 1 for point lights (lightPdf >> brdfPdf).
     const relErr = Math.abs(misSum - rawSum) / Math.max(rawSum, 1e-12);
     expect(relErr).toBeLessThan(0.05); // ≤5%
+  });
+});
+
+describe('power-heuristic numerical contract', () => {
+  it.each([
+    1e-30,
+    1e-20,
+    1e-4,
+    1,
+    1e20,
+    1e30,
+  ])('keeps equal finite PDFs at one half across scale (%s)', (pdf) => {
+    expect(powerHeuristic(pdf, pdf)).toBeCloseTo(0.5, 15);
+  });
+
+  it.each([
+    [1e-30, 1e-20],
+    [1e-20, 1e-30],
+    [1e-4, 2e-4],
+    [1, 17],
+    [1e20, 1e30],
+    [1e30, 1e20],
+  ])('keeps paired strategy weights partitioned for %s and %s', (pdfA, pdfB) => {
+    const forward = powerHeuristic(pdfA, pdfB);
+    const reverse = powerHeuristic(pdfB, pdfA);
+    expect(Number.isFinite(forward)).toBe(true);
+    expect(Number.isFinite(reverse)).toBe(true);
+    expect(forward + reverse).toBeCloseTo(1, 15);
+  });
+
+  it('handles zero and invalid densities without a denominator floor', () => {
+    expect(powerHeuristic(0, 0)).toBe(0);
+    expect(powerHeuristic(1, 0)).toBe(1);
+    expect(powerHeuristic(0, 1)).toBe(0);
+    expect(powerHeuristic(Number.POSITIVE_INFINITY, 1)).toBe(0);
+    expect(powerHeuristic(Number.NaN, 1)).toBe(0);
+    expect(powerHeuristic(-1, 1)).toBe(0);
+  });
+
+  it('ships the ratio-normalized WGSL implementation', () => {
+    const start = PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL.indexOf(
+      'fn powerHeuristic(',
+    );
+    const end = PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL.indexOf(
+      '\n}\n',
+      start,
+    );
+    const source = PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL.slice(start, end + 3);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(source).toContain('let scale = max(pdfA, pdfB);');
+    expect(source).toContain('let a = pdfA / scale;');
+    expect(source).toContain('let b = pdfB / scale;');
+    expect(source).not.toContain('max(a2 + b2, 1e-6)');
   });
 });

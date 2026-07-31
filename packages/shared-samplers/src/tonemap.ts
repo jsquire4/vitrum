@@ -4,9 +4,9 @@
 //
 // These are the operators `FrameQualitySettings.tonemap` selects. 'aces' is the
 // default (matching the historical hardcoded composite curve). Backends apply
+// exposure first, then the operator.
 
 import { requireFinite } from './numericGuards.js';
-// exposure first, then the operator.
 
 export type TonemapMode = 'aces' | 'agx' | 'reinhard' | 'linear' | 'none';
 
@@ -19,7 +19,28 @@ export const TONEMAP_MODE_INDEX: Readonly<Record<TonemapMode, number>> = {
   none: 4,
 };
 
+/**
+ * Largest finite IEEE-754 binary32 value.
+ *
+ * Exposure is evaluated in f32 by the GPU twins, even when the source texture
+ * is half-float. Saturating the product here prevents finite inputs from
+ * becoming Inf without silently imposing an rgba16float output ceiling on
+ * `tonemap:'none'`. Each backend clamps the final write to its actual target
+ * format separately.
+ */
+export const TONEMAP_MAX_FINITE_F32 = 3.4028234663852886e38;
+
 const clamp01 = (x: number): number => Math.min(1, Math.max(0, x));
+
+function safelyApplyExposure(channel: number, exposure: number): number {
+  if (exposure === 0 || channel === 0) return 0;
+  const boundedExposure = Math.min(exposure, TONEMAP_MAX_FINITE_F32);
+  const magnitude = Math.min(
+    Math.abs(channel) * boundedExposure,
+    TONEMAP_MAX_FINITE_F32,
+  );
+  return channel < 0 ? -magnitude : magnitude;
+}
 
 /** Narkowicz 2015 ACES filmic approximation, per channel. */
 export function acesFilmic(x: number): number {
@@ -66,14 +87,19 @@ export function applyTonemap(
   mode: TonemapMode,
   exposure = 1,
 ): [number, number, number] {
+  if (!Object.prototype.hasOwnProperty.call(OPS, mode)) {
+    throw new RangeError(
+      `applyTonemap.mode is unsupported: ${String(mode)}`,
+    );
+  }
   const op = OPS[mode];
-  if (op == null) throw new RangeError(`applyTonemap.mode is unsupported: ${String(mode)}`);
   requireFinite(exposure, 'applyTonemap.exposure');
+  if (exposure < 0) {
+    throw new RangeError('applyTonemap.exposure must be non-negative');
+  }
   const scaled = rgb.map((channel, i) => {
     requireFinite(channel, `applyTonemap.rgb[${i}]`);
-    const value = channel * exposure;
-    if (!Number.isFinite(value)) throw new RangeError(`applyTonemap.rgb[${i}] * exposure overflowed`);
-    return value;
+    return safelyApplyExposure(channel, exposure);
   }) as [number, number, number];
   return [op(scaled[0]), op(scaled[1]), op(scaled[2])];
 }

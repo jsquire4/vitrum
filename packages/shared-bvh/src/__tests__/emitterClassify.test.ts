@@ -41,14 +41,14 @@ describe('materialSpecEmissiveLe', () => {
   it('defaults missing emissiveIntensity to one', () => {
     expect(materialSpecEmissiveLe(material({
       emissive: [0.5, 0.25, 0.1],
-    }))).toEqual([0.5, 0.25, 0.1]);
+    }))).toEqual([0.5, 0.25, Math.fround(0.1)]);
   });
 
   it('pre-multiplies authored emissiveIntensity into HDR radiance', () => {
     expect(materialSpecEmissiveLe(material({
       emissive: [0.5, 0.25, 0.1],
       emissiveIntensity: 4,
-    }))).toEqual([2.0, 1.0, 0.4]);
+    }))).toEqual([2.0, 1.0, Math.fround(Math.fround(0.1) * 4)]);
   });
 
   it('rejects zero intensity as non-emissive', () => {
@@ -74,6 +74,89 @@ describe('materialSpecEmissiveLe', () => {
       emissiveIntensity: 3,
       emissiveMap: { handle },
     }))).toEqual([3, 2.25, 4.5]);
+  });
+
+  it('classifies unhinted Float32 emissive maps in the linear HDR domain', () => {
+    expect(materialSpecEmissiveLe(material({
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([0.25, 0.5, 4, 1]),
+        },
+      },
+    }))).toEqual([0.25, 0.5, 4]);
+  });
+
+  it('normalizes public one/two-channel raw maps as RRR and RG0', () => {
+    const oneChannel = materialSpecEmissiveLe(material({
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([0.25]),
+          __vitrum_hint__: {
+            channels: 1,
+            dataType: 'float32',
+            colorSpace: 'linear',
+          },
+        },
+      },
+    }));
+    expect(oneChannel).toEqual([0.25, 0.25, 0.25]);
+
+    const twoChannel = materialSpecEmissiveLe(material({
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([0.25, 4]),
+          __vitrum_hint__: {
+            channels: 2,
+            dataType: 'float32',
+            colorSpace: 'linear',
+          },
+        },
+      },
+    }));
+    expect(twoChannel).toEqual([0.25, 4, 0]);
+  });
+
+  it('classifies a two-channel GPU mirror with native RG support, including green-only emission', () => {
+    const source = material({
+      emissive: [0, 2, 0],
+      emissiveMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          cpuMirror: {
+            width: 1,
+            height: 1,
+            channels: 2,
+            dataType: 'float32',
+            colorSpace: 'linear',
+            data: new Float32Array([0, 0.5]),
+          },
+        },
+      },
+    });
+    expect(materialSpecEmissiveLe(source)).toEqual([0, 1, 0]);
+
+    const visited: Array<readonly [number, number, number]> = [];
+    expect(forEachEmissiveMapTexelSubTriangle(
+      source,
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      (_a, _b, _c, radiance) => visited.push(radiance),
+    )).toBe(true);
+    expect(visited).toEqual([[0, 1, 0]]);
   });
 
   it('decodes readable sRGB emissiveMap handles before modulating Le', () => {
@@ -312,6 +395,40 @@ describe('materialSpecEmissiveLe', () => {
     expect(visited).toEqual([1.25, 2.5, 4]);
   });
 
+  it('rejects default mapped-texel f32 overflow and complete positive collapse', () => {
+    const invoke = (emissive: number, texel: number): void => {
+      forEachEmissiveMapTexelSubTriangle(
+        material({
+          emissive: [emissive, 0, 0],
+          emissiveMap: {
+            handle: {
+              width: 1,
+              height: 1,
+              data: new Float32Array([texel, 0, 0, 1]),
+              __vitrum_hint__: {
+                channels: 4,
+                dataType: 'float32',
+                colorSpace: 'linear',
+              },
+            },
+          },
+        }),
+        [0, 0],
+        [1, 0],
+        [0, 1],
+        undefined,
+        undefined,
+        undefined,
+        () => undefined,
+      );
+    };
+
+    expect(() => invoke(2, Math.fround(3.4028234663852886e38)))
+      .toThrow(/remain finite in Float32/);
+    expect(() => invoke(2 ** -80, 2 ** -80))
+      .toThrow(/underflow completely to zero/);
+  });
+
   it('does not split unsupported-UV emissive maps into exact texel sub-triangles', () => {
     const handle = {
       width: 2,
@@ -383,6 +500,20 @@ describe('classifyTriangleEmitterCore', () => {
 
     expect(emitter).toEqual({
       color: [0.25, 0.5, 1],
+      intensity: 1,
+    });
+  });
+
+  it('returns unit intensity when authored intensity is already folded into color', () => {
+    const emitter = classifyTriangleEmitterCore(
+      material({
+        emissive: [0.5, 0.25, 0.1],
+        emissiveIntensity: 4,
+      }),
+    );
+
+    expect(emitter).toEqual({
+      color: [2, 1, Math.fround(Math.fround(0.1) * 4)],
       intensity: 1,
     });
   });

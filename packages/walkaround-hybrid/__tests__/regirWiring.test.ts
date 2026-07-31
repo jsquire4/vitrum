@@ -58,7 +58,8 @@ function fakeInputs(): PipelineFrameInputs {
     },
     gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
     filter: {
-      triIntersectEpsilon: 1e-5, glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1],
+      triIntersectEpsilon: 1e-5, rayOriginBias: 1e-3,
+      glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
     },

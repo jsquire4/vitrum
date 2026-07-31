@@ -45,7 +45,7 @@ describe('analytic area-light one-sided NEE / forward-hit parity', () => {
     expect(sampling).toContain('if ( dot( normal, rayDirection ) < 0.0 )');
     expect(sampling).toContain('float cosTheta = dot( - rayDirection, normal );');
     expect(sampling).toContain('float cosLight = dot( lightNormal, - direction );');
-    expect(sampling).toContain('cosLight > 0.0');
+    expect(sampling).toContain('if ( cosLight <= 0.0 ) return rec;');
     expect(sampling).not.toContain('abs( light.area');
 
     const normal = [0, 0, 1] as const;
@@ -64,8 +64,11 @@ describe('analytic area-light one-sided NEE / forward-hit parity', () => {
     expect(oneSidedAreaPdf(area, distance, normal, backDirection)).toBe(0);
   });
 
-  it('marks analytic BDPT roots one-sided while retaining two-sided mesh-area roots', () => {
-    expect(bdpt).toContain('vec4( light.castShadowDisabled, 0.0, 0.0, 0.0 )');
-    expect(bdpt).toContain('vec4( tri.castShadowDisabled, 1.0, 0.0, 0.0 )');
+  it('marks analytic BDPT roots one-sided and carries material-owned mesh sidedness', () => {
+    expect(bdpt).toContain('vec4( light.castShadowDisabled, 0.0, -1.0, 0.0 )');
+    expect(bdpt).toContain(
+      'tri.sourceFaceWords.x',
+    );
+    expect(bdpt).toContain('tri.sourceFaceWords.y');
   });
 });

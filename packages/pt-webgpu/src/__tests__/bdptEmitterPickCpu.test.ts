@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import {
   bdptDirectionalConePdf,
+  bdptDirectionalConeIsDelta,
   bdptDirectionalSourceDirectionWeight,
   bdptEmitterCount,
   distantDirectEmitterCount,
+  distantDirectEmitterGlobalIndex,
   distantDirectEmitterPower,
   bdptEmitterRejectionThreshold,
   bdptPickEmitterFlat,
@@ -30,6 +32,7 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
     meshAreaLightsData: new Float32Array(0),
     environmentTint: [1, 1, 1],
     environmentHdriIntensity: 1,
+    environmentLightTreePower: 0,
     environmentHdriRotationY: 0,
     environmentMapWidth: 0,
     environmentMapHeight: 0,
@@ -63,6 +66,7 @@ function mixedScene(): UploadedSceneBuffers {
     environmentMapHeight: 1,
     environmentMapCdf: new Float32Array([0, 1]),
     environmentMapTexels: new Float32Array([2, 2, 2, 1 / (4 * Math.PI)]),
+    environmentLightTreePower: 2,
     sceneRadius: 5,
   });
 }
@@ -118,9 +122,33 @@ describe('invocation-local BDPT source selection', () => {
     expect(soft.directionPdf).toBeCloseTo(bdptDirectionalConePdf(0.25), 13);
     expect(soft.neePdf).toBeCloseTo(soft.directionPdf!, 13);
     expect(bdptDirectionalConePdf(0)).toBe(1);
+    expect(bdptDirectionalConeIsDelta(1e-30)).toBe(true);
+    expect(bdptDirectionalConePdf(1e-30)).toBe(1);
+    expect(bdptDirectionalConeIsDelta(1e-10)).toBe(false);
+    expect(Number.isFinite(bdptDirectionalConePdf(1e-10))).toBe(true);
     expect(bdptDirectionalSourceDirectionWeight(0.25)).toBeCloseTo(
       bdptDirectionalConePdf(0.25), 13,
     );
+  });
+
+  it('accepts representable launch-disk Jacobians and rejects impossible f32 measures', () => {
+    const makeDirectional = (sceneRadius: number) => stubScene({
+      directionalLightCount: 1,
+      directionalLightsData: new Float32Array([0, 1, 0, 0, 0.1, 0.1, 0.1, 0]),
+      sceneRadius,
+    });
+    for (const radius of [1, 1e19]) {
+      const scene = makeDirectional(radius);
+      const sample = sampleBdptBounce0Cpu(scene, 0, 0.2, 0.7)!;
+      expect(sample.positionPdf).toBeGreaterThan(0);
+      expect(Number.isFinite(sample.positionPdf)).toBe(true);
+      expect(Number.isFinite(distantDirectEmitterPower(scene, 0))).toBe(true);
+    }
+
+    expect(() => sampleBdptBounce0Cpu(makeDirectional(1e-30), 0, 0.2, 0.7))
+      .toThrow(/unrepresentable-area/);
+    expect(() => sampleBdptBounce0Cpu(makeDirectional(1.1e19), 0, 0.2, 0.7))
+      .toThrow(/unrepresentable-area/);
   });
 
   it('launches HDRI roots and preserves the authored direction density', () => {
@@ -132,6 +160,7 @@ describe('invocation-local BDPT source selection', () => {
       environmentMapCdf: new Float32Array([0, 1]),
       environmentMapTexels: new Float32Array([2, 4, 6, 0.125]),
       environmentHdriIntensity: 3,
+      environmentLightTreePower: 12,
     });
     const sample = sampleBdptBounce0Cpu(scene, 0, 0.4, 0.7)!;
     expect(bdptEmitterCount(scene)).toBe(1);
@@ -196,5 +225,32 @@ describe('invocation-local BDPT source selection', () => {
       'let threshold = ((0xffffffffu % emitterCount) + 1u) % emitterCount;',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('return vec3f(0.0);');
+  });
+
+  it('normalizes extreme distant powers without overflowing and uses HDRI power, not the CDF tail', () => {
+    const scene = stubScene({
+      directionalLightCount: 2,
+      directionalLightsData: new Float32Array([
+        0, 1, 0, 0, 3.0e38, 3.0e38, 3.0e38, 0,
+        0, 1, 0, 0, 1.5e38, 1.5e38, 1.5e38, 0,
+      ]),
+      hasEnvironmentMap: true,
+      environmentMapWidth: 1,
+      environmentMapHeight: 1,
+      environmentMapCdf: new Float32Array([0, 1]),
+      environmentMapTexels: new Float32Array([1, 1, 1, 1]),
+      environmentLightTreePower: 7.5e37,
+    });
+    const pdfs = [0, 1, 2].map((i) =>
+      distantDirectSelectionPdf(
+        scene,
+        i < 2 ? i : distantDirectEmitterGlobalIndex(scene, i),
+      ),
+    );
+    expect(pdfs.every(Number.isFinite)).toBe(true);
+    expect(pdfs[0]).toBeCloseTo(4 / 7, 6);
+    expect(pdfs[1]).toBeCloseTo(2 / 7, 6);
+    expect(pdfs[2]).toBeCloseTo(1 / 7, 6);
+    expect(pdfs.reduce((sum, pdf) => sum + pdf, 0)).toBeCloseTo(1, 12);
   });
 });

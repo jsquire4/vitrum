@@ -418,7 +418,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
     expect(result).not.toBeNull();
   });
 
-  it('creates a texture with rgba32float format', () => {
+  it('creates a texture with rg32float format', () => {
     let capturedDesc: GPUTextureDescriptor | null = null;
     const mockDevice = {
       createTexture(desc: GPUTextureDescriptor): GPUTexture {
@@ -429,7 +429,7 @@ describe('createVarianceBuffer — RG32Float storage texture factory', () => {
 
     createVarianceBuffer(mockDevice, 1920, 1080);
     expect(capturedDesc).not.toBeNull();
-    expect((capturedDesc as unknown as GPUTextureDescriptor).format).toBe('rgba32float');
+    expect((capturedDesc as unknown as GPUTextureDescriptor).format).toBe('rg32float');
   });
 
   it('creates a texture with the supplied dimensions', () => {

@@ -154,9 +154,7 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
   it('includes rect/disc, mesh-area, and environment sources in the same flat selection order as NEE', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (sppmRectAreaCastsShadow(rectIdx))');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (sppmMeshAreaCastsShadow(meshIdx))');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain(
-      'if (hasEnvironmentMap()) {',
-    );
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (hasEnvironmentMap()) {');
     expect(SPPM_PHOTON_PASS_WGSL).not.toContain('params.environmentSun.w');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('availableLightCount = availableLightCount + 1u;');
   });
@@ -171,13 +169,16 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
       'sppmConcentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0))',
     );
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('area = PI * normalLen;');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('area = 4.0 * length(cross(ru, rv));');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (area > 0.0)');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain(
+      'ru, rv, select(4.0, PI, isDisc),',
+    );
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('if (areaMeasure.valid != 0u)');
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
       'let hemi = cosineHemisphereSample(&rng, lightNormal);',
     );
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('photonFlux   = rr * area * PI * lightSelectInvPdf');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain(
+      'photonFlux   = rr * areaMeasure.area * PI * lightSelectInvPdf',
+    );
   });
 
   it('emits mesh-area photons from the NEE packed triangle data and area convention', () => {
@@ -186,16 +187,29 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let b = meshAreaLights[meshBase + 1u].xyz;');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let c = meshAreaLights[meshBase + 2u].xyz;');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let mr = sampleMeshAreaLightRadiance(');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('let area = 0.5 * normalLen;');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('photonFlux   = mr * area * PI * lightSelectInvPdf');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain(
+      'let areaMeasure = measureAreaVector(e1, e2, 0.5);',
+    );
+    expect(SPPM_PHOTON_PASS_WGSL).toContain(
+      'mr * areaMeasure.area * PI * sidedPowerScale * lightSelectInvPdf',
+    );
   });
 
   it('emits environment photons through the same NEE importance and PDF helpers', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let envSample = sampleEnvironmentImportance(&rng);');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('envColor = sampleEnvironmentColor(envDir);');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('envPdf = max(environmentPdf(envDir), 1e-8);');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain('envPdf = 0.25 * INV_PI;');
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
-      'photonFlux   = envColor * diskArea * lightSelectInvPdf /',
+      'photonFlux = ptScaleEnvironmentRadiance(envColor, diskArea);',
+    );
+    expect(SPPM_PHOTON_PASS_WGSL).toContain(
+      'photonFlux = ptScaleEnvironmentRadiance(\n' +
+      '        photonFlux,\n' +
+      '        lightSelectInvPdf,\n' +
+      '      );',
+    );
+    expect(SPPM_PHOTON_PASS_WGSL).toContain(
+      'photonFlux = ptScaleEnvironmentRadiance(photonFlux, 1.0 / envPdf);',
     );
     expect(SPPM_PHOTON_PASS_WGSL).not.toContain('TODO(PTWG-03 area/env)');
   });
@@ -394,7 +408,8 @@ describe('SPPM source-measure and launch-volume oracles', () => {
       'if (!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission)',
     );
     expect(SHADE_PROLOGUE_SOURCE).toContain(
-      'if (!prevSampleAllowsAreaMis && !sppmOwnsCurrentEmission${emissiveOwnershipGuard})',
+      '!sppmOwnsCurrentEmission${emissiveOwnershipGuard} &&\n' +
+        '      (isFrontFace || mat.doubleSided)',
     );
   });
 });
@@ -403,8 +418,7 @@ describe('SPPM per-pixel progressive stats update site (PTWG-04)', () => {
   it('guards photonMapUpdateProgressive so one pixel mutates stats once per frame', () => {
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain('var sppmGatherUpdated = false;');
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
-      'let sppmReceiverEligible =\n' +
-        '        (1.0 - metallic) * (1.0 - transmission) > 0.0;',
+      'let sppmReceiverEligible =\n' + '        (1.0 - metallic) * (1.0 - transmission) > 0.0;',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
       'if (!sppmGatherUpdated && sppmReceiverEligible)',

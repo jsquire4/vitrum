@@ -9,6 +9,7 @@ import {
   rebuildTlasReuseBlas,
   refitTlasTransforms,
 } from '../scenePack.js';
+import { mat4Mul } from '../mathUtils.js';
 import { tlasIntersect } from '../tlas.js';
 import { mergeUv1FromCore, mergeWorldSpaceFromCore } from '../worldSpaceMerge.js';
 
@@ -119,23 +120,35 @@ function boxMesh(id: string, min: Vec3, max: Vec3, transform?: Mat4): Scene['pri
     kind: 'mesh',
     id,
     positions: new Float32Array([
-      x0, y0, z0,
-      x1, y0, z0,
-      x0, y1, z0,
-      x0, y0, z1,
-      x1, y1, z1,
-      x1, y0, z1,
-      x0, y1, z1,
-      x1, y1, z1,
+      x0,
+      y0,
+      z0,
+      x1,
+      y0,
+      z0,
+      x0,
+      y1,
+      z0,
+      x0,
+      y0,
+      z1,
+      x1,
+      y1,
+      z1,
+      x1,
+      y0,
+      z1,
+      x0,
+      y1,
+      z1,
+      x1,
+      y1,
+      z1,
     ]),
     normals: new Float32Array(24).fill(0).map((_, i) => (i % 3 === 2 ? 1 : 0)),
     indices: new Uint32Array([
-      0, 1, 2, 4, 1, 2,
-      1, 5, 6, 5, 4, 6,
-      0, 2, 3, 2, 6, 7,
-      0, 1, 3, 1, 5, 3,
-      3, 5, 7, 5, 6, 7,
-      0, 4, 3, 4, 6, 7,
+      0, 1, 2, 4, 1, 2, 1, 5, 6, 5, 4, 6, 0, 2, 3, 2, 6, 7, 0, 1, 3, 1, 5, 3, 3, 5, 7, 5, 6, 7, 0,
+      4, 3, 4, 6, 7,
     ]),
     material: { baseColor: [0.6, 0.6, 0.6], roughness: 0.5, metallic: 0 },
     ...(transform != null ? { transform } : {}),
@@ -144,12 +157,24 @@ function boxMesh(id: string, min: Vec3, max: Vec3, transform?: Mat4): Scene['pri
 
 describe('packSceneFromCore (SP-*)', () => {
   it('applies CPU-readable vertex displacement before local BLAS/TLAS packing', () => {
-    const packed = packSceneFromCore(displacedTriScene(), { tlas: true, resolveMaterialId: () => 0 });
+    const packed = packSceneFromCore(displacedTriScene(), {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
 
     expect(Array.from(packed.positions.slice(0, 12))).toEqual([
-      0, 0, expect.closeTo(0.15), 0,
-      1, 0, expect.closeTo(0.15), 0,
-      0, 1, expect.closeTo(0.15), 0,
+      0,
+      0,
+      expect.closeTo(0.15),
+      0,
+      1,
+      0,
+      expect.closeTo(0.15),
+      0,
+      0,
+      1,
+      expect.closeTo(0.15),
+      0,
     ]);
     expect(packed.primitiveTlasBindings[0]?.localAabbMin).toEqual([0, 0, expect.closeTo(0.15)]);
     expect(packed.primitiveTlasBindings[0]?.localAabbMax).toEqual([1, 1, expect.closeTo(0.15)]);
@@ -160,9 +185,18 @@ describe('packSceneFromCore (SP-*)', () => {
     const merged = mergeWorldSpaceFromCore(displacedTriScene(), { positionStride: 4 });
 
     expect(Array.from(merged.positions.slice(0, 12))).toEqual([
-      0, 0, expect.closeTo(0.15), 0,
-      1, 0, expect.closeTo(0.15), 0,
-      0, 1, expect.closeTo(0.15), 0,
+      0,
+      0,
+      expect.closeTo(0.15),
+      0,
+      1,
+      0,
+      expect.closeTo(0.15),
+      0,
+      0,
+      1,
+      expect.closeTo(0.15),
+      0,
     ]);
     expect(merged.boundingBox).toEqual({
       min: [0, 0, expect.closeTo(0.15)],
@@ -194,10 +228,9 @@ describe('packSceneFromCore (SP-*)', () => {
       ],
     };
 
-    expect(() => packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 }))
-      .toThrow(
-        'Primitive "displaced" displacementMap at materials[0].extensions.VITRUM_displacement.displacementTexture handle is not CPU-readable',
-      );
+    expect(() => packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 })).toThrow(
+      'Primitive "displaced" displacementMap at materials[0].extensions.VITRUM_displacement.displacementTexture handle is not CPU-readable',
+    );
   });
 
   it('rejects ambiguous Uint16Array displacement handles without a dataType', () => {
@@ -225,8 +258,9 @@ describe('packSceneFromCore (SP-*)', () => {
       ],
     };
 
-    expect(() => packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 }))
-      .toThrow('Uint16Array displacement pixels require explicit dataType');
+    expect(() => packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 })).toThrow(
+      'Uint16Array displacement pixels require explicit dataType',
+    );
   });
 
   it('keeps explicit float16 displacement handles available for half-float height pixels', () => {
@@ -257,21 +291,36 @@ describe('packSceneFromCore (SP-*)', () => {
     const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
 
     expect(Array.from(packed.positions.slice(0, 12))).toEqual([
-      0, 0, expect.closeTo(0.15), 0,
-      1, 0, expect.closeTo(0.15), 0,
-      0, 1, expect.closeTo(0.15), 0,
+      0,
+      0,
+      expect.closeTo(0.15),
+      0,
+      1,
+      0,
+      expect.closeTo(0.15),
+      0,
+      0,
+      1,
+      expect.closeTo(0.15),
+      0,
     ]);
     expect(packed.warnings).toEqual([]);
   });
 
   it('microdisplaces CPU-readable height maps by dicing before local BLAS/TLAS packing', () => {
-    const packed = packSceneFromCore(microDisplacedTriScene(1), { tlas: true, resolveMaterialId: () => 0 });
+    const packed = packSceneFromCore(microDisplacedTriScene(1), {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
 
     expect(packed.triangleCount).toBe(4);
     expect(packed.primitiveTlasBindings[0]?.vertexCount).toBe(6);
     expect(packed.primitiveTlasBindings[0]?.triCount).toBe(4);
     expect(packed.primitiveTlasBindings[0]?.localAabbMax[2]).toBeCloseTo(1);
-    const zValues = Array.from({ length: Math.floor(packed.positions.length / 4) }, (_, i) => packed.positions[i * 4 + 2] ?? 0);
+    const zValues = Array.from(
+      { length: Math.floor(packed.positions.length / 4) },
+      (_, i) => packed.positions[i * 4 + 2] ?? 0,
+    );
     expect(zValues.some((z) => Math.abs(z - 0.5) < 1e-6)).toBe(true);
     expect(packed.warnings).toEqual([]);
   });
@@ -299,11 +348,7 @@ describe('packSceneFromCore (SP-*)', () => {
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
           uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
-          tangents: new Float32Array([
-            1, 0, 0, -1,
-            0, 1, 0, 1,
-            1, 1, 0, -1,
-          ]),
+          tangents: new Float32Array([1, 0, 0, -1, 0, 1, 0, 1, 1, 1, 0, -1]),
           material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
         },
         unitTriMesh('without-tangents', translate(2)),
@@ -316,9 +361,7 @@ describe('packSceneFromCore (SP-*)', () => {
 
     expect(packed.tangents.length).toBe(packed.positions.length);
     expect(Array.from(packed.tangents.slice(0, 12))).toEqual([
-      1, 0, 0, -1,
-      0, 1, 0, 1,
-      1, 1, 0, -1,
+      1, 0, 0, -1, 0, 1, 0, 1, 1, 1, 0, -1,
     ]);
     expect(Array.from(packed.tangents.slice(12, 24))).toEqual(new Array(12).fill(0));
   });
@@ -329,19 +372,12 @@ describe('packSceneFromCore (SP-*)', () => {
       id,
       positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
       normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-      tangents: new Float32Array([
-        1, 0, 0, 1,
-        1, 0, 0, 1,
-        1, 0, 0, 1,
-      ]),
+      tangents: new Float32Array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1]),
       material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
       transform,
     });
     const scene: Scene = {
-      primitives: [
-        tangentTri('rot', rotateZ90()),
-        tangentTri('mirror', mirrorX()),
-      ],
+      primitives: [tangentTri('rot', rotateZ90()), tangentTri('mirror', mirrorX())],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -369,11 +405,7 @@ describe('packSceneFromCore (SP-*)', () => {
           id: 'rgb-colors',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          colors: new Float32Array([
-            1, 0, 0,
-            0, 1, 0,
-            0, 0, 1,
-          ]),
+          colors: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
           material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
         },
         {
@@ -382,9 +414,7 @@ describe('packSceneFromCore (SP-*)', () => {
           positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
           colors: new Float32Array([
-            0.25, 0.5, 0.75, 0.1,
-            0.5, 0.25, 0.75, 0.2,
-            0.75, 0.5, 0.25, 0.3,
+            0.25, 0.5, 0.75, 0.1, 0.5, 0.25, 0.75, 0.2, 0.75, 0.5, 0.25, 0.3,
           ]),
           material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
         },
@@ -397,16 +427,12 @@ describe('packSceneFromCore (SP-*)', () => {
     const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
 
     expect(packed.colors.length).toBe(packed.positions.length);
-    expect(Array.from(packed.colors.slice(0, 12))).toEqual([
-      1, 0, 0, 1,
-      0, 1, 0, 1,
-      0, 0, 1, 1,
-    ]);
-    expect(Array.from(packed.colors.slice(12, 24))).toEqual([
-      0.25, 0.5, 0.75, 0.1,
-      0.5, 0.25, 0.75, 0.2,
-      0.75, 0.5, 0.25, 0.3,
-    ].map((v) => expect.closeTo(v)));
+    expect(Array.from(packed.colors.slice(0, 12))).toEqual([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]);
+    expect(Array.from(packed.colors.slice(12, 24))).toEqual(
+      [0.25, 0.5, 0.75, 0.1, 0.5, 0.25, 0.75, 0.2, 0.75, 0.5, 0.25, 0.3].map((v) =>
+        expect.closeTo(v),
+      ),
+    );
     expect(Array.from(packed.colors.slice(24, 36))).toEqual(new Array(12).fill(1));
   });
 
@@ -418,11 +444,7 @@ describe('packSceneFromCore (SP-*)', () => {
           id: 'rgb-colors',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          colors: new Float32Array([
-            1, 0, 0,
-            0, 1, 0,
-            0, 0, 1,
-          ]),
+          colors: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
           material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
         },
         {
@@ -431,9 +453,7 @@ describe('packSceneFromCore (SP-*)', () => {
           positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
           colors: new Float32Array([
-            0.25, 0.5, 0.75, 0.1,
-            0.5, 0.25, 0.75, 0.2,
-            0.75, 0.5, 0.25, 0.3,
+            0.25, 0.5, 0.75, 0.1, 0.5, 0.25, 0.75, 0.2, 0.75, 0.5, 0.25, 0.3,
           ]),
           material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
         },
@@ -446,21 +466,21 @@ describe('packSceneFromCore (SP-*)', () => {
     const merged = mergeWorldSpaceFromCore(scene, { positionStride: 4 });
 
     expect(merged.colors.length).toBe(merged.vertexCount * 4);
-    expect(Array.from(merged.colors.slice(0, 12))).toEqual([
-      1, 0, 0, 1,
-      0, 1, 0, 1,
-      0, 0, 1, 1,
-    ]);
-    expect(Array.from(merged.colors.slice(12, 24))).toEqual([
-      0.25, 0.5, 0.75, 0.1,
-      0.5, 0.25, 0.75, 0.2,
-      0.75, 0.5, 0.25, 0.3,
-    ].map((v) => expect.closeTo(v)));
+    expect(Array.from(merged.colors.slice(0, 12))).toEqual([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]);
+    expect(Array.from(merged.colors.slice(12, 24))).toEqual(
+      [0.25, 0.5, 0.75, 0.1, 0.5, 0.25, 0.75, 0.2, 0.75, 0.5, 0.25, 0.3].map((v) =>
+        expect.closeTo(v),
+      ),
+    );
     expect(Array.from(merged.colors.slice(24, 36))).toEqual(new Array(12).fill(1));
   });
 
   it('can bake primitive-constant COLOR_0 RGB into material slots for compatibility renderers', () => {
-    const baseMaterial = { baseColor: [0.2, 0.3, 0.4] as [number, number, number], roughness: 0.5, metallic: 0 };
+    const baseMaterial = {
+      baseColor: [0.2, 0.3, 0.4] as [number, number, number],
+      roughness: 0.5,
+      metallic: 0,
+    };
     const scene: Scene = {
       primitives: [
         {
@@ -468,11 +488,7 @@ describe('packSceneFromCore (SP-*)', () => {
           id: 'constant-tint',
           positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          colors: new Float32Array([
-            0.5, 0.25, 1,
-            0.5, 0.25, 1,
-            0.5, 0.25, 1,
-          ]),
+          colors: new Float32Array([0.5, 0.25, 1, 0.5, 0.25, 1, 0.5, 0.25, 1]),
           material: baseMaterial,
         },
         {
@@ -480,11 +496,7 @@ describe('packSceneFromCore (SP-*)', () => {
           id: 'gradient-tint',
           positions: new Float32Array([2, 0, 0, 3, 0, 0, 2, 1, 0]),
           normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-          colors: new Float32Array([
-            1, 0, 0,
-            0, 1, 0,
-            0, 0, 1,
-          ]),
+          colors: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
           material: baseMaterial,
         },
       ],
@@ -502,32 +514,28 @@ describe('packSceneFromCore (SP-*)', () => {
 
     expect(baseColors).toEqual(['0.1,0.075,0.4', '0.2,0.3,0.4']);
     expect(Array.from(merged.colors.slice(0, 12))).toEqual([
-      0.5, 0.25, 1, 1,
-      0.5, 0.25, 1, 1,
-      0.5, 0.25, 1, 1,
+      0.5, 0.25, 1, 1, 0.5, 0.25, 1, 1, 0.5, 0.25, 1, 1,
     ]);
-    expect(Array.from(merged.colors.slice(12, 24))).toEqual([
-      1, 0, 0, 1,
-      0, 1, 0, 1,
-      0, 0, 1, 1,
-    ]);
+    expect(Array.from(merged.colors.slice(12, 24))).toEqual([1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1]);
   });
 
   it('does not bake constant COLOR_0 alpha into RGB-only material slots', () => {
-    const baseMaterial = { baseColor: [0.2, 0.3, 0.4] as [number, number, number], roughness: 0.5, metallic: 0 };
+    const baseMaterial = {
+      baseColor: [0.2, 0.3, 0.4] as [number, number, number],
+      roughness: 0.5,
+      metallic: 0,
+    };
     const scene: Scene = {
-      primitives: [{
-        kind: 'mesh',
-        id: 'constant-alpha-tint',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        colors: new Float32Array([
-          0.5, 0.25, 1, 0.5,
-          0.5, 0.25, 1, 0.5,
-          0.5, 0.25, 1, 0.5,
-        ]),
-        material: baseMaterial,
-      }],
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'constant-alpha-tint',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          colors: new Float32Array([0.5, 0.25, 1, 0.5, 0.5, 0.25, 1, 0.5, 0.5, 0.25, 1, 0.5]),
+          material: baseMaterial,
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -539,9 +547,7 @@ describe('packSceneFromCore (SP-*)', () => {
 
     expect(merged.materials[0]?.baseColor).toEqual([0.2, 0.3, 0.4]);
     expect(Array.from(merged.colors.slice(0, 12))).toEqual([
-      0.5, 0.25, 1, 0.5,
-      0.5, 0.25, 1, 0.5,
-      0.5, 0.25, 1, 0.5,
+      0.5, 0.25, 1, 0.5, 0.5, 0.25, 1, 0.5, 0.5, 0.25, 1, 0.5,
     ]);
   });
 
@@ -549,12 +555,12 @@ describe('packSceneFromCore (SP-*)', () => {
     const scene: Scene = {
       primitives: [
         boxMesh('box-a', [0, 0, 0], [1, 1, 1]),
-        boxMesh('box-b', [0, 0, 0], [1, 1, 1], asMat4(new Float32Array([
-          1, 0, 0, 0,
-          0, 1, 0, 0,
-          0, 0, 1, 0,
-          3, 0, 0, 1,
-        ]))),
+        boxMesh(
+          'box-b',
+          [0, 0, 0],
+          [1, 1, 1],
+          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1])),
+        ),
       ],
       emitters: [],
       environment: { kind: 'none' },
@@ -585,32 +591,25 @@ describe('packSceneFromCore (SP-*)', () => {
       { tlas: true, resolveMaterialId: () => 0 },
     );
     const moved: Scene = {
-      primitives: [{
-        kind: 'mesh',
-        id: base.id,
-        positions: base.positions,
-        normals: base.normals,
-        material: base.material,
-        transform: asMat4(new Float32Array([
-          1, 0, 0, 0,
-          0, 1, 0, 0,
-          0, 0, 1, 0,
-          2, 0, 0, 1,
-        ])),
-      }],
+      primitives: [
+        {
+          kind: 'mesh',
+          id: base.id,
+          positions: base.positions,
+          normals: base.normals,
+          material: base.material,
+          transform: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1])),
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
-    const rebuilt = refitTlasTransforms(
-      moved,
-      packed.primitiveTlasBindings,
-      {
-        tlasNodes: packed.tlasNodes,
-        tlasInstanceIndices: packed.tlasInstanceIndices,
-        tlasBlasRoots: packed.tlasBlasRoots,
-        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
-      },
-    );
+    const rebuilt = refitTlasTransforms(moved, packed.primitiveTlasBindings, {
+      tlasNodes: packed.tlasNodes,
+      tlasInstanceIndices: packed.tlasInstanceIndices,
+      tlasBlasRoots: packed.tlasBlasRoots,
+      tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+    });
     expect(rebuilt.ok).toBe(true);
     if (!rebuilt.ok) return;
     expect(rebuilt.tlasNodes.length).toBe(packed.tlasNodes.length);
@@ -633,12 +632,8 @@ describe('packSceneFromCore (SP-*)', () => {
       resolveMaterialId: () => 0,
     });
     const nodesBefore = new Uint32Array(packed.tlasNodes);
-    const worldToLocalBefore = new Float32Array(
-      packed.tlasInstanceWorldToLocal,
-    );
-    const localToWorldBefore = new Float32Array(
-      packed.tlasInstanceLocalToWorld,
-    );
+    const worldToLocalBefore = new Float32Array(packed.tlasInstanceWorldToLocal);
+    const localToWorldBefore = new Float32Array(packed.tlasInstanceLocalToWorld);
     const moved: Scene = {
       ...scene,
       primitives: [
@@ -663,39 +658,29 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(rebuilt.ok).toBe(true);
     if (!rebuilt.ok) return;
     expect(rebuilt.tlasNodes).not.toBe(packed.tlasNodes);
-    expect(rebuilt.tlasInstanceWorldToLocal).not.toBe(
-      packed.tlasInstanceWorldToLocal,
-    );
-    expect(rebuilt.tlasInstanceLocalToWorld).not.toBe(
-      packed.tlasInstanceLocalToWorld,
-    );
+    expect(rebuilt.tlasInstanceWorldToLocal).not.toBe(packed.tlasInstanceWorldToLocal);
+    expect(rebuilt.tlasInstanceLocalToWorld).not.toBe(packed.tlasInstanceLocalToWorld);
     expect(packed.tlasNodes).toEqual(nodesBefore);
     expect(packed.tlasInstanceWorldToLocal).toEqual(worldToLocalBefore);
     expect(packed.tlasInstanceLocalToWorld).toEqual(localToWorldBefore);
-    expect(Array.from(rebuilt.dirtyTlasTransformInstanceIndices ?? [])).toEqual([
-      1,
-    ]);
+    expect(Array.from(rebuilt.dirtyTlasTransformInstanceIndices ?? [])).toEqual([1]);
     const dirtyNodes = new Set(rebuilt.dirtyTlasNodeIndices ?? []);
     expect(dirtyNodes.size).toBeGreaterThan(0);
     expect(dirtyNodes.size).toBeLessThan(packed.tlasNodeCount);
     for (let node = 0; node < packed.tlasNodeCount; node += 1) {
       if (dirtyNodes.has(node)) continue;
-      expect(
-        Array.from(rebuilt.tlasNodes.subarray(node * 8, node * 8 + 8)),
-      ).toEqual(Array.from(nodesBefore.subarray(node * 8, node * 8 + 8)));
+      expect(Array.from(rebuilt.tlasNodes.subarray(node * 8, node * 8 + 8))).toEqual(
+        Array.from(nodesBefore.subarray(node * 8, node * 8 + 8)),
+      );
     }
     for (const instance of [0, 2, 3]) {
       const start = instance * 16;
-      expect(
-        Array.from(
-          rebuilt.tlasInstanceWorldToLocal.subarray(start, start + 16),
-        ),
-      ).toEqual(Array.from(worldToLocalBefore.subarray(start, start + 16)));
-      expect(
-        Array.from(
-          rebuilt.tlasInstanceLocalToWorld.subarray(start, start + 16),
-        ),
-      ).toEqual(Array.from(localToWorldBefore.subarray(start, start + 16)));
+      expect(Array.from(rebuilt.tlasInstanceWorldToLocal.subarray(start, start + 16))).toEqual(
+        Array.from(worldToLocalBefore.subarray(start, start + 16)),
+      );
+      expect(Array.from(rebuilt.tlasInstanceLocalToWorld.subarray(start, start + 16))).toEqual(
+        Array.from(localToWorldBefore.subarray(start, start + 16)),
+      );
     }
     expect(rebuilt.tlasInstanceWorldToLocal[28]).toBeCloseTo(-3);
     expect(rebuilt.tlasInstanceLocalToWorld[28]).toBeCloseTo(3);
@@ -734,20 +719,13 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(Array.from(refit.dirtyTlasTransformInstanceIndices ?? [])).toEqual([]);
     expect(refit.tlasNodes).not.toBe(packed.tlasNodes);
     expect(refit.tlasNodes).toEqual(packed.tlasNodes);
-    expect(refit.tlasInstanceWorldToLocal).toEqual(
-      packed.tlasInstanceWorldToLocal,
-    );
-    expect(refit.tlasInstanceLocalToWorld).toEqual(
-      packed.tlasInstanceLocalToWorld,
-    );
+    expect(refit.tlasInstanceWorldToLocal).toEqual(packed.tlasInstanceWorldToLocal);
+    expect(refit.tlasInstanceLocalToWorld).toEqual(packed.tlasInstanceLocalToWorld);
   });
 
   it('chains partial refits for two primitives without mutating either rollback baseline', () => {
     const scene: Scene = {
-      primitives: [
-        unitTriMesh('first', translate(0)),
-        unitTriMesh('second', translate(10)),
-      ],
+      primitives: [unitTriMesh('first', translate(0)), unitTriMesh('second', translate(10))],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -756,18 +734,11 @@ describe('packSceneFromCore (SP-*)', () => {
       resolveMaterialId: () => 0,
     });
     const packedNodesBefore = new Uint32Array(packed.tlasNodes);
-    const packedWorldToLocalBefore = new Float32Array(
-      packed.tlasInstanceWorldToLocal,
-    );
-    const packedLocalToWorldBefore = new Float32Array(
-      packed.tlasInstanceLocalToWorld,
-    );
+    const packedWorldToLocalBefore = new Float32Array(packed.tlasInstanceWorldToLocal);
+    const packedLocalToWorldBefore = new Float32Array(packed.tlasInstanceLocalToWorld);
     const firstMoved: Scene = {
       ...scene,
-      primitives: [
-        unitTriMesh('first', translate(4)),
-        scene.primitives[1]!,
-      ],
+      primitives: [unitTriMesh('first', translate(4)), scene.primitives[1]!],
     };
     const firstRefit = refitTlasTransforms(
       firstMoved,
@@ -784,19 +755,12 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(firstRefit.ok).toBe(true);
     if (!firstRefit.ok) return;
     const firstNodesBeforeSecond = new Uint32Array(firstRefit.tlasNodes);
-    const firstWorldToLocalBeforeSecond = new Float32Array(
-      firstRefit.tlasInstanceWorldToLocal,
-    );
-    const firstLocalToWorldBeforeSecond = new Float32Array(
-      firstRefit.tlasInstanceLocalToWorld,
-    );
+    const firstWorldToLocalBeforeSecond = new Float32Array(firstRefit.tlasInstanceWorldToLocal);
+    const firstLocalToWorldBeforeSecond = new Float32Array(firstRefit.tlasInstanceLocalToWorld);
 
     const bothMoved: Scene = {
       ...scene,
-      primitives: [
-        unitTriMesh('first', translate(4)),
-        unitTriMesh('second', translate(14)),
-      ],
+      primitives: [unitTriMesh('first', translate(4)), unitTriMesh('second', translate(14))],
     };
     const secondRefit = refitTlasTransforms(
       bothMoved,
@@ -818,19 +782,11 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(secondRefit.tlasInstanceWorldToLocal[12]).toBeCloseTo(-4);
     expect(secondRefit.tlasInstanceWorldToLocal[16 + 12]).toBeCloseTo(-14);
     expect(firstRefit.tlasNodes).toEqual(firstNodesBeforeSecond);
-    expect(firstRefit.tlasInstanceWorldToLocal).toEqual(
-      firstWorldToLocalBeforeSecond,
-    );
-    expect(firstRefit.tlasInstanceLocalToWorld).toEqual(
-      firstLocalToWorldBeforeSecond,
-    );
+    expect(firstRefit.tlasInstanceWorldToLocal).toEqual(firstWorldToLocalBeforeSecond);
+    expect(firstRefit.tlasInstanceLocalToWorld).toEqual(firstLocalToWorldBeforeSecond);
     expect(packed.tlasNodes).toEqual(packedNodesBefore);
-    expect(packed.tlasInstanceWorldToLocal).toEqual(
-      packedWorldToLocalBefore,
-    );
-    expect(packed.tlasInstanceLocalToWorld).toEqual(
-      packedLocalToWorldBefore,
-    );
+    expect(packed.tlasInstanceWorldToLocal).toEqual(packedWorldToLocalBefore);
+    expect(packed.tlasInstanceLocalToWorld).toEqual(packedLocalToWorldBefore);
   });
 
   it('H34-e: transform-only refit rejects a newly non-invertible transform', () => {
@@ -839,19 +795,10 @@ describe('packSceneFromCore (SP-*)', () => {
       { primitives: [base], emitters: [], environment: { kind: 'none' } },
       { tlas: true, resolveMaterialId: () => 0 },
     );
-    const singular = asMat4(new Float32Array([
-      0, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]));
+    const singular = asMat4(new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
     const nodesBefore = new Uint32Array(packed.tlasNodes);
-    const worldToLocalBefore = new Float32Array(
-      packed.tlasInstanceWorldToLocal,
-    );
-    const localToWorldBefore = new Float32Array(
-      packed.tlasInstanceLocalToWorld,
-    );
+    const worldToLocalBefore = new Float32Array(packed.tlasInstanceWorldToLocal);
+    const localToWorldBefore = new Float32Array(packed.tlasInstanceLocalToWorld);
     const rebuilt = refitTlasTransforms(
       { primitives: [unitTriMesh('tri', singular)], emitters: [], environment: { kind: 'none' } },
       packed.primitiveTlasBindings,
@@ -875,19 +822,21 @@ describe('packSceneFromCore (SP-*)', () => {
 
   it('SP-3: instanced mesh produces four TLAS instances', () => {
     const scene: Scene = {
-      primitives: [{
-        kind: 'instanced-mesh',
-        id: 'inst',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
-        instances: [
-          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
-          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1])),
-          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1])),
-          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1])),
-        ],
-      }],
+      primitives: [
+        {
+          kind: 'instanced-mesh',
+          id: 'inst',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+          instances: [
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1])),
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1])),
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 3, 0, 0, 1])),
+          ],
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -899,52 +848,49 @@ describe('packSceneFromCore (SP-*)', () => {
 
   it('T-4.3: instance count change fails refit (forces topology rebuild)', () => {
     const scene: Scene = {
-      primitives: [{
-        kind: 'instanced-mesh',
-        id: 'inst',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
-        instances: [
-          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
-          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1])),
-        ],
-      }],
+      primitives: [
+        {
+          kind: 'instanced-mesh',
+          id: 'inst',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+          instances: [
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1])),
+          ],
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
     const packed = packSceneFromCore(scene, { tlas: true, resolveMaterialId: () => 0 });
-    const extraInstance = asMat4(new Float32Array([
-      1, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      2, 0, 0, 1,
-    ]));
+    const extraInstance = asMat4(
+      new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 0, 0, 1]),
+    );
     const instPrim = scene.primitives[0]!;
     if (instPrim.kind !== 'instanced-mesh') {
       throw new Error('expected instanced-mesh');
     }
     const sceneMore: Scene = {
       ...scene,
-      primitives: [{
-        kind: 'instanced-mesh',
-        id: instPrim.id,
-        positions: instPrim.positions,
-        normals: instPrim.normals,
-        material: instPrim.material,
-        instances: [...instPrim.instances, extraInstance],
-      }],
+      primitives: [
+        {
+          kind: 'instanced-mesh',
+          id: instPrim.id,
+          positions: instPrim.positions,
+          normals: instPrim.normals,
+          material: instPrim.material,
+          instances: [...instPrim.instances, extraInstance],
+        },
+      ],
     };
-    const rebuilt = refitTlasTransforms(
-      sceneMore,
-      packed.primitiveTlasBindings,
-      {
-        tlasNodes: packed.tlasNodes,
-        tlasInstanceIndices: packed.tlasInstanceIndices,
-        tlasBlasRoots: packed.tlasBlasRoots,
-        tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
-      },
-    );
+    const rebuilt = refitTlasTransforms(sceneMore, packed.primitiveTlasBindings, {
+      tlasNodes: packed.tlasNodes,
+      tlasInstanceIndices: packed.tlasInstanceIndices,
+      tlasBlasRoots: packed.tlasBlasRoots,
+      tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
+    });
     expect(rebuilt.ok).toBe(false);
     if (rebuilt.ok) return;
     expect(rebuilt.reason).toMatch(/instance/i);
@@ -954,12 +900,12 @@ describe('packSceneFromCore (SP-*)', () => {
     const scene: Scene = {
       primitives: [
         boxMesh('box-a', [0, 0, 0], [1, 1, 1]),
-        boxMesh('box-b', [0, 0, 0], [1, 1, 1], asMat4(new Float32Array([
-          1, 0, 0, 0,
-          0, 1, 0, 0,
-          0, 0, 1, 0,
-          5, 0, 0, 1,
-        ]))),
+        boxMesh(
+          'box-b',
+          [0, 0, 0],
+          [1, 1, 1],
+          asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1])),
+        ),
       ],
       emitters: [],
       environment: { kind: 'none' },
@@ -1022,25 +968,37 @@ describe('packSceneFromCore (SP-*)', () => {
     };
     const opts = { tlas: true, resolveMaterialId: () => 0 };
 
-    const t0 = performance.now();
-    const spliced = rebuildPrimitiveBlas(nextScene, 'box-b', packed, opts);
-    const spliceMs = performance.now() - t0;
+    // Warm both call paths before comparing them. A single cold timing here is
+    // dominated by JIT, GC, and parallel-suite scheduling on this tiny scene.
+    for (let i = 0; i < 4; i += 1) {
+      rebuildPrimitiveBlas(nextScene, 'box-b', packed, opts);
+      packSceneFromCore(nextScene, opts);
+    }
 
-    const t1 = performance.now();
-    packSceneFromCore(nextScene, opts);
-    const fullMs = performance.now() - t1;
+    const spliceSamples: number[] = [];
+    const fullSamples: number[] = [];
+    let spliced = rebuildPrimitiveBlas(nextScene, 'box-b', packed, opts);
+    for (let i = 0; i < 11; i += 1) {
+      let started = performance.now();
+      spliced = rebuildPrimitiveBlas(nextScene, 'box-b', packed, opts);
+      spliceSamples.push(performance.now() - started);
+
+      started = performance.now();
+      packSceneFromCore(nextScene, opts);
+      fullSamples.push(performance.now() - started);
+    }
+
+    spliceSamples.sort((a, b) => a - b);
+    fullSamples.sort((a, b) => a - b);
+    const spliceMs = spliceSamples[Math.floor(spliceSamples.length / 2)]!;
+    const fullMs = fullSamples[Math.floor(fullSamples.length / 2)]!;
 
     expect(spliced.ok).toBe(true);
     if (spliced.ok) expect(spliced.strategy).toBe('splice');
-    // Perf signal: splice should not be dramatically slower than a full repack.
-    // Both ops are sub-millisecond here, so `performance.now()` deltas are
-    // dominated by scheduler jitter under parallel-suite load — only assert the
-    // ratio when the full repack is above a meaningful noise floor, otherwise the
-    // timing is not measurable enough to compare (the `strategy === 'splice'`
-    // assertion above is the load-bearing correctness check).
-    if (fullMs > 1) {
-      expect(spliceMs).toBeLessThan(fullMs * 5);
-    }
+    // Perf signal: after warmup, median splice work must not be dramatically
+    // slower than a full repack. The wide ratio is intentional: correctness and
+    // the explicit strategy result remain the load-bearing assertions.
+    expect(spliceMs).toBeLessThan(fullMs * 5);
   });
 
   it('rebuildPrimitiveBlas splices a growing triangle count (slice-2 resize)', () => {
@@ -1095,7 +1053,9 @@ describe('packSceneFromCore (SP-*)', () => {
     if (!rebuilt.ok) return;
     expect(rebuilt.strategy).toBe('splice');
     expect(rebuilt.pack.triangleCount).toBe(full.triangleCount);
-    expect(rebuilt.pack.primitiveTlasBindings[0]?.vertexCount).toBe(full.primitiveTlasBindings[0]?.vertexCount);
+    expect(rebuilt.pack.primitiveTlasBindings[0]?.vertexCount).toBe(
+      full.primitiveTlasBindings[0]?.vertexCount,
+    );
     expect(Array.from(rebuilt.pack.positions)).toEqual(Array.from(full.positions));
     expect(Array.from(rebuilt.pack.indices)).toEqual(Array.from(full.indices));
   });
@@ -1106,10 +1066,7 @@ describe('packSceneFromCore (SP-*)', () => {
     // box-b's geometry intact and its global vertex/tri references re-rebased so
     // tlasIntersect still routes a ray to box-b (instance 1).
     const scene: Scene = {
-      primitives: [
-        unitTriMesh('shape-a'),
-        boxMesh('box-b', [5, 0, 0], [6, 1, 1]),
-      ],
+      primitives: [unitTriMesh('shape-a'), boxMesh('box-b', [5, 0, 0], [6, 1, 1])],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -1119,10 +1076,7 @@ describe('packSceneFromCore (SP-*)', () => {
     // Grow shape-a to a box (1 tri → 12 tris), shifting box-b's vert/tri/node
     // starts forward.
     const next: Scene = {
-      primitives: [
-        boxMesh('shape-a', [0, 0, 0], [1, 1, 1]),
-        scene.primitives[1]!,
-      ],
+      primitives: [boxMesh('shape-a', [0, 0, 0], [1, 1, 1]), scene.primitives[1]!],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -1287,14 +1241,16 @@ describe('packSceneFromCore (SP-*)', () => {
       indices[t * 3 + 2] = t * 3 + 2;
     }
     const scene: Scene = {
-      primitives: [{
-        kind: 'mesh',
-        id: 'big',
-        positions,
-        normals,
-        indices,
-        material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
-      }],
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'big',
+          positions,
+          normals,
+          indices,
+          material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -1419,27 +1375,16 @@ describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
 // ─── warning-emission characterization ───────────────────────────────────────
 describe('packSceneFromCore — warning characterization', () => {
   it('caps initial and incremental warning history to the newest 256 entries', () => {
-    const singular = asMat4(new Float32Array([
-      0, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]));
-    const analytics: Scene['primitives'] = Array.from(
-      { length: 300 },
-      (_, index) => ({
-        kind: 'analytic' as const,
-        id: `audit-${index}`,
-        shape: 'sphere' as const,
-        params: new Float32Array([1]),
-        material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
-      }),
-    );
+    const singular = asMat4(new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+    const analytics: Scene['primitives'] = Array.from({ length: 300 }, (_, index) => ({
+      kind: 'analytic' as const,
+      id: `audit-${index}`,
+      shape: 'sphere' as const,
+      params: new Float32Array([1]),
+      material: { baseColor: [1, 1, 1], roughness: 1, metallic: 0 },
+    }));
     const initialScene: Scene = {
-      primitives: [
-        instancedMesh('live', [translate(0), singular]),
-        ...analytics,
-      ],
+      primitives: [instancedMesh('live', [translate(0), singular]), ...analytics],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -1456,10 +1401,7 @@ describe('packSceneFromCore — warning characterization', () => {
     const rebuilt = rebuildTlasReuseBlas(
       {
         ...initialScene,
-        primitives: [
-          instancedMesh('live', [translate(0), translate(2), singular]),
-          ...analytics,
-        ],
+        primitives: [instancedMesh('live', [translate(0), translate(2), singular]), ...analytics],
       },
       packed,
     );
@@ -1477,15 +1419,9 @@ describe('packSceneFromCore — warning characterization', () => {
   });
 
   it('refreshes a recurring current warning before applying the incremental cap', () => {
-    const singular = asMat4(new Float32Array([
-      0, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]));
-    const primitives = Array.from(
-      { length: 256 },
-      (_, index) => instancedMesh(`warning-${index}`, [translate(index * 2)]),
+    const singular = asMat4(new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+    const primitives = Array.from({ length: 256 }, (_, index) =>
+      instancedMesh(`warning-${index}`, [translate(index * 2)]),
     );
     const scene: Scene = {
       primitives,
@@ -1501,10 +1437,7 @@ describe('packSceneFromCore — warning characterization', () => {
       'skipping this TLAS instance (geometry would be placed at the origin otherwise).';
     const priorWithFullHistory = {
       ...packed,
-      warnings: [
-        recurring,
-        ...Array.from({ length: 255 }, (_, index) => `stale warning ${index}`),
-      ],
+      warnings: [recurring, ...Array.from({ length: 255 }, (_, index) => `stale warning ${index}`)],
     };
     const next: Scene = {
       ...scene,
@@ -1512,9 +1445,8 @@ describe('packSceneFromCore — warning characterization', () => {
         if (primitive.kind !== 'instanced-mesh') throw new Error('test setup');
         return {
           ...primitive,
-          instances: index === 0
-            ? [translate(0), singular, translate(1)]
-            : [translate(index * 2), singular],
+          instances:
+            index === 0 ? [translate(0), singular, translate(1)] : [translate(index * 2), singular],
         };
       }),
     };
@@ -1525,13 +1457,13 @@ describe('packSceneFromCore — warning characterization', () => {
     expect(rebuilt.pack.warnings).toHaveLength(256);
     expect(rebuilt.pack.warnings[0]).toBe(recurring);
     expect(rebuilt.pack.warnings).toContain(recurring);
-    expect(rebuilt.pack.warnings.some((warning) =>
-      warning.startsWith('stale warning')
-    )).toBe(false);
+    expect(rebuilt.pack.warnings.some((warning) => warning.startsWith('stale warning'))).toBe(
+      false,
+    );
     for (let index = 0; index < 256; index += 1) {
       expect(rebuilt.pack.warnings).toContain(
         `Primitive "warning-${index}" has non-invertible instance transform; ` +
-        'skipping this TLAS instance (geometry would be placed at the origin otherwise).',
+          'skipping this TLAS instance (geometry would be placed at the origin otherwise).',
       );
     }
     expect(rebuilt.currentWarnings).toHaveLength(256);
@@ -1563,12 +1495,7 @@ describe('packSceneFromCore — warning characterization', () => {
   });
 
   it('includes current TLAS-instance warnings in a BLAS splice delta and history', () => {
-    const singular = asMat4(new Float32Array([
-      0, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]));
+    const singular = asMat4(new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
     const initialPrimitive = instancedMesh('live', [translate(0), singular]);
     const scene: Scene = {
       primitives: [initialPrimitive],
@@ -1582,11 +1509,7 @@ describe('packSceneFromCore — warning characterization', () => {
     const packed = packSceneFromCore(scene, opts);
     const nextPrimitive = {
       ...initialPrimitive,
-      positions: new Float32Array([
-        0, 0, 0,
-        2, 0, 0,
-        0, 1, 0,
-      ]),
+      positions: new Float32Array([0, 0, 0, 2, 0, 0, 0, 1, 0]),
     } as Scene['primitives'][number];
     const rebuilt = rebuildPrimitiveBlas(
       { ...scene, primitives: [nextPrimitive] },
@@ -1608,13 +1531,15 @@ describe('packSceneFromCore — warning characterization', () => {
 
   it('emits skip warning for <3-vertex primitive (exact message)', () => {
     const scene: Scene = {
-      primitives: [{
-        kind: 'mesh',
-        id: 'tiny',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0]),  // only 2 vertices
-        normals: new Float32Array([0, 0, 1, 0, 0, 1]),
-        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
-      }],
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'tiny',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0]), // only 2 vertices
+          normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -1625,15 +1550,17 @@ describe('packSceneFromCore — warning characterization', () => {
 
   it('emits skip warning for zero-triangle primitive (exact message)', () => {
     const scene: Scene = {
-      primitives: [{
-        kind: 'mesh',
-        id: 'notri',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        // Explicitly empty index buffer → 0 triangles
-        indices: new Uint32Array(0),
-        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
-      }],
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'notri',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          // Explicitly empty index buffer → 0 triangles
+          indices: new Uint32Array(0),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -1645,21 +1572,18 @@ describe('packSceneFromCore — warning characterization', () => {
   // H34-e: singular transform → skip-with-warning (not identity-at-origin fallback).
   it('emits non-invertible warning and skips the TLAS instance (H34-e new behavior)', () => {
     // A zero-column matrix is singular (det=0) — invertMat4 returns null.
-    const singular = asMat4(new Float32Array([
-      0, 0, 0, 0,
-      0, 1, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]));
+    const singular = asMat4(new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
     const scene: Scene = {
-      primitives: [{
-        kind: 'mesh',
-        id: 'sing',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
-        transform: singular,
-      }],
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'sing',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+          transform: singular,
+        },
+      ],
       emitters: [],
       environment: { kind: 'none' },
     };
@@ -1667,23 +1591,58 @@ describe('packSceneFromCore — warning characterization', () => {
     // H34-e: now emits skip warning, not identity-fallback warning.
     expect(packed.warnings).toContain(
       'Primitive "sing" has non-invertible instance transform; ' +
-      'skipping this TLAS instance (geometry would be placed at the origin otherwise).',
+        'skipping this TLAS instance (geometry would be placed at the origin otherwise).',
     );
-    // BLAS geometry is still packed — the primitive contributes triangles to the BLAS buffer.
-    expect(packed.triangleCount).toBe(1);
-    // But the TLAS has NO instances (the singular transform instance was skipped).
+    // With no surviving placement, the BLAS is omitted too. Leaving a local
+    // root behind would let a zero-node TLAS fallback render it at identity.
+    expect(packed.triangleCount).toBe(0);
+    expect(packed.bvhNodes).toHaveLength(0);
+    expect(packed.primitiveTlasBindings).toEqual([]);
     expect(packed.tlasNodeCount).toBe(0);
+  });
+
+  it('retains a valid tiny-scale TLAS placement instead of substituting identity', () => {
+    const tinyScale = 1e-4;
+    const transform = asMat4(
+      new Float32Array([tinyScale, 0, 0, 0, 0, tinyScale, 0, 0, 0, 0, tinyScale, 0, 2, 0, 0, 1]),
+    );
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'tiny-scale',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+          },
+          transform,
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+
+    expect(packed.warnings).toEqual([]);
+    expect(packed.triangleCount).toBe(1);
+    expect(packed.primitiveTlasBindings).toHaveLength(1);
+    expect(packed.tlasInstanceLocalToWorld[0]).toBeCloseTo(tinyScale, 10);
+    expect(packed.tlasInstanceLocalToWorld[12]).toBe(2);
+    expect(packed.tlasInstanceWorldToLocal[0]).toBeCloseTo(1 / tinyScale, 2);
+    expect(packed.tlasInstanceWorldToLocal[12]).toBeCloseTo(-2 / tinyScale, 0);
   });
 });
 
 // ─── invertMat4 unit tests ────────────────────────────────────────────────────
 describe('invertMat4', () => {
-  const IDENTITY = asMat4(new Float32Array([
-    1, 0, 0, 0,
-    0, 1, 0, 0,
-    0, 0, 1, 0,
-    0, 0, 0, 1,
-  ]));
+  const IDENTITY = asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
 
   it('invert(identity) == identity', () => {
     const result = invertMat4(IDENTITY);
@@ -1695,12 +1654,7 @@ describe('invertMat4', () => {
 
   it('invert∘invert == id (round-trip on a non-trivial matrix)', () => {
     // A matrix with translation, non-uniform scale, and a rotation component.
-    const m = asMat4(new Float32Array([
-       2,  1,  0,  0,
-       0,  3,  1,  0,
-       1,  0,  2,  0,
-       4, -1,  2,  1,
-    ]));
+    const m = asMat4(new Float32Array([2, 1, 0, 0, 0, 3, 1, 0, 1, 0, 2, 0, 4, -1, 2, 1]));
     const inv = invertMat4(m);
     expect(inv).not.toBeNull();
     const inv2 = invertMat4(asMat4(inv!));
@@ -1711,13 +1665,28 @@ describe('invertMat4', () => {
   });
 
   it('returns null for a singular matrix', () => {
-    const singular = asMat4(new Float32Array([
-      1, 0, 0, 0,
-      0, 0, 0, 0,
-      0, 0, 1, 0,
-      0, 0, 0, 1,
-    ]));
+    const singular = asMat4(new Float32Array([1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
     expect(invertMat4(singular)).toBeNull();
+  });
+
+  it('inverts a valid small affine scale and remains reciprocal after f32 packing', () => {
+    const scale = 1e-4;
+    const matrix = asMat4(
+      new Float32Array([scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, 2, -3, 4, 1]),
+    );
+    const inverse = invertMat4(matrix);
+    expect(inverse).not.toBeNull();
+    expect(inverse![0]).toBeCloseTo(1 / scale, 2);
+    expect(inverse![5]).toBeCloseTo(1 / scale, 2);
+    expect(inverse![10]).toBeCloseTo(1 / scale, 2);
+    expect(inverse![12]).toBeCloseTo(-2 / scale, 0);
+    expect(inverse![13]).toBeCloseTo(3 / scale, 0);
+    expect(inverse![14]).toBeCloseTo(-4 / scale, 0);
+
+    const product = mat4Mul(matrix, inverse!);
+    for (let index = 0; index < 16; index += 1) {
+      expect(product[index]).toBeCloseTo(IDENTITY[index]!, 5);
+    }
   });
 });
 
@@ -1743,7 +1712,9 @@ describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
     expect(pack.uvs.length).toBe(pack.positions.length);
     expect(pack.uvs.length).toBe(12);
     // v0: uv0 (0,0), uv1 (0.1,0.2)
-    expect(Array.from(pack.uvs.subarray(0, 4))).toEqual([0, 0, 0.1, 0.2].map((v) => expect.closeTo(v)));
+    expect(Array.from(pack.uvs.subarray(0, 4))).toEqual(
+      [0, 0, 0.1, 0.2].map((v) => expect.closeTo(v)),
+    );
     // v1: uv0 (1,0), uv1 (0.3,0.4)
     expect(pack.uvs[4]).toBeCloseTo(1);
     expect(pack.uvs[5]).toBeCloseTo(0);
@@ -1784,9 +1755,7 @@ describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
     expect(() =>
       mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount),
     ).not.toThrow();
-    expect(
-      mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount),
-    ).toBeUndefined();
+    expect(mergeUv1FromCore(scene, merged.meshVertexRanges, merged.vertexCount)).toBeUndefined();
   });
 
   it('D12: world-space uv1 merge skips zero-triangle primitives in range order', () => {
@@ -1846,16 +1815,22 @@ describe('packSceneFromCore per-vertex UV flattening (P2)', () => {
 // ─── H34-c: zero-instance instanced-mesh ─────────────────────────────────────
 describe('H34-c: zero-instance instanced-mesh skips geometry', () => {
   it('[meshA, zeroInstanceB, meshC] packs only meshA and meshC', () => {
-    const meshA = unitTriMesh('A', asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1])));
+    const meshA = unitTriMesh(
+      'A',
+      asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
+    );
     const zeroInstB: Scene['primitives'][number] = {
       kind: 'instanced-mesh',
       id: 'B',
-      positions: new Float32Array([0,0,0, 1,0,0, 0,1,0]),
-      normals: new Float32Array([0,0,1, 0,0,1, 0,0,1]),
-      material: { baseColor: [1,1,1], roughness: 0.5, metallic: 0 },
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
       instances: [],
     };
-    const meshC = unitTriMesh('C', asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 5,0,0,1])));
+    const meshC = unitTriMesh(
+      'C',
+      asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1])),
+    );
     const scene: Scene = {
       primitives: [meshA, zeroInstB, meshC],
       emitters: [],
@@ -1865,7 +1840,9 @@ describe('H34-c: zero-instance instanced-mesh skips geometry', () => {
     // Two non-zero primitives → 2 triangles
     expect(packed.triangleCount).toBe(2);
     // Warning must mention the zero-instance primitive
-    expect(packed.warnings.some((w) => w.includes('"B"') && w.includes('zero instances'))).toBe(true);
+    expect(packed.warnings.some((w) => w.includes('"B"') && w.includes('zero instances'))).toBe(
+      true,
+    );
     // TLAS bindings must NOT include B
     const bindingIds = packed.primitiveTlasBindings.map((b) => b.primitiveId);
     expect(bindingIds).not.toContain('B');
@@ -1878,7 +1855,10 @@ describe('H34-c: zero-instance instanced-mesh skips geometry', () => {
 describe('H34-d: tlas:false with multiple primitives auto-upgrades to tlas', () => {
   it('emits a warning and still builds a TLAS when tlas:false + 2 primitives', () => {
     const meshA = unitTriMesh('A');
-    const meshB = unitTriMesh('B', asMat4(new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 5,0,0,1])));
+    const meshB = unitTriMesh(
+      'B',
+      asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 0, 0, 1])),
+    );
     const scene: Scene = {
       primitives: [meshA, meshB],
       emitters: [],
@@ -1901,5 +1881,243 @@ describe('H34-d: tlas:false with multiple primitives auto-upgrades to tlas', () 
     };
     const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
     expect(packed.warnings.some((w) => w.includes('tlas:false'))).toBe(false);
+  });
+
+  it('auto-upgrades a single transformed mesh instead of dropping its transform', () => {
+    const scene: Scene = {
+      primitives: [unitTriMesh('moved', translate(5))],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+
+    expect(packed.tlasNodeCount).toBeGreaterThan(0);
+    expect(packed.primitiveTlasBindings).toHaveLength(1);
+    expect(packed.tlasInstanceLocalToWorld[12]).toBeCloseTo(5);
+    expect(
+      packed.warnings.some(
+        (warning) =>
+          warning.includes('tlas:false') &&
+          warning.includes('non-identity transform') &&
+          warning.includes('automatically upgrading'),
+      ),
+    ).toBe(true);
+  });
+
+  it('auto-upgrades a single instanced mesh with multiple instances', () => {
+    const scene: Scene = {
+      primitives: [instancedMesh('copies', [translate(0), translate(3)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+
+    expect(packed.tlasBlasRoots).toHaveLength(2);
+    expect(packed.tlasInstanceLocalToWorld[12]).toBeCloseTo(0);
+    expect(packed.tlasInstanceLocalToWorld[16 + 12]).toBeCloseTo(3);
+    expect(
+      packed.warnings.some(
+        (warning) => warning.includes('tlas:false') && warning.includes('2 instances'),
+      ),
+    ).toBe(true);
+  });
+
+  it('auto-upgrades a single translated instance but keeps one identity instance direct', () => {
+    const translated: Scene = {
+      primitives: [instancedMesh('translated', [translate(2)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const identity: Scene = {
+      primitives: [instancedMesh('identity', [translate(0)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const translatedPack = packSceneFromCore(translated, {
+      tlas: false,
+      resolveMaterialId: () => 0,
+    });
+    const identityPack = packSceneFromCore(identity, {
+      tlas: false,
+      resolveMaterialId: () => 0,
+    });
+
+    expect(translatedPack.tlasNodeCount).toBeGreaterThan(0);
+    expect(translatedPack.tlasInstanceLocalToWorld[12]).toBeCloseTo(2);
+    expect(identityPack.tlasNodeCount).toBe(0);
+    expect(identityPack.primitiveTlasBindings).toEqual([]);
+    expect(identityPack.warnings.some((warning) => warning.includes('tlas:false'))).toBe(false);
+  });
+
+  it('removes a singular-only primitive instead of leaving a root-0 direct fallback', () => {
+    const singular = asMat4(new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+    const scene: Scene = {
+      primitives: [unitTriMesh('singular-direct', singular)],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+
+    expect(packed.triangleCount).toBe(0);
+    expect(packed.positions).toHaveLength(0);
+    expect(packed.indices).toHaveLength(0);
+    expect(packed.bvhNodes).toHaveLength(0);
+    expect(packed.tlasNodeCount).toBe(0);
+    expect(packed.primitiveTlasBindings).toEqual([]);
+    expect(
+      packed.warnings.some(
+        (warning) =>
+          warning.includes('non-invertible instance transform') &&
+          warning.includes('skipping this TLAS instance'),
+      ),
+    ).toBe(true);
+    expect(
+      packed.warnings.some(
+        (warning) =>
+          warning.includes('no invertible placements') &&
+          warning.includes('skipping its geometry and BLAS nodes'),
+      ),
+    ).toBe(true);
+    expect(packed.warnings.some((warning) => warning.includes('automatically upgrading'))).toBe(
+      false,
+    );
+  });
+
+  it('keeps a zero-instance primitive as a valid empty direct representation', () => {
+    const scene: Scene = {
+      primitives: [instancedMesh('empty', [])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+
+    expect(packed.triangleCount).toBe(0);
+    expect(packed.tlasNodeCount).toBe(0);
+    expect(packed.primitiveTlasBindings).toEqual([]);
+    expect(packed.warnings.some((warning) => warning.includes('tlas:false'))).toBe(false);
+  });
+
+  it('selects direct mode from the geometry that actually survives packing', () => {
+    const tiny: Scene['primitives'][number] = {
+      kind: 'mesh',
+      id: 'skipped-tiny',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1]),
+      material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0 },
+    };
+    const scene: Scene = {
+      primitives: [tiny, unitTriMesh('survivor')],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+
+    expect(packed.triangleCount).toBe(1);
+    expect(packed.tlasNodeCount).toBe(0);
+    expect(packed.primitiveTlasBindings).toEqual([]);
+    expect(packed.warnings).toContain(
+      'Primitive "skipped-tiny" has fewer than 3 vertices; skipping.',
+    );
+    expect(packed.warnings.some((warning) => warning.includes('automatically upgrading'))).toBe(
+      false,
+    );
+  });
+
+  it('keeps one identity placement direct after skipping a singular sibling instance', () => {
+    const singular = asMat4(new Float32Array([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]));
+    const scene: Scene = {
+      primitives: [instancedMesh('partly-singular', [translate(0), singular])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = packSceneFromCore(scene, { tlas: false, resolveMaterialId: () => 0 });
+
+    expect(packed.triangleCount).toBe(1);
+    expect(packed.tlasNodeCount).toBe(0);
+    expect(packed.primitiveTlasBindings).toEqual([]);
+    expect(
+      packed.warnings.some((warning) => warning.includes('non-invertible instance transform')),
+    ).toBe(true);
+    expect(packed.warnings.some((warning) => warning.includes('automatically upgrading'))).toBe(
+      false,
+    );
+  });
+
+  it('retains TLAS representation through a BLAS splice after an automatic upgrade', () => {
+    const initial: Scene = {
+      primitives: [unitTriMesh('mutable', translate(4))],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const prior = packSceneFromCore(initial, { tlas: false, resolveMaterialId: () => 0 });
+    const primitive = initial.primitives[0]!;
+    if (primitive.kind !== 'mesh') throw new Error('test setup');
+    const next: Scene = {
+      ...initial,
+      primitives: [
+        {
+          ...primitive,
+          positions: new Float32Array([0, 0, 0, 2, 0, 0, 0, 1, 0]),
+        },
+      ],
+    };
+
+    const rebuilt = rebuildPrimitiveBlas(next, 'mutable', prior, {
+      tlas: false,
+      resolveMaterialId: () => 0,
+    });
+
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.strategy).toBe('splice');
+    expect(rebuilt.pack.tlasNodeCount).toBeGreaterThan(0);
+    expect(rebuilt.pack.tlasInstanceLocalToWorld[12]).toBeCloseTo(4);
+  });
+
+  it('rejects a direct-pack splice and deterministically full-packs an incompatible mutation', () => {
+    const initial: Scene = {
+      primitives: [unitTriMesh('direct-mutable')],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const prior = packSceneFromCore(initial, { tlas: false, resolveMaterialId: () => 0 });
+    const next: Scene = {
+      ...initial,
+      primitives: [unitTriMesh('direct-mutable', translate(6))],
+    };
+
+    // Direct packs intentionally publish no TLAS binding metadata. The bounded
+    // splice therefore fails explicitly instead of guessing that root zero may
+    // remain direct after the mutation changed its representation preconditions.
+    const attemptedSplice = rebuildPrimitiveBlas(next, 'direct-mutable', prior, {
+      tlas: false,
+      resolveMaterialId: () => 0,
+    });
+    expect(attemptedSplice).toEqual({
+      ok: false,
+      reason:
+        'primitive "direct-mutable" was not in the previous TLAS pack ' +
+        '(topology-only rebuild requires full scene pack)',
+    });
+
+    const fallback = packSceneFromCore(next, {
+      tlas: false,
+      resolveMaterialId: () => 0,
+    });
+    expect(fallback.tlasNodeCount).toBeGreaterThan(0);
+    expect(fallback.tlasInstanceLocalToWorld[12]).toBeCloseTo(6);
+    expect(
+      fallback.warnings.some(
+        (warning) =>
+          warning.includes('non-identity transform') && warning.includes('automatically upgrading'),
+      ),
+    ).toBe(true);
   });
 });

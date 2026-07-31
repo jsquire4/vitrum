@@ -44,4 +44,11 @@ describe('public neural package surface', () => {
       expect(typeof value).toBe('function');
     }
   });
+
+  it('normalizes a tiny finite normal instead of replacing its direction', () => {
+    const normal = sanitizeNeuralNormal(1e-20, 0, 0);
+    expect(normal[0]).toBeCloseTo(1, 7);
+    expect(normal[1]).toBeCloseTo(0, 7);
+    expect(normal[2]).toBeCloseTo(0, 7);
+  });
 });

@@ -5,11 +5,12 @@
 // threshold, etc.) from the scene's diagonal length D.
 //
 // Mesh + InstancedMesh primitives contribute their transformed vertex AABB.
-// Analytic primitives contribute their fallback mesh's AABB if present, or
-// a point at their transform origin (best-effort — analytic shapes are
-// expected to be rare in user scenes).
+// Analytic primitives contribute their exact declared-shape AABB, conservatively
+// unioned with fallback geometry when one is present.
 
+import { decodeAnalyticParams } from '@vitrum/core';
 import type {
+  AnalyticPrimitive,
   Scene,
   ScenePrimitive,
   Mat4,
@@ -129,27 +130,99 @@ function primitiveBounds(prim: ScenePrimitive): BoundsContribution | null {
     };
   }
   if (prim.kind === 'analytic') {
+    let local = analyticLocalBounds(prim);
+    let triangles = 0;
     if (prim.fallbackMesh != null) {
-      const local = vertexAabb(prim.fallbackMesh.positions);
-      if (local != null) {
-        const transformed = transformAabb(local, prim.transform);
-        const triCount = triangleCountFor(
-          prim.fallbackMesh.positions,
-          prim.fallbackMesh.indices,
-        );
-        return { ...transformed, triangles: triCount };
-      }
+      const fallbackBounds = vertexAabb(prim.fallbackMesh.positions);
+      if (fallbackBounds != null) local = unionAabb(local, fallbackBounds);
+      triangles = triangleCountFor(
+        prim.fallbackMesh.positions,
+        prim.fallbackMesh.indices,
+      );
     }
-    // H31-f (D10) — an analytic primitive without a fallbackMesh contributes
-    // null (skip) instead of a zero-volume point at the transform origin. A
-    // zero-volume point collapses one extent dimension to 0, making the
-    // diagonal underestimate the scene scale → scale-derived epsilons too
-    // small (Möller-Trumbore ε, emitter dist² floor, camera-reset threshold).
-    // null-skip is conservative: the AABB slightly undersizes the scene instead
-    // of poisoning scale with a degenerate point contribution.
-    return null;
+    return { ...transformAabb(local, prim.transform), triangles };
   }
   return null;
+}
+
+function analyticLocalBounds(
+  prim: AnalyticPrimitive,
+): { min: Vec3; max: Vec3 } {
+  switch (prim.shape) {
+    case 'sphere': {
+      const [cx, cy, cz, radius] = decodeAnalyticParams('sphere', prim.params);
+      return {
+        min: [cx - radius, cy - radius, cz - radius],
+        max: [cx + radius, cy + radius, cz + radius],
+      };
+    }
+    case 'box': {
+      const [cx, cy, cz, hx, hy, hz] = decodeAnalyticParams('box', prim.params);
+      return {
+        min: [cx - hx, cy - hy, cz - hz],
+        max: [cx + hx, cy + hy, cz + hz],
+      };
+    }
+    case 'capsule': {
+      const [ax, ay, az, bx, by, bz, radius] = decodeAnalyticParams(
+        'capsule',
+        prim.params,
+      );
+      return {
+        min: [
+          Math.min(ax, bx) - radius,
+          Math.min(ay, by) - radius,
+          Math.min(az, bz) - radius,
+        ],
+        max: [
+          Math.max(ax, bx) + radius,
+          Math.max(ay, by) + radius,
+          Math.max(az, bz) + radius,
+        ],
+      };
+    }
+    case 'cylinder': {
+      const [cx, cy, cz, radius, halfHeight] = decodeAnalyticParams(
+        'cylinder',
+        prim.params,
+      );
+      return {
+        min: [cx - radius, cy - halfHeight, cz - radius],
+        max: [cx + radius, cy + halfHeight, cz + radius],
+      };
+    }
+    case 'h-channel-came': {
+      const [length, railWidth, blockHeight] = decodeAnalyticParams(
+        'h-channel-came',
+        prim.params,
+      );
+      const hx = length * 0.5;
+      const hy = blockHeight * 0.5;
+      const hz = railWidth * 0.5;
+      return {
+        min: [-hx, -hy, -hz],
+        max: [hx, hy, hz],
+      };
+    }
+  }
+}
+
+function unionAabb(
+  a: { min: Vec3; max: Vec3 },
+  b: { min: Vec3; max: Vec3 },
+): { min: Vec3; max: Vec3 } {
+  return {
+    min: [
+      Math.min(a.min[0], b.min[0]),
+      Math.min(a.min[1], b.min[1]),
+      Math.min(a.min[2], b.min[2]),
+    ],
+    max: [
+      Math.max(a.max[0], b.max[0]),
+      Math.max(a.max[1], b.max[1]),
+      Math.max(a.max[2], b.max[2]),
+    ],
+  };
 }
 
 function vertexAabb(positions: Float32Array): { min: Vec3; max: Vec3 } | null {

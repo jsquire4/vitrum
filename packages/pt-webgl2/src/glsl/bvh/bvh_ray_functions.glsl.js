@@ -1,7 +1,8 @@
-// Ported verbatim from three-mesh-bvh (gkjohnson/three-mesh-bvh),
+// Ported from three-mesh-bvh (gkjohnson/three-mesh-bvh),
 // src/webgl/glsl/bvh_ray_functions.glsl.js. MIT License, (c) Garrett Johnson.
-// Copied to drop the three-mesh-bvh runtime dependency for the THREE-free
-// @vitrum/pt-webgl2 backend. See CREDITS.md.
+// Vitrum's triangle solve separates angular, barycentric, and ray-parameter
+// tolerances and equilibrates coordinates for scale-independent classification.
+// See CREDITS.md.
 
 /**
  * Set of shader functions used for interacting with the packed BVH in a shader and sampling
@@ -16,37 +17,60 @@
  */
 export const bvh_ray_functions = /* glsl */`
 
-#ifndef TRI_INTERSECT_EPSILON
-#define TRI_INTERSECT_EPSILON 1e-5
-#endif
+#define TRI_INTERSECT_ANGULAR_EPSILON 1e-7
+#define TRI_INTERSECT_BARYCENTRIC_EPSILON 1e-6
 
 // Raycasting
 bool intersectsBounds( vec3 rayOrigin, vec3 rayDirection, vec3 boundsMin, vec3 boundsMax, out float dist ) {
 
-	// https://www.reddit.com/r/opengl/comments/8ntzz5/fast_glsl_ray_box_intersection/
-	// https://tavianator.com/2011/ray_box.html
-	vec3 invDir = 1.0 / rayDirection;
+	// Evaluate each slab explicitly. The common reciprocal-vector form produces
+	// 0 * Inf = NaN when an axis-parallel ray starts exactly on a slab, which can
+	// turn a real hit into a driver-dependent miss. Division is used only after a
+	// non-zero direction check, so boundary numerators remain an exact zero.
+	if (
+		any( isnan( rayOrigin ) ) || any( isinf( rayOrigin ) ) ||
+		any( isnan( rayDirection ) ) || any( isinf( rayDirection ) ) ||
+		any( isnan( boundsMin ) ) || any( isinf( boundsMin ) ) ||
+		any( isnan( boundsMax ) ) || any( isinf( boundsMax ) ) ||
+		any( greaterThan( boundsMin, boundsMax ) )
+	) {
+		dist = 0.0;
+		return false;
+	}
 
-	// find intersection distances for each plane
-	vec3 tMinPlane = invDir * ( boundsMin - rayOrigin );
-	vec3 tMaxPlane = invDir * ( boundsMax - rayOrigin );
+	float nearDistance = 0.0;
+	float farDistance = INFINITY;
+	for ( int axis = 0; axis < 3; axis ++ ) {
 
-	// get the min and max distances from each intersection
-	vec3 tMinHit = min( tMaxPlane, tMinPlane );
-	vec3 tMaxHit = max( tMaxPlane, tMinPlane );
+		float origin = rayOrigin[ axis ];
+		float direction = rayDirection[ axis ];
+		float slabMin = boundsMin[ axis ];
+		float slabMax = boundsMax[ axis ];
+		if ( direction == 0.0 ) {
 
-	// get the furthest hit distance
-	vec2 t = max( tMinHit.xx, tMinHit.yz );
-	float t0 = max( t.x, t.y );
+			if ( origin < slabMin || origin > slabMax ) {
+				dist = 0.0;
+				return false;
+			}
+			continue;
 
-	// get the minimum hit distance
-	t = min( tMaxHit.xx, tMaxHit.yz );
-	float t1 = min( t.x, t.y );
+		}
 
-	// set distance to 0.0 if the ray starts inside the box
-	dist = max( t0, 0.0 );
+		float first = ( slabMin - origin ) / direction;
+		float second = ( slabMax - origin ) / direction;
+		float axisNear = min( first, second );
+		float axisFar = max( first, second );
+		nearDistance = max( nearDistance, axisNear );
+		farDistance = min( farDistance, axisFar );
+		if ( farDistance < nearDistance ) {
+			dist = 0.0;
+			return false;
+		}
 
-	return t1 >= dist;
+	}
+
+	dist = nearDistance;
+	return true;
 
 }
 
@@ -58,30 +82,70 @@ bool intersectsTriangle(
 	// https://stackoverflow.com/questions/42740765/intersection-between-line-and-triangle-in-3d
 	vec3 edge1 = b - a;
 	vec3 edge2 = c - a;
-	norm = cross( edge1, edge2 );
-
-	float det = - dot( rayDirection, norm );
+	float edgeScale = max(
+		max( max( abs( edge1.x ), abs( edge1.y ) ), abs( edge1.z ) ),
+		max( max( abs( edge2.x ), abs( edge2.y ) ), abs( edge2.z ) )
+	);
+	float directionScale = max(
+		abs( rayDirection.x ),
+		max( abs( rayDirection.y ), abs( rayDirection.z ) )
+	);
+	if (
+		! ( edgeScale > 0.0 ) || edgeScale > 3.402823e38 ||
+		! ( directionScale > 0.0 ) || directionScale > 3.402823e38
+	) {
+		return false;
+	}
+	vec3 scaledEdge1 = edge1 / edgeScale;
+	vec3 scaledEdge2 = edge2 / edgeScale;
+	vec3 scaledDirection = rayDirection / directionScale;
+	vec3 scaledAO = ( rayOrigin - a ) / edgeScale;
+	vec3 scaledNormal = cross( scaledEdge1, scaledEdge2 );
+	float normalScale = max(
+		abs( scaledNormal.x ),
+		max( abs( scaledNormal.y ), abs( scaledNormal.z ) )
+	);
+	if ( ! ( normalScale > 0.0 ) || normalScale > 3.402823e38 ) {
+		return false;
+	}
+	vec3 normalDirection = scaledNormal / normalScale;
+	float normalLength = length( normalDirection );
+	vec3 directionUnit = scaledDirection / length( scaledDirection );
+	float det = - dot( scaledDirection, scaledNormal );
+	float angularDeterminant = abs(
+		dot( directionUnit, normalDirection / normalLength )
+	);
+	if (
+		! ( angularDeterminant > TRI_INTERSECT_ANGULAR_EPSILON ) ||
+		det == 0.0
+	) {
+		return false;
+	}
 	float invdet = 1.0 / det;
-
-	vec3 AO = rayOrigin - a;
-	vec3 DAO = cross( AO, rayDirection );
+	vec3 DAO = cross( scaledAO, scaledDirection );
 
 	vec4 uvt;
-	uvt.x = dot( edge2, DAO ) * invdet;
-	uvt.y = - dot( edge1, DAO ) * invdet;
-	uvt.z = dot( AO, norm ) * invdet;
+	uvt.x = dot( scaledEdge2, DAO ) * invdet;
+	uvt.y = - dot( scaledEdge1, DAO ) * invdet;
+	uvt.z =
+		dot( scaledAO, scaledNormal ) * invdet *
+		edgeScale / directionScale;
 	uvt.w = 1.0 - uvt.x - uvt.y;
 
 	// set the hit information
 	barycoord = uvt.wxy; // arranged in A, B, C order
 	dist = uvt.z;
 	side = sign( det );
-	norm = side * normalize( norm );
+	norm = side * normalDirection / normalLength;
 
-	// add an epsilon to avoid misses between triangles
-	uvt += vec4( TRI_INTERSECT_EPSILON );
-
-	return all( greaterThanEqual( uvt, vec4( 0.0 ) ) );
+	bool finiteHit =
+		all( lessThanEqual( abs( uvt ), vec4( 3.402823e38 ) ) );
+	return finiteHit &&
+		all( greaterThanEqual(
+			uvt.xyw,
+			vec3( - TRI_INTERSECT_BARYCENTRIC_EPSILON )
+		) ) &&
+		uvt.z >= 0.0;
 
 }
 

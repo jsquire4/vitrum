@@ -25,6 +25,18 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const RESTIR_PHAT_WGSL = /* wgsl */ `
 
+// Receiver-independent target used only when a coarse reservoir is shared by
+// multiple full-resolution shading receivers. Its support depends solely on
+// the sampled light/environment source; receiver BRDF, geometry, sidedness,
+// depth, and visibility are re-evaluated by the final full-resolution consumer.
+fn restir_di_coarse_proposal_phat(lid: u32, xi: vec2f) -> f32 {
+  if (lid == ENV_SAMPLE_SENTINEL) {
+    return max(0.0, luminance(envRadiance(envDirFromXi(xi))));
+  }
+  if (lid >= ubo.emitterCount) { return 0.0; }
+  return max(0.0, luminance(sampleEmitterLeAtXi(sceneLoadEmitter(lid), xi)));
+}
+
 // ============================================================
 // Canonical ReSTIR-DI target distribution p̂.
 //   Same body all three pre-refactor copies (computePHat /
@@ -107,18 +119,22 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
     let wi = envDirFromXi(xi);
     let nDotL = max(0.0, dot(surf.normal, wi));
     if (nDotL <= 0.0) { return 0.0; }
-    let color = envRadiance(wi) * max(surf.envMapIntensity, 0.0);
+    let color = walkaroundScaleEnvironmentRadiance(
+      envRadiance(wi),
+      surf.envMapIntensity,
+    );
     let brdf  = restir_di_eval_surface_brdf(surf, wi);
     return luminance(color * brdf);
   }
   let e = sceneLoadEmitter(lid);
   let ls = sampleEmitterPoint(e, xi);
   let toL = ls.pos - surf.pos;
-  let dist2 = dot(toL, toL);
-  if (dist2 < 1e-8) { return 0.0; }
-  let wi     = toL / sqrt(dist2);
+  let dist = safe_length(toL);
+  if (!(dist > 0.0)) { return 0.0; }
+  let dist2 = dist * dist;
+  let wi = safe_normalize(toL);
   let nDotL  = max(0.0, dot(surf.normal, wi));
-  let nlDotL = max(0.0, dot(-e.normal, wi));
+  let nlDotL = emitterTriCosineTowardReceiver(e, -wi);
   if (nDotL <= 0.0 || nlDotL <= 0.0) { return 0.0; }
   // evalGGX already multiplies by NdotL (receiver cosine); G is the emitter
   // geometry term only: cos(emitter) / dist² with the emitterDist2Floor

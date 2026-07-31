@@ -48,15 +48,9 @@ export function solarDiscTexelCoverage(
 ): Float64Array {
   requireDimension(width, 'solarDiscTexelCoverage.width');
   requireDimension(height, 'solarDiscTexelCoverage.height');
-  const sunLength = Math.hypot(
-    sunDirection[0],
-    sunDirection[1],
-    sunDirection[2],
-  );
+  const sunLength = Math.hypot(sunDirection[0], sunDirection[1], sunDirection[2]);
   if (!Number.isFinite(sunLength) || sunLength <= 0) {
-    throw new RangeError(
-      'solarDiscTexelCoverage.sunDirection must be a finite non-zero vector',
-    );
+    throw new RangeError('solarDiscTexelCoverage.sunDirection must be a finite non-zero vector');
   }
 
   const sx = sunDirection[0] / sunLength;
@@ -64,7 +58,10 @@ export function solarDiscTexelCoverage(
   const sz = sunDirection[2] / sunLength;
   const thetaSun = Math.acos(Math.max(-1, Math.min(1, sy)));
   const sinThetaSun = Math.hypot(sx, sz);
-  const sunPhi = normalizeLongitude(Math.atan2(sz, sx));
+  // The coverage array uses texture-space longitude u∈[0,1), while world
+  // longitude is phi=atan2(z,x)∈[-π,π].  Shift by π to match the canonical
+  // renderer mapping u=phi/(2π)+0.5.
+  const sunPhi = normalizeLongitude(Math.atan2(sz, sx) + Math.PI);
   const cosRadius = Math.cos(SOLAR_ANGULAR_RADIUS);
   const capSolidAngle = TWO_PI * (1 - cosRadius);
   const dTheta = Math.PI / height;
@@ -74,10 +71,7 @@ export function solarDiscTexelCoverage(
   const thetaMin = Math.max(0, thetaSun - SOLAR_ANGULAR_RADIUS);
   const thetaMax = Math.min(Math.PI, thetaSun + SOLAR_ANGULAR_RADIUS);
   const firstRow = Math.max(0, Math.floor(thetaMin / dTheta));
-  const lastRow = Math.min(
-    height - 1,
-    Math.ceil(thetaMax / dTheta) - 1,
-  );
+  const lastRow = Math.min(height - 1, Math.ceil(thetaMax / dTheta) - 1);
   let depositedSolidAngle = 0;
 
   if (sinThetaSun <= POLAR_AXIS_EPSILON) {
@@ -88,8 +82,7 @@ export function solarDiscTexelCoverage(
       const thetaLo = Math.max(row * dTheta, capMin);
       const thetaHi = Math.min((row + 1) * dTheta, capMax);
       if (thetaHi <= thetaLo) continue;
-      const texelSolidAngle =
-        dPhi * (Math.cos(thetaLo) - Math.cos(thetaHi));
+      const texelSolidAngle = dPhi * (Math.cos(thetaLo) - Math.cos(thetaHi));
       const rowOffset = row * width;
       for (let x = 0; x < width; x += 1) {
         coverage[rowOffset + x] = texelSolidAngle;
@@ -105,10 +98,7 @@ export function solarDiscTexelCoverage(
     ): void => {
       if (intervalHi <= intervalLo) return;
       const firstColumn = Math.max(0, Math.floor(intervalLo / dPhi));
-      const lastColumn = Math.min(
-        width - 1,
-        Math.ceil(intervalHi / dPhi) - 1,
-      );
+      const lastColumn = Math.min(width - 1, Math.ceil(intervalHi / dPhi) - 1);
       const rowOffset = row * width;
       for (let x = firstColumn; x <= lastColumn; x += 1) {
         const phiLo = Math.max(intervalLo, x * dPhi);
@@ -121,11 +111,7 @@ export function solarDiscTexelCoverage(
       }
     };
 
-    const addPeriodicLongitudeSpan = (
-      row: number,
-      halfSpan: number,
-      thetaWeight: number,
-    ): void => {
+    const addPeriodicLongitudeSpan = (row: number, halfSpan: number, thetaWeight: number): void => {
       if (halfSpan >= Math.PI) {
         addLongitudeInterval(row, 0, TWO_PI, thetaWeight);
         return;
@@ -145,10 +131,7 @@ export function solarDiscTexelCoverage(
       const thetaSpan = thetaHi - thetaLo;
       const stepCount = Math.max(
         MIN_THETA_QUADRATURE_STEPS,
-        Math.min(
-          MAX_THETA_QUADRATURE_STEPS,
-          Math.ceil(thetaSpan / TARGET_THETA_STEP),
-        ),
+        Math.min(MAX_THETA_QUADRATURE_STEPS, Math.ceil(thetaSpan / TARGET_THETA_STEP)),
       );
       const thetaStep = thetaSpan / stepCount;
       for (let sample = 0; sample < stepCount; sample += 1) {
@@ -162,8 +145,7 @@ export function solarDiscTexelCoverage(
           }
           continue;
         }
-        const threshold =
-          (cosRadius - Math.cos(theta) * sy) / horizontalTerm;
+        const threshold = (cosRadius - Math.cos(theta) * sy) / horizontalTerm;
         if (threshold <= -1) {
           addPeriodicLongitudeSpan(row, Math.PI, thetaWeight);
         } else if (threshold < 1) {
@@ -178,9 +160,7 @@ export function solarDiscTexelCoverage(
   }
 
   if (!(depositedSolidAngle > 0) || !Number.isFinite(depositedSolidAngle)) {
-    throw new RangeError(
-      'solarDiscTexelCoverage could not integrate a finite solar cap',
-    );
+    throw new RangeError('solarDiscTexelCoverage could not integrate a finite solar cap');
   }
 
   // Composite quadrature controls distribution across intersected texels; this
@@ -188,13 +168,11 @@ export function solarDiscTexelCoverage(
   const normalization = capSolidAngle / depositedSolidAngle;
   for (let row = firstRow; row <= lastRow; row += 1) {
     const centerTheta = ((row + 0.5) / height) * Math.PI;
-    const integrationMeasure =
-      dTheta * dPhi * Math.max(Math.sin(centerTheta), 1e-6);
+    const integrationMeasure = dTheta * dPhi * Math.max(Math.sin(centerTheta), 1e-6);
     const rowOffset = row * width;
     for (let x = 0; x < width; x += 1) {
       const index = rowOffset + x;
-      coverage[index] =
-        (coverage[index] ?? 0) * normalization / integrationMeasure;
+      coverage[index] = ((coverage[index] ?? 0) * normalization) / integrationMeasure;
     }
   }
 

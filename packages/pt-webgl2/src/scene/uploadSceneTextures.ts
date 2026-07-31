@@ -43,6 +43,10 @@ import {
 import { packLightsTexture } from './lightsTexture.js';
 import { assertSceneEmissiveMapsCpuReadable, packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
+import {
+  computeWebgl2TransportBounds,
+  type Webgl2TransportBounds,
+} from './sceneScalePolicy.js';
 import { solveSkinPrimitives } from './solveSkinPrimitives.js';
 import type { UploadedSceneTextures } from './sceneTextures.js';
 import { buildUvAttributeLayout, type UvAttributeLayout } from './uvAttributeLayout.js';
@@ -52,6 +56,7 @@ export interface SceneTexturesBuild {
   readonly merged: WorldSpaceMergeResult;
   readonly warnings: string[];
   readonly structuredWarnings: readonly EngineWarning[];
+  readonly transportBounds: Webgl2TransportBounds;
   /** The capability-filtered scene (H7: returned so callers reuse this single
    *  partition instead of running `partitionSceneBySupport` a second time). */
   readonly supported: Scene;
@@ -92,7 +97,10 @@ function vertexDisplacementWarningDetails(message: string): Readonly<Record<stri
     source: 'mergeWorldSpaceFromCore',
     warning: message,
   };
-  const match = / displacementMap at (.+?)(?: handle | requests | has | displacementSubdivisions| triangle )/.exec(message);
+  const match =
+    / displacementMap at (.+?)(?: handle | requests | has | displacementSubdivisions| triangle )/.exec(
+      message,
+    );
   if (match?.[1] !== undefined) details.sourcePath = match[1];
   return details;
 }
@@ -122,29 +130,32 @@ function buildGeometryInputs(
     },
   });
   const uvLayout = buildUvAttributeLayout(skinnedScene, merged, merged.materials);
-  const mergedTangents = mergeTangentsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
-  const mergedColors = mergeColorsFromCore(skinnedScene, merged.meshVertexRanges, merged.vertexCount);
-  const attrData = packAttributesArray(
-    {
-      ...merged,
-      uv1: uvLayout.mergedByTexCoord.get(1)!,
-      extraUvLayers: uvLayout.extraUvLayers,
-      ...(mergedTangents != null ? { tangents: mergedTangents } : {}),
-      ...(mergedColors != null ? { colors: mergedColors } : {}),
-    },
+  const mergedTangents = mergeTangentsFromCore(
+    skinnedScene,
+    merged.meshVertexRanges,
+    merged.vertexCount,
   );
+  const mergedColors = mergeColorsFromCore(
+    skinnedScene,
+    merged.meshVertexRanges,
+    merged.vertexCount,
+  );
+  const attrData = packAttributesArray({
+    ...merged,
+    uv1: uvLayout.mergedByTexCoord.get(1)!,
+    extraUvLayers: uvLayout.extraUvLayers,
+    ...(mergedTangents != null ? { tangents: mergedTangents } : {}),
+    ...(mergedColors != null ? { colors: mergedColors } : {}),
+  });
   return { skinnedScene, merged, attrData, uvLayout };
 }
 
-function assertAttributeLayerBudget(
-  gl: WebGL2RenderingContext,
-  requiredLayers: number,
-): void {
+function assertAttributeLayerBudget(gl: WebGL2RenderingContext, requiredLayers: number): void {
   const limit = gl.getParameter(gl.MAX_ARRAY_TEXTURE_LAYERS) as number;
   if (Number.isFinite(limit) && limit > 0 && requiredLayers > limit) {
     throw new RangeError(
       `pt-webgl2: vertex attributes require ${requiredLayers} texture-array layers, ` +
-      `but this device exposes MAX_ARRAY_TEXTURE_LAYERS=${limit}`,
+        `but this device exposes MAX_ARRAY_TEXTURE_LAYERS=${limit}`,
     );
   }
 }
@@ -169,7 +180,10 @@ export function buildSceneGeometryTextureData(
     geometry.merged,
     geometry.uvLayout.mergedByTexCoord,
   );
-  const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, geometry.merged);
+  const vertexColorMaterialIds = collectVertexColorMaterialIds(
+    geometry.skinnedScene,
+    geometry.merged,
+  );
   return {
     bvhData,
     attrData: geometry.attrData,
@@ -270,11 +284,7 @@ export function buildRefitSceneGeometryTextures(
   };
 
   const bvhData = packBvhTextureData(refitMerged);
-  const meshLightsData = packMeshAreaLights(
-    scene,
-    refitMerged,
-    geometry.uvLayout.mergedByTexCoord,
-  );
+  const meshLightsData = packMeshAreaLights(scene, refitMerged, geometry.uvLayout.mergedByTexCoord);
   const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, refitMerged);
 
   return {
@@ -300,6 +310,7 @@ export function buildSceneTextures(
   gl: WebGL2RenderingContext,
   scene: Scene,
   caps: EngineCapabilities,
+  options: { readonly bdpt?: boolean } = {},
 ): SceneTexturesBuild {
   const analyticExpansion = expandAnalyticPrimitiveFallbacks(scene);
   // (1) capability filter
@@ -326,6 +337,11 @@ export function buildSceneTextures(
   const skinnedScene = geometry.skinnedScene;
   const merged = geometry.merged;
   assertAttributeLayerBudget(gl, geometry.attrData.layers);
+  const transportBounds = computeWebgl2TransportBounds(
+    merged,
+    supported,
+    options,
+  );
 
   // Complete every CPU pack and authored-input validation before the first GL
   // allocation. A malformed material map or HDRI must leave no candidate GPU
@@ -342,11 +358,7 @@ export function buildSceneTextures(
   });
   const atlas = materialAtlases.ldr;
   const hdrAtlas = materialAtlases.hdr;
-  const atlasCapacities = materialTextureAtlasLayerCapacities(
-    atlas,
-    hdrAtlas,
-    maxAtlasLayers,
-  );
+  const atlasCapacities = materialTextureAtlasLayerCapacities(atlas, hdrAtlas, maxAtlasLayers);
   const materialAtlasLayerCapacity = atlasCapacities.ldr;
   const materialHdrAtlasLayerCapacity = atlasCapacities.hdr;
 
@@ -372,11 +384,7 @@ export function buildSceneTextures(
   // (5b) B4 — mesh-area triangle lights for NEE, built from explicit mesh-area
   //      emitters plus implicit emissive-material meshes over the merged world-
   //      space geometry. null when the scene has no emissive mesh triangles.
-  const meshLightsData = packMeshAreaLights(
-    supported,
-    merged,
-    geometry.uvLayout.mergedByTexCoord,
-  );
+  const meshLightsData = packMeshAreaLights(supported, merged, geometry.uvLayout.mergedByTexCoord);
 
   // (6) environment importance-sampling (null for non-HDRI scenes).
   const env = buildEquirectInfo(supported.environment, warningOptions);
@@ -397,91 +405,112 @@ export function buildSceneTextures(
     return texture;
   };
   try {
-  const textures2DArray = atlas != null
-    ? own(uploadTextureAtlas(gl, atlas, { layerCapacity: materialAtlasLayerCapacity }))
-    : null;
-  const materialHdrTextures2DArray = hdrAtlas != null
-    ? own(uploadTextureAtlas(gl, hdrAtlas, { layerCapacity: materialHdrAtlasLayerCapacity }))
-    : null;
-  const materials = own(uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials'));
-  const lights = own(uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights'));
-  const meshLights = meshLightsData.data != null
-    ? own(uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights'))
-    : null;
-  const envMap = env.map
-    ? own(uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map'))
-    : null;
-  const envMarginal = env.marginal
-    ? own(uploadRgba32fRect(gl, env.marginal.data, env.marginal.width, env.marginal.height, 'environment marginal CDF'))
-    : null;
-  const envConditional = env.conditional
-    ? own(uploadRgba32fRect(gl, env.conditional.data, env.conditional.width, env.conditional.height, 'environment conditional CDF'))
-    : null;
-  const attributesArray = own(uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes'));
+    const textures2DArray =
+      atlas != null
+        ? own(uploadTextureAtlas(gl, atlas, { layerCapacity: materialAtlasLayerCapacity }))
+        : null;
+    const materialHdrTextures2DArray =
+      hdrAtlas != null
+        ? own(uploadTextureAtlas(gl, hdrAtlas, { layerCapacity: materialHdrAtlasLayerCapacity }))
+        : null;
+    const materials = own(
+      uploadRgba32f(gl, materialsData.data, materialsData.dim, 'scene materials'),
+    );
+    const lights = own(uploadRgba32f(gl, lightsData.data, lightsData.dim, 'scene lights'));
+    const meshLights =
+      meshLightsData.data != null
+        ? own(uploadRgba32f(gl, meshLightsData.data, meshLightsData.dim, 'mesh-area lights'))
+        : null;
+    const envMap = env.map
+      ? own(uploadRgba32fRect(gl, env.map.data, env.map.width, env.map.height, 'environment map'))
+      : null;
+    // The conditional payload also carries the marginal forward CDF in .g, so
+    // the production graph owns one distribution texture and stays within the
+    // WebGL2-minimum 16 active fragment samplers.
+    const envMarginal = null;
+    const envConditional = env.conditional
+      ? own(
+          uploadRgba32fRect(
+            gl,
+            env.conditional.data,
+            env.conditional.width,
+            env.conditional.height,
+            'environment CDF distribution',
+          ),
+        )
+      : null;
+    const attributesArray = own(
+      uploadRgba32fArray(gl, attrData.data, attrData.dim, attrData.layers, 'vertex attributes'),
+    );
 
-  // (8) assemble the bundle.
-  let destroyed = false;
-  const textures: UploadedSceneTextures = {
-    bvhBounds: bvh.bounds,
-    bvhContents: bvh.contents,
-    bvhPosition: bvh.position,
-    bvhIndex: bvh.index,
-    materialIndex: bvh.materialIndex,
-    materials,
-    attributesArray,
-    lights,
-    lightCount: lightsData.lightCount,
-    meshLights,
-    meshLightCount: meshLightsData.triLightCount,
-    totalEmissiveArea: meshLightsData.totalEmissiveArea,
-    totalEmissivePower: meshLightsData.totalEmissivePower,
-    envMap,
-    envMarginal,
-    envConditional,
-    envTotalSum: env.totalSum,
-    envWidth: env.map?.width ?? 0,
-    envHeight: env.map?.height ?? 0,
-    textures2DArray,
-    materialAtlasDim: atlas?.dim ?? 0,
-    materialAtlasLayerCount: atlas?.layerCount ?? 0,
-    materialAtlasLayerCapacity,
-    materialHdrTextures2DArray,
-    materialHdrAtlasDim: hdrAtlas?.dim ?? 0,
-    materialHdrAtlasLayerCount: hdrAtlas?.layerCount ?? 0,
-    materialHdrAtlasLayerCapacity,
-    materialLayerMap,
-    vertexColorMaterialIds,
-    uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
-    attributeLayerCount: attrData.layers,
-    triangleCount: merged.triangleCount,
-    destroy(): void {
-      if (destroyed) return;
-      destroyed = true;
-      retireIndependently([
-        () => bvh.destroy(),
-        ...[
-          materials,
-          attributesArray,
-          lights,
-          meshLights,
-          envMap,
-          envMarginal,
-          envConditional,
-          textures2DArray,
-          materialHdrTextures2DArray,
-        ].filter((texture): texture is WebGLTexture => texture != null)
-          .map((texture) => () => gl.deleteTexture(texture)),
-      ], 'pt-webgl2: one or more scene textures failed to retire');
-    },
-  };
+    // (8) assemble the bundle.
+    let destroyed = false;
+    const textures: UploadedSceneTextures = {
+      bvhBounds: bvh.bounds,
+      bvhContents: bvh.contents,
+      bvhPosition: bvh.position,
+      bvhIndex: bvh.index,
+      materialIndex: bvh.materialIndex,
+      materials,
+      attributesArray,
+      lights,
+      lightCount: lightsData.lightCount,
+      meshLights,
+      meshLightCount: meshLightsData.triLightCount,
+      totalEmissiveArea: meshLightsData.totalEmissiveArea,
+      totalEmissivePower: meshLightsData.totalEmissivePower,
+      envMap,
+      envMarginal,
+      envConditional,
+      envTotalSum: env.totalSum,
+      envWidth: env.map?.width ?? 0,
+      envHeight: env.map?.height ?? 0,
+      textures2DArray,
+      materialAtlasDim: atlas?.dim ?? 0,
+      materialAtlasLayerCount: atlas?.layerCount ?? 0,
+      materialAtlasLayerCapacity,
+      materialHdrTextures2DArray,
+      materialHdrAtlasDim: hdrAtlas?.dim ?? 0,
+      materialHdrAtlasLayerCount: hdrAtlas?.layerCount ?? 0,
+      materialHdrAtlasLayerCapacity,
+      materialLayerMap,
+      vertexColorMaterialIds,
+      uvLayerByTexCoord: geometry.uvLayout.layerByTexCoord,
+      attributeLayerCount: attrData.layers,
+      triangleCount: merged.triangleCount,
+      destroy(): void {
+        if (destroyed) return;
+        destroyed = true;
+        retireIndependently(
+          [
+            () => bvh.destroy(),
+            ...[
+              materials,
+              attributesArray,
+              lights,
+              meshLights,
+              envMap,
+              envMarginal,
+              envConditional,
+              textures2DArray,
+              materialHdrTextures2DArray,
+            ]
+              .filter((texture): texture is WebGLTexture => texture != null)
+              .map((texture) => () => gl.deleteTexture(texture)),
+          ],
+          'pt-webgl2: one or more scene textures failed to retire',
+        );
+      },
+    };
 
-  return {
-    textures,
-    merged,
-    warnings: [...warnings, ...merged.warnings],
-    structuredWarnings,
-    supported,
-  };
+    return {
+      textures,
+      merged,
+      warnings: [...warnings, ...merged.warnings],
+      structuredWarnings,
+      transportBounds,
+      supported,
+    };
   } catch (error) {
     bvh.destroy();
     for (const texture of allocated) gl.deleteTexture(texture);
@@ -489,7 +518,10 @@ export function buildSceneTextures(
   }
 }
 
-export function expandAnalyticPrimitiveFallbacks(scene: Scene): { readonly scene: Scene; readonly warnings: string[] } {
+export function expandAnalyticPrimitiveFallbacks(scene: Scene): {
+  readonly scene: Scene;
+  readonly warnings: string[];
+} {
   let changed = false;
   const warnings: string[] = [];
   const primitives = scene.primitives.map((primitive): ScenePrimitive => {
@@ -497,7 +529,7 @@ export function expandAnalyticPrimitiveFallbacks(scene: Scene): { readonly scene
     changed = true;
     warnings.push(
       `Scene primitive "${primitive.id}" (analytic ${primitive.shape}) is tessellated to a generated MeshPrimitive ` +
-      `fallback for @vitrum/pt-webgl2.`,
+        `fallback for @vitrum/pt-webgl2.`,
     );
     return analyticPrimitiveToMesh(primitive);
   });
@@ -516,43 +548,67 @@ type MeshLikePrimitive = Extract<
   { positions: Float32Array; tangents?: Float32Array }
 >;
 
-const IDENTITY_MAT4 = new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, 0, 1,
-]);
+const IDENTITY_MAT4 = new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
 
 function isMeshLikePrimitive(p: ScenePrimitive): p is MeshLikePrimitive {
   return p.kind === 'mesh' || p.kind === 'instanced-mesh' || p.kind === 'skinned-mesh';
 }
 
 function determinant4(m: ArrayLike<number>): number {
-  const n11 = m[0] ?? 0, n12 = m[4] ?? 0, n13 = m[8] ?? 0, n14 = m[12] ?? 0;
-  const n21 = m[1] ?? 0, n22 = m[5] ?? 0, n23 = m[9] ?? 0, n24 = m[13] ?? 0;
-  const n31 = m[2] ?? 0, n32 = m[6] ?? 0, n33 = m[10] ?? 0, n34 = m[14] ?? 0;
-  const n41 = m[3] ?? 0, n42 = m[7] ?? 0, n43 = m[11] ?? 0, n44 = m[15] ?? 0;
+  const n11 = m[0] ?? 0,
+    n12 = m[4] ?? 0,
+    n13 = m[8] ?? 0,
+    n14 = m[12] ?? 0;
+  const n21 = m[1] ?? 0,
+    n22 = m[5] ?? 0,
+    n23 = m[9] ?? 0,
+    n24 = m[13] ?? 0;
+  const n31 = m[2] ?? 0,
+    n32 = m[6] ?? 0,
+    n33 = m[10] ?? 0,
+    n34 = m[14] ?? 0;
+  const n41 = m[3] ?? 0,
+    n42 = m[7] ?? 0,
+    n43 = m[11] ?? 0,
+    n44 = m[15] ?? 0;
   return (
-    n41 * (
-      +n14 * n23 * n32 - n13 * n24 * n32 - n14 * n22 * n33 +
-      n12 * n24 * n33 + n13 * n22 * n34 - n12 * n23 * n34
-    ) +
-    n42 * (
-      +n11 * n23 * n34 - n11 * n24 * n33 + n14 * n21 * n33 -
-      n13 * n21 * n34 + n13 * n24 * n31 - n14 * n23 * n31
-    ) +
-    n43 * (
-      +n11 * n24 * n32 - n11 * n22 * n34 - n14 * n21 * n32 +
-      n12 * n21 * n34 + n14 * n22 * n31 - n12 * n24 * n31
-    ) +
-    n44 * (
-      -n13 * n22 * n31 - n11 * n23 * n32 + n11 * n22 * n33 +
-      n13 * n21 * n32 - n12 * n21 * n33 + n12 * n23 * n31
-    )
+    n41 *
+      (+n14 * n23 * n32 -
+        n13 * n24 * n32 -
+        n14 * n22 * n33 +
+        n12 * n24 * n33 +
+        n13 * n22 * n34 -
+        n12 * n23 * n34) +
+    n42 *
+      (+n11 * n23 * n34 -
+        n11 * n24 * n33 +
+        n14 * n21 * n33 -
+        n13 * n21 * n34 +
+        n13 * n24 * n31 -
+        n14 * n23 * n31) +
+    n43 *
+      (+n11 * n24 * n32 -
+        n11 * n22 * n34 -
+        n14 * n21 * n32 +
+        n12 * n21 * n34 +
+        n14 * n22 * n31 -
+        n12 * n24 * n31) +
+    n44 *
+      (-n13 * n22 * n31 -
+        n11 * n23 * n32 +
+        n11 * n22 * n33 +
+        n13 * n21 * n32 -
+        n12 * n21 * n33 +
+        n12 * n23 * n31)
   );
 }
 
-function transformDirection(m: ArrayLike<number>, x: number, y: number, z: number): [number, number, number] {
+function transformDirection(
+  m: ArrayLike<number>,
+  x: number,
+  y: number,
+  z: number,
+): [number, number, number] {
   return [
     (m[0] ?? 0) * x + (m[4] ?? 0) * y + (m[8] ?? 0) * z,
     (m[1] ?? 0) * x + (m[5] ?? 0) * y + (m[9] ?? 0) * z,
@@ -584,9 +640,10 @@ function mergeTangentsFromCore(
     const legacyInstanceIndex = legacyInstanceCursor.get(sourceId) ?? 0;
     legacyInstanceCursor.set(sourceId, legacyInstanceIndex + 1);
     const sourceInstanceIndex = range.sourceInstanceIndex ?? legacyInstanceIndex;
-    const transform = prim.kind === 'instanced-mesh'
-      ? (prim.instances[sourceInstanceIndex] ?? IDENTITY_MAT4)
-      : (prim.transform ?? IDENTITY_MAT4);
+    const transform =
+      prim.kind === 'instanced-mesh'
+        ? (prim.instances[sourceInstanceIndex] ?? IDENTITY_MAT4)
+        : (prim.transform ?? IDENTITY_MAT4);
     const handednessScale = determinant4(transform) < 0 ? -1 : 1;
     for (let v = 0; v < range.vertexCount; v += 1) {
       const local = Math.min(v, localVertexCount - 1);
@@ -612,10 +669,13 @@ function mergeColorsFromCore(
   totalVertexCount: number,
 ): Float32Array | undefined {
   const meshLike = scene.primitives.filter(isMeshLikePrimitive);
-  if (!meshLike.some((p) => {
-    const colors = getPrimitiveActiveColorSet(p);
-    return colors != null && colors.length > 0;
-  })) return undefined;
+  if (
+    !meshLike.some((p) => {
+      const colors = getPrimitiveActiveColorSet(p);
+      return colors != null && colors.length > 0;
+    })
+  )
+    return undefined;
 
   const out = new Float32Array(totalVertexCount * 4);
   for (let i = 0; i < totalVertexCount; i += 1) {
@@ -635,9 +695,10 @@ function mergeColorsFromCore(
     const localVertexCount = Math.floor(prim.positions.length / 3);
     if (localVertexCount < 1) continue;
     const src = getPrimitiveActiveColorSet(prim);
-    const colorStride = src == null || src.length === 0
-      ? 4
-      : Math.max(3, Math.min(4, Math.floor(src.length / Math.max(1, localVertexCount))));
+    const colorStride =
+      src == null || src.length === 0
+        ? 4
+        : Math.max(3, Math.min(4, Math.floor(src.length / Math.max(1, localVertexCount))));
 
     if (src == null || src.length === 0) continue;
 
@@ -695,45 +756,32 @@ export function uploadRgba32f(
   resourceName: string,
 ): WebGLTexture {
   return allocGlTexture(gl, {
-    kind: '2d', dim,
-    internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT,
+    kind: '2d',
+    dim,
+    internalFormat: gl.RGBA32F,
+    format: gl.RGBA,
+    type: gl.FLOAT,
     data,
     resourceName,
   });
 }
 
-function guardTextureSubUpload(gl: WebGL2RenderingContext, resourceName: string): void {
-  if (gl.isContextLost()) {
-    throw new Error(
-      `pt-webgl2: WebGL context lost — cannot update ${resourceName} texture`,
-    );
-  }
-}
-
-/** In-place replacement for an existing square RGBA32F sampler2D payload. */
-export function updateRgba32f(
+/** Square RGBA32UI sampler2D (dim×dim), NEAREST/ClampToEdge. */
+export function uploadRgba32ui(
   gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Float32Array,
-  dim: number,
-  resourceName: string,
-): void {
-  guardTextureSubUpload(gl, resourceName);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, dim, dim, gl.RGBA, gl.FLOAT, data);
-}
-
-/** In-place replacement for an existing square RGBA32UI sampler2D payload. */
-export function updateRgba32ui(
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
   data: Uint32Array,
   dim: number,
   resourceName: string,
-): void {
-  guardTextureSubUpload(gl, resourceName);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, dim, dim, gl.RGBA_INTEGER, gl.UNSIGNED_INT, data);
+): WebGLTexture {
+  return allocGlTexture(gl, {
+    kind: '2d',
+    dim,
+    internalFormat: gl.RGBA32UI,
+    format: gl.RGBA_INTEGER,
+    type: gl.UNSIGNED_INT,
+    data,
+    resourceName,
+  });
 }
 
 /** Non-square RGBA32F sampler2D (width×height) — for the equirect map / CDF slabs. */
@@ -745,25 +793,15 @@ export function uploadRgba32fRect(
   resourceName: string,
 ): WebGLTexture {
   return allocGlTexture(gl, {
-    kind: 'rect', width, height,
-    internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT,
+    kind: 'rect',
+    width,
+    height,
+    internalFormat: gl.RGBA32F,
+    format: gl.RGBA,
+    type: gl.FLOAT,
     data,
     resourceName,
   });
-}
-
-/** In-place replacement for an existing non-square RGBA32F sampler2D payload. */
-export function updateRgba32fRect(
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Float32Array,
-  width: number,
-  height: number,
-  resourceName: string,
-): void {
-  guardTextureSubUpload(gl, resourceName);
-  gl.bindTexture(gl.TEXTURE_2D, texture);
-  gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, width, height, gl.RGBA, gl.FLOAT, data);
 }
 
 /** RGBA32F TEXTURE_2D_ARRAY (dim×dim × `layers`), NEAREST/ClampToEdge — the
@@ -776,35 +814,13 @@ export function uploadRgba32fArray(
   resourceName: string,
 ): WebGLTexture {
   return allocGlTexture(gl, {
-    kind: 'array', dim, layers,
-    internalFormat: gl.RGBA32F, format: gl.RGBA, type: gl.FLOAT,
+    kind: 'array',
+    dim,
+    layers,
+    internalFormat: gl.RGBA32F,
+    format: gl.RGBA,
+    type: gl.FLOAT,
     data,
     resourceName,
   });
-}
-
-/** In-place replacement for an existing RGBA32F sampler2DArray payload. */
-export function updateRgba32fArray(
-  gl: WebGL2RenderingContext,
-  texture: WebGLTexture,
-  data: Float32Array,
-  dim: number,
-  layers: number,
-  resourceName: string,
-): void {
-  guardTextureSubUpload(gl, resourceName);
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, texture);
-  gl.texSubImage3D(
-    gl.TEXTURE_2D_ARRAY,
-    0,
-    0,
-    0,
-    0,
-    dim,
-    dim,
-    layers,
-    gl.RGBA,
-    gl.FLOAT,
-    data,
-  );
 }

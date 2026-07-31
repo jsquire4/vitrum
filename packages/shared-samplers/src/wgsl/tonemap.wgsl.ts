@@ -4,6 +4,23 @@
 
 export function tonemapWgsl(): string {
   return /* wgsl */ `
+const VT_MAX_FINITE_F32: f32 = 3.402823466e38;
+
+fn vt_safeExposureScalar(channel: f32, exposure: f32) -> f32 {
+  if (channel != channel || !(exposure > 0.0)) { return 0.0; }
+  let boundedExposure = min(exposure, VT_MAX_FINITE_F32);
+  let magnitude = min(abs(channel) * boundedExposure, VT_MAX_FINITE_F32);
+  return select(magnitude, -magnitude, channel < 0.0);
+}
+
+fn vt_safeExposure(color: vec3f, exposure: f32) -> vec3f {
+  return vec3f(
+    vt_safeExposureScalar(color.x, exposure),
+    vt_safeExposureScalar(color.y, exposure),
+    vt_safeExposureScalar(color.z, exposure),
+  );
+}
+
 fn vt_aces(x: vec3f) -> vec3f {
   let a = 2.51; let b = 0.03; let c = 2.43; let d = 0.59; let e = 0.14;
   let v = max(x, vec3f(0.0));
@@ -30,7 +47,7 @@ fn vt_linearToSrgb(c: vec3f) -> vec3f {
 }
 // mode: 0=aces 1=agx 2=reinhard 3=linear(clamped) 4=none. Exposure applied first.
 fn vitrumTonemap(color: vec3f, mode: u32, exposure: f32) -> vec3f {
-  let x = color * exposure;
+  let x = vt_safeExposure(color, exposure);
   if (mode == 1u) { return vt_agx(x); }
   if (mode == 2u) {
     let v = max(x, vec3f(0.0));

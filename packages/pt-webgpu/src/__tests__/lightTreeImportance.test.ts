@@ -78,15 +78,21 @@ describe('WS2 — per-emitter-type power formula', () => {
 
   it('delta light (point/spot/directional) power == luminance(radiance)', () => {
     const radiance: [number, number, number] = [2, 4, 6];
-    const expected = luminance(radiance[0], radiance[1], radiance[2]);
-    expect(emitterPower(radiance, { kind: 'delta' })).toBeCloseTo(expected, 12);
+    const expected = Math.fround(luminance(
+      Math.fround(radiance[0]),
+      Math.fround(radiance[1]),
+      Math.fround(radiance[2]),
+    ));
+    expect(emitterPower(radiance, { kind: 'delta' })).toBe(expected);
   });
 
   it('area light power == luminance(radiance) · area', () => {
     const radiance: [number, number, number] = [1, 1, 1];
     const area = 3.5;
-    const expected = luminance(1, 1, 1) * area;
-    expect(emitterPower(radiance, { kind: 'area', area })).toBeCloseTo(expected, 12);
+    const expected = Math.fround(
+      Math.fround(luminance(1, 1, 1)) * Math.fround(area),
+    );
+    expect(emitterPower(radiance, { kind: 'area', area })).toBe(expected);
   });
 
   it('power scales linearly with radiance magnitude', () => {
@@ -100,6 +106,24 @@ describe('WS2 — per-emitter-type power formula', () => {
   it('power is non-negative and zero for a black emitter', () => {
     expect(emitterPower([0, 0, 0], { kind: 'delta' })).toBe(0);
     expect(emitterPower([0, 0, 0], { kind: 'area', area: 10 })).toBe(0);
+  });
+
+  it('rejects a positive light-tree proxy that overflows or collapses in Float32', () => {
+    const maxFloat32 = Math.fround(3.4028234663852886e38);
+    const minFloat32 = Math.fround(1.401298464324817e-45);
+
+    expect(() => emitterPower(
+      [maxFloat32, maxFloat32, maxFloat32],
+      { kind: 'area', area: 2 },
+    )).toThrow(/luminance.*area power.*finite.*Float32/);
+    expect(() => emitterPower(
+      [minFloat32, 0, 0],
+      { kind: 'delta' },
+    )).toThrow(/luminance power.*remain positive.*Float32/);
+    expect(() => emitterPower(
+      [1e-30, 0, 0],
+      { kind: 'area', area: 1e-20 },
+    )).toThrow(/luminance.*area power.*underflow.*Float32/);
   });
 
   it('AREA_LIGHT_KINDS enumerates exactly the positional area emitters', () => {

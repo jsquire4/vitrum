@@ -385,6 +385,48 @@ describe('decode context governance', () => {
     expect(snapshots[0]).not.toBe(shared);
   });
 
+  it('admits decoded textures in scene order regardless of decoder completion order', async () => {
+    const run = async (delays: readonly number[]) => {
+      const handles = delays.map((_, index) =>
+        raw(new Uint8Array([index]), 'application/octet-stream')
+      );
+      const result = await decodeSceneTextures(
+        sceneForMaterials(handles.map((handle) => materialWith('baseColorMap', handle))),
+        {
+          target: 'cpu-linear',
+          maxImageDecodeConcurrency: 3,
+          maxTotalDecodedTexturePixels: 4,
+          decodePixels: async (handle) => {
+            const index = handle.data[0]!;
+            await new Promise<void>((resolve) => setTimeout(resolve, delays[index]));
+            return {
+              width: 2,
+              height: 1,
+              data: new Uint8Array(8).fill(255),
+              channels: 4,
+              dataType: 'uint8',
+            };
+          },
+        },
+      );
+      return {
+        decodedCount: result.decodedCount,
+        accepted: result.scene.primitives.map((primitive, index) =>
+          primitive.material.baseColorMap?.handle === handles[index] ? false : true
+        ),
+      };
+    };
+
+    expect(await run([30, 15, 0])).toEqual({
+      decodedCount: 2,
+      accepted: [true, true, false],
+    });
+    expect(await run([0, 15, 30])).toEqual({
+      decodedCount: 2,
+      accepted: [true, true, false],
+    });
+  });
+
   it('checks encoded bytes before copying or calling a custom decoder', async () => {
     const decodePixels = vi.fn<
       Parameters<DecodeGltfTexturePixelsFn>,
@@ -645,6 +687,40 @@ describe('decode context governance', () => {
     ]));
   });
 
+  it('does not bake a non-finite CPU-linear spec-gloss payload', async () => {
+    const data = new Float32Array(16).fill(1);
+    data[3] = Number.NaN;
+    const malformed = {
+      width: 2,
+      height: 2,
+      data,
+      __vitrum_hint__: {
+        channels: 4 as const,
+        dataType: 'float32' as const,
+        colorSpace: 'linear' as const,
+      },
+    };
+    const material: MaterialSpec = {
+      ...materialWith('specularColorMap', malformed),
+      extensions: {
+        KHR_materials_pbrSpecularGlossiness: {
+          glossinessFactor: 1,
+          specularGlossinessTexture: {},
+        },
+      },
+    };
+    const result = await decodeSceneTextures(sceneForMaterials([material]), {
+      target: 'cpu-linear',
+      maxDecodedTexturePixels: 4,
+    });
+    const decodedMaterial = (result.scene.primitives[0] as MeshPrimitive).material;
+    expect(decodedMaterial.roughnessMap).toBeUndefined();
+    expect(result.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'decode-pixels-invalid' }),
+      expect.objectContaining({ code: 'spec-gloss-alpha-bake-unavailable' }),
+    ]));
+  });
+
   it('honors flat pixel aliases over resourceLimits and explicit zero opt-out', async () => {
     const handle = {
       width: 2,
@@ -693,6 +769,36 @@ describe('decode context governance', () => {
 });
 
 describe('hostile texture boundaries', () => {
+  it.each([
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY],
+    ['negative infinity', Number.NEGATIVE_INFINITY],
+  ])('rejects custom decoded pixels containing %s', async (_label, value) => {
+    const source = raw();
+    const result = await decodeSceneTextures(
+      sceneForMaterials([materialWith('baseColorMap', source)]),
+      {
+        target: 'cpu-linear',
+        decodePixels: () => ({
+          width: 1,
+          height: 1,
+          data: new Float32Array([value, 0.25, 0.5, 1]),
+          channels: 4,
+          dataType: 'float32',
+        }),
+      },
+    );
+
+    const material = (result.scene.primitives[0] as MeshPrimitive).material;
+    expect((material.baseColorMap as TextureRef).handle).toBe(source);
+    expect(result.decodedCount).toBe(0);
+    expect(result.unchangedCount).toBe(1);
+    expect(result.diagnostics).toContainEqual(expect.objectContaining({
+      code: 'decode-pixels-invalid',
+      message: expect.stringContaining('non-finite component at index 0'),
+    }));
+  });
+
   it('uses intrinsic byte-view offsets and ArrayBuffer.slice despite own shadows', async () => {
     const normalized = normalizeCapturedRawImageForDecode(
       pngHeader(1, 1),
@@ -835,11 +941,21 @@ describe('hostile texture boundaries', () => {
       height: 1.5,
       close() {},
     };
+    const nonFiniteCpu = {
+      width: 1,
+      height: 1,
+      data: new Float32Array([Number.NaN, 0, 0, 1]),
+    };
     const report = buildTextureDecodeReport(sceneForMaterials([
       materialWith('baseColorMap', malformedCpu),
       materialWith('baseColorMap', malformedBitmap),
+      materialWith('baseColorMap', nonFiniteCpu),
     ]));
     expect(report.entries).toEqual([
+      expect.objectContaining({
+        handleKind: 'opaque',
+        backendReadiness: expect.objectContaining({ ptWebgpu: 'opaque' }),
+      }),
       expect.objectContaining({
         handleKind: 'opaque',
         backendReadiness: expect.objectContaining({ ptWebgpu: 'opaque' }),

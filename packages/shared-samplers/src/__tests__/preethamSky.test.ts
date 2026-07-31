@@ -30,12 +30,8 @@ describe('bakePreethamSkyEquirect', () => {
     const y = Math.floor(maxIndex / bake.width);
     const x = maxIndex % bake.width;
     const theta = ((y + 0.5) / bake.height) * Math.PI;
-    const phi = ((x + 0.5) / bake.width) * (2 * Math.PI);
-    return [
-      Math.sin(theta) * Math.cos(phi),
-      Math.cos(theta),
-      Math.sin(theta) * Math.sin(phi),
-    ];
+    const phi = ((x + 0.5) / bake.width - 0.5) * (2 * Math.PI);
+    return [Math.sin(theta) * Math.cos(phi), Math.cos(theta), Math.sin(theta) * Math.sin(phi)];
   };
 
   it('bakes a finite 256x128 RGBA equirect map with a normalized CDF', () => {
@@ -50,6 +46,31 @@ describe('bakePreethamSkyEquirect', () => {
     expect(Array.from(bake.texels).every(Number.isFinite)).toBe(true);
     expect(Number.isFinite(bake.luminanceIntegral)).toBe(true);
     expect(bake.luminanceIntegral).toBeGreaterThan(0);
+  });
+
+  it('normalizes the stored per-steradian PDF over exact texel solid angles', () => {
+    const bake = bakePreethamSkyEquirect({ width: 32, height: 16 });
+    const deltaPhi = (2 * Math.PI) / bake.width;
+    let integratedPdf = 0;
+    let flattenedBins = 0;
+    for (let y = 0; y < bake.height; y += 1) {
+      const theta0 = (y / bake.height) * Math.PI;
+      const theta1 = ((y + 1) / bake.height) * Math.PI;
+      const texelSolidAngle = deltaPhi * (Math.cos(theta0) - Math.cos(theta1));
+      for (let x = 0; x < bake.width; x += 1) {
+        const index = y * bake.width + x;
+        const effectivePmf = bake.cdf[index + 1]! - bake.cdf[index]!;
+        const pdf = bake.texels[index * 4 + 3]!;
+        expect(pdf).toBe(Math.fround(effectivePmf / texelSolidAngle));
+        if (effectivePmf === 0) {
+          flattenedBins += 1;
+          expect(pdf).toBe(0);
+        }
+        integratedPdf += pdf * texelSolidAngle;
+      }
+    }
+    expect(flattenedBins).toBeGreaterThan(0);
+    expect(integratedPdf).toBeCloseTo(1, 6);
   });
 
   it('honors zero intensity instead of falling back to the default sky strength', () => {
@@ -76,10 +97,7 @@ describe('bakePreethamSkyEquirect', () => {
       intensity: 3.5,
     });
 
-    expect(scaled.luminanceIntegral / unit.luminanceIntegral).toBeCloseTo(
-      3.5,
-      5,
-    );
+    expect(scaled.luminanceIntegral / unit.luminanceIntegral).toBeCloseTo(3.5, 5);
   });
 
   it('builds a normalized CDF for a dim but positive baked sky', () => {
@@ -90,11 +108,30 @@ describe('bakePreethamSkyEquirect', () => {
     });
 
     expect(bake.luminanceIntegral).toBeGreaterThan(0);
-    expect(Array.from(bake.texels).some((value, index) =>
-      index % 4 !== 3 && value > 0
-    )).toBe(true);
+    expect(Array.from(bake.texels).some((value, index) => index % 4 !== 3 && value > 0)).toBe(true);
     expect(bake.cdf[0]).toBe(0);
     expect(bake.cdf[bake.cdf.length - 1]).toBe(1);
+  });
+
+  it('rejects a mathematically positive sky that collapses entirely in Float32', () => {
+    expect(() => bakePreethamSkyEquirect({
+      width: 32,
+      height: 16,
+      rayleigh: 2 ** -160,
+      intensity: 1,
+    })).toThrow(/positive procedural-sky radiance underflows entirely/i);
+  });
+
+  it('keeps an explicitly zero-Rayleigh model black at positive intensity', () => {
+    const bake = bakePreethamSkyEquirect({
+      width: 32,
+      height: 16,
+      rayleigh: 0,
+      intensity: 1,
+    });
+
+    expect(bake.luminanceIntegral).toBe(0);
+    expect(bake.cdf[bake.cdf.length - 1]).toBe(0);
   });
 
   it('places the brightest texel near a low-angle sun direction', () => {
@@ -112,11 +149,11 @@ describe('bakePreethamSkyEquirect', () => {
     const pyMax = (maxIdx / bake.width) | 0;
     const pxMax = maxIdx % bake.width;
     const thetaMax = ((pyMax + 0.5) / bake.height) * Math.PI;
-    const phiMax = ((pxMax + 0.5) / bake.width) * (2 * Math.PI);
+    const phiMax = ((pxMax + 0.5) / bake.width - 0.5) * (2 * Math.PI);
 
     expect(thetaMax).toBeGreaterThan(Math.PI / 2 - 0.3);
     expect(thetaMax).toBeLessThan(Math.PI / 2 + 0.3);
-    expect(Math.min(phiMax, 2 * Math.PI - phiMax)).toBeLessThan(0.3);
+    expect(Math.abs(phiMax)).toBeLessThan(0.3);
   });
 
   it('integrates the sub-texel solar disc at the default resolution', () => {
@@ -170,10 +207,7 @@ describe('bakePreethamSkyEquirect', () => {
           brightest[1] * sunDirection[1] +
           brightest[2] * sunDirection[2];
         const angularError = Math.acos(Math.max(-1, Math.min(1, cosine)));
-        const texelDiagonal = Math.hypot(
-          Math.PI / bake.height,
-          (2 * Math.PI) / bake.width,
-        );
+        const texelDiagonal = Math.hypot(Math.PI / bake.height, (2 * Math.PI) / bake.width);
 
         // Even when the physical disc is much smaller than one texel, its
         // deposited energy remains visible at the authored sun direction.
@@ -198,9 +232,7 @@ describe('bakePreethamSkyEquirect', () => {
     });
 
     // The old local clamp flattened these two authored values to the same sky.
-    expect(authoredTail.luminanceIntegral)
-      .not.toBe(oldBoundary.luminanceIntegral);
-    expect(Array.from(authoredTail.texels))
-      .not.toEqual(Array.from(oldBoundary.texels));
+    expect(authoredTail.luminanceIntegral).not.toBe(oldBoundary.luminanceIntegral);
+    expect(Array.from(authoredTail.texels)).not.toEqual(Array.from(oldBoundary.texels));
   });
 });

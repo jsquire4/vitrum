@@ -24,87 +24,100 @@
  *   frame for hosts that want alpha cross-fade blending.
  */
 
-import { createProgressiveEngine } from '@vitrum/engine';
-import { asMat4 } from '@vitrum/core';
-import type { HandoffFrameResult } from '@vitrum/engine';
+import {
+  attachVitrum,
+  createProgressiveEngine,
+  progressiveHandleAsEngine,
+  type CameraLike,
+} from '@vitrum/engine';
+import type { FrameStats, ProgressStats } from '@vitrum/core';
 import { createCornellScene } from '@vitrum-examples/cornell-scene';
+import {
+  CORNELL_CAMERA_POSITION,
+  createAxisAlignedView,
+  createPerspectiveProjection,
+  syncCanvasToDisplaySize,
+  writePerspectiveProjection,
+} from '../../shared/exampleHost.js';
 
 // ── URL params ────────────────────────────────────────────────────────────────
 const params = new URLSearchParams(location.search);
 const targetSpp = Number(params.get('vitrumSpp')) || 128;
 
-// ── Static camera matrices ────────────────────────────────────────────────────
-const viewMatrix = asMat4(new Float32Array([
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0,-1,-4, 1,
-]));
-
-const aspect = window.innerWidth / Math.max(window.innerHeight, 1);
-const fovY   = Math.PI / 3;
-const near   = 0.1;
-const far    = 100;
-const f = 1 / Math.tan(fovY / 2);
-const projMatrix = asMat4(new Float32Array([
-  f / aspect, 0, 0,                               0,
-  0,          f, 0,                               0,
-  0,          0, (far + near) / (near - far),   -1,
-  0,          0, (2 * far * near) / (near - far), 0,
-]));
-
-// ── App ───────────────────────────────────────────────────────────────────────
 const canvas      = document.getElementById('vitrum-canvas') as HTMLCanvasElement;
 const phaseLabel  = document.getElementById('phase') as HTMLDivElement;
 const scene       = createCornellScene();
+const initialViewport = syncCanvasToDisplaySize(canvas);
 
+// ── Static camera matrices ────────────────────────────────────────────────────
+const viewMatrix = createAxisAlignedView(CORNELL_CAMERA_POSITION);
+const projMatrix = createPerspectiveProjection(initialViewport.width, initialViewport.height);
+const camera: CameraLike = {
+  updateMatrixWorld() {
+    writePerspectiveProjection(projMatrix, canvas.width, canvas.height);
+  },
+  matrixWorldInverse: { elements: viewMatrix },
+  projectionMatrix: { elements: projMatrix },
+  position: {
+    x: CORNELL_CAMERA_POSITION[0],
+    y: CORNELL_CAMERA_POSITION[1],
+    z: CORNELL_CAMERA_POSITION[2],
+  },
+};
+
+// ── App ───────────────────────────────────────────────────────────────────────
 async function main(): Promise<void> {
-  let handle: Awaited<ReturnType<typeof createProgressiveEngine>>;
+  let progressiveHandle: Awaited<ReturnType<typeof createProgressiveEngine>>;
   try {
-    handle = await createProgressiveEngine({ canvas, scene });
+    progressiveHandle = await createProgressiveEngine({
+      canvas,
+      scene,
+      convergedOptions: { maxSamplesPerPixel: targetSpp },
+    });
   } catch (err) {
     console.error('[progressive] createProgressiveEngine failed:', err);
     phaseLabel.textContent = 'WebGPU unavailable';
+    (globalThis as Record<string, unknown>).VITRUM_CAPTURE_ERROR = String(
+      err instanceof Error ? err.stack ?? err.message : err,
+    );
     return;
   }
-
-  let frameIndex       = 0;
+  const engine = progressiveHandleAsEngine(progressiveHandle);
   let captureSignalled = false;
 
-  function tick(): void {
-    const width  = Math.max(1, canvas.clientWidth);
-    const height = Math.max(1, canvas.clientHeight);
-    canvas.width  = width;
-    canvas.height = height;
-
-    const result: HandoffFrameResult = handle.coordinator.frame({
-      viewMatrix,
-      projMatrix,
-      cameraPosition: [0, 1, 4],
-      viewport:  { width, height, devicePixelRatio: 1 },
-      frameIndex,
-      frameSeed: (frameIndex * 1664525 + 1013904223) >>> 0,
-    });
-
-    phaseLabel.textContent = `phase: ${result.phase}`;
-    frameIndex++;
-
-    // 'converging' = converged engine is the active renderer (result.output
-    //  is the converged engine's FrameOutput, not the real-time engine's).
-    if (result.phase === 'converging') {
-      const spp = result.output.samplesAccumulated;
-      if (!captureSignalled && spp >= targetSpp) {
+  // The coordinator intentionally leaves canvas presentation to its host.
+  // Adapting it to Engine lets attachVitrum own cadence, resize propagation,
+  // swapchain presentation, and the offscreen blit after the PT handoff.
+  const lifecycleHandle = await attachVitrum({
+    canvas,
+    scene,
+    camera,
+    engine,
+    quality: { samplesTarget: targetSpp },
+    onFrame(stats: FrameStats) {
+      phaseLabel.textContent = `phase: ${progressiveHandle.coordinator.phase}`;
+      const spp = stats.spp ?? 0;
+      (globalThis as Record<string, unknown>).VITRUM_MS_PER_SAMPLE =
+        stats.frameTimeMs > 0 && spp > 0 ? stats.frameTimeMs / spp : 0;
+    },
+    onProgress(progress: ProgressStats) {
+      if (
+        progress.kind === 'pt-spp' &&
+        progressiveHandle.coordinator.phase === 'converging' &&
+        !captureSignalled &&
+        progress.current >= targetSpp
+      ) {
         (globalThis as Record<string, unknown>).VITRUM_CAPTURE_READY = true;
         captureSignalled = true;
       }
-    }
-
-    requestAnimationFrame(tick);
-  }
-
-  requestAnimationFrame(tick);
+    },
+  });
+  (globalThis as Record<string, unknown>).VITRUM_HANDLE = lifecycleHandle;
 }
 
 main().catch((err: unknown) => {
   console.error('[progressive example] fatal:', err);
+  (globalThis as Record<string, unknown>).VITRUM_CAPTURE_ERROR = String(
+    err instanceof Error ? err.stack ?? err.message : err,
+  );
 });

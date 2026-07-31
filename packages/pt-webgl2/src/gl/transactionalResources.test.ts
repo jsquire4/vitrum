@@ -4,7 +4,11 @@ import { asMat4 } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
 import { buildSceneTextures } from '../scene/uploadSceneTextures.js';
 import { createMockGl } from '../__tests__/mockGl.js';
-import { createNeeCandidateTarget, createRenderTarget } from './framebuffer.js';
+import {
+  createNeeCandidateTarget,
+  createProgressiveTarget,
+  createRenderTarget,
+} from './framebuffer.js';
 import { GlResources, programGraphKey } from './glResources.js';
 import { DEFAULT_TRACE_FEATURES, featureDefines } from '../featureTypes.js';
 import { FLOAT16_HALF_MIN_SUBNORMAL } from '../scene/halfFloat.js';
@@ -179,6 +183,67 @@ describe('pt-webgl2 transactional framebuffer allocation', () => {
     expect(deleteFramebuffer).toHaveBeenCalledOnce();
   });
 
+  it('allocates the compact progressive formats and shares one auxiliary pair', () => {
+    const gl = createMockGl();
+    const texImage2D = vi.fn(gl.texImage2D.bind(gl));
+    const deleteTexture = vi.fn();
+    const deleteFramebuffer = vi.fn();
+    Object.assign(gl, { texImage2D, deleteTexture, deleteFramebuffer });
+
+    const target = createProgressiveTarget(gl, 32, 16, true);
+    expect(texImage2D.mock.calls.map((call) => [call[2], call[7]])).toEqual([
+      [gl.RGBA32F, gl.FLOAT],
+      [gl.RGBA32F, gl.FLOAT],
+      [gl.RGBA32F, gl.FLOAT],
+      [gl.RGBA16F, gl.HALF_FLOAT],
+    ]);
+    expect(target.fbos).toHaveLength(2);
+    expect(target.colors).toHaveLength(2);
+    expect(target.normalDepth).not.toBeNull();
+    expect(target.albedo).not.toBeNull();
+
+    target.destroy();
+    expect(deleteFramebuffer).toHaveBeenCalledTimes(2);
+    expect(deleteTexture).toHaveBeenCalledTimes(4);
+  });
+
+  it('rolls back both progressive FBOs and every prior texture on allocation failure', () => {
+    const gl = createMockGl();
+    const framebuffers = [
+      { id: 'progressive-fbo-0' },
+      { id: 'progressive-fbo-1' },
+    ] as unknown as WebGLFramebuffer[];
+    const textures = [
+      { id: 'progressive-color-0' },
+      { id: 'progressive-color-1' },
+      { id: 'progressive-normal' },
+    ] as unknown as WebGLTexture[];
+    const createFramebuffer = vi
+      .fn<[], WebGLFramebuffer | null>()
+      .mockReturnValueOnce(framebuffers[0]!)
+      .mockReturnValueOnce(framebuffers[1]!);
+    const createTexture = vi
+      .fn<[], WebGLTexture | null>()
+      .mockReturnValueOnce(textures[0]!)
+      .mockReturnValueOnce(textures[1]!)
+      .mockReturnValueOnce(textures[2]!)
+      .mockReturnValueOnce(null);
+    const deleteTexture = vi.fn();
+    const deleteFramebuffer = vi.fn();
+    Object.assign(gl, {
+      createFramebuffer,
+      createTexture,
+      deleteTexture,
+      deleteFramebuffer,
+    });
+
+    expect(() => createProgressiveTarget(gl, 32, 16, true)).toThrow(
+      /progressive albedo texture/,
+    );
+    expect(deleteTexture.mock.calls.map(([texture]) => texture)).toEqual(textures);
+    expect(deleteFramebuffer.mock.calls.map(([fbo]) => fbo)).toEqual(framebuffers);
+  });
+
   it('rejects an incomplete framebuffer and releases every candidate resource', () => {
     const gl = createMockGl();
     const texture = { id: 'candidate' } as unknown as WebGLTexture;
@@ -218,6 +283,52 @@ describe('pt-webgl2 transactional framebuffer allocation', () => {
 });
 
 describe('pt-webgl2 transactional scene texture upload', () => {
+  it('keeps CPU and resident scene state unpublished when a fast mutation upload fails', async () => {
+    const gl = createMockGl();
+    const engine = await createPTEngine_WebGL2({ device: gl });
+    engine.setScene(triangleScene('transactional-fast-path'));
+    const beforeBvh = engine._debugGeoPack?.bvhNodes;
+    const beforeRoughness = (
+      engine.getScene?.()?.primitives[0] as { material?: { roughness?: number } } | undefined
+    )?.material?.roughness;
+    const originalDeleteTexture = gl.deleteTexture.bind(gl);
+    const deleteTexture = vi.fn((texture: WebGLTexture | null) =>
+      originalDeleteTexture(texture));
+    let errorRead = 0;
+    Object.assign(gl, {
+      deleteTexture,
+      getError: () => {
+        errorRead += 1;
+        return errorRead === 2 ? gl.OUT_OF_MEMORY : gl.NO_ERROR;
+      },
+    });
+
+    expect(() =>
+      engine.updatePrimitive?.('transactional-fast-path', {
+        material: { roughness: 0.25 },
+      }),
+    ).toThrow(/scene materials.*OUT_OF_MEMORY/);
+    expect(engine._debugGeoPack?.bvhNodes).toBe(beforeBvh);
+    expect(engine._debugGeoPack?.materials[0]?.roughness).toBe(beforeRoughness);
+    const retained = engine.getScene?.()?.primitives[0];
+    expect(retained?.kind).toBe('mesh');
+    if (retained?.kind === 'mesh') {
+      expect(retained.material.roughness).toBe(beforeRoughness);
+    }
+    // allocGlTexture owns and retires the failed candidate. No resident handle
+    // is exposed to the mutation publisher.
+    expect(deleteTexture).toHaveBeenCalledTimes(1);
+
+    Object.assign(gl, { getError: () => gl.NO_ERROR });
+    expect(() =>
+      engine.updatePrimitive?.('transactional-fast-path', {
+        material: { roughness: 0.25 },
+      }),
+    ).not.toThrow();
+    expect(engine._debugGeoPack?.materials[0]?.roughness).toBe(0.25);
+    engine.dispose();
+  });
+
   it('rejects an opaque emissive map before allocating any GL texture', () => {
     const gl = createMockGl();
     const originalCreateTexture = gl.createTexture.bind(gl);
@@ -250,6 +361,52 @@ describe('pt-webgl2 transactional scene texture upload', () => {
     expect(() => buildSceneTextures(gl, rejected, capabilities)).toThrow(
       /emissiveMap without complete CPU-readable texels/,
     );
+    expect(createTexture).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'overflowing',
+      Number.MAX_VALUE,
+      /envMapIntensity.*(?:representable as float32|overflows WebGL float32 storage)/,
+    ],
+    [
+      'positive-underflowing',
+      Number.MIN_VALUE,
+      /envMapIntensity.*(?:must not underflow to zero as float32|underflows WebGL float32 storage)/,
+    ],
+  ])('rejects a %s envMapIntensity before initial scene allocation', (
+    _label,
+    envMapIntensity,
+    message,
+  ) => {
+    const gl = createMockGl();
+    const originalCreateTexture = gl.createTexture.bind(gl);
+    const createTexture = vi.fn(() => originalCreateTexture());
+    (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+    const scene = triangleScene('invalid-environment-scale');
+    const primitive = scene.primitives[0];
+    if (primitive?.kind !== 'mesh') throw new Error('test fixture must be a mesh');
+    const rejected: Scene = {
+      ...scene,
+      primitives: [{
+        ...primitive,
+        material: {
+          ...primitive.material,
+          envMapIntensity,
+        },
+      }],
+    };
+    const capabilities = {
+      backend: 'pt-webgl2',
+      sceneSupport: {
+        primitiveKinds: ['mesh'],
+        emitterKinds: [],
+        environmentKinds: ['none'],
+      },
+    } as never;
+
+    expect(() => buildSceneTextures(gl, rejected, capabilities)).toThrow(message);
     expect(createTexture).not.toHaveBeenCalled();
   });
 
@@ -367,7 +524,9 @@ describe('pt-webgl2 transactional scene texture upload', () => {
         environmentKinds: ['none'],
       },
     } as never;
-    expect(() => buildSceneTextures(gl, triangleScene(), capabilities)).toThrow(/cannot create vertex attributes texture/);
+    expect(() => buildSceneTextures(gl, triangleScene(), capabilities)).toThrow(
+      /failed to create vertex attributes texture/,
+    );
     expect(new Set(deleteTexture.mock.calls.map(([texture]) => texture))).toEqual(new Set(created));
   });
 
@@ -381,7 +540,12 @@ describe('pt-webgl2 transactional scene texture upload', () => {
       frameSeed: 1,
       viewport: { width: 8, height: 8, devicePixelRatio: 1 },
       viewMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
-      projMatrix: asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1])),
+      projMatrix: asMat4(new Float32Array([
+        1.5, 0, 0, 0,
+        0, 1.5, 0, 0,
+        0, 0, -1.002, -1,
+        0, 0, -0.2, 0,
+      ])),
       quality: { samplesTarget: 1 },
     });
 
@@ -416,7 +580,7 @@ describe('pt-webgl2 transactional scene texture upload', () => {
 
       expect(() => engine.updatePrimitive?.('original', {
         material: { baseColorMap: { handle } },
-      } as never)).toThrow();
+      })).toThrow();
       const failedPrimitive = engine.getScene?.()?.primitives[0];
       expect(failedPrimitive?.kind).toBe('mesh');
       if (failedPrimitive?.kind === 'mesh') {
@@ -428,7 +592,7 @@ describe('pt-webgl2 transactional scene texture upload', () => {
         originalCreateTexture;
       engine.updatePrimitive?.('original', {
         material: { baseColorMap: { handle } },
-      } as never);
+      });
       const committedPrimitive = engine.getScene?.()?.primitives[0];
       expect(committedPrimitive?.kind).toBe('mesh');
       if (committedPrimitive?.kind === 'mesh') {

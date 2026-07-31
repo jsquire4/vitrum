@@ -205,7 +205,7 @@ describe('pt-webgpu exact medium-boundary identity', () => {
     const packed = buildPackedScene(instancedVolume([transform(0)]), {
       geometryMode: 'tlas',
     });
-    expect(packed.triangleCount).toBe(1);
+    expect(packed.triangleCount).toBe(0);
     expect(packed.tlasNodes).toHaveLength(0);
     expect(packed.warnings.some((warning) => warning.includes('non-invertible'))).toBe(true);
 

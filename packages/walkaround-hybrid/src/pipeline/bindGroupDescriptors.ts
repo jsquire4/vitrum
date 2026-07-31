@@ -58,6 +58,7 @@ type BindingKind =
   | 'tex'                         // texture: { sampleType: 'unfilterable-float' }
   | 'tex:f'                       // texture: { sampleType: 'float' }
   | 'tex-array'                   // texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' }
+  | 'tex-array:uint'              // texture: { sampleType: 'uint', viewDimension: '2d-array' }
   | 'tex:uint'                    // texture: { sampleType: 'uint' }
   | 'sampler:nf'                  // sampler: { type: 'non-filtering' }
   | 'sampler:f'                   // sampler: { type: 'filtering' }
@@ -195,15 +196,16 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       // bvh_beer/bvh_material). A 1×1 placeholder + envParams.hasEnv=0 is bound for
       // non-HDRI scenes (the WGSL falls back to the scalar sky → byte-identical).
       // Only ris/risGi/shade reference these; the other passes declare a subset.
-      { binding: 15, kind: 'tex', note: 'env_map (directional IBL radiance .rgb + per-texel solid-angle pdf .a, rgba16float)' },
+      { binding: 15, kind: 'tex', note: 'env_map (directional IBL unit-intensity radiance, rgba32float)' },
       { binding: 16, kind: 'tex', note: 'env_marginal (H×1 forward CDF, r32float; binary search selects row)' },
       { binding: 17, kind: 'tex', note: 'env_conditional (W×H forward CDF, r32float; binary search selects column)' },
+      { binding: 18, kind: 'tex', note: 'env_pdf (per-texel solid-angle density, r32float)' },
       { binding: 19, kind: 'uniform', minSizeBytes: ENV_PARAMS_BYTES, note: 'EnvParams { hasEnv, width, height, rotationY, intensity } — own uniform (WalkaroundUBO is frozen at 432B)' },
       // Phase-3D material-map atlas and per-triangle metadata.
       // Both are textures (not storage buffers) so the scene group stays inside
       // the full-tier WebGPU storage-buffer floor.
-      { binding: 20, kind: 'tex-array', note: 'materialTextureAtlas (CPU pixels or nominal GPU sources as mipmapped RGBA32F array layers)' },
-      { binding: 21, kind: 'tex', note: 'baseColorMapMeta (per-triangle map layer/wrap/transform/coverage metadata)' },
+      { binding: 20, kind: 'tex-array:uint', note: 'packed material texture atlas (r32uint codec planes; native rectangles + authored logical mips)' },
+      { binding: 21, kind: 'tex', note: 'material metadata + packed-atlas address directory (rgba32float)' },
       { binding: 22, kind: 'tex', note: 'bvh_tangent (per-vertex authored/generated tangent.xyzw, rgba32float texture)' },
       { binding: 23, kind: 'tex', note: 'bvh_vertex_color (per-vertex COLOR_0 rgba, rgba32float texture)' },
     ],
@@ -328,7 +330,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     visibility: 'compute',
     entries: [
       { binding: 0, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'SampleBudgetUniforms (thresholds + screen size)' },
-      { binding: 1, kind: 'tex', note: 'variance source (rgba32float, welford)' },
+      { binding: 1, kind: 'tex', note: 'variance source (rg32float, welford)' },
       { binding: 2, kind: 'storage-tex:r32uint', note: 'tier output' },
       { binding: 3, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'SampleCountUniforms (sample-count counter)' },
     ],
@@ -349,7 +351,7 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'uniform', minSizeBytes: UBO_16_BYTES, note: 'CbPrefillUniforms (screenW/H, frameParity, pad)' },
       { binding: 1, kind: 'tex', note: 'readAccum — previous-frame accumulated radiance' },
-      { binding: 2, kind: 'tex', note: 'motionVectors — rgba32float previous-current pixel delta' },
+      { binding: 2, kind: 'tex', note: 'motionVectors — rg32float previous-current pixel delta' },
       { binding: 3, kind: 'tex', note: 'current shaded-radiance snapshot for spatial reconstruction' },
       { binding: 4, kind: 'storage-tex:rgba16float', note: 'hdrColorTexture — gap-pixel fill output' },
     ],
@@ -407,6 +409,8 @@ function layoutResourceFor(
       return { texture: { sampleType: 'float' } };
     case 'tex-array':
       return { texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } };
+    case 'tex-array:uint':
+      return { texture: { sampleType: 'uint', viewDimension: '2d-array' } };
     case 'tex:uint':
       return { texture: { sampleType: 'uint' } };
     case 'sampler:nf':

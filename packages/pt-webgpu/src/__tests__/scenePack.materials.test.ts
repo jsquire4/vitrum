@@ -8,6 +8,62 @@ import {
 } from '../scene/materialPacking.js';
 import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
 
+describe('material emissive Float32 publication', () => {
+  const baseMaterial = {
+    baseColor: [1, 1, 1] as [number, number, number],
+    roughness: 0.5,
+    metallic: 0,
+  };
+
+  it('uses staged f32 operands rather than a binary64 intermediate product', () => {
+    const authored = 1.0000002;
+    const intensity = 1.0000002;
+    const directBinary64Product = Math.fround(authored * intensity);
+    const stagedProduct = Math.fround(
+      Math.fround(authored) * Math.fround(intensity),
+    );
+    expect(stagedProduct).not.toBe(directBinary64Product);
+
+    const packed = materialToPackedVec4s({
+      ...baseMaterial,
+      emissive: [authored, authored, authored],
+      emissiveIntensity: intensity,
+    });
+    expect(packed.slice(4, 7)).toEqual([
+      stagedProduct,
+      stagedProduct,
+      stagedProduct,
+    ]);
+  });
+
+  it('rejects overflow and total positive collapse while retaining zero and partial-lane underflow', () => {
+    const maxFloat32 = Math.fround(3.4028234663852886e38);
+    const minFloat32 = Math.fround(1.401298464324817e-45);
+
+    expect(() => materialToPackedVec4s({
+      ...baseMaterial,
+      emissive: [maxFloat32, 0, 0],
+      emissiveIntensity: 2,
+    })).toThrow(/color.*intensity.*finite.*Float32/);
+    expect(() => materialToPackedVec4s({
+      ...baseMaterial,
+      emissive: [minFloat32, 0, 0],
+      emissiveIntensity: 0.5,
+    })).toThrow(/color.*intensity.*underflow.*Float32/);
+
+    expect(materialToPackedVec4s({
+      ...baseMaterial,
+      emissive: [minFloat32, 1, 0],
+      emissiveIntensity: 0.5,
+    }).slice(4, 7)).toEqual([0, 0.5, 0]);
+    expect(materialToPackedVec4s({
+      ...baseMaterial,
+      emissive: [maxFloat32, 0, 0],
+      emissiveIntensity: 0,
+    }).slice(4, 7)).toEqual([0, 0, 0]);
+  });
+});
+
 describe('buildPackedScene material payload packing', () => {
   it('packs layered/spectral/thin-film summaries', () => {
     const spectralValues = new Float32Array([0.1, 0.2, 0.3, 0.4]);

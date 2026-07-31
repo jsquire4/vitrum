@@ -548,6 +548,140 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     vi.restoreAllMocks();
   });
 
+  it('contains camera/frame-preparation failures and applies the RAF self-stop policy', async () => {
+    const scheduledFrames: FrameRequestCallback[] = [];
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      scheduledFrames.push(callback);
+      return scheduledFrames.length;
+    });
+    const cancelFrame = vi.fn();
+    (globalThis as Record<string, unknown>).requestAnimationFrame = requestFrame;
+    (globalThis as Record<string, unknown>).cancelAnimationFrame = cancelFrame;
+
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const renderSpy = vi.fn((): FrameOutput => ({
+      kind: 'skipped',
+      samplesAccumulated: 0,
+      isConverged: false,
+    }));
+    const engine = Object.assign(makeMockEngine(renderSpy), {
+      backendId: 'pt-webgl2' as const,
+    }) as EngineWithBackendId;
+    const identity = new Float32Array([
+      1,0,0,0,
+      0,1,0,0,
+      0,0,1,0,
+      0,0,0,1,
+    ]);
+    const preparationFailure = new Error('camera preparation failed');
+    const events: Array<{ readonly error: unknown; readonly recoverable: boolean }> = [];
+    const handle = await attachVitrum({
+      canvas: happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement,
+      engine,
+      scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+      camera: {
+        updateMatrixWorld: () => { throw preparationFailure; },
+        matrixWorldInverse: { elements: identity },
+        projectionMatrix: { elements: identity },
+        position: { x: 0, y: 0, z: 0 },
+      },
+      onError: (error, event) => {
+        events.push({ error, recoverable: event.recoverable });
+      },
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const callback = scheduledFrames.shift();
+      expect(callback).toBeDefined();
+      expect(() => callback?.(attempt * 16)).not.toThrow();
+    }
+
+    expect(renderSpy).not.toHaveBeenCalled();
+    expect(events).toHaveLength(5);
+    expect(events.every(({ error }) => error === preparationFailure)).toBe(true);
+    expect(events.slice(0, 4).every(({ recoverable }) => recoverable)).toBe(true);
+    expect(events[4]?.recoverable).toBe(false);
+    expect(cancelFrame).toHaveBeenCalledOnce();
+
+    handle.dispose();
+  });
+
+  it('commits frame index and previous matrices only after a rendered output', async () => {
+    const scheduledFrames: FrameRequestCallback[] = [];
+    (globalThis as Record<string, unknown>).requestAnimationFrame = vi.fn(
+      (callback: FrameRequestCallback) => {
+        scheduledFrames.push(callback);
+        return scheduledFrames.length;
+      },
+    );
+    (globalThis as Record<string, unknown>).cancelAnimationFrame = vi.fn();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const outputs: Array<'skipped' | 'throw' | 'rendered'> = [
+      'skipped',
+      'throw',
+      'rendered',
+      'rendered',
+    ];
+    let outputIndex = 0;
+    const engine = Object.assign(
+      makeMockEngine(() => {
+        const output = outputs[outputIndex++];
+        if (output === 'throw') throw new Error('injected render failure');
+        if (output === 'rendered') {
+          return {
+            kind: 'rendered',
+            primaryRadiance: {},
+            samplesAccumulated: 1,
+            isConverged: false,
+          } as unknown as FrameOutput;
+        }
+        return {
+          kind: 'skipped',
+          samplesAccumulated: 0,
+          isConverged: false,
+        };
+      }),
+      { backendId: 'pt-webgl2' as const },
+    ) as EngineWithBackendId;
+    const view = new Float32Array([
+      1,0,0,0,
+      0,1,0,0,
+      0,0,1,0,
+      0,0,0,1,
+    ]);
+    const projection = new Float32Array(view);
+    const handle = await (await import('../src/lifecycle/vanilla.js')).attachVitrum({
+      canvas: happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement,
+      engine,
+      scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+      camera: {
+        updateMatrixWorld: vi.fn(),
+        matrixWorldInverse: { elements: view },
+        projectionMatrix: { elements: projection },
+        position: { x: 0, y: 0, z: 0 },
+      },
+    });
+
+    for (let frame = 0; frame < outputs.length; frame += 1) {
+      projection[0] = frame + 1;
+      const callback = scheduledFrames.shift();
+      expect(callback).toBeDefined();
+      callback?.(frame * 16);
+    }
+
+    const inputs = (
+      engine as EngineWithBackendId & { readonly _renders: readonly FrameInput[] }
+    )._renders;
+    expect(inputs.map(({ frameIndex }) => frameIndex)).toEqual([0, 0, 0, 1]);
+    expect(inputs[0]?.prevProjMatrix).toBeUndefined();
+    expect(inputs[1]?.prevProjMatrix).toBeUndefined();
+    expect(inputs[2]?.prevProjMatrix).toBeUndefined();
+    expect(inputs[3]?.prevProjMatrix?.[0]).toBe(3);
+
+    handle.dispose();
+  });
+
   it('H30 fix — ResizeObserver updates the backing store and calls swapchain-optional setSize', async () => {
     // Verifies Bug 1: after a resize, canvas.width/height must track the new
     // CSS × DPR size so the swapchain textures are the right physical size.

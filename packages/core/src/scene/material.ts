@@ -442,6 +442,54 @@ export interface MaterialSpec {
   readonly extensions?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * Keys whose properties are optional on `T`.
+ *
+ * Kept internal so the patch contract can distinguish omission ("preserve the
+ * current value") from an explicitly supplied `undefined` ("clear this
+ * optional value") under `exactOptionalPropertyTypes`.
+ */
+type OptionalPropertyKeys<T extends object> = {
+  [K in keyof T]-?: Pick<T, K> extends Required<Pick<T, K>> ? never : K;
+}[keyof T];
+
+/** A shallow patch with explicit-clear support only for optional properties. */
+type ExactShallowPatch<T extends object> = {
+  readonly [K in keyof T]?: K extends OptionalPropertyKeys<T>
+    ? T[K] | undefined
+    : T[K];
+};
+
+/**
+ * Incremental patch for one face-specific absorption layer.
+ *
+ * `transmission` is required by a complete layer but optional in a patch.
+ * Existing optional fields may be cleared by supplying their key with
+ * `undefined`; omitting a key preserves it.
+ */
+export type SurfaceAbsorptionLayerPatch =
+  ExactShallowPatch<SurfaceAbsorptionLayer>;
+
+/**
+ * Incremental material update accepted by `Engine.updatePrimitive`.
+ *
+ * Patch semantics are deliberately bounded:
+ * - `frontLayer` and `backLayer` merge one level deeper, using
+ *   {@link SurfaceAbsorptionLayerPatch};
+ * - every other object/array field (`TextureRef`, `SpectralCurve`,
+ *   `ThinFilmStack`, `extensions`, and typed arrays) is an atomic replacement;
+ * - an omitted field preserves its current value;
+ * - an own `undefined` clears an optional field, but cannot clear one of the
+ *   three required base-PBR fields.
+ */
+export type MaterialSpecPatch = Omit<
+  ExactShallowPatch<MaterialSpec>,
+  'frontLayer' | 'backLayer'
+> & {
+  readonly frontLayer?: SurfaceAbsorptionLayerPatch | undefined;
+  readonly backLayer?: SurfaceAbsorptionLayerPatch | undefined;
+};
+
 /** Feature slices for adapters and partial material updates (W3 contract hygiene). */
 export type BasePbrMaterialFields = Pick<
   MaterialSpec,

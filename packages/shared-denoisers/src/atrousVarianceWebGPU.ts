@@ -29,6 +29,7 @@ import {
 import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 import { buildAtrousChain, makeResourceTracker } from './atrousChain.js';
 import {
+  assertFiniteFloat16Slice,
   assertFiniteFloatSlice,
   assertFiniteNumber,
   assertOneShotArrayLength,
@@ -272,6 +273,16 @@ export async function runAtrousVarianceWebGPU(
   if (opts.welfordMeanM2 == null) {
     warnMissingWelfordTemporal(frameCount);
   }
+  const rgbForFiltering =
+    opts.albedoRgb != null
+      ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h)
+      : opts.rgb;
+  assertFiniteFloat16Slice(
+    'runAtrousVarianceWebGPU',
+    'rgbForFiltering',
+    rgbForFiltering,
+    w * h * 3,
+  );
 
   const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({
     device: opts.device,
@@ -365,8 +376,6 @@ export async function runAtrousVarianceWebGPU(
     // signal domain. With albedo demodulation enabled, feed the demodulated
     // lighting signal to BOTH passes (not radiance to variance and lighting to
     // à-trous, which shrinks the color edge-stop by roughly albedo²).
-    const rgbForFiltering =
-      opts.albedoRgb != null ? demodulateAlbedo(opts.rgb, opts.albedoRgb, w * h) : opts.rgb;
     uploadRgbAsRgba32f(device, inputColor, rgbForFiltering, w, h);
     if (opts.gbufferNormalsRgb != null) {
       uploadUnitNormalsAsRgba32f(device, gbufferNormal, opts.gbufferNormalsRgb, w, h);

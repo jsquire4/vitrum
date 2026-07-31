@@ -52,6 +52,14 @@ import {
   assertPositiveDdgiInteger,
   assertValidDdgiLights,
 } from './inputValidation.js';
+import {
+  assertWalkaroundEnvironmentScaleF32,
+  packWalkaroundEnvironmentRotationF32,
+} from '../environment/environmentRadianceScale.js';
+import {
+  packLightingRgbScaleEnvelopeF32,
+  packNonNegativeLightingFloat32,
+} from '../lightingFloat32.js';
 
 // Default probe round-robin stride. STRIDE=8 means each probe updates every
 // 8th frame (~133ms at 60fps). This is the cadence the engine has always
@@ -309,9 +317,10 @@ export class DDGI {
   /** Replace the current light list. Forwarded to ProbeUpdatePass. */
   setLights(lights: DDGILight[]): void {
     assertValidDdgiLights(lights);
-    if (sameDdgiLights(this._configuredLights, lights)) return;
-    this._pass.setLights(lights);
-    this._configuredLights = snapshotDdgiLights(lights);
+    const nextLights = snapshotDdgiLights(lights);
+    if (sameDdgiLights(this._configuredLights, nextLights)) return;
+    this._pass.setLights(nextLights);
+    this._configuredLights = nextLights;
     this._invalidateLightingContent();
   }
 
@@ -342,29 +351,59 @@ export class DDGI {
     readonly sunIntensityMultiplier: number;
     readonly emitterTris: Float32Array;
     readonly emitterCount: number;
+    readonly skyTint?: readonly [number, number, number];
+    readonly skyIrradiance?: number;
   }): PreparedSceneMutation {
     assertValidDdgiLights(inputs.lights);
     assertNonNegativeDdgiNumber(
       inputs.sunIntensityMultiplier,
       'DDGI sun intensity multiplier',
     );
-    const passMutation = this._pass.prepareLightingMutation(
-      inputs.lights,
+    const packedSunIntensityMultiplier = packNonNegativeLightingFloat32(
       inputs.sunIntensityMultiplier,
-      inputs.emitterTris,
-      inputs.emitterCount,
+      'DDGI sun intensity multiplier',
     );
     const nextLights = snapshotDdgiLights(inputs.lights);
+    if (
+      (inputs.skyTint === undefined) !==
+      (inputs.skyIrradiance === undefined)
+    ) {
+      throw new TypeError(
+        'DDGI prepared lighting mutation must supply skyTint and skyIrradiance together.',
+      );
+    }
+    const packedSky =
+      inputs.skyTint === undefined || inputs.skyIrradiance === undefined
+        ? null
+        : packLightingRgbScaleEnvelopeF32(
+            inputs.skyTint,
+            inputs.skyIrradiance,
+            'DDGI sky radiance',
+          );
+    // Complete every allocation/snapshot that can fail before the pass stages
+    // a private GPU candidate. Nothing between pass preparation and returning
+    // the transaction performs user-code access or another fallible copy.
     const nextEmitterTris = inputs.emitterTris.slice(0, inputs.emitterCount * 20);
     const previousConfiguredLights = this._configuredLights;
     const previousConfiguredSunIntensityMultiplier =
       this._configuredSunIntensityMultiplier;
     const previousConfiguredEmitterTris = this._configuredEmitterTris;
     const previousConfiguredEmitterCount = this._configuredEmitterCount;
+    const previousConfiguredSkyTint = this._configuredSkyTint;
+    const previousConfiguredSkyIrradiance = this._configuredSkyIrradiance;
     const previousFrame = this._frame;
     const previousReady = this._ready;
     const previousContentEpoch = this._contentEpoch;
     const previousFullBlend = this._pass.captureFullBlendState();
+    const passMutation = this._pass.prepareLightingMutation(
+      nextLights,
+      packedSunIntensityMultiplier,
+      inputs.emitterTris,
+      inputs.emitterCount,
+      packedSky == null
+        ? undefined
+        : { tint: packedSky.value, irradiance: packedSky.scale },
+    );
     let committed = false;
     let closed = false;
     return {
@@ -372,9 +411,13 @@ export class DDGI {
         if (closed || committed) return;
         passMutation.commit();
         this._configuredLights = nextLights;
-        this._configuredSunIntensityMultiplier = inputs.sunIntensityMultiplier;
+        this._configuredSunIntensityMultiplier = packedSunIntensityMultiplier;
         this._configuredEmitterTris = nextEmitterTris;
         this._configuredEmitterCount = inputs.emitterCount;
+        if (packedSky != null) {
+          this._configuredSkyTint = packedSky.value;
+          this._configuredSkyIrradiance = packedSky.scale;
+        }
         committed = true;
         this._frame = 0;
         this._ready = false;
@@ -395,6 +438,9 @@ export class DDGI {
               previousConfiguredSunIntensityMultiplier;
             this._configuredEmitterTris = previousConfiguredEmitterTris;
             this._configuredEmitterCount = previousConfiguredEmitterCount;
+            this._configuredSkyTint = previousConfiguredSkyTint;
+            this._configuredSkyIrradiance =
+              previousConfiguredSkyIrradiance;
             this._pass.restoreFullBlendState(previousFullBlend);
           }
           closed = true;
@@ -409,6 +455,23 @@ export class DDGI {
         }
       },
     };
+  }
+
+  /**
+   * Prepare a runtime-only sun/sky mutation while retaining the current
+   * emitter-triangle payload and GPU buffer identity.
+   */
+  prepareRuntimeLightingMutation(inputs: {
+    readonly lights: readonly DDGILight[];
+    readonly sunIntensityMultiplier: number;
+    readonly skyTint: readonly [number, number, number];
+    readonly skyIrradiance: number;
+  }): PreparedSceneMutation {
+    return this.prepareLightingMutation({
+      ...inputs,
+      emitterTris: this._configuredEmitterTris,
+      emitterCount: this._configuredEmitterCount,
+    });
   }
 
   /**
@@ -440,8 +503,15 @@ export class DDGI {
     intensity: number,
     hasEnv: boolean,
   ): void {
-    assertFiniteDdgiNumber(rotationY, 'DDGI environment rotation');
+    const packedRotationY = packWalkaroundEnvironmentRotationF32(
+      rotationY,
+      'DDGI environment rotation',
+    );
     assertNonNegativeDdgiNumber(intensity, 'DDGI environment intensity');
+    const packedIntensity = assertWalkaroundEnvironmentScaleF32(
+      intensity,
+      'DDGI environment intensity',
+    );
     assertDdgiBoolean(hasEnv, 'DDGI environment hasEnv');
     if (hasEnv && view == null) {
       throw new TypeError('DDGI environment view is required when hasEnv is true.');
@@ -450,19 +520,37 @@ export class DDGI {
     if (
       previous.view === view &&
       previous.sampler === sampler &&
-      Object.is(previous.rotationY, rotationY) &&
-      Object.is(previous.intensity, intensity) &&
+      Object.is(previous.rotationY, packedRotationY) &&
+      Object.is(previous.intensity, packedIntensity) &&
       previous.hasEnv === hasEnv
     ) {
       // Preserve the facade's forwarding contract even for the default
       // procedural environment. The pass may have acquired GPU state since the
       // previous call; forwarding lets it repair that binding without treating
       // an idempotent host synchronization as new lighting content.
-      this._pass.setEnvironment(view, sampler, rotationY, intensity, hasEnv);
+      this._pass.setEnvironment(
+        view,
+        sampler,
+        packedRotationY,
+        packedIntensity,
+        hasEnv,
+      );
       return;
     }
-    this._pass.setEnvironment(view, sampler, rotationY, intensity, hasEnv);
-    this._configuredEnvironment = { view, sampler, rotationY, intensity, hasEnv };
+    this._pass.setEnvironment(
+      view,
+      sampler,
+      packedRotationY,
+      packedIntensity,
+      hasEnv,
+    );
+    this._configuredEnvironment = {
+      view,
+      sampler,
+      rotationY: packedRotationY,
+      intensity: packedIntensity,
+      hasEnv,
+    };
     this._invalidateLightingContent();
   }
 
@@ -475,9 +563,13 @@ export class DDGI {
    */
   setSunIntensityMultiplier(m: number): void {
     assertNonNegativeDdgiNumber(m, 'DDGI sun intensity multiplier');
-    if (Object.is(this._configuredSunIntensityMultiplier, m)) return;
-    this._pass.setSunIntensityMultiplier(m);
-    this._configuredSunIntensityMultiplier = m;
+    const packed = packNonNegativeLightingFloat32(
+      m,
+      'DDGI sun intensity multiplier',
+    );
+    if (Object.is(this._configuredSunIntensityMultiplier, packed)) return;
+    this._pass.setSunIntensityMultiplier(packed);
+    this._configuredSunIntensityMultiplier = packed;
     this._invalidateLightingContent();
   }
 
@@ -487,15 +579,20 @@ export class DDGI {
       assertNonNegativeDdgiNumber(channel, `DDGI sky tint[${index}]`);
     });
     assertNonNegativeDdgiNumber(irradiance, 'DDGI sky irradiance');
+    const packed = packLightingRgbScaleEnvelopeF32(
+      tint,
+      irradiance,
+      'DDGI sky radiance',
+    );
     if (
-      sameNumber(this._configuredSkyTint[0], tint[0]) &&
-      sameNumber(this._configuredSkyTint[1], tint[1]) &&
-      sameNumber(this._configuredSkyTint[2], tint[2]) &&
-      sameNumber(this._configuredSkyIrradiance, irradiance)
+      sameNumber(this._configuredSkyTint[0], packed.value[0]) &&
+      sameNumber(this._configuredSkyTint[1], packed.value[1]) &&
+      sameNumber(this._configuredSkyTint[2], packed.value[2]) &&
+      sameNumber(this._configuredSkyIrradiance, packed.scale)
     ) return;
-    this._pass.setSkyParams(tint, irradiance);
-    this._configuredSkyTint = [...tint];
-    this._configuredSkyIrradiance = irradiance;
+    this._pass.setSkyParams(packed.value, packed.scale);
+    this._configuredSkyTint = packed.value;
+    this._configuredSkyIrradiance = packed.scale;
     this._invalidateLightingContent();
   }
 
@@ -818,6 +915,16 @@ export class DDGI {
           `[DDGI] GPU init threw: ${ddgiErrorMessage(initError)}`,
           initError,
         );
+        this._inited = false;
+        this._gpuOk = false;
+        this._lastFrameMs = performance.now() - t0;
+        return;
+      }
+      if (!ok && this._pass.initializationRetryable) {
+        // ProbeUpdatePass uses false for both definitive no-device failures and
+        // transient pipeline-compilation failures. Only the latter clears its
+        // init-attempt guard. Keep this facade initializing so the next owned
+        // frame retries instead of latching a recoverable failure forever.
         this._inited = false;
         this._gpuOk = false;
         this._lastFrameMs = performance.now() - t0;

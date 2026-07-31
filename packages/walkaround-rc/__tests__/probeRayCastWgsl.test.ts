@@ -51,6 +51,12 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
     expect(rcShaderStride).toBe(hostStride);
     expect(rcShaderStride).toBe(mainShaderStride);
     expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let idTableTexel = triangleMaterialBase + triIndex / 4u;',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      '+ materialId * RC_MATERIAL_MAP_META_TEXELS_PER_TRI',
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toContain(
       'triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset',
     );
   });
@@ -62,6 +68,30 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
     expect(PROBE_RAY_CAST_WGSL).not.toContain(
       'return clamp(rcMaterialMapChannel(texel, channel), 0.0, 1.0);',
     );
+  });
+
+  it('uses the no-layer identity when optional material metadata is absent', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'if (!rcMaterialMetaAvailable(triIndex, offset)) {',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'return vec4f(1.0, 1.0, 1.0, -1.0);',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'out.layerTransmission = clamp(layerControls.rgb, vec3f(0.0), vec3f(1.0));',
+    );
+  });
+
+  it('does not turn a traversable glass back interface into two-sided emission', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'hit.side >= 0.0 ||',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      '(mat.flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0u',
+    );
+    expect(
+      PROBE_RAY_CAST_WGSL.match(/rcSampleSurfaceEmissiveMap\(hit,/g),
+    ).toHaveLength(2);
   });
 });
 
@@ -83,7 +113,12 @@ describe('PROBE_RAY_CAST_WGSL environment transform', () => {
     expect(
       PROBE_RAY_CAST_WGSL.match(/rcEnvironmentRadiance\((?:ray\.direction|rayDir)\)/g),
     ).toHaveLength(2);
-    expect(PROBE_RAY_CAST_WGSL).toContain(').rgb * rc_u.envIntensity;');
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'return rcScaleEnvironmentRadiance(texel.rgb, rc_u.envIntensity);',
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toContain(
+      ').rgb * rc_u.envIntensity;',
+    );
 
     const rotationY = Math.PI / 2;
     const direction: readonly [number, number, number] = [1, 0, 0];
@@ -101,12 +136,26 @@ describe('PROBE_RAY_CAST_WGSL environment transform', () => {
 
   it('selects scalar sky radiance only when no directional payload is active', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('if (rc_u.hasDirectionalEnv == 0u)');
-    expect(PROBE_RAY_CAST_WGSL).toContain('return rc_u.scalarSkyRadiance;');
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'return rcScaleEnvironmentRadiance(rc_u.scalarSkyRadiance, 1.0);',
+    );
     expect(PROBE_RAY_CAST_WGSL).toContain(
       'radiance = rcEnvironmentRadiance(rayDir);',
     );
     expect(PROBE_RAY_CAST_WGSL).toContain(
       'let env = rcEnvironmentRadiance(ray.direction);',
+    );
+  });
+
+  it('composes one whole-RGB fail-closed environment scaler', () => {
+    expect(PROBE_RAY_CAST_WGSL.match(
+      /fn rcScaleEnvironmentRadiance\(/g,
+    )).toHaveLength(1);
+    expect(PROBE_RAY_CAST_WGSL.match(
+      /return rcScaleEnvironmentRadiance\(/g,
+    )).toHaveLength(2);
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'if (!all(scaled == scaled) || any(abs(scaled) > vec3f(maxFinite)))',
     );
   });
 });

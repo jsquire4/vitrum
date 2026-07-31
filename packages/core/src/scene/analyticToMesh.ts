@@ -14,6 +14,13 @@ export interface AnalyticPrimitiveToMeshOptions {
   readonly rings?: number;
   /** Use primitive.fallbackMesh when supplied. Defaults to true. */
   readonly preferFallbackMesh?: boolean;
+  /**
+   * Maximum aggregate byte length of the typed arrays allocated for the
+   * returned mesh. The preflight includes positions, normals, UVs, indices,
+   * and every optional fallback stream that is cloned. Defaults to
+   * {@link DEFAULT_ANALYTIC_MESH_OUTPUT_BUDGET_BYTES}.
+   */
+  readonly maxOutputBytes?: number;
 }
 
 interface GeometryData {
@@ -33,14 +40,29 @@ interface GeometryBuilder {
 type V3 = readonly [number, number, number];
 
 const DEFAULT_SEGMENTS = 32;
-const EPS_DIM = 1e-4;
 const TAU = Math.PI * 2;
+const FLOAT32_BYTES = Float32Array.BYTES_PER_ELEMENT;
+const UINT32_BYTES = Uint32Array.BYTES_PER_ELEMENT;
+const GENERATED_VERTEX_COMPONENTS = 3 + 3 + 2;
+
+/**
+ * Default per-conversion output-allocation ceiling (64 MiB). This admits, for
+ * example, a 1024×1024 sphere while preventing hostile segment/ring products
+ * or oversized fallback clones from reaching partial construction.
+ */
+export const DEFAULT_ANALYTIC_MESH_OUTPUT_BUDGET_BYTES = 64 * 1024 * 1024;
 
 export function analyticPrimitiveToMesh(
   primitive: AnalyticPrimitive,
   options: AnalyticPrimitiveToMeshOptions = {},
 ): MeshPrimitive {
+  const maxOutputBytes = resolveMaxOutputBytes(options.maxOutputBytes);
   if (options.preferFallbackMesh !== false && primitive.fallbackMesh != null) {
+    assertOutputAllocationWithinBudget(
+      fallbackOutputBytes(primitive),
+      maxOutputBytes,
+      `fallback mesh for primitive "${primitive.id}"`,
+    );
     return meshFromFallback(primitive);
   }
 
@@ -48,20 +70,171 @@ export function analyticPrimitiveToMesh(
   const rings = sanitizeRings(options.rings, segments);
   const geometry = (() => {
     switch (primitive.shape) {
-      case 'sphere':
-        return buildSphere(decodeAnalyticParams('sphere', primitive.params), segments, rings);
-      case 'box':
-        return buildBox(decodeAnalyticParams('box', primitive.params));
-      case 'capsule':
-        return buildCapsule(decodeAnalyticParams('capsule', primitive.params), segments, rings);
-      case 'cylinder':
-        return buildCylinder(decodeAnalyticParams('cylinder', primitive.params), segments);
-      case 'h-channel-came':
-        return buildHChannelCame(decodeAnalyticParams('h-channel-came', primitive.params));
+      case 'sphere': {
+        const params = decodeAnalyticParams('sphere', primitive.params);
+        assertGeneratedOutputWithinBudget(
+          primitive,
+          generatedGeometryCounts('sphere', segments, rings),
+          maxOutputBytes,
+        );
+        return buildSphere(params, segments, rings);
+      }
+      case 'box': {
+        const params = decodeAnalyticParams('box', primitive.params);
+        assertGeneratedOutputWithinBudget(
+          primitive,
+          generatedGeometryCounts('box', segments, rings),
+          maxOutputBytes,
+        );
+        return buildBox(params);
+      }
+      case 'capsule': {
+        const params = decodeAnalyticParams('capsule', primitive.params);
+        const [ax, ay, az, bx, by, bz] = params;
+        const degeneratesToSphere = ax === bx && ay === by && az === bz;
+        assertGeneratedOutputWithinBudget(
+          primitive,
+          generatedGeometryCounts(
+            degeneratesToSphere ? 'sphere' : 'capsule',
+            segments,
+            rings,
+          ),
+          maxOutputBytes,
+        );
+        return buildCapsule(params, segments, rings);
+      }
+      case 'cylinder': {
+        const params = decodeAnalyticParams('cylinder', primitive.params);
+        assertGeneratedOutputWithinBudget(
+          primitive,
+          generatedGeometryCounts('cylinder', segments, rings),
+          maxOutputBytes,
+        );
+        return buildCylinder(params, segments);
+      }
+      case 'h-channel-came': {
+        const params = decodeAnalyticParams('h-channel-came', primitive.params);
+        assertGeneratedOutputWithinBudget(
+          primitive,
+          generatedGeometryCounts('h-channel-came', segments, rings),
+          maxOutputBytes,
+        );
+        return buildHChannelCame(params);
+      }
     }
   })();
 
   return meshFromGeometry(primitive, geometry);
+}
+
+interface GeometryCounts {
+  readonly vertices: bigint;
+  readonly indices: bigint;
+}
+
+function resolveMaxOutputBytes(value: number | undefined): bigint {
+  const resolved = value ?? DEFAULT_ANALYTIC_MESH_OUTPUT_BUDGET_BYTES;
+  if (!Number.isSafeInteger(resolved) || resolved < 0) {
+    throw new RangeError(
+      `analyticPrimitiveToMesh: maxOutputBytes must be a non-negative safe integer ` +
+        `(got ${String(resolved)}).`,
+    );
+  }
+  return BigInt(resolved);
+}
+
+function generatedGeometryCounts(
+  shape: AnalyticPrimitive['shape'],
+  segments: number,
+  rings: number,
+): GeometryCounts {
+  const s = BigInt(segments);
+  const r = BigInt(rings);
+  switch (shape) {
+    case 'sphere':
+      return {
+        vertices: 2n + (r - 1n) * (s + 1n),
+        indices: 6n * s * (r - 1n),
+      };
+    case 'box':
+      return { vertices: 24n, indices: 36n };
+    case 'capsule': {
+      const hemisphereRings = r / 2n > 0n ? r / 2n : 1n;
+      return {
+        vertices: 2n + 2n * hemisphereRings * (s + 1n),
+        indices: 12n * hemisphereRings * s,
+      };
+    }
+    case 'cylinder':
+      return {
+        vertices: 4n * s + 4n,
+        indices: 12n * s,
+      };
+    case 'h-channel-came':
+      return { vertices: 72n, indices: 108n };
+  }
+}
+
+function generatedOutputBytes(counts: GeometryCounts): bigint {
+  return (
+    counts.vertices * BigInt(GENERATED_VERTEX_COMPONENTS * FLOAT32_BYTES) +
+    counts.indices * BigInt(UINT32_BYTES)
+  );
+}
+
+function assertGeneratedOutputWithinBudget(
+  primitive: AnalyticPrimitive,
+  counts: GeometryCounts,
+  maxOutputBytes: bigint,
+): void {
+  assertOutputAllocationWithinBudget(
+    generatedOutputBytes(counts),
+    maxOutputBytes,
+    `${primitive.shape} tessellation for primitive "${primitive.id}"`,
+  );
+}
+
+function fallbackOutputBytes(primitive: AnalyticPrimitive): bigint {
+  const fallback = primitive.fallbackMesh!;
+  let bytes =
+    BigInt(fallback.positions.byteLength) +
+    BigInt(fallback.normals.byteLength);
+  if (fallback.uvs != null) bytes += BigInt(fallback.uvs.byteLength);
+  if (fallback.uv1 != null) bytes += BigInt(fallback.uv1.byteLength);
+  if (fallback.uvSets != null) bytes += sparseStreamOutputBytes(fallback.uvSets);
+  if (fallback.tangents != null) bytes += BigInt(fallback.tangents.byteLength);
+  if (fallback.colors != null) bytes += BigInt(fallback.colors.byteLength);
+  if (fallback.colorSets != null) bytes += sparseStreamOutputBytes(fallback.colorSets);
+  if (fallback.indices != null) bytes += BigInt(fallback.indices.byteLength);
+  return bytes;
+}
+
+function sparseStreamOutputBytes(
+  streams: PrimitiveUvSets | PrimitiveColorSets,
+): bigint {
+  let bytes = 0n;
+  for (const index of sparseArrayOwnIndices(streams)) {
+    const stream = streams[index];
+    if (stream != null) bytes += BigInt(stream.byteLength);
+  }
+  return bytes;
+}
+
+function assertOutputAllocationWithinBudget(
+  requiredBytes: bigint,
+  maxOutputBytes: bigint,
+  source: string,
+): void {
+  if (requiredBytes <= maxOutputBytes) return;
+  throw new RangeError(
+    `analyticPrimitiveToMesh: ${source} requires ${formatInteger(requiredBytes)} bytes ` +
+      `of output allocation, exceeding the maxOutputBytes budget of ` +
+      `${formatInteger(maxOutputBytes)} bytes.`,
+  );
+}
+
+function formatInteger(value: bigint): string {
+  return value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
 function meshFromGeometry(primitive: AnalyticPrimitive, geometry: GeometryData): MeshPrimitive {
@@ -135,10 +308,6 @@ function sanitizeRings(value: number | undefined, segments: number): number {
   return Math.max(2, Math.floor(value));
 }
 
-function positiveDimension(value: number): number {
-  return Number.isFinite(value) ? Math.max(value, EPS_DIM) : EPS_DIM;
-}
-
 function createBuilder(): GeometryBuilder {
   return { positions: [], normals: [], uvs: [], indices: [] };
 }
@@ -186,9 +355,9 @@ function addQuad(
 
 function buildBox(params: readonly [number, number, number, number, number, number]): GeometryData {
   const [cx, cy, cz, rawHx, rawHy, rawHz] = params;
-  const hx = positiveDimension(rawHx);
-  const hy = positiveDimension(rawHy);
-  const hz = positiveDimension(rawHz);
+  const hx = rawHx;
+  const hy = rawHy;
+  const hz = rawHz;
   const x0 = cx - hx, x1 = cx + hx;
   const y0 = cy - hy, y1 = cy + hy;
   const z0 = cz - hz, z1 = cz + hz;
@@ -217,7 +386,7 @@ function buildSphere(
   rings: number,
 ): GeometryData {
   const [cx, cy, cz, rawRadius] = params;
-  const radius = positiveDimension(rawRadius);
+  const radius = rawRadius;
   const center: V3 = [cx, cy, cz];
   const axis: V3 = [0, 1, 0];
   const u: V3 = [1, 0, 0];
@@ -244,8 +413,8 @@ function buildSphere(
 
 function buildCylinder(params: readonly [number, number, number, number, number], segments: number): GeometryData {
   const [cx, cy, cz, rawRadius, rawHalfHeight] = params;
-  const radius = positiveDimension(rawRadius);
-  const halfHeight = positiveDimension(rawHalfHeight);
+  const radius = rawRadius;
+  const halfHeight = rawHalfHeight;
   const center: V3 = [cx, cy, cz];
   const axis: V3 = [0, 1, 0];
   const u: V3 = [1, 0, 0];
@@ -267,12 +436,12 @@ function buildCapsule(
   rings: number,
 ): GeometryData {
   const [ax, ay, az, bx, by, bz, rawRadius] = params;
-  const radius = positiveDimension(rawRadius);
+  const radius = rawRadius;
   const pa: V3 = [ax, ay, az];
   const pb: V3 = [bx, by, bz];
   const axisDelta = sub(pb, pa);
   const length = len(axisDelta);
-  if (length <= EPS_DIM) {
+  if (axisDelta[0] === 0 && axisDelta[1] === 0 && axisDelta[2] === 0) {
     return buildSphere([ax, ay, az, radius], segments, rings);
   }
 
@@ -315,11 +484,10 @@ function buildCapsule(
 
 function buildHChannelCame(params: readonly [number, number, number, number]): GeometryData {
   const [rawLength, rawRailWidth, rawBlockHeight, rawWebThickness] = params;
-  const hx = positiveDimension(rawLength * 0.5);
-  const hy = positiveDimension(rawBlockHeight * 0.5);
-  const hz = positiveDimension(rawRailWidth * 0.5);
-  const rawT = Number.isFinite(rawWebThickness) ? rawWebThickness * 0.5 : EPS_DIM;
-  const t = Math.max(Math.min(rawT, hy, hz), EPS_DIM);
+  const hx = rawLength * 0.5;
+  const hy = rawBlockHeight * 0.5;
+  const hz = rawRailWidth * 0.5;
+  const t = rawWebThickness * 0.5;
   const builder = createBuilder();
 
   appendXCapRect(builder, hx, 1, hy - t, hy, -hz, hz);
@@ -429,7 +597,7 @@ function buildSurfaceRows(
     // v-coordinate: 0 at south pole (first row), 1 at north pole (last row).
     const vCoord = rowIdx / (totalRows - 1);
 
-    if (row.radius <= EPS_DIM) {
+    if (row.radius === 0) {
       // Pole vertex — single vertex at UV (0.5, vCoord). The standard
       // lat/long convention uses the column-average u for the pole (0.5).
       // This keeps vertex counts unchanged from the pre-UV implementation.

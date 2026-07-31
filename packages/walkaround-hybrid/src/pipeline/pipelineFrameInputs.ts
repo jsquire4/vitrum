@@ -164,8 +164,12 @@ interface PipelineFrameGtao {
 export interface PipelineFrameFilter {
   /** D12 — Möller-Trumbore coplanarity epsilon.  Controls the `abs(det) < ε`
    *  near-zero determinant threshold in `intersectTriangle`.  Default `1e-5`
-   *  (metre-scale).  Reduce for millimetre-scale geometry. */
+   *  in normalized triangle space; it is angular/dimensionless, not a
+   *  world-distance epsilon. */
   triIntersectEpsilon: number;
+  /** Scene-diagonal-relative world-space offset for secondary ray origins.
+   *  Exactly 1e-3 at the canonical Cornell scale. */
+  rayOriginBias: number;
   /** 2026-05-18 sweep — probe-side glass-transmission perceptual mix scale.
    *  Cornell default 0.7. */
   glassMixScale: number;

@@ -14,14 +14,21 @@
  * Fields verified against probeUpdatePass.ts _uploadLights (the only
  * consumer in this package):
  *   - kind      — switched on: 'sun' | 'fixture' | 'teaLight'
-   *   - intensity — multiplied by _sunIntensityMul for sun lights
-   *   - position  — accessed via unsafe cast on fixture/teaLight lights
-   *   - direction — sun travel-direction; packed for 'sun' lights (see below)
-   *   - angularRadius — sun cone radius in radians for soft directional lights
-   *   - on        — filter: only lights where on===true are uploaded
-   *   - castShadow — when false, the probe direct-light estimator skips the
-   *     light's own visibility ray while still emitting radiance
+ *   - intensity — multiplied by _sunIntensityMul for sun lights
+ *   - position  — accessed via unsafe cast on fixture/teaLight lights
+ *   - direction — sun travel-direction; packed for 'sun' lights (see below)
+ *   - angularRadius — sun cone radius in radians for soft directional lights
+ *   - on        — filter: only lights where on===true are uploaded
+ *   - castShadow — when false, the probe direct-light estimator skips the
+ *     light's own visibility ray while still emitting radiance
  */
+import {
+  canonicalizeLightingDirectionF32,
+  packFiniteLightingFloat32,
+  packNonNegativeLightingFloat32,
+  packNonNegativeLightingRgbF32,
+} from '../lightingFloat32.js';
+
 export interface DDGILight {
   /** Closed runtime kind tag. New kinds must add an explicit GPU estimator;
    *  they cannot silently disappear from probe-update GI. */
@@ -108,13 +115,103 @@ export interface DDGILight {
  * @internal
  */
 export function snapshotDdgiLights(lights: readonly DDGILight[]): DDGILight[] {
-  return lights.map((light) => ({
-    ...light,
-    ...(light.position === undefined ? {} : { position: { ...light.position } }),
-    ...(light.direction === undefined ? {} : { direction: { ...light.direction } }),
-    ...(light.color === undefined ? {} : { color: { ...light.color } }),
-    ...(light.spotAxis === undefined ? {} : { spotAxis: { ...light.spotAxis } }),
-  }));
+  return lights.map((light, index) => {
+    const label = `DDGI lights[${index}]`;
+    const position = light.position === undefined
+      ? undefined
+      : {
+          x: packFiniteLightingFloat32(light.position.x, `${label}.position.x`),
+          y: packFiniteLightingFloat32(light.position.y, `${label}.position.y`),
+          z: packFiniteLightingFloat32(light.position.z, `${label}.position.z`),
+        };
+    const direction = light.direction === undefined
+      ? undefined
+      : canonicalizeLightingDirectionF32(
+          [light.direction.x, light.direction.y, light.direction.z],
+          `${label}.direction`,
+        );
+    const color = light.color === undefined
+      ? undefined
+      : packNonNegativeLightingRgbF32(
+          [light.color.r, light.color.g, light.color.b],
+          `${label}.color`,
+        );
+    const spotAxis = light.spotAxis === undefined
+      ? undefined
+      : canonicalizeLightingDirectionF32(
+          [light.spotAxis.x, light.spotAxis.y, light.spotAxis.z],
+          `${label}.spotAxis`,
+        );
+    return {
+      ...light,
+      intensity: packNonNegativeLightingFloat32(
+        light.intensity,
+        `${label}.intensity`,
+      ),
+      ...(position === undefined ? {} : { position }),
+      ...(direction === undefined
+        ? {}
+        : {
+            direction: {
+              x: direction[0],
+              y: direction[1],
+              z: direction[2],
+            },
+          }),
+      ...(light.angularRadius === undefined
+        ? {}
+        : {
+            angularRadius: packNonNegativeLightingFloat32(
+              light.angularRadius,
+              `${label}.angularRadius`,
+            ),
+          }),
+      ...(color === undefined
+        ? {}
+        : { color: { r: color[0], g: color[1], b: color[2] } }),
+      ...(spotAxis === undefined
+        ? {}
+        : {
+            spotAxis: {
+              x: spotAxis[0],
+              y: spotAxis[1],
+              z: spotAxis[2],
+            },
+          }),
+      ...(light.spotCosInner === undefined
+        ? {}
+        : {
+            spotCosInner: packFiniteLightingFloat32(
+              light.spotCosInner,
+              `${label}.spotCosInner`,
+            ),
+          }),
+      ...(light.spotCosOuter === undefined
+        ? {}
+        : {
+            spotCosOuter: packFiniteLightingFloat32(
+              light.spotCosOuter,
+              `${label}.spotCosOuter`,
+            ),
+          }),
+      ...(light.distance === undefined
+        ? {}
+        : {
+            distance: packNonNegativeLightingFloat32(
+              light.distance,
+              `${label}.distance`,
+            ),
+          }),
+      ...(light.decay === undefined
+        ? {}
+        : {
+            decay: packNonNegativeLightingFloat32(
+              light.decay,
+              `${label}.decay`,
+            ),
+          }),
+    };
+  });
 }
 
 // `DDGIDeviceHandle` interface removed 2026-05-18 — was defined here but

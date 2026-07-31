@@ -8,8 +8,8 @@
 //   - positionsRefit          → refreshBvhNormalsSlice
 //   - topologyRebuild         → transactional replacement
 //   - materialPatch           → refreshBvhMaterialSlice (+ optional atlas refresh)
-//   - wholesale topology field → intercepted to setScene (none of the refit/
-//     rebuild slice methods fire from _routePrimitiveUpdate)
+//   - wholesale topology field → candidate-first whole-scene replacement
+//     (none of the in-place refit slice methods fire)
 //
 // This complements mutationMatrix.test.ts, which pins the material-atlas-rebuild
 // PREDICATES (which material fields trigger refreshMaterialTextureAtlas) but does
@@ -449,11 +449,13 @@ describe('HybridEngine _routePrimitiveUpdate (patch shape → routed path) matri
     }
   });
 
-  it('equal kind discriminant is neutral, not a wholesale rebuild', () => {
+  it('rejects even an equal kind discriminant before any rebuild', () => {
     const { engine, pipeline } = seedEngine(baseScene());
     const setScene = vi.spyOn(engine, 'setScene');
     try {
-      engine.updatePrimitive('mesh-a', { kind: 'mesh' });
+      expect(() =>
+        engine.updatePrimitive('mesh-a', { kind: 'mesh' } as never),
+      ).toThrow(/kind cannot change or be supplied/);
       expect(setScene).not.toHaveBeenCalled();
       expect(routeMarkers(pipeline)).toEqual({
         transformRefit: 0, positionsRefit: 0, topologyRebuild: 0, materialPatch: 0,

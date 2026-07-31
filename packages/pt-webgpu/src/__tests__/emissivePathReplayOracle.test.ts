@@ -182,13 +182,16 @@ describe('certified emissive path-replay oracle', () => {
     );
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain('mollerTrumboreCore(');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(
-      'positions[idx.z].xyz,\n      1e-5,',
+      'positions[idx.z].xyz,\n      0.0,',
     );
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(
-      'triHit.t > 1e-4 && triHit.t < best.t',
+      'triHit.t > 0.0 && triHit.t < best.t',
     );
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(
-      'u < -triEps || v < -triEps || w < -triEps',
+      'u < -MOLLER_TRUMBORE_BARYCENTRIC_EPSILON',
+    );
+    expect(PT_WEBGPU_ADJOINT_PASS_WGSL).toContain(
+      '!(angularDet > MOLLER_TRUMBORE_ANGULAR_EPSILON)',
     );
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toContain('gradient +=');
     expect(PT_WEBGPU_ADJOINT_PASS_WGSL).not.toMatch(

@@ -102,7 +102,7 @@ describe('idempotentDispose proxy table — pre-dispose forwarding', () => {
   it('forwards all 7 noop-methods with their args', () => {
     const { engine, spies } = makeFullEngine();
     const p = wrapWithIdempotentDispose(engine, () => {});
-    p.updatePrimitive!('a', { transform: undefined } as never);
+    p.updatePrimitive!('a', { transform: undefined });
     p.updateEmitter!('b', {});
     p.addPrimitive!({ id: 'x' } as never);
     p.removePrimitive!('y');

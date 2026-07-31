@@ -12,6 +12,7 @@ export {
   type HybridEngineAdvancedOptions,
 } from './HybridEngineConfig.js';
 export type {
+  HybridDenoiserTrainingCapture,
   HybridEngine,
   HybridEngineGISurface,
   HybridRenderLayer,

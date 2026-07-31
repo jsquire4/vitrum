@@ -15,6 +15,10 @@
 
 import { float16BitsToFloat32, float32ToFloat16Bits } from './halfFloat.js';
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
+import {
+  assertFiniteFloat16Slice,
+  assertOneShotDimensions,
+} from './webGpuOneShotValidation.js';
 
 /**
  * Read 4 channels of a row-major rgba16float GPU readback buffer into a
@@ -74,6 +78,16 @@ export function rgbF32ToRgba16fRowAligned(
   width: number,
   height: number,
 ): { buffer: ArrayBuffer; bytesPerRow: number } {
+  const label = 'rgbF32ToRgba16fRowAligned';
+  const pixelCount = assertOneShotDimensions(label, width, height);
+  const requiredLength = pixelCount * 3;
+  if (src.length !== requiredLength) {
+    throw new Error(
+      `${label}: src length must equal ${requiredLength}; received ${src.length}`,
+    );
+  }
+  assertFiniteFloat16Slice(label, 'src', src, requiredLength);
+
   const bytesPerRow = alignedTextureCopyBytesPerRow(width, 8);
   // Allocate as ArrayBuffer (not ArrayBufferLike via `new Uint8Array(N).buffer`)
   // so the return type stays narrow enough for GPUAllowSharedBufferSource —

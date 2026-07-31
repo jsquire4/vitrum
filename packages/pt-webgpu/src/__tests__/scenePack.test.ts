@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
-import { buildPackedScene, rebuildTlasForSceneTransforms } from '../scene/uploadSceneBuffers.js';
+import {
+  buildPackedScene,
+  rebuildTlasForSceneTransforms,
+  sceneCenterRadiusForPackedGeometry,
+} from '../scene/uploadSceneBuffers.js';
 
 function makeScene(): Scene {
   return {
@@ -109,6 +113,113 @@ describe('buildPackedScene core packing', () => {
     expect(packed.analyticHeaders.length).toBe(4);
     expect(packed.analyticParams.length).toBe(8);
     expect(packed.warnings.some((warning) => warning.includes('a-sphere') && warning.includes('skipped'))).toBe(false);
+  });
+
+  it('packs every analytic shape into the shader two-vec4 ABI', () => {
+    const material = {
+      baseColor: [0.8, 0.2, 0.1] as const,
+      roughness: 0.5,
+      metallic: 0.1,
+    };
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'analytic',
+          id: 'sphere',
+          shape: 'sphere',
+          params: new Float32Array([1, 2, 3, 4]),
+          material,
+        },
+        {
+          kind: 'analytic',
+          id: 'box',
+          shape: 'box',
+          params: new Float32Array([5, 6, 7, 8, 9, 10]),
+          material,
+        },
+        {
+          kind: 'analytic',
+          id: 'capsule',
+          shape: 'capsule',
+          params: new Float32Array([11, 12, 13, 14, 15, 16, 17]),
+          material,
+        },
+        {
+          kind: 'analytic',
+          id: 'cylinder',
+          shape: 'cylinder',
+          params: new Float32Array([18, 19, 20, 21, 22]),
+          material,
+        },
+        {
+          kind: 'analytic',
+          id: 'came',
+          shape: 'h-channel-came',
+          params: new Float32Array([30, 12, 14, 2]),
+          material,
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(scene);
+    expect(packed.analyticCount).toBe(5);
+    expect(Array.from(packed.analyticHeaders)).toEqual([
+      1, 0, 0, 0,
+      2, 1, 2, 0,
+      3, 2, 4, 0,
+      4, 3, 6, 0,
+      5, 4, 8, 0,
+    ]);
+    expect(Array.from(packed.analyticParams)).toEqual([
+      1, 2, 3, 4, 0, 0, 0, 0,
+      5, 6, 7, 0, 8, 9, 10, 0,
+      11, 12, 13, 0, 14, 15, 16, 17,
+      18, 19, 20, 21, 22, 0, 0, 0,
+      30, 12, 14, 2, 0, 0, 0, 0,
+    ]);
+  });
+
+  it('includes transformed analytics in initial and incremental scene bounds', () => {
+    const analyticScene: Scene = {
+      primitives: [{
+        kind: 'analytic',
+        id: 'bounded-sphere',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 2]),
+        transform: asMat4(new Float32Array([
+          2, 0, 0, 0,
+          0, 3, 0, 0,
+          0, 0, 4, 0,
+          100, -20, 7, 1,
+        ])),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = buildPackedScene(analyticScene);
+    expect(packed.sceneCenter).toEqual([100, -20, 7]);
+    expect(packed.sceneRadius).toBeCloseTo(Math.hypot(4, 6, 8), 12);
+
+    const movedTransforms = new Float32Array(packed.analyticLocalToWorld);
+    movedTransforms[12] = -50;
+    movedTransforms[13] = 30;
+    movedTransforms[14] = 9;
+    const moved = sceneCenterRadiusForPackedGeometry({
+      bvhNodes: packed.bvhNodes,
+      tlasNodes: packed.tlasNodes,
+      analyticHeaders: packed.analyticHeaders,
+      analyticParams: packed.analyticParams,
+      analyticLocalToWorld: movedTransforms,
+    });
+    expect(moved.center).toEqual([-50, 30, 9]);
+    expect(moved.radius).toBeCloseTo(Math.hypot(4, 6, 8), 12);
   });
 
   it('builds and uploads TLAS metadata buffers', () => {

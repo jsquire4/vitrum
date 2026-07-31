@@ -38,6 +38,7 @@ import {
 import { acquireDenoiseDevice, makePerDevicePipelineCache } from './sharedWebGpuDevice.js';
 import { makeResourceTracker } from './atrousChain.js';
 import {
+  assertFiniteFloat16Slice,
   assertFiniteFloatSlice,
   assertFiniteNumber,
   assertOneShotArrayLength,
@@ -101,6 +102,12 @@ export interface BmfrWebGPUOptions {
    * blend. This is the same radiance domain returned by `runBmfrWebGPU`.
    */
   readonly historyRgb?: Float32Array;
+  /**
+   * Previous-frame albedo corresponding to `historyRgb`. Required when both
+   * `albedoRgb` and `historyRgb` are supplied so historical radiance is
+   * demodulated in its own material domain rather than the current frame's.
+   */
+  readonly historyAlbedoRgb?: Float32Array;
   /** Per-pixel diffuse albedo (RGB, length W*H*3); enables demodulation. */
   readonly albedoRgb?: Float32Array;
 
@@ -148,7 +155,16 @@ export async function runBmfrWebGPU(opts: BmfrWebGPUOptions): Promise<Float32Arr
     check('gbufferNormalsRgb', opts.gbufferNormalsRgb, px * 3);
   }
   if (opts.historyRgb != null) check('historyRgb', opts.historyRgb, px * 3);
+  if (opts.historyAlbedoRgb != null) {
+    check('historyAlbedoRgb', opts.historyAlbedoRgb, px * 3);
+  }
   if (opts.albedoRgb != null) check('albedoRgb', opts.albedoRgb, px * 3);
+  if (opts.historyAlbedoRgb != null && opts.albedoRgb == null) {
+    throw new Error(`${label}: historyAlbedoRgb requires albedoRgb`);
+  }
+  if (opts.historyAlbedoRgb != null && opts.historyRgb == null) {
+    throw new Error(`${label}: historyAlbedoRgb requires historyRgb`);
+  }
 
   const blockSize = opts.blockSize ?? BMFR_BLOCK_SIZE;
   assertFiniteNumber(label, 'blockSize', blockSize, {
@@ -191,6 +207,38 @@ export async function runBmfrWebGPU(opts: BmfrWebGPUOptions): Promise<Float32Arr
     // The one-shot host path supplies a real world-position buffer (mode 0).
     positionMode: 0,
   };
+  const rgbForFit = opts.albedoRgb != null
+    ? demodulateAlbedo(opts.rgb, opts.albedoRgb, px)
+    : opts.rgb;
+  const normalsForUpload =
+    opts.gbufferNormalsRgb ?? packedFlatNormals(px);
+  let historyForTemporal: Float32Array;
+  if (opts.historyRgb == null) {
+    historyForTemporal = new Float32Array(px * 3);
+  } else if (opts.albedoRgb == null) {
+    historyForTemporal = opts.historyRgb;
+  } else {
+    const historyAlbedo = opts.historyAlbedoRgb;
+    if (historyAlbedo == null) {
+      throw new Error(
+        `${label}: historyAlbedoRgb is required when albedoRgb and historyRgb are supplied`,
+      );
+    }
+    historyForTemporal = demodulateAlbedo(opts.historyRgb, historyAlbedo, px);
+  }
+  assertFiniteFloat16Slice(label, 'rgbForFit', rgbForFit, px * 3);
+  assertFiniteFloat16Slice(
+    label,
+    'gbufferNormalsRgb',
+    normalsForUpload,
+    px * 3,
+  );
+  assertFiniteFloat16Slice(
+    label,
+    'historyForTemporal',
+    historyForTemporal,
+    px * 3,
+  );
 
   const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({
     device: opts.device,
@@ -236,17 +284,10 @@ export async function runBmfrWebGPU(opts: BmfrWebGPUOptions): Promise<Float32Arr
     }));
 
     // Color (demodulated by albedo when supplied).
-    const rgbForFit = opts.albedoRgb != null
-      ? demodulateAlbedo(opts.rgb, opts.albedoRgb, px)
-      : opts.rgb;
     uploadRgbAsRgba16f(device, colorTex, rgbForFit, w, h);
 
     // Normals (packed 0..1); default forward-facing +Z = packed (0.5,0.5,1).
-    if (opts.gbufferNormalsRgb != null) {
-      uploadRgbAsRgba16f(device, normalTex, opts.gbufferNormalsRgb, w, h);
-    } else {
-      uploadRgbAsRgba16f(device, normalTex, packedFlatNormals(px), w, h);
-    }
+    uploadRgbAsRgba16f(device, normalTex, normalsForUpload, w, h);
 
     // World position (XYZ in .xyz, validity/depth in .w). The kernel uses .w<=0
     // as the sky/miss sentinel.
@@ -255,18 +296,14 @@ export async function runBmfrWebGPU(opts: BmfrWebGPUOptions): Promise<Float32Arr
     // History must enter the resolve kernel in the same domain as the current
     // fit. `historyRgb` is a prior public result and is therefore remodulated
     // radiance, while `rgbForFit` is c/ρ when albedo is supplied. Demodulate
-    // history with the current surface albedo before the EMA; the result is
-    // remodulated exactly once after readback below.
-    const historyForTemporal =
-      opts.historyRgb != null && opts.albedoRgb != null
-        ? demodulateAlbedo(opts.historyRgb, opts.albedoRgb, px)
-        : opts.historyRgb;
+    // history with its own frame's albedo before the EMA; the result is
+    // remodulated with the current albedo exactly once after readback below.
     // Only sampled when hasHistory; zero-fill otherwise so the texture is
     // initialised — the kernel skips the read unless hasHistory.
     uploadRgbAsRgba16f(
       device,
       historyTex,
-      historyForTemporal ?? new Float32Array(px * 3),
+      historyForTemporal,
       w,
       h,
     );

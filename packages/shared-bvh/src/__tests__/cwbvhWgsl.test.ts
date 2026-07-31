@@ -51,6 +51,36 @@ describe('CWBVH_INTERSECT_WGSL', () => {
     expect(CWBVH_INTERSECT_WGSL).toContain('if (tri.hit && tri.t > tMin && tri.t < best.dist)');
   });
 
+  it('uses the range-local distance threshold in the shared triangle kernel', () => {
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain(
+      'mollerTrumboreCore(ray.origin, ray.direction, pa4.xyz, pb4.xyz, pc4.xyz, tMin)',
+    );
+    expect(CWBVH_INTERSECT_CORE_WGSL).not.toContain(
+      'mollerTrumboreCore(ray.origin, ray.direction, pa4.xyz, pb4.xyz, pc4.xyz, triEps)',
+    );
+    expect(CWBVH_INTERSECT_CORE_WGSL).not.toContain('_legacyTriEps');
+  });
+
+  it('uses the finite f32 ceiling and an explicit AABB hit flag', () => {
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain(
+      'const CWBVH_INTERSECT_INFINITY: f32 = 3.402823e38;',
+    );
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('struct CwbvhAabbEntryResult');
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('if (!childEntry.didHit)');
+    expect(CWBVH_INTERSECT_CORE_WGSL).not.toContain(
+      'childT == CWBVH_INTERSECT_INFINITY',
+    );
+  });
+
+  it('propagates canonical barycentric, determinant-side, and normal attributes', () => {
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('best.barycoord = tri.bary;');
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('best.side = sign(tri.det);');
+    expect(CWBVH_INTERSECT_CORE_WGSL).toContain('best.normal = tri.normal * best.side;');
+    expect(CWBVH_INTERSECT_CORE_WGSL).not.toContain(
+      'normalize(cross(pb4.xyz - pa4.xyz, pc4.xyz - pa4.xyz))',
+    );
+  });
+
   it('rejects corrupt live children while leaving zeroed padding outside childCount unread', () => {
     expect(CWBVH_INTERSECT_WGSL).toContain('fn cwbvhBoundsAreValid(');
     expect(CWBVH_INTERSECT_WGSL).toContain('all(abs(bmin) <= finiteMax)');

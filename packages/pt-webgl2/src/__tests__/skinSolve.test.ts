@@ -439,8 +439,13 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
         environment: { kind: 'none' },
       };
       const gl = createMockGl();
+      const originalCreateTexture = gl.createTexture.bind(gl);
+      const createTexture = vi.fn(() => originalCreateTexture());
+      const deleteTexture = vi.fn();
       const texSubImage2D = vi.fn();
       const texSubImage3D = vi.fn();
+      (gl as unknown as { createTexture: typeof createTexture }).createTexture = createTexture;
+      (gl as unknown as { deleteTexture: typeof deleteTexture }).deleteTexture = deleteTexture;
       (gl as unknown as { texSubImage2D: typeof texSubImage2D }).texSubImage2D = texSubImage2D;
       (gl as unknown as { texSubImage3D: typeof texSubImage3D }).texSubImage3D = texSubImage3D;
 
@@ -449,6 +454,8 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
         onWarning: (warning) => structured.push(warning),
       });
       e.setScene(scene);
+      const initialCreates = createTexture.mock.calls.length;
+      const initialDeletes = deleteTexture.mock.calls.length;
       const initialSubImage2D = texSubImage2D.mock.calls.length;
       const initialSubImage3D = texSubImage3D.mock.calls.length;
 
@@ -471,8 +478,10 @@ describe('pt-webgl2 skinned-mesh ingestion', () => {
         m.includes('updatePrimitive("sk3") fields [bones]'),
       )).toHaveLength(0);
       expect(structured.some((w) => w.code === 'pt-webgl2.primitive-mutation-fallback-rebuild')).toBe(false);
-      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(2);
-      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(1);
+      expect(createTexture.mock.calls.length - initialCreates).toBe(3);
+      expect(deleteTexture.mock.calls.length - initialDeletes).toBe(3);
+      expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
+      expect(texSubImage3D.mock.calls.length - initialSubImage3D).toBe(0);
 
       e.dispose();
     } finally {

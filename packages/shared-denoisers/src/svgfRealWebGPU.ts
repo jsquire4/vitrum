@@ -40,6 +40,7 @@ import { ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS } from './atrousVarianceBinding
 import { acquireDenoiseDevice } from './sharedWebGpuDevice.js';
 import { buildAtrousChain, makeResourceTracker } from './atrousChain.js';
 import {
+  assertFiniteFloat16Slice,
   assertFiniteFloatSlice,
   assertFiniteNumber,
   assertOneShotArrayLength,
@@ -112,6 +113,12 @@ export interface SVGFRealWebGPUOptions {
    * `prevRadianceOut`.
    */
   readonly prevRadianceRgb?: Float32Array;
+  /**
+   * Previous-frame albedo corresponding to `prevRadianceRgb`. Required when
+   * both `albedoRgb` and `prevRadianceRgb` are supplied so previous radiance is
+   * demodulated in its own material domain rather than the current frame's.
+   */
+  readonly prevAlbedoRgb?: Float32Array;
   /** Screen-space motion vector (pixel delta, RG interleaved), length W*H*2. */
   readonly motionRg?: Float32Array;
   /** Linear depth per pixel, length W*H. Defaults to constant 1.0. */
@@ -169,7 +176,9 @@ export interface SVGFRealWebGPUOptions {
    * (blended moments + per-pixel history length) are read back BEFORE the
    * transient textures are destroyed and returned as `prevRadianceOut`,
    * `momentsOut`, and `historyLengthOut`. Feed them back as
-   * `prevRadianceRgb`, `momentsIn`, and `historyLengthIn` next frame.
+   * `prevRadianceRgb`, `momentsIn`, and `historyLengthIn` next frame. When
+   * albedo demodulation is enabled, also feed the current `albedoRgb` back as
+   * the next call's `prevAlbedoRgb`.
    * Default false (single-frame; chaining outputs remain undefined and no
    * extra readback is submitted).
    */
@@ -222,6 +231,9 @@ export function assertSVGFRealWebGPUInputs(opts: SVGFRealWebGPUOptions): number 
   if (opts.prevRadianceRgb != null) {
     checkFloat('prevRadianceRgb', opts.prevRadianceRgb, px * 3);
   }
+  if (opts.prevAlbedoRgb != null) {
+    checkFloat('prevAlbedoRgb', opts.prevAlbedoRgb, px * 3);
+  }
   if (opts.motionRg != null) checkFloat('motionRg', opts.motionRg, px * 2);
   if (opts.linearDepth != null) checkFloat('linearDepth', opts.linearDepth, px);
   if (opts.gbufferNormalsRgb != null) {
@@ -234,6 +246,21 @@ export function assertSVGFRealWebGPUInputs(opts: SVGFRealWebGPUOptions): number 
     checkFloat('prevNormalsRgb', opts.prevNormalsRgb, px * 3);
   }
   if (opts.albedoRgb != null) checkFloat('albedoRgb', opts.albedoRgb, px * 3);
+  if (
+    opts.albedoRgb != null &&
+    opts.prevRadianceRgb != null &&
+    opts.prevAlbedoRgb == null
+  ) {
+    throw new Error(
+      `${label}: prevAlbedoRgb is required when albedoRgb and prevRadianceRgb are supplied`,
+    );
+  }
+  if (opts.prevAlbedoRgb != null && opts.albedoRgb == null) {
+    throw new Error(`${label}: prevAlbedoRgb requires albedoRgb`);
+  }
+  if (opts.prevAlbedoRgb != null && opts.prevRadianceRgb == null) {
+    throw new Error(`${label}: prevAlbedoRgb requires prevRadianceRgb`);
+  }
   if (opts.momentsIn != null) checkFloat('momentsIn', opts.momentsIn, px * 2);
 
   if (opts.objectIds != null) checkU32('objectIds', opts.objectIds, px);
@@ -289,6 +316,30 @@ export async function runSVGFRealWebGPU(
     alphaMin: opts.reprojUniforms?.alphaMin ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
     forceReset: opts.reprojUniforms?.forceReset ?? SVGF_REPROJ_DEFAULT_UNIFORMS.forceReset ?? 0,
   };
+  const rgbForChain =
+    opts.albedoRgb != null
+      ? svgfRealDemodulateAlbedo(opts.rgb, opts.albedoRgb, px)
+      : opts.rgb;
+  const prevForChain =
+    opts.albedoRgb != null
+      ? svgfRealDemodulateAlbedo(
+          opts.prevRadianceRgb ?? opts.rgb,
+          opts.prevAlbedoRgb ?? opts.albedoRgb,
+          px,
+        )
+      : (opts.prevRadianceRgb ?? opts.rgb);
+  assertFiniteFloat16Slice(
+    'runSVGFRealWebGPU',
+    'rgbForChain',
+    rgbForChain,
+    px * 3,
+  );
+  assertFiniteFloat16Slice(
+    'runSVGFRealWebGPU',
+    'prevRadianceForChain',
+    prevForChain,
+    px * 3,
+  );
 
   const { device, dispose: destroyEphemeral } = await acquireDenoiseDevice({
     device: opts.device,
@@ -487,12 +538,6 @@ export async function runSVGFRealWebGPU(
     // original noisy `rgb` (no temporal moments there). The divergence is
     // intentional — do NOT unify; the algorithms differ (Schied SVGF vs
     // à-trous lookup).
-    const rgbForChain =
-      opts.albedoRgb != null ? svgfRealDemodulateAlbedo(opts.rgb, opts.albedoRgb, px) : opts.rgb;
-    const prevForChain =
-      opts.albedoRgb != null
-        ? svgfRealDemodulateAlbedo(opts.prevRadianceRgb ?? opts.rgb, opts.albedoRgb, px)
-        : (opts.prevRadianceRgb ?? opts.rgb);
     uploadRgbAsRgba16f(device, currColorTex, rgbForChain, w, h);
     uploadRgbAsRgba16f(device, prevColorTex, prevForChain, w, h);
 

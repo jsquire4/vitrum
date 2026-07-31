@@ -115,13 +115,13 @@ function bodyHash(wgsl: string, fnName: string): string {
 const FROZEN_HASHES: Record<string, string> = {
   // Repin by running the test with the new WGSL, capturing the failing assertion,
   // and updating the value here + updating cpuTracer.ts.
-  safe_normalize:         '0d23a9b027f5edfc',
+  safe_normalize:         '55763fc94df6cec4',
   intersectAabb:          'da9898b696fd3d16',
   cosineHemisphereSample: 'f93d14571d96f6e6',
   sampleGgxVndfTangent:   '867ece6ffbc4ae0b',
   fresnelSchlick:         'c5e709aecf383066',
   frDielectric:           'b37da4158d551392',
-  powerHeuristic:         'e6ba80ffab3fa7ac',
+  powerHeuristic:         '1c52c6b8f659d42f',
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

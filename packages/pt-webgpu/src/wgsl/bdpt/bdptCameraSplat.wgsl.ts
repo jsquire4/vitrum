@@ -96,12 +96,7 @@ fn bdptLoadCameraRgb(pixelIndex: u32) -> vec3f {
 }
 
 fn bdptCameraDirectionForNdc(ndc: vec2f) -> vec3f {
-  let far4 = params.invViewProj * vec4f(ndc, 1.0, 1.0);
-  let near4 = params.invViewProj * vec4f(ndc, -1.0, 1.0);
-  if (abs(far4.w) <= 1e-12 || abs(near4.w) <= 1e-12) {
-    return vec3f(0.0);
-  }
-  return safe_normalize(far4.xyz / far4.w - near4.xyz / near4.w);
+  return unproject_ray_common(params.invViewProj, ndc).direction;
 }
 
 fn bdptBuildCameraGeometry() -> BdptCameraGeometry {
@@ -109,22 +104,21 @@ fn bdptBuildCameraGeometry() -> BdptCameraGeometry {
   result.valid = false;
   let rasterCenterDirection =
     bdptCameraDirectionForNdc(vec2f(0.0));
-  let near00h =
-    params.invViewProj * vec4f(-1.0, 1.0, -1.0, 1.0);
-  let near10h =
-    params.invViewProj * vec4f(1.0, 1.0, -1.0, 1.0);
-  let near01h =
-    params.invViewProj * vec4f(-1.0, -1.0, -1.0, 1.0);
-  if (
-    abs(near00h.w) <= 1e-12 ||
-    abs(near10h.w) <= 1e-12 ||
-    abs(near01h.w) <= 1e-12
-  ) {
+  let near00h = finite_homogeneous_point_common(
+    params.invViewProj * vec4f(-1.0, 1.0, -1.0, 1.0),
+  );
+  let near10h = finite_homogeneous_point_common(
+    params.invViewProj * vec4f(1.0, 1.0, -1.0, 1.0),
+  );
+  let near01h = finite_homogeneous_point_common(
+    params.invViewProj * vec4f(-1.0, -1.0, -1.0, 1.0),
+  );
+  if (near00h.w == 0.0 || near10h.w == 0.0 || near01h.w == 0.0) {
     return result;
   }
-  let near00 = near00h.xyz / near00h.w;
-  let near10 = near10h.xyz / near10h.w;
-  let near01 = near01h.xyz / near01h.w;
+  let near00 = near00h.xyz;
+  let near10 = near10h.xyz;
+  let near01 = near01h.xyz;
   result.forward = safe_normalize(
     cross(near10 - near00, near01 - near00),
   );
@@ -137,7 +131,7 @@ fn bdptBuildCameraGeometry() -> BdptCameraGeometry {
   let c00 = dot(d00, result.forward);
   let c10 = dot(d10, result.forward);
   let c01 = dot(d01, result.forward);
-  if (c00 <= 1e-8 || c10 <= 1e-8 || c01 <= 1e-8) {
+  if (!(c00 > 0.0) || !(c10 > 0.0) || !(c01 > 0.0)) {
     return result;
   }
   let p00 = d00 / c00;
@@ -145,7 +139,7 @@ fn bdptBuildCameraGeometry() -> BdptCameraGeometry {
   let p01 = d01 / c01;
   result.imagePlaneArea = length(cross(p10 - p00, p01 - p00));
   if (
-    !(result.imagePlaneArea > 1e-12) ||
+    !(result.imagePlaneArea > 0.0) ||
     result.imagePlaneArea - result.imagePlaneArea != 0.0
   ) {
     return result;
@@ -161,7 +155,7 @@ fn bdptCameraDirectionalPdfForDirection(direction: vec3f) -> f32 {
   }
   let rayDirection = safe_normalize(direction);
   let cosTheta = dot(rayDirection, camera.forward);
-  if (!(cosTheta > 1e-8)) {
+  if (!(cosTheta > 0.0)) {
     return 0.0;
   }
   let pdf =
@@ -178,8 +172,16 @@ fn bdptProjectCameraSplat(
 ) -> BdptCameraProjection {
   var result: BdptCameraProjection;
   result.valid = false;
-  let clip = params.viewProj * vec4f(vertexPosition, 1.0);
-  if (!(clip.w > 1e-8)) {
+  let rawClip = params.viewProj * vec4f(vertexPosition, 1.0);
+  let clipScale = max(
+    max(abs(rawClip.x), abs(rawClip.y)),
+    max(abs(rawClip.z), abs(rawClip.w)),
+  );
+  if (!(clipScale > 0.0) || clipScale > 3.402823e38) {
+    return result;
+  }
+  let clip = rawClip / clipScale;
+  if (!(clip.w > 0.0)) {
     return result;
   }
   let ndc = clip.xy / clip.w;
@@ -191,12 +193,12 @@ fn bdptProjectCameraSplat(
   }
   let cameraToVertexVector = vertexPosition - params.cameraPos.xyz;
   let distanceSquared = dot(cameraToVertexVector, cameraToVertexVector);
-  if (!(distanceSquared > 1e-12)) {
+  if (!(distanceSquared > 0.0)) {
     return result;
   }
   result.cameraToVertex = cameraToVertexVector * inverseSqrt(distanceSquared);
   let cosTheta = dot(result.cameraToVertex, camera.forward);
-  if (!(cosTheta > 1e-8)) {
+  if (!(cosTheta > 0.0)) {
     return result;
   }
   result.cameraDirectionalPdf =
@@ -264,10 +266,9 @@ fn bdptEvaluateCameraSplatVertex(
     return bdptCameraSplatInvalidResult();
   }
   let toCamera = -projection.cameraToVertex;
-  let cameraDistance = sqrt(
-    dot(lightPosition - params.cameraPos.xyz, lightPosition - params.cameraPos.xyz),
-  );
-  if (!(cameraDistance > 1e-4)) {
+  let cameraDistance =
+    safe_length(lightPosition - params.cameraPos.xyz);
+  if (!(cameraDistance > 0.0)) {
     return bdptCameraSplatInvalidResult();
   }
   let lightNormal = lv1.xyz;
@@ -300,13 +301,13 @@ fn bdptEvaluateCameraSplatVertex(
   }
 
   let visibilityRay = Ray(
-    lightPosition + toCamera * 1e-3,
+    lightPosition + toCamera * ptRayOriginBias(),
     toCamera,
   );
   if (traceAny(
     visibilityRay,
-    1e-4,
-    max(cameraDistance - 2e-3, 1e-3),
+    ptRayTMin(),
+    ptFiniteSegmentTMax(cameraDistance),
     rng,
   )) {
     return bdptCameraSplatInvalidResult();

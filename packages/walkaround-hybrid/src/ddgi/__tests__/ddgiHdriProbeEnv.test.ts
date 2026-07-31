@@ -161,13 +161,16 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
     expect(wgsl).toContain('texture_2d<f32>');
   });
 
-  it('(a) declares and consumes the caller-provided environment sampler', () => {
-    expect(wgsl).toContain('@group(2) @binding(7)');
-    expect(wgsl).toContain('ddgiEnvSamp:  sampler');
+  it('(a) does not require a filterable-float sampler binding', () => {
+    expect(wgsl).not.toContain('@group(2) @binding(7)');
+    expect(wgsl).not.toContain('ddgiEnvSamp');
   });
 
-  it('(a) equirect UV math samples through ddgiEnvSamp', () => {
-    expect(wgsl).toContain('textureSampleLevel(ddgiEnvMap, ddgiEnvSamp');
+  it('(a) samples rgba32float with portable manual bilinear filtering', () => {
+    expect(wgsl).toContain('fn ddgiSampleEnvironmentBilinear(');
+    expect(wgsl).toContain('textureLoad(ddgiEnvMap');
+    expect(wgsl).toContain('ddgiWrapEnvironmentX');
+    expect(wgsl).not.toContain('textureSampleLevel(ddgiEnvMap');
   });
 
   it('(a) ddgiEnvRotateYNeg helper is defined (H6 RY(-rotY) world→map)', () => {
@@ -301,7 +304,6 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
       envMapView:        mockView,
       envMapOwnedByPass: true,
       envMapPlaceholderTex: null,
-      envSamplerForProbe: mockSampler,
     };
 
     const encoder = {
@@ -337,16 +339,16 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
     // bg2 is the 3rd createBindGroup call (index 2).
     const bg2Entries = bindGroupEntryLists[2] as Array<{ binding: number }>;
     expect(bg2Entries).toBeDefined();
-    expect(bg2Entries.length).toBe(9);
+    expect(bg2Entries.length).toBe(8);
 
     const bindings = bg2Entries.map((e) => e.binding).sort((a, b) => a - b);
-    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6, 8]);
 
-    const replacementSampler = {} as GPUSampler;
-    gpu.envSamplerForProbe = replacementSampler;
+    const replacementView = {} as GPUTextureView;
+    gpu.envMapView = replacementView;
     dispatchProbeUpdateRaysPass(encoder, gpu, 1, mockTex, mockTex);
     const rebuiltBg2 = bindGroupEntryLists[3] as Array<{ binding: number; resource: unknown }>;
-    expect(rebuiltBg2.find((entry) => entry.binding === 7)?.resource).toBe(replacementSampler);
+    expect(rebuiltBg2.find((entry) => entry.binding === 6)?.resource).toBe(replacementView);
 
     const g0BufferFields = [
       'bvhBuf',
@@ -389,7 +391,13 @@ describe('Wave 4 — DDGI.setEnvironment() forwards to ProbeUpdatePass', () => {
     ddgi.setEnvironment(mockView, mockSampler, Math.PI / 6, 1.5, true);
 
     expect(spy).toHaveBeenCalledOnce();
-    expect(spy).toHaveBeenCalledWith(mockView, mockSampler, Math.PI / 6, 1.5, true);
+    expect(spy).toHaveBeenCalledWith(
+      mockView,
+      mockSampler,
+      Math.fround(Math.PI / 6),
+      Math.fround(1.5),
+      true,
+    );
   });
 
   it('DDGI.setEnvironment(null, null, 0, 0, false) disables HDRI (procedural fallback)', () => {

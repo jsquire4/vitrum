@@ -71,6 +71,73 @@ describe('resolveHybridEnvironment', () => {
     expect(resolved.warnings.join('\n')).toContain('directional IBL map');
   });
 
+  it('publishes exact binary32 HDRI intensity for directional consumers', () => {
+    const authoredIntensity = 1 + 2 ** -24;
+    const resolved = resolveHybridEnvironment({
+      kind: 'hdri',
+      intensity: authoredIntensity,
+      hdri: {
+        width: 1,
+        height: 1,
+        data: new Float32Array([1, 1, 1]),
+      },
+    });
+
+    expect(resolved.directionalIntensity).toBe(Math.fround(authoredIntensity));
+    expect(resolved.directionalIntensity).not.toBe(authoredIntensity);
+    expect(() => resolveHybridEnvironment({
+      kind: 'hdri',
+      intensity: 2 ** -150,
+      hdri: {
+        width: 1,
+        height: 1,
+        data: new Float32Array([1, 1, 1]),
+      },
+    })).toThrow(/Float32 packing/);
+  });
+
+  it('stages resolver scalar radiance and HDRI intensity in binary32', () => {
+    const resolved = resolveHybridEnvironment(
+      {
+        kind: 'hdri',
+        hdri: { texture: 'opaque-host-handle' },
+        intensity: 0.2,
+      },
+      {
+        extensions: {
+          'walkaround-hybrid': {
+            resolveEnvironmentMap: () => ({
+              kind: 'scalar-only',
+              skyIrradiance: 0.1,
+            }),
+          },
+        },
+      },
+    );
+    expect(resolved.skyIrradiance).toBe(
+      Math.fround(Math.fround(0.1) * Math.fround(0.2)),
+    );
+
+    const overflowResolver: HybridEnvironmentMapResolver = () => ({
+      kind: 'scalar-only',
+      skyIrradiance: 3.4028234663852886e38,
+    });
+    expect(() => resolveHybridEnvironment(
+      {
+        kind: 'hdri',
+        hdri: { texture: 'opaque-host-handle' },
+        intensity: 2,
+      },
+      {
+        extensions: {
+          'walkaround-hybrid': {
+            resolveEnvironmentMap: overflowResolver,
+          },
+        },
+      },
+    )).toThrow(/remain finite/);
+  });
+
   it('keeps the scalar-only fallback (no directional) for an all-black raw map', () => {
     const resolved = resolveHybridEnvironment({
       kind: 'hdri',
@@ -182,6 +249,18 @@ describe('resolveHybridEnvironment', () => {
     expect(resolved.skyIrradiance).toBe(0);
     expect(resolved.directional).toBeUndefined();
     expect(resolved.warnings).toEqual([]);
+  });
+
+  it('rejects a positive procedural sky that would collapse before directional publication', () => {
+    expect(() => resolveHybridEnvironment({
+      kind: 'procedural-sky',
+      sunDirection: [0, 1, 0],
+      turbidity: 2,
+      rayleigh: 2 ** -170,
+      mieCoefficient: 0.005,
+      mieDirectionalG: 0.8,
+      intensity: 1,
+    })).toThrow(/positive procedural-sky radiance underflows entirely/i);
   });
 
   it('uses the extension resolver for opaque HDRI handles and applies SceneEnvironment intensity', () => {

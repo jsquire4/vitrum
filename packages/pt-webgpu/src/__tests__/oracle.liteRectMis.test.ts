@@ -202,9 +202,15 @@ function brdfDirectionalPdf(
 }
 // material.wgsl.ts:753-757
 function powerHeuristic(pdfA: number, pdfB: number): number {
-  const a2 = pdfA * pdfA;
-  const b2 = pdfB * pdfB;
-  return a2 / Math.max(a2 + b2, 1e-6);
+  if (
+    !(pdfA >= 0) || !(pdfB >= 0) ||
+    pdfA > 3.402823466e38 || pdfB > 3.402823466e38
+  ) return 0;
+  const scale = Math.max(pdfA, pdfB);
+  if (!(scale > 0)) return 0;
+  const a = pdfA / scale;
+  const b = pdfB / scale;
+  return (a * a) / (a * a + b * b);
 }
 
 // ── scene: one rect area light over a flat receiver, no occlusion ────────────

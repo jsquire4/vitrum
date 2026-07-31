@@ -117,6 +117,21 @@ describe('light-tree GPU encoding invariants', () => {
     });
     expect(packLightTreeForGPU(nodes)).toHaveLength(nodes.length * 16);
   });
+
+  it('normalizes non-zero cone axes independently of their authored scale', () => {
+    const { nodes } = buildLightTree({
+      powers: [1],
+      centroids: [[0, 0, 0]],
+      aabbs: [{ min: [0, 0, 0], max: [0, 0, 0] }],
+      cones: [{ axis: [1e-30, 0, 0], thetaO: 0, thetaE: Math.PI / 2 }],
+    });
+    expect(nodes[0]!.cone.axis).toEqual([1, 0, 0]);
+
+    const packed = packLightTreeForGPU([
+      leaf({ cone: { axis: [0, -1e-30, 0], thetaO: 0, thetaE: Math.PI / 2 } }),
+    ]);
+    expect(Array.from(packed.slice(10, 13))).toEqual([0, -1, 0]);
+  });
 });
 
 describe('CPU/WGSL sampler degeneracy contracts', () => {

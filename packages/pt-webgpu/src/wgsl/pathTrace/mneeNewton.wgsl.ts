@@ -409,9 +409,10 @@ fn mneeBoundedChainFocusingDet(
   let derivativeV = (
     mnee_safe_normalize(solveV.vertices[0] - lightP) - baseDirection
   ) / eps;
-  let determinant = length(cross(derivativeU, derivativeV));
-  if (!(determinant >= 0.0) || !(determinant < INFINITY)) { return 0.0; }
-  return determinant;
+  let determinantMeasure = measureAreaVector(
+    derivativeU, derivativeV, 1.0,
+  );
+  return determinantMeasure.area;
 }
 
 // Directional-source irradiance transport. Perturb one square metre of receiver
@@ -442,11 +443,15 @@ fn mneeBoundedChainDirectionalFocusingDet(
   if (solveU.valid == 0u || solveV.valid == 0u) { return 0.0; }
   let derivativeU = (solveU.vertices[0] - solved.vertices[0]) / eps;
   let derivativeV = (solveV.vertices[0] - solved.vertices[0]) / eps;
-  let determinant = abs(dot(
-    cross(derivativeU, derivativeV),
+  let determinantMeasure = measureAreaVector(
+    derivativeU, derivativeV, 1.0,
+  );
+  if (determinantMeasure.valid == 0u) { return 0.0; }
+  let determinant = determinantMeasure.area * abs(dot(
+    determinantMeasure.normal,
     mnee_safe_normalize(geometry.sourceDirection),
   ));
-  if (!(determinant >= 0.0) || !(determinant < INFINITY)) { return 0.0; }
+  if (!(determinant >= 0.0) || determinant > 3.402823e38) { return 0.0; }
   return determinant;
 }
 
@@ -469,12 +474,10 @@ fn mneeBoundedChainAreaPdfDet(
   let solverScales = mneeBoundedChainScales(geometry, lightP, recv);
   if (!mneeScalesRepresentable(solverScales)) { return 0.0; }
   let eps = mneeFdStepFromScales(solverScales);
-  let lightAreaScale = length(cross(lightU, lightV));
-  if (!(lightAreaScale > mneeLengthFloorFromScales(solverScales) *
-      mneeLengthFloorFromScales(solverScales)) ||
-      !(lightAreaScale < INFINITY)) { return 0.0; }
+  let lightAreaMeasure = measureAreaVector(lightU, lightV, 1.0);
+  if (lightAreaMeasure.valid == 0u) { return 0.0; }
   let tu = mnee_safe_normalize(lightU);
-  let lightN = mnee_safe_normalize(cross(lightU, lightV));
+  let lightN = lightAreaMeasure.normal;
   let tv = mnee_safe_normalize(cross(lightN, tu));
   let solveU = mneeNewtonSolveChainBounded(
     geometry, media, lightP + tu * eps, recv, solved.vertices, maxIter,
@@ -491,8 +494,9 @@ fn mneeBoundedChainAreaPdfDet(
   let derivativeV = (
     mnee_safe_normalize(solveV.vertices[last] - recv) - baseDirection
   ) / eps;
-  let determinant = length(cross(derivativeU, derivativeV));
-  if (!(determinant >= 0.0) || !(determinant < INFINITY)) { return 0.0; }
-  return determinant;
+  let determinantMeasure = measureAreaVector(
+    derivativeU, derivativeV, 1.0,
+  );
+  return determinantMeasure.area;
 }
 `;

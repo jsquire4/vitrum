@@ -38,7 +38,7 @@ describe('Sprint 15 — GTAO WGSL', () => {
 
   it('GTAO_WGSL writes 1.0 (unoccluded) for sky-miss pixels (depth = 0)', () => {
     // The sky-miss early-out should set the output to fully lit.
-    expect(GTAO_WGSL).toMatch(/centerDepth\s*<\s*1e-4/);
+    expect(GTAO_WGSL).toContain('if (!(centerDepth > 0.0))');
     expect(GTAO_WGSL).toContain('textureStore(gtao_aoOut, gid.xy, vec4f(1.0))');
   });
 
@@ -91,7 +91,7 @@ describe('Sprint 15 — GTAO upsample WGSL', () => {
   });
 
   it('passes through sky-miss as 1.0', () => {
-    expect(GTAO_UPSAMPLE_WGSL).toMatch(/centerDepth\s*<\s*1e-4/);
+    expect(GTAO_UPSAMPLE_WGSL).toContain('if (!(centerDepth > 0.0))');
     expect(GTAO_UPSAMPLE_WGSL).toContain('textureStore(up_aoFullOut, gid.xy, vec4f(1.0))');
   });
 
@@ -125,8 +125,11 @@ describe('Tier-G — shade consumes per-channel multi-bounce AO', () => {
   it('reads .rgb from aoFullTexture (not .r)', () => {
     // `pix` is the decoded pixel coordinate (gid.xy on the OFF path; the
     // compacted-dispatch-decoded active-parity pixel on the checkerboard path).
-    expect(SHADE_WGSL).toContain('textureLoad(aoFullTexture, vec2i(pix), 0).rgb');
-    expect(SHADE_WGSL).not.toMatch(/textureLoad\(aoFullTexture,\s*vec2i\(pix\),\s*0\)\.r\b/);
+    expect(SHADE_WGSL).toContain(
+      'let aoCoord = select(vec2i(0), vec2i(pix), all(aoDims == ubo.screenSize));',
+    );
+    expect(SHADE_WGSL).toContain('textureLoad(aoFullTexture, aoCoord, 0).rgb');
+    expect(SHADE_WGSL).not.toMatch(/textureLoad\(aoFullTexture,\s*aoCoord,\s*0\)\.r\b/);
   });
 
   it('declares ao as vec3f for per-channel multiplication', () => {

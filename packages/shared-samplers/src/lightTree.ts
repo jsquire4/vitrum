@@ -153,7 +153,9 @@ interface BuildItem {
 }
 
 function vlen(v: readonly [number, number, number]): number {
-  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  const scale = Math.max(Math.abs(v[0]), Math.abs(v[1]), Math.abs(v[2]));
+  if (scale === 0) return 0;
+  return scale * Math.hypot(v[0] / scale, v[1] / scale, v[2] / scale);
 }
 
 /**
@@ -167,7 +169,7 @@ function mergeCones(a: OrientationCone, b: OrientationCone): OrientationCone {
   const la = vlen(a.axis);
   const lb = vlen(b.axis);
   // A degenerate (zero-axis) or already-full-sphere cone unions to full-sphere.
-  if (la < 1e-8 || lb < 1e-8 || a.thetaO >= Math.PI || b.thetaO >= Math.PI) {
+  if (la === 0 || lb === 0 || a.thetaO >= Math.PI || b.thetaO >= Math.PI) {
     const thetaE = Math.min(Math.PI, Math.max(a.thetaE, b.thetaE));
     return { axis: [0, 0, 0], thetaO: Math.PI, thetaE };
   }
@@ -452,7 +454,7 @@ export function buildLightTree(input: LightTreeBuildInput): {
       requireFinite(thetaE, `buildLightTree.cones[${i}].thetaE`);
       if (thetaO < 0 || thetaO > Math.PI || thetaE < 0 || thetaE > Math.PI) throw new RangeError(`buildLightTree.cones[${i}] angles must be in [0, PI]`);
     }
-    if (ci == null || vlen(ci.axis) < 1e-8) {
+    if (ci == null || vlen(ci.axis) === 0) {
       cone = FULL_SPHERE_CONE;
     } else {
       const l = vlen(ci.axis);
@@ -548,8 +550,8 @@ export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float3
         throw new RangeError(`packLightTreeForGPU.nodes[${i}] has min > max on axis ${axis}`);
       }
     }
-    const coneAxisLength = Math.hypot(...node.cone.axis);
-    if (coneAxisLength < 1e-8 && node.cone.thetaO < Math.PI) {
+    const coneAxisLength = vlen(node.cone.axis);
+    if (coneAxisLength === 0 && node.cone.thetaO < Math.PI) {
       throw new RangeError(
         `packLightTreeForGPU.nodes[${i}] zero cone axis requires a full-sphere thetaO`,
       );
@@ -589,9 +591,12 @@ export function packLightTreeForGPU(nodes: ReadonlyArray<LightTreeNode>): Float3
     out[base + 7] = node.aabbMax[0];
     out[base + 8] = node.aabbMax[1];
     out[base + 9] = node.aabbMax[2];
-    out[base + 10] = node.cone.axis[0];
-    out[base + 11] = node.cone.axis[1];
-    out[base + 12] = node.cone.axis[2];
+    // This packer is public and may receive nodes not built by `buildLightTree`.
+    // Normalize at the GPU boundary so a cone is independent of axis magnitude.
+    const coneAxisInvLength = coneAxisLength > 0 ? 1 / coneAxisLength : 0;
+    out[base + 10] = node.cone.axis[0] * coneAxisInvLength;
+    out[base + 11] = node.cone.axis[1] * coneAxisInvLength;
+    out[base + 12] = node.cone.axis[2] * coneAxisInvLength;
     out[base + 13] = Math.cos(Math.min(Math.PI, node.cone.thetaO));
     out[base + 14] = Math.cos(Math.min(Math.PI, node.cone.thetaO + node.cone.thetaE));
     out[base + 15] = 0; // padding
@@ -665,14 +670,14 @@ function coneImportanceFactor(
   cx: number, cy: number, cz: number,
   radius: number,
 ): number {
-  const al = axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2];
-  if (al < 1e-12) return 1.0;             // full sphere / unoriented — no culling
+  const axisLength = vlen(axis);
+  if (axisLength === 0) return 1.0;        // full sphere / unoriented — no culling
   let dx = px - cx, dy = py - cy, dz = pz - cz;
-  const dl = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  if (dl <= Math.max(radius, 1e-12)) return 1.0; // inside bounding sphere: do not cull
+  const dl = vlen([dx, dy, dz]);
+  if (dl === 0 || dl <= radius) return 1.0; // inside bounding sphere: do not cull
   const inv = 1.0 / dl;
   dx *= inv; dy *= inv; dz *= inv;
-  const aInv = 1.0 / Math.sqrt(al);
+  const aInv = 1.0 / axisLength;
   const cosTheta = Math.max(-1, Math.min(
     1,
     (axis[0] * aInv) * dx + (axis[1] * aInv) * dy + (axis[2] * aInv) * dz,

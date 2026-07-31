@@ -246,6 +246,8 @@ describe('ddgiOctahedral sign()→select() fix', () => {
         matches,
         `Expected at least 2 select(-1.0, 1.0, ...) occurrences (the octV visibility fold), found ${matches}`,
       ).toBeGreaterThanOrEqual(2);
+      expect(DDGI_SAMPLE_WGSL).toContain('let dirV       = probeDirToSurf;');
+      expect(DDGI_SAMPLE_WGSL).not.toContain('let dirV       = -probeDirToSurf;');
     });
   });
 

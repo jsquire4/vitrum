@@ -56,9 +56,8 @@ export const RESTIR_PT_SPATIAL_WGSL = /* wgsl */ `
 const K_RPT_SPATIAL: u32 = 5u;            // neighbours sampled per pixel
 const RPT_SPATIAL_RADIUS: f32 = 16.0;     // disc radius (px) — full-res
 const RPT_SPATIAL_NORMAL_DOT_MIN: f32 = 0.906; // cos(25°) normal reject
-const RPT_SPATIAL_COPLANAR_TOL: f32 = 0.05;    // plane-distance reject (world)
+const RPT_SPATIAL_COPLANAR_REL_TOL: f32 = 0.05; // plane-distance / local-path scale
 const RPT_SPATIAL_M_CLAMP: u32 = 500u;    // per-neighbour confidence clamp
-const RPT_SPATIAL_NORMAL_BIAS: f32 = 1e-3;
 
 // Uniform disc sample in pixels (radius RPT_SPATIAL_RADIUS).
 fn rptSpatialDiscPx(rng: ptr<function, PtRngState>) -> vec2f {
@@ -75,12 +74,20 @@ fn rptSpatialReconVisible(
   rng: ptr<function, PtRngState>,
 ) -> bool {
   let toS = xs - xv;
-  let dist = length(toS);
-  if (dist < 1e-4) { return false; }
-  let wi = toS / dist;
-  let orig = xv + nv * RPT_SPATIAL_NORMAL_BIAS;
+  let dist = rptScaledLength(toS);
+  if (!rptFinitePositive(dist)) { return false; }
+  let startEpsilon = rptWorldRayEpsilon(xv, dist);
+  if (!rptFinitePositive(startEpsilon)) { return false; }
+  let orig = xv + safe_normalize(nv) * startEpsilon;
+  if (!rptFiniteVec3(orig)) { return false; }
+  let remaining = xs - orig;
+  let remainingDistance = rptScaledLength(remaining);
+  if (!rptFinitePositive(remainingDistance)) { return false; }
+  let endEpsilon = rptWorldRayEpsilon(xs, remainingDistance);
+  let tMax = remainingDistance - endEpsilon;
+  if (!rptFinitePositive(endEpsilon) || !(tMax > startEpsilon)) { return false; }
   return !traceAny(
-    Ray(orig, wi), 1e-4, max(dist - 2e-3, 1e-3), rng,
+    Ray(orig, safe_normalize(remaining)), startEpsilon, tMax, rng,
   );
 }
 
@@ -135,8 +142,19 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
 
     // Geometric-consistency: normal alignment + coplanarity to centre pixel.
     if (dot(rCenter.nv, rQ.nv) < RPT_SPATIAL_NORMAL_DOT_MIN) { continue; }
-    let planeDist = abs(dot(rQ.xv - rCenter.xv, rCenter.nv));
-    if (planeDist > RPT_SPATIAL_COPLANAR_TOL) { continue; }
+    let surfaceDelta = rQ.xv - rCenter.xv;
+    let planeDist = rptScaledAbsProjection(surfaceDelta, rCenter.nv);
+    let localPathScale = max(
+      rptScaledLength(surfaceDelta),
+      max(
+        rptScaledLength(rCenter.xs - rCenter.xv),
+        rptScaledLength(rQ.xs - rQ.xv),
+      ),
+    );
+    if (!rptFinitePositive(localPathScale)
+     || planeDist > localPathScale * RPT_SPATIAL_COPLANAR_REL_TOL) {
+      continue;
+    }
 
     let woQ = rQ.woV;
     // Cache this source sample's one-edge q→canonical determinant.  Do not
@@ -158,7 +176,7 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // ── Pass-2 FOLD: canonical sample with its full-GBH weight ──
-  if (rCenter.M > 0u && pHatCanonNative > 1e-9) {
+  if (rCenter.M > 0u && rptFinitePositive(pHatCanonNative)) {
     var logDenomR = rptLogWeightedTarget(
       cR, pHatCanonNative,
     ); // canonical's own native term
@@ -171,7 +189,7 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
       );
       let qCoversCanonical =
            rptFinitePositive(JCanonicalToQ)
-        && pHatQ_atCanonicalSample >= 1e-9
+        && rptFinitePositive(pHatQ_atCanonicalSample)
         && rptSpatialReconVisible(
           qR[j].xv, qR[j].nv, rCenter.xs, &rng,
         );
@@ -204,8 +222,8 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
       rCenter, qR[i].heroLambdaV, woCenter, qR[i].xs, qR[i].Lo,
     );
     let qCandidateValid =
-         pHatQ_native >= 1e-9
-      && pHatQ_atR >= 1e-9
+         rptFinitePositive(pHatQ_native)
+      && rptFinitePositive(pHatQ_atR)
       && rptFinitePositive(qJ[i])
       && rptSpatialReconVisible(
         rCenter.xv, rCenter.nv, qR[i].xs, &rng,
@@ -232,7 +250,7 @@ fn restirPtSpatial(@builtin(global_invocation_id) gid: vec3u) {
       let JQToJ = restirPtReconnectionJacobianForPair(qR[i], qR[j]);
       let jCoversQSample =
            rptFinitePositive(JQToJ)
-        && pHatJ_atQSample >= 1e-9
+        && rptFinitePositive(pHatJ_atQSample)
         && rptSpatialReconVisible(
           qR[j].xv, qR[j].nv, qR[i].xs, &rng,
         );

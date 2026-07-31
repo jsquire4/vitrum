@@ -56,7 +56,7 @@ describe('walkaround double-sided transport', () => {
       '(*best).side = localHit.side * tlasLinearOrientationSign(l2w0, l2w1, l2w2);',
     );
     expect(SCENE_TRAVERSAL_WGSL).toContain(
-      'n = (worldN / wl) * tlasLinearOrientationSign(w2l0, w2l1, w2l2);',
+      'n = safe_normalize(worldN) * tlasLinearOrientationSign(w2l0, w2l1, w2l2);',
     );
 
     const determinantSign = (c0: readonly number[], c1: readonly number[], c2: readonly number[]): number => {
@@ -77,7 +77,9 @@ describe('walkaround double-sided transport', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('return doubleSided || transmissive;');
     expect(MATERIAL_ATLAS_WGSL).toContain('if (!materialSideAdmittedForHit(hit))');
     expect(TRANSPARENT_OIT_WGSL).toContain('if (!materialSideAdmittedForHit(hit))');
-    expect(SURFACE_TEXTURES_WGSL).toContain('if (side < 0.0 && trans4 == 0u)');
+    expect(SURFACE_TEXTURES_WGSL).toContain(
+      'let alphaT = materialShadowTransmittanceForHit(hit, word, false);',
+    );
 
     const ddgi = makeProbeUpdateRaysWGSL(8);
     expect(ddgi).toContain('fn ddgiMaterialSideAdmittedForHit(');

@@ -62,7 +62,7 @@ describe('transparent alpha transport contract', () => {
     expect(SHADING_TERMS_WGSL).not.toContain('sunShadowT = traceSceneAlphaTransmittanceTextured(');
   });
 
-  it('preserves explicit transmission ownership in the overflow fallback', () => {
+  it('preserves explicit transmission ownership through the complete ordered walk', () => {
     const ownershipWalker = SURFACE_TEXTURES_WGSL.slice(
       SURFACE_TEXTURES_WGSL.indexOf(
         'fn traceSceneAlphaTintTransmittanceTexturedWithOwnership(',
@@ -72,17 +72,27 @@ describe('transparent alpha transport contract', () => {
       ),
     );
     expect(ownershipWalker).toContain(
-      'materialShadowTransmittanceForHit(\n' +
-      '      hit,\n' +
-      '      word,\n' +
-      '      !blockMaterialTransmission,',
+      'let surfaceBudget = materialShadowWorldSurfaceBudget(',
     );
     expect(ownershipWalker).toContain(
-      'max(0.0, tMax - traveled), triEps,\n' +
-      '    !blockMaterialTransmission,',
+      'for (var i = 0u; i < surfaceBudget; i = i + 1u)',
     );
-    expect(ownershipWalker).not.toContain(
-      'max(0.0, tMax - traveled), triEps, true,',
+    expect(ownershipWalker).toContain(
+      'tau = tau * vec3f(1.0 - coverage);',
+    );
+    expect(ownershipWalker).toContain(
+      'mediumMaterialId[mediumDepth - 1u] == materialId',
+    );
+    expect(ownershipWalker).toContain('return vec3f(0.0);');
+    expect(ownershipWalker).not.toContain('traceSceneAny');
+    expect(SURFACE_TEXTURES_WGSL).toContain(
+      'return traceSceneAlphaTintTransmittanceTextured(',
+    );
+    expect(SURFACE_TEXTURES_WGSL).not.toContain(
+      'fn _bvhTintedTriAccumulate(',
+    );
+    expect(SURFACE_TEXTURES_WGSL).not.toContain(
+      'fn _bvhTraceTintedBlasLeaves(',
     );
   });
 

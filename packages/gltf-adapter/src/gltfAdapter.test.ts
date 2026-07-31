@@ -1777,6 +1777,21 @@ describe('material field mapping', () => {
     expect(mat.clearcoatRoughness).toBeCloseTo(0.1);
   });
 
+  it('preserves authored clearcoat state when the factor is zero', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      extensions: {
+        KHR_materials_clearcoat: {
+          clearcoatFactor: 0,
+          clearcoatRoughnessFactor: 0.35,
+        },
+      },
+    });
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.clearcoat).toBe(0);
+    expect(mat.clearcoatRoughness).toBeCloseTo(0.35);
+  });
+
   it('maps KHR_materials_iridescence', async () => {
     const { gltf, buffers } = makeGltfWithMaterial({
       extensions: {
@@ -1793,6 +1808,24 @@ describe('material field mapping', () => {
     expect(mat.iridescence).toBeCloseTo(0.7);
     expect(mat.iridescenceIor).toBeCloseTo(2.0);
     expect(mat.iridescenceThicknessRange).toEqual([200, 800]);
+  });
+
+  it('preserves authored iridescence state when the factor is zero', async () => {
+    const { gltf, buffers } = makeGltfWithMaterial({
+      extensions: {
+        KHR_materials_iridescence: {
+          iridescenceFactor: 0,
+          iridescenceIor: 1.8,
+          iridescenceThicknessMinimum: 175,
+          iridescenceThicknessMaximum: 625,
+        },
+      },
+    });
+    const { scene } = await gltfToScene(gltf, { buffers });
+    const mat = (scene.primitives[0] as MeshPrimitive).material;
+    expect(mat.iridescence).toBe(0);
+    expect(mat.iridescenceIor).toBeCloseTo(1.8);
+    expect(mat.iridescenceThicknessRange).toEqual([175, 625]);
   });
 
   it('maps KHR_materials_anisotropy', async () => {
@@ -3138,6 +3171,16 @@ describe('KHR_lights_punctual → SceneEmitter[]', () => {
     expect(point.decay).toBe(2);
   });
 
+  it('imports a point emitter without imposing a world-scale direction threshold', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    gltf.nodes![1]!.scale = [1e-20, 1e-20, 1e-20];
+
+    const { scene } = await gltfToScene(gltf, { buffers });
+
+    const point = scene.emitters.find(e => e.kind === 'point') as PointEmitter;
+    expect(point.position).toEqual([5, 0, 0]);
+  });
+
   it('spot emitter: kind, position, angle, penumbra, intensity', async () => {
     const { gltf, buffers } = makeLightsGltf();
     const { scene } = await gltfToScene(gltf, { buffers });
@@ -3152,6 +3195,18 @@ describe('KHR_lights_punctual → SceneEmitter[]', () => {
     expect(spot.penumbra).toBeCloseTo(0.6, 4);
     expect(spot.intensity).toBeCloseTo(200);
     expect(spot.decay).toBe(2);
+  });
+
+  it('normalizes a spot direction from a finite subnormal-scale node basis', async () => {
+    const { gltf, buffers } = makeLightsGltf();
+    gltf.nodes![2]!.scale = [1e-20, 1e-20, 1e-20];
+
+    const { scene } = await gltfToScene(gltf, { buffers });
+
+    const spot = scene.emitters.find(e => e.kind === 'spot') as SpotEmitter;
+    expect(spot.direction[0]).toBeCloseTo(-1, 4);
+    expect(spot.direction[1]).toBeCloseTo(0, 4);
+    expect(spot.direction[2]).toBeCloseTo(0, 4);
   });
 
   it('spot emitter: direction is world-space forward after 90° Y rotation', async () => {

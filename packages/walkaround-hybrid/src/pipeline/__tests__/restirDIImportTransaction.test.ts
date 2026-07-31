@@ -28,6 +28,9 @@ type TrackedCohort = {
 
 type PipelineInternals = {
   _initialized: boolean;
+  _width: number;
+  _height: number;
+  _reservoirScale: number;
   _res: FrameResources;
   _resourceCache: { clear(): void };
 };
@@ -87,21 +90,48 @@ function makeDevice() {
   return { device, candidates };
 }
 
-function makePipeline(device: GPUDevice) {
+function makePipeline(
+  device: GPUDevice,
+  dimensions: {
+    readonly width?: number;
+    readonly height?: number;
+    readonly reservoirScale?: number;
+  } = {},
+) {
   const live: TrackedCohort = {
     reservoirCurrentBuffer: trackedBuffer(),
     reservoirPreviousBuffer: trackedBuffer(),
     reservoirSpatialBuffer: trackedBuffer(),
   };
-  const pipeline = new WalkaroundGPUPipeline(device, WIDTH, HEIGHT);
+  const pipeline = new WalkaroundGPUPipeline(
+    device,
+    dimensions.width ?? WIDTH,
+    dimensions.height ?? HEIGHT,
+  );
   const state = pipeline as unknown as PipelineInternals;
   state._initialized = true;
+  state._reservoirScale = dimensions.reservoirScale ?? 1;
   state._res = { restirDI: live } as unknown as FrameResources;
   const clear = vi.spyOn(state._resourceCache, 'clear');
   return { pipeline, state, live, clear };
 }
 
 describe('ReSTIR-DI reservoir import transaction', () => {
+  it('accepts only the DI grid implied by internal dimensions and active scale', () => {
+    const gpu = makeDevice();
+    const made = makePipeline(gpu.device, {
+      width: 8,
+      height: 8,
+      reservoirScale: 2,
+    });
+
+    expect(made.pipeline.canImportRestirDIReservoirs(snapshot())).toBe(true);
+    made.state._reservoirScale = 4;
+    expect(made.pipeline.canImportRestirDIReservoirs(snapshot())).toBe(false);
+    expect(gpu.device.createBuffer).not.toHaveBeenCalled();
+    expect(made.state._res.restirDI).toBe(made.live);
+  });
+
   it('rejects malformed or foreign-device input before allocation', () => {
     const owner = makeDevice();
     const foreign = makeDevice();

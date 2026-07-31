@@ -144,7 +144,9 @@ fn ddgiSample(
     let toProbe   = probeWorld - biasedPos;
     let probeDist = length(toProbe);
 
-    // Octahedral-encode the surface→probe direction (visibility lookup).
+    // Octahedral-encode the probe→surface direction. The blend producer bins
+    // depth moments under each outward probe-ray direction, so the receiver
+    // must query that same hemisphere.
     let probeToSurface = biasedPos - probeWorld;
     let probeToSurfaceLen2 = dot(probeToSurface, probeToSurface);
     // A relocated probe may exactly coincide with the biased receiver. Avoid
@@ -155,7 +157,7 @@ fn ddgiSample(
       probeToSurface * inverseSqrt(max(probeToSurfaceLen2, 1.0e-12)),
       probeToSurfaceLen2 > 1.0e-12,
     );
-    let dirV       = -probeDirToSurf;
+    let dirV       = probeDirToSurf;
     let absV       = abs(dirV);
     let nv         = dirV / (absV.x + absV.y + absV.z);
     var octV: vec2f;

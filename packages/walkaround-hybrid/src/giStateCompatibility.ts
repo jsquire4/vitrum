@@ -15,7 +15,10 @@
 import { fingerprintBuffersExact } from '@vitrum/shared-bvh';
 import type { DirectionalEnvData } from './environment/equirectDirectional.js';
 import type { SceneBVHBuffers } from './restir/bvhTypes.js';
-import type { MaterialTextureAtlasPayload } from './bvh/materialTextureAtlasPack.js';
+import {
+  materialTextureAtlasFingerprintParts,
+  type MaterialTextureAtlasPayload,
+} from './bvh/materialTextureAtlasPack.js';
 
 export const GI_STATE_COMPATIBILITY_WORDS = 16;
 export const GI_STATE_COMPATIBILITY_SCHEMA = 0x47534331; // "GSC1"
@@ -59,9 +62,9 @@ export function makeGIStateCompatibility(
       bvh.lightTreeNodeCount,
       bvh.lightTreeEnabled ? 1 : 0,
       tlas?.nodeCount ?? 0,
-      atlas.atlasDim,
-      atlas.atlasLayerCount,
-      atlas.atlasMipLevelCount,
+      atlas.atlasLayers.length,
+      atlas.atlasLayers.reduce((sum, layer) => sum + layer.width, 0),
+      atlas.atlasLayers.reduce((sum, layer) => sum + layer.height, 0),
     ]),
   );
   result[2] = fingerprintBuffersExact(bvh.bvhNodes.cpuData);
@@ -79,10 +82,9 @@ export function makeGIStateCompatibility(
     bvh.bvhEmissiveLe.cpuData,
   );
   result[7] = fingerprintBuffersExact(
-    atlas.atlasData,
     atlas.baseColorMetaData,
     materialAtlasMetadata(atlas),
-    materialAtlasGpuSourceIdentity(atlas),
+    ...materialTextureAtlasFingerprintParts(atlas),
   );
   result[8] = tlas == null
     ? 0
@@ -105,6 +107,7 @@ export function makeGIStateCompatibility(
   result[13] = directional == null
     ? 0
     : fingerprintBuffersExact(
+        directional.pdf,
         directional.marginal,
         directional.conditional,
       );
@@ -164,9 +167,15 @@ function materialAtlasMetadata(
   atlas: MaterialTextureAtlasPayload,
 ): Uint32Array {
   return new Uint32Array([
-    atlas.atlasDim,
-    atlas.atlasLayerCount,
-    atlas.atlasMipLevelCount,
+    atlas.atlasLayers.length,
+    atlas.atlasLayers.reduce(
+      (maximum, layer) => Math.max(maximum, layer.mipLevelCount),
+      0,
+    ),
+    atlas.atlasLayers.reduce(
+      (sum, layer) => sum + layer.width * layer.height,
+      0,
+    ),
     atlas.gpuSourceLayers.length,
     atlas.baseColorMetaWidth,
     atlas.baseColorMetaHeight,
@@ -192,24 +201,4 @@ function materialAtlasMetadata(
     atlas.readableThicknessLayerCount,
     atlas.readableBumpLayerCount,
   ]);
-}
-
-function materialAtlasGpuSourceIdentity(
-  atlas: MaterialTextureAtlasPayload,
-): Uint32Array {
-  const words = new Uint32Array(atlas.gpuSourceLayers.length * 8);
-  atlas.gpuSourceLayers.forEach((entry, index) => {
-    const source = entry.source;
-    const base = index * 8;
-    words[base] = entry.layer;
-    words[base + 1] = source.sourceId >>> 0;
-    words[base + 2] =
-      Math.floor(source.sourceId / 0x1_0000_0000) >>> 0;
-    words[base + 3] = entry.decodeSrgb ? 1 : 0;
-    words[base + 4] = source.width;
-    words[base + 5] = source.height;
-    words[base + 6] = source.baseMipLevel;
-    words[base + 7] = source.arrayLayer;
-  });
-  return words;
 }

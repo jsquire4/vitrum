@@ -1,4 +1,8 @@
-import { asMat4, type FrameInput } from '@vitrum/core';
+import {
+  asBackendTextureFormat,
+  asMat4,
+  type FrameInput,
+} from '@vitrum/core';
 import { describe, expect, it, vi } from 'vitest';
 
 import { HybridEngine } from '../HybridEngine.js';
@@ -33,7 +37,9 @@ function makeEngine(resize: () => void): {
     _internalWidth: 8,
     _internalHeight: 8,
     _resolutionFactor: 0.5,
+    _device: { limits: {} },
     _pipeline: { resize },
+    _frameResourceResolution: { persistentBytes: 0 },
     _errorFrameCount: 7,
     _cfg: { staticPipelineRebuildKey: 'viewport-test' },
     _rebuildKeyFingerprintSeen: '__different',
@@ -82,7 +88,7 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
 
     expect(output.kind).toBe('skipped');
     expect(resize).toHaveBeenCalledOnce();
-    expect(resize).toHaveBeenCalledWith(16, 12);
+    expect(resize).toHaveBeenCalledWith(16, 12, 1);
     expect(reset).toHaveBeenCalledOnce();
     const state = engine as unknown as Record<string, unknown>;
     expect(state._width).toBe(32);
@@ -122,6 +128,45 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
     expect(state._errorFrameCount).toBe(7);
     expect(state._rebuildKeyFingerprintSeen).toBe('__different');
   });
+
+  it.each([
+    [
+      'unsupported target format',
+      'depth24plus' as GPUTextureFormat,
+      undefined,
+      /swapChainFormat is unsupported/,
+    ],
+    [
+      'linear output on an sRGB attachment',
+      'bgra8unorm-srgb' as GPUTextureFormat,
+      { outputColorSpace: 'linear' } as const,
+      /outputColorSpace 'linear' is incompatible/,
+    ],
+  ])(
+    'rejects %s before resize or frame-state publication',
+    (_label, format, quality, expected) => {
+      const resize = vi.fn();
+      const { engine, reset } = makeEngine(resize);
+      const input = {
+        ...frame(32, 24),
+        swapChainFormat:
+          asBackendTextureFormat<'webgpu', GPUTextureFormat>(format),
+        ...(quality === undefined ? {} : { quality }),
+      } satisfies FrameInput;
+
+      expect(() => engine.renderFrame(input)).toThrow(expected);
+      expect(resize).not.toHaveBeenCalled();
+      expect(reset).not.toHaveBeenCalled();
+      const state = engine as unknown as Record<string, unknown>;
+      expect(state._width).toBe(16);
+      expect(state._height).toBe(16);
+      expect(state._internalWidth).toBe(8);
+      expect(state._internalHeight).toBe(8);
+      expect(state._errorFrameCount).toBe(7);
+      expect(state._rebuildKeyFingerprintSeen).toBe('__different');
+      expect(state._lastFrameCamera).toBeUndefined();
+    },
+  );
 
   it.each([
     ['zero width', frame(0, 24)],
@@ -201,6 +246,8 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
     ['NaN resolutionFactor', { resolutionFactor: Number.NaN }],
     ['negative exposure', { exposure: -1 }],
     ['NaN exposure', { exposure: Number.NaN }],
+    ['overflowing exposure', { exposure: Number.MAX_VALUE }],
+    ['underflowing positive exposure', { exposure: Number.MIN_VALUE }],
     ['NaN filteredGlossyFactor', { filteredGlossyFactor: Number.NaN }],
     ['nonzero filteredGlossyFactor', { filteredGlossyFactor: 0.5 }],
     ['unknown tonemap', { tonemap: 'bad' }],

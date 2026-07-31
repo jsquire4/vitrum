@@ -104,6 +104,18 @@ function identityMat(): Float32Array {
   return m;
 }
 
+function perspectiveMat(): Float32Array {
+  const near = 0.1;
+  const far = 100;
+  const m = new Float32Array(16);
+  m[0] = 1;
+  m[5] = 1;
+  m[10] = (far + near) / (near - far);
+  m[11] = -1;
+  m[14] = (2 * far * near) / (near - far);
+  return m;
+}
+
 function frameInput(size: number) {
   return {
     viewMatrix: asMat4(identityMat()),
@@ -317,7 +329,10 @@ describe('R4 / V2-5 (D2) — BDPT default light-bounces is 2 so the connection l
       bdpt: true, // no bdptOptions → default light-bounce count
     });
     engine.setScene(makeScene());
-    engine.renderFrame(frameInput(16));
+    engine.renderFrame({
+      ...frameInput(16),
+      projMatrix: asMat4(perspectiveMat()),
+    });
     const params = latestFrameParams(rec);
     const maxLv = params[FrameParamsSlot.bdptMaxLightBounces];
     expect(maxLv).toBe(2);

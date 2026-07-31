@@ -38,7 +38,7 @@ ${TEMPORAL_GI_COMMON_WGSL}
 @compute @workgroup_size(8, 8, 1)
 fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let fullDims = ubo.screenSize;
-  let halfDims = fullDims / 2u;
+  let halfDims = restirGiDimensions();
   if (any(gid.xy >= halfDims)) { return; }
   let pixelIdx = gid.y * halfDims.x + gid.x;
   let epoch = grisHistoryEpoch();
@@ -75,9 +75,18 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
     storeReservoirGI_rw(pixelIdx, current);
     return;
   }
+  if (
+    restirReservoirScaleValue() > 1u
+    && previous.receiverMaterialKey != current.receiverMaterialKey
+  ) {
+    storeReservoirGI_rw(pixelIdx, current);
+    return;
+  }
 
-  let dDepth = abs(length(current.xv - ubo.cameraPos) - length(previous.xv - ubo.cameraPos));
-  let depthRef = max(1e-3, length(current.xv - ubo.cameraPos));
+  let currentDepth = safe_length(current.xv - ubo.cameraPos);
+  let previousDepth = safe_length(previous.xv - ubo.cameraPos);
+  let dDepth = abs(currentDepth - previousDepth);
+  let depthRef = max(walkaroundRayOriginBias(), currentDepth);
   if (dDepth / depthRef > DEPTH_REL_TOL || dot(current.nv, previous.nv) < NORMAL_DOT_MIN) {
     storeReservoirGI_rw(pixelIdx, current);
     return;
@@ -97,14 +106,14 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   domainM[1] = min(previous.M, ubo.restirGiMClamp);
   let currentInvVP = invertMat4_common(ubo.projMatrix * ubo.viewMatrix);
   domainSurface[0] = castPrimary(
-    gid.xy * 2u + vec2u(1u),
+    restirGiFullPixel(gid.xy),
     fullDims,
     ubo.cameraPos,
     currentInvVP,
   );
   let previousInvVP = invertMat4_common(ubo.prevViewProjMatrix);
   domainSurface[1] = castPrimaryFromInvVP(
-    vec2u(prevHalfPx) * 2u + vec2u(1u),
+    restirGiFullPixel(vec2u(prevHalfPx)),
     fullDims,
     previousInvVP,
   );
@@ -195,6 +204,7 @@ fn temporalGiMain(@builtin(global_invocation_id) gid: vec3u) {
   var out = emptyReservoirGI();
   out.xv = current.xv;
   out.nv = current.nv;
+  out.receiverMaterialKey = current.receiverMaterialKey;
   if (maxCandidateLogWeight != GRIS_LOG_ZERO) {
     for (var i: u32 = 0u; i < 2u; i = i + 1u) {
       let candidate = domains[i];

@@ -15,7 +15,7 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 
 export const MOTION_VECTORS_WGSL = /* wgsl */ `
 @group(0) @binding(0) var gNormalDepthIn: texture_2d<f32>;
-@group(0) @binding(1) var motionVectorsOut: texture_storage_2d<rgba32float, write>;
+@group(0) @binding(1) var motionVectorsOut: texture_storage_2d<rg32float, write>;
 @group(0) @binding(2) var<uniform> ubo: WalkaroundUBO;
 
 @compute @workgroup_size(8, 8, 1)
@@ -28,7 +28,7 @@ fn motionVectorsMain(@builtin(global_invocation_id) gid: vec3u) {
   let depth = abs(depthSigned);
 
   // Sky sentinel from shade pass.
-  if (depth <= 1e-6) {
+  if (depthSigned == 0.0 || !cameraFiniteF32(depthSigned)) {
     textureStore(motionVectorsOut, gid.xy, vec4f(0.0, 0.0, 0.0, 0.0));
     return;
   }
@@ -42,9 +42,20 @@ fn motionVectorsMain(@builtin(global_invocation_id) gid: vec3u) {
   );
   let worldPos = ray.origin + ray.direction * depth;
 
-  let currClip = ubo.projMatrix * ubo.viewMatrix * vec4f(worldPos, 1.0);
-  let prevClip = ubo.prevViewProjMatrix * vec4f(worldPos, 1.0);
-  if (abs(currClip.w) <= 1e-6 || abs(prevClip.w) <= 1e-6) {
+  let currClipRaw = ubo.projMatrix * ubo.viewMatrix * vec4f(worldPos, 1.0);
+  let prevClipRaw = ubo.prevViewProjMatrix * vec4f(worldPos, 1.0);
+  let currScale = cameraMaxAbs4(currClipRaw);
+  let prevScale = cameraMaxAbs4(prevClipRaw);
+  if (
+    !cameraFiniteF32(currScale) || !(currScale > 0.0) ||
+    !cameraFiniteF32(prevScale) || !(prevScale > 0.0)
+  ) {
+    textureStore(motionVectorsOut, gid.xy, vec4f(0.0, 0.0, 0.0, 0.0));
+    return;
+  }
+  let currClip = currClipRaw / currScale;
+  let prevClip = prevClipRaw / prevScale;
+  if (!(currClip.w > 0.0) || !(prevClip.w > 0.0)) {
     textureStore(motionVectorsOut, gid.xy, vec4f(0.0, 0.0, 0.0, 0.0));
     return;
   }

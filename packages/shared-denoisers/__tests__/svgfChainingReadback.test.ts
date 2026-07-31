@@ -247,6 +247,38 @@ describe('one-shot SVGF chaining plumbing + return shape (V3-3)', () => {
     );
     expect(prevDepthCall?.[2]).toBe(depth);
   });
+
+  it('demodulates previous radiance with previous rather than current albedo', async () => {
+    const device = createStubDevice();
+    const current = new Float32Array(W * H * 3).fill(0.2);
+    const previous = new Float32Array(W * H * 3).fill(0.2);
+    const currentAlbedo = new Float32Array(W * H * 3).fill(0.5);
+    const previousAlbedo = new Float32Array(W * H * 3).fill(0.25);
+
+    await runSVGFRealWebGPU({
+      device: device as unknown as GPUDevice,
+      rgb: current,
+      prevRadianceRgb: previous,
+      albedoRgb: currentAlbedo,
+      prevAlbedoRgb: previousAlbedo,
+      width: W,
+      height: H,
+      atrousIterations: 1,
+    });
+
+    const currentCall = uploadMocks.uploadRgbAsRgba16f.mock.calls.find(
+      (call) => labelOfArg(call[1]) === 'svgf-curr-color',
+    );
+    const previousCall = uploadMocks.uploadRgbAsRgba16f.mock.calls.find(
+      (call) => labelOfArg(call[1]) === 'svgf-prev-color',
+    );
+    expect(Array.from(currentCall?.[2] as Float32Array)).toEqual(
+      Array.from(new Float32Array(W * H * 3).fill(0.4)),
+    );
+    expect(Array.from(previousCall?.[2] as Float32Array)).toEqual(
+      Array.from(new Float32Array(W * H * 3).fill(0.8)),
+    );
+  });
 });
 
 // ── readback try/finally (V3-5) ───────────────────────────────────────────────

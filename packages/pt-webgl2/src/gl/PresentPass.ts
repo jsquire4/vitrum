@@ -1,14 +1,11 @@
 // PresentPass — the tonemap/exposure/outputColorSpace present pass (D10.1).
-// Previously the #presentTex / #presentFbo / #presentProgram fields + the
-// #runPresentPass / #ensurePresentProgram / buildPresentFragBody / BLEND_FRAG
-// ... wait: BLEND_FRAG belongs to the blend-composite step, not the present pass.
-// Only the present-pass pieces are extracted here:
+// Previously the #presentTex / #presentFbo / #presentProgram fields lived in
+// GlResources. The present-pass pieces extracted here are:
 //   buildPresentFragBody, #ensurePresentProgram, #runPresentPass,
 //   #presentTex, #presentFbo, #presentProgram.
 //
 // The present-pass reads the portable running-mean ping-pong result and writes
-// the tonemapped result to an
-// allocated RGBA32F texture (presentTex).
+// the tonemapped result to an allocated RGBA16F texture (presentTex).
 //
 // Usage pattern:
 //   1. allocate(gl, w, h)      — call when ensureAccumResources reallocates
@@ -54,14 +51,17 @@ void main() {
   float coverageAlpha = texture(uAlphaTex, vUv).a;
   // Guard against negative values that can appear from alpha-compositing precision.
   vec3 tonemapped = vitrumTonemap(max(hdr, vec3(0.0)), uTonemapMode, uExposure);
+  vec3 presented = tonemapped;
   // outputColorSpace 0 = srgb (default) — apply the IEC 61966-2-1 OETF before
-  // writing the display-referred output (the framebuffer is RGBA32F, not auto-sRGB).
+  // writing the display-referred output (the framebuffer is RGBA16F, not auto-sRGB).
   // outputColorSpace 1 = linear — skip the OETF (useful for HDR/linear pipeline).
   if (uOutputColorSpace == 0) {
-    pc_fragColor = vec4(vt_linearToSrgb(tonemapped), coverageAlpha);
-  } else {
-    pc_fragColor = vec4(tonemapped, coverageAlpha);
+    presented = vt_linearToSrgb(tonemapped);
   }
+  // Exposure is evaluated in f32 so the shared none operator remains raw HDR.
+  // This backend publishes RGBA16F, so bound only the concrete final write.
+  presented = clamp(presented, vec3(0.0), vec3(65504.0));
+  pc_fragColor = vec4(presented, coverageAlpha);
 }
 `;
 }
@@ -89,7 +89,7 @@ export function selectPresentSources(
 }
 
 /**
- * Manages the single-attachment present-pass target (RGBA32F) + the tonemap
+ * Manages the single-attachment present-pass target (RGBA16F) + the tonemap
  * fullscreen-quad program. Owned by GlResources.
  *
  * Default dials match the contract (FrameQualitySettings) defaults and the
@@ -120,11 +120,11 @@ export class PresentPass {
   /**
    * Allocate (or reallocate) the present target at the given dimensions.
    * Call whenever ensureAccumResources reallocates (width or height changed).
-   * RGBA32F — deliberate; the present texture is the public primaryRadiance
-   * and must stay FLOAT-readable (see framebuffer.ts's present-format note).
+   * RGBA16F is sufficient for the display-referred result and remains readable
+   * with FLOAT readPixels into the public Float32 capture shape.
    */
   allocate(w: number, h: number): void {
-    const next = createRenderTarget(this.#gl, w, h, false);
+    const next = createRenderTarget(this.#gl, w, h, false, 'rgba16f');
     const previous = this.#target;
     this.#target = next;
     previous?.destroy();

@@ -31,3 +31,6 @@ export const SVGF_REAL_DEFAULT_ATROUS_ITERATIONS = 5 as const;
 
 /** Maximum à-trous iterations in svgf-real mode (hard cap). */
 export const SVGF_REAL_MAX_ATROUS_ITERATIONS = 12 as const;
+
+/** Maximum history representable by the persistent r16uint history input. */
+export const SVGF_REAL_MAX_HISTORY_LENGTH = 0xffff as const;

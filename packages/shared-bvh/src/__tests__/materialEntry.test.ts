@@ -179,9 +179,10 @@ describe('coreMaterialToMaterialEntry — THREE-free MaterialSpec adapter', () =
     const folded = toProductionEmissiveRadiance(
       spec({ emissive: [0.5, 0.25, 0.1], emissiveIntensity: 4 }),
     );
-    expect(folded.emissive).toEqual([2, 1, 0.4]);
+    const expected = [2, 1, Math.fround(Math.fround(0.1) * 4)];
+    expect(folded.emissive).toEqual(expected);
     expect(folded.emissiveIntensity).toBe(1);
-    expect(coreMaterialToMaterialEntry(folded).emissive).toEqual([2, 1, 0.4]);
+    expect(coreMaterialToMaterialEntry(folded).emissive).toEqual(expected);
   });
 
   it('passes through baseColor / roughness / metallic (→ metalness)', () => {
@@ -197,12 +198,16 @@ describe('coreMaterialToMaterialEntry — THREE-free MaterialSpec adapter', () =
     const e = coreMaterialToMaterialEntry(
       spec({ emissive: [0.5, 0.25, 0.1], emissiveIntensity: 4 }),
     );
-    expect(e.emissive).toEqual([2.0, 1.0, 0.4]);
+    expect(e.emissive).toEqual([2.0, 1.0, Math.fround(Math.fround(0.1) * 4)]);
   });
 
   it('defaults emissiveIntensity to ×1 when absent (matches PBR_DEFAULTS)', () => {
     const e = coreMaterialToMaterialEntry(spec({ emissive: [0.3, 0.6, 0.9] }));
-    expect(e.emissive).toEqual([0.3, 0.6, 0.9]);
+    expect(e.emissive).toEqual([
+      Math.fround(0.3),
+      Math.fround(0.6),
+      Math.fround(0.9),
+    ]);
   });
 
   it('omits emissive entirely when the spec has none (→ packMaterials default (0,0,0))', () => {

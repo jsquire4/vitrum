@@ -316,7 +316,7 @@ fn bdptInfiniteLaunchDisk(
   rng: ptr<function, PtRngState>,
 ) -> BdptInfiniteLaunch {
   let towardSource = safe_normalize(towardSourceIn);
-  let radius = max(params.sceneRadius, 1e-3);
+  let radius = params.sceneRadius;
   let center = vec3f(
     params.sceneCenterX, params.sceneCenterY, params.sceneCenterZ,
   ) + towardSource * radius;
@@ -326,11 +326,20 @@ fn bdptInfiniteLaunchDisk(
   let disc = concentricDiscSample(
     vec2f(rand_f32(rng), rand_f32(rng)) * 2.0 - vec2f(1.0),
   );
+  let launchArea = measureAreaVector(
+    vec3f(radius, 0.0, 0.0),
+    vec3f(0.0, radius, 0.0),
+    PI,
+  );
+  var positionPdf = 0.0;
+  if (launchArea.valid != 0u) {
+    positionPdf = 1.0 / launchArea.area;
+  }
   return BdptInfiniteLaunch(
     center + radius * (disc.x * tangent + disc.y * bitangent),
     towardSource,
     -towardSource,
-    1.0 / (PI * radius * radius),
+    positionPdf,
   );
 }
 
@@ -340,10 +349,12 @@ fn bdptSampleDirectionalCone(
   angularDiameter: f32,
 ) -> vec3f {
   let axis = safe_normalize(axisIn);
-  if (angularDiameter <= 0.0) { return axis; }
-  let cosHalfAngle = cos(angularDiameter * 0.5);
-  let cosTheta = mix(cosHalfAngle, 1.0, rand_f32(rng));
-  let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+  if (ptDirectionalConeIsDelta(angularDiameter)) { return axis; }
+  let sinCosTheta = ptDirectionalConeSinCos(
+    angularDiameter, rand_f32(rng),
+  );
+  let sinTheta = sinCosTheta.x;
+  let cosTheta = sinCosTheta.y;
   let phi = 2.0 * PI * rand_f32(rng);
   var tangent: vec3f;
   var bitangent: vec3f;
@@ -386,6 +397,14 @@ fn bdptFinishInfiniteEndpoint(
   let emitted = select(
     radiance, spectralEmit, params.spectralEnabled != 0u,
   );
+  var endpointThroughput = ptScaleEnvironmentRadiance(
+    emitted,
+    sourceDirectionWeight,
+  );
+  endpointThroughput = ptScaleEnvironmentRadiance(
+    endpointThroughput,
+    1.0 / pdfPosition,
+  );
   bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(
     launch.position,
     select(0.0, BDPT_KIND_DELTA, directionIsDelta),
@@ -393,7 +412,7 @@ fn bdptFinishInfiniteEndpoint(
   bdptLightPath[bdptLightPathIndex(col, 1u)] =
     vec4f(launch.towardSource, pdfPosition);
   bdptLightPath[bdptLightPathIndex(col, 2u)] =
-    vec4f(emitted * sourceDirectionWeight / pdfPosition, 0.0);
+    vec4f(endpointThroughput, 0.0);
   bdptClearLvMaterialPayload(col);
   bdptWriteLvBsdf(col, emitterKind, launch.travelDirection);
   bdptLightPath[bdptLightPathIndex(col, 4u)] = vec4f(
@@ -427,16 +446,11 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, PtRngState>) {
         rng, directional.xyz, angularDiameter,
       );
       let launch = bdptInfiniteLaunchDisk(towardSource, rng);
-      let directionIsDelta = angularDiameter <= 0.0;
+      let directionIsDelta = ptDirectionalConeIsDelta(angularDiameter);
       // 1-cos(d/2) = 2*sin(d/4)^2 avoids catastrophic cancellation for
       // sun-sized and smaller authored cones while preserving the exact cone
       // solid-angle measure.
-      var directionPdf = 1.0;
-      if (!directionIsDelta) {
-        let coneQuarterSin = sin(angularDiameter * 0.25);
-        directionPdf =
-          1.0 / (4.0 * PI * coneQuarterSin * coneQuarterSin);
-      }
+      let directionPdf = ptDirectionalConePdf(angularDiameter);
       // Packed directional RGB is irradiance, not radiance. The authored
       // source is invariant to the soft-shadow cone size, so its directional
       // measure carries p_dir and cancels the extension's 1/p_dir factor.
@@ -513,32 +527,32 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, PtRngState>) {
       let rshapeS = rectAreaLights[rb + 3u];
       let rr = rshapeS.rgb;
       let isDiscS = abs(rshapeS.w - 1.0) < 0.5;
+      let areaMeasure = measureAreaVector(
+        ru, rv, select(4.0, PI, isDiscS),
+      );
       let xi1s = rand_f32(rng);
       let xi2s = rand_f32(rng);
       var emitPos: vec3f;
-      var areaS: f32;
       if (isDiscS) {
         let disc = concentricDiscSample(
           vec2f(xi1s * 2.0 - 1.0, xi2s * 2.0 - 1.0),
         );
         emitPos = rpos + ru * disc.x + rv * disc.y;
-        areaS = PI * length(cross(ru, rv));
       } else {
         emitPos = rpos + ru * (xi1s * 2.0 - 1.0) + rv * (xi2s * 2.0 - 1.0);
-        areaS = 4.0 * length(cross(ru, rv));
       }
-      if (areaS <= 0.0) {
+      if (areaMeasure.valid == 0u) {
         bdptWriteInvalid(col);
         return;
       }
-      let emitNormal = safe_normalize(cross(ru, rv));
+      let emitNormal = areaMeasure.normal;
       bdptFinishBounce0Endpoint(
         col,
         emitPos,
         emitNormal,
         emitNormal,
         rr,
-        discretePdf / areaS,
+        discretePdf / areaMeasure.area,
         BDPT_LV_AREA_EMITTER_MATID,
         rbase.w > 0.5,
         0.0,
@@ -567,24 +581,22 @@ fn bdptWriteBounce0(col: i32, rng: ptr<function, PtRngState>) {
       );
       let e1 = b - a;
       let e2 = c - a;
-      let n = cross(e1, e2);
-      let nLen = length(n);
-      if (!(nLen > 0.0)) {
+      let areaMeasure = measureAreaVector(e1, e2, 0.5);
+      if (areaMeasure.valid == 0u) {
         bdptWriteInvalid(col);
         return;
       }
-      let emitNormal = n / nLen;
-      let areaM = 0.5 * nLen;
+      let emitNormal = areaMeasure.normal;
       bdptFinishBounce0Endpoint(
         col,
         emitPos,
         emitNormal,
         emitNormal,
         mr,
-        discretePdf / areaM,
+        discretePdf / areaMeasure.area,
         BDPT_LV_AREA_EMITTER_MATID,
         meshAreaLights[mb + 3u].w > 0.5,
-        0.0,
+        select(0.0, 1.0, meshAreaLightIsTwoSided(mi)),
         0.0,
         0.0,
       );
@@ -687,10 +699,21 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
         cosPrev = 1.0;
         fPrev = vec3f(1.0);
       } else if (prevMatId == BDPT_LV_AREA_EMITTER_MATID) {
-        let hemi = cosineHemisphereSample(&rng, prevNormal);
+        let emitterPayload =
+          bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
+        let twoSidedEmitter = emitterPayload.y > 0.5;
+        var launchNormal = prevNormal;
+        if (twoSidedEmitter && rand_f32(&rng) < 0.5) {
+          launchNormal = -launchNormal;
+        }
+        let hemi = cosineHemisphereSample(&rng, launchNormal);
         scatterDir = hemi.wi;
-        pdfScatter = hemi.pdf;
-        cosPrev = max(dot(prevNormal, scatterDir), 0.0);
+        pdfScatter = hemi.pdf * select(1.0, 0.5, twoSidedEmitter);
+        cosPrev = select(
+          max(dot(prevNormal, scatterDir), 0.0),
+          abs(dot(prevNormal, scatterDir)),
+          twoSidedEmitter,
+        );
         fPrev = vec3f(1.0);
       } else if (prevMatId == BDPT_LV_POINT_EMITTER_MATID) {
         scatterDir = uniformSphere(vec2f(rand_f32(&rng), rand_f32(&rng)));
@@ -893,12 +916,13 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
     }
 
     var ray: Ray;
-    let emitterRayOrigin = prevPos + scatterDir * 1e-4;
+    let emitterRayOrigin =
+      prevPos + scatterDir * ptRayOriginBias();
     ray.origin = select(surfaceRayOrigin, emitterRayOrigin, prevMatId < 0.0 && prevMatId != BDPT_LV_MEDIUM_MATID);
     ray.direction = scatterDir;
     let alphaTraceOrigin = ray.origin;
     var alphaAdvance = 0.0;
-    var hit = traceClosest(ray, 1e-4, 1e30);
+    var hit = traceClosest(ray, ptRayTMin(), INFINITY);
     let alphaSurfaceHitLimit = sceneSurfaceHitLimit();
     var alphaSurfaceHitCount = 0u;
     var alphaTraversalValid = true;
@@ -912,10 +936,10 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       if (!alphaTestPassThrough(
         hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
       )) { break; }
-      let alphaStep = hit.dist + 1e-4;
+      let alphaStep = hit.dist + ptRayTMin();
       alphaAdvance = alphaAdvance + alphaStep;
       ray.origin = ray.origin + ray.direction * alphaStep;
-      hit = traceClosest(ray, 1e-4, 1e30);
+      hit = traceClosest(ray, ptRayTMin(), INFINITY);
     }
     if (!alphaTraversalValid) {
       bdptWriteInvalid(col);
@@ -1081,10 +1105,22 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
     // segment. pdfFwd = generation density of scatterDir at prevPos (SA measure,
     // no baked-in geometry term — the §10.3 ConvertDensity handles SA→area).
     let pdfFwd = pdfScatter * segmentForwardDensity;
-    var newThroughput = prevThroughput * surfaceThroughputMul * segmentWeight;
+    var incomingPathThroughput = prevThroughput;
+    if (
+      prevCol == 0 &&
+      prevMatId == BDPT_LV_ENVIRONMENT_EMITTER_MATID
+    ) {
+      incomingPathThroughput = ptScaleEnvironmentRadiance(
+        incomingPathThroughput,
+        materialEnvMapIntensity(matIdx),
+      );
+    }
+    var newThroughput =
+      incomingPathThroughput * surfaceThroughputMul * segmentWeight;
     if (prevMatId < 0.0 && prevMatId != BDPT_LV_MEDIUM_MATID) {
       // Emitter events are represented explicitly by f*cos/pdf above.
-      newThroughput = prevThroughput * fPrev * cosPrev / pdfScatter * segmentWeight;
+      newThroughput =
+        incomingPathThroughput * fPrev * cosPrev / pdfScatter * segmentWeight;
     }
     if (
       prevCol == 0 &&

@@ -20,6 +20,7 @@ import {
   materialSig,
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
+  packRadianceRgbScaleF32,
   packSceneFromCore,
   rebuildPrimitiveBlas,
   resolveDisplacedGeometry,
@@ -329,11 +330,10 @@ function makeMergedGeometry(
  * mesh-area emitter to make the mesh a light with a specific colour/intensity; the
  * material emissive is a style hint, not the physical source.
  *
- * Caveats documented:
- *  - Dedup collision: if two primitives share the same renderer-visible material
- *    signature, the override applies to ALL triangles with that material slot. This
- *    is an accepted edge case — mesh-area emitters are typically unique materials.
- *  - Missing reference: a meshId that matches no primitive is warned and skipped.
+ * Mesh-area owners receive caller-keyed material slots during world merge, and
+ * the optional merge result below resolves primitive id → exact slot from the
+ * emitted triangle stream. This prevents an emitter override from aliasing a
+ * structurally identical material used by a non-emitter primitive.
  *
  * @returns Map from material-slot-index to Le [r,g,b] override; empty when no
  *          mesh-area emitters are present.
@@ -342,6 +342,7 @@ function buildMeshAreaLeOverrides(
   scene: Scene,
   mergedMaterials: readonly MaterialSpec[],
   options: CoreBvhBuildOptions = {},
+  merged?: Pick<WorldSpaceMergeResult, 'meshVertexRanges' | 'mergedTriMaterialId'>,
 ): Map<number, MeshAreaLeOverride> {
   const meshAreaEmitters = scene.emitters.filter((e) => e.kind === 'mesh-area');
   if (meshAreaEmitters.length === 0) return new Map();
@@ -362,14 +363,25 @@ function buildMeshAreaLeOverrides(
     if (!sigToSlot.has(shadowAware)) sigToSlot.set(shadowAware, s);
   }
 
-  // Build primitive-id → material slot via one O(P) pass.
   const primitiveIdToMaterialSlot = new Map<string, number>();
-  for (const p of scene.primitives) {
-    if (p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh') {
-      const shadowAware = materialSlotSig(p.material, p.castShadow ?? true);
-      const s = sigToSlot.get(shadowAware) ?? sigToSlot.get(materialSig(p.material));
-      if (s !== undefined) {
-        primitiveIdToMaterialSlot.set(String(p.id), s);
+  if (merged != null) {
+    for (const range of merged.meshVertexRanges) {
+      if (range.triCount <= 0 || primitiveIdToMaterialSlot.has(range.name)) continue;
+      const slot = merged.mergedTriMaterialId[range.triStart];
+      if (slot !== undefined && slot < mergedMaterials.length) {
+        primitiveIdToMaterialSlot.set(range.name, slot);
+      }
+    }
+  } else {
+    // Compatibility fallback for non-merged callers. Ownership-sensitive
+    // merged paths always provide the exact range map above.
+    for (const p of scene.primitives) {
+      if (p.kind === 'mesh' || p.kind === 'skinned-mesh' || p.kind === 'instanced-mesh') {
+        const shadowAware = materialSlotSig(p.material, p.castShadow ?? true);
+        const s = sigToSlot.get(shadowAware) ?? sigToSlot.get(materialSig(p.material));
+        if (s !== undefined) {
+          primitiveIdToMaterialSlot.set(String(p.id), s);
+        }
       }
     }
   }
@@ -383,17 +395,31 @@ function buildMeshAreaLeOverrides(
       warnMissingMeshAreaEmitterReference(options, e.id, meshId, 'bvh-emissive-override');
       continue;
     }
-    const Le: [number, number, number] = [
-      e.color[0] * e.intensity,
-      e.color[1] * e.intensity,
-      e.color[2] * e.intensity,
-    ];
+    const Le = packRadianceRgbScaleF32(
+      e.color,
+      e.intensity,
+      `mesh-area emitter "${String(e.id)}"`,
+    ).scaled;
     overrides.set(slot, {
       Le,
       castShadowDisabled: e.castShadow === false,
     });
   }
   return overrides;
+}
+
+function primitiveMaterialOwnershipKey(
+  _scene: Scene,
+): (primitive: Scene['primitives'][number]) => string {
+  // Every mesh-like primitive is a potential mesh-area-emitter owner after a
+  // runtime updateEmitter(meshId) call. Keeping the merged-mode slot topology
+  // primitive-stable prevents an ownership change from reinterpreting the
+  // already-published per-triangle material ids. TLAS mode already assigns one
+  // material slot per primitive through materialResolver().
+  return (primitive): string => {
+    const id = String(primitive.id);
+    return `primitive-owner:${id}`;
+  };
 }
 
 /**
@@ -429,13 +455,52 @@ function applyMeshAreaLeOverridesToCoreMaterials(
       // Warn already issued by buildMeshAreaLeOverrides for the emitter-list path.
       continue;
     }
-    const Le: [number, number, number] = [e.color[0] * e.intensity, e.color[1] * e.intensity, e.color[2] * e.intensity];
+    const Le = packRadianceRgbScaleF32(
+      e.color,
+      e.intensity,
+      `mesh-area emitter "${String(e.id)}"`,
+    ).scaled;
     patched[slot] = applyMeshAreaLeOverride(patched[slot]!, {
       Le,
       castShadowDisabled: e.castShadow === false,
     });
   }
   return patched;
+}
+
+/**
+ * Resolve the exact material emissive scalars published for camera-visible
+ * glow and atlas modulation. Mesh-area emitter radiance replaces the owning
+ * material's authored emissive term in both BVH modes.
+ */
+export function resolveProductionEmissiveMaterialsForCoreScene(
+  scene: Scene,
+  bvhMode: ReSTIRBvhMode,
+  coreMaterials: readonly MaterialSpec[],
+  options: CoreBvhBuildOptions = {},
+): readonly MaterialSpec[] {
+  if (bvhMode === 'tlas') {
+    return applyMeshAreaLeOverridesToCoreMaterials(scene, coreMaterials);
+  }
+  const ownershipMerged = mergeWorldSpaceFromCore(scene, {
+    positionStride: 4,
+    splitMaterialsByCastShadow: true,
+    materialDedupKey: primitiveMaterialOwnershipKey(scene),
+  });
+  const overrides = buildMeshAreaLeOverrides(
+    scene,
+    coreMaterials,
+    {
+      ...options,
+      suppressMeshAreaMissingReferenceWarnings: true,
+    },
+    ownershipMerged,
+  );
+  return coreMaterials.map((material, slot) => {
+    const override = overrides.get(slot);
+    if (override == null) return toProductionEmissiveRadiance(material);
+    return applyMeshAreaLeOverride(material, override);
+  });
 }
 
 export function rebuildBvhEmissiveLeFromCoreScene(
@@ -445,23 +510,12 @@ export function rebuildBvhEmissiveLeFromCoreScene(
 ): SceneBVHBuffers['bvhEmissiveLe'] {
   const triMaterialIds = new Uint32Array(bvh.triangleMaterialIds.cpuData);
   const triCount = bvh.bvhBeerColors.count;
-  if (bvh.bvhMode === 'tlas') {
-    const emissiveCoreMats = applyMeshAreaLeOverridesToCoreMaterials(scene, bvh.coreMaterials);
-    return makeStorageHandle(
-      packBVHEmissiveLeFromCore(triMaterialIds, emissiveCoreMats, triCount),
-      16,
-    );
-  }
-
-  const overrides = buildMeshAreaLeOverrides(scene, bvh.coreMaterials, {
-    ...options,
-    suppressMeshAreaMissingReferenceWarnings: true,
-  });
-  const emissiveMaterials = bvh.coreMaterials.map((material, slot) => {
-    const override = overrides.get(slot);
-    if (override == null) return toProductionEmissiveRadiance(material);
-    return applyMeshAreaLeOverride(material, override);
-  });
+  const emissiveMaterials = resolveProductionEmissiveMaterialsForCoreScene(
+    scene,
+    bvh.bvhMode,
+    bvh.coreMaterials,
+    options,
+  );
   return makeStorageHandle(
     packBVHEmissiveLeFromCore(triMaterialIds, emissiveMaterials, triCount),
     16,
@@ -518,6 +572,7 @@ function coreEmitterBuffers(
   const merged = mergeWorldSpaceFromCore(scene, {
     positionStride: 4,
     splitMaterialsByCastShadow: true,
+    materialDedupKey: primitiveMaterialOwnershipKey(scene),
   });
   const extraEmitters = collectRectAreaEmitterTrisFromCore(scene);
   // H23 — derive mesh-area emitter Le overrides. When a mesh-area emitter
@@ -527,7 +582,7 @@ function coreEmitterBuffers(
   const meshAreaOverrides = buildMeshAreaLeOverrides(scene, merged.materials, {
     ...options,
     warningMethod: options.warningMethod ?? 'rebuildEmitterBuffersFromCoreScene',
-  });
+  }, merged);
   const productionMaterials = merged.materials.map((m, slot) => {
     const override = meshAreaOverrides.get(slot);
     if (override == null) return toProductionEmissiveRadiance(m);
@@ -781,17 +836,19 @@ function buffersFromCoreScenePack(
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
+  // Mesh-area emitter Le is the scalar the shader multiplies by emissiveMap;
+  // validate the atlas against that production override, not the style material.
+  const emissiveCoreMats = applyMeshAreaLeOverridesToCoreMaterials(scene, coreMaterials);
   const materialTextureAtlas = packMaterialTextureAtlas(coreMaterials, geo.triMaterialIds, triCount, {
     indices: triIndices3,
     uv0: uv0Stride2,
     uv1: uv1Stride2,
     uvSets: highUvSets,
-  });
+  }, emissiveCoreMats);
   // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
   const roughMetalBuf = packBVHRoughMetalFromCore(geo.triMaterialIds, coreMaterials, triCount);
   // H23 — apply mesh-area emitter Le overrides to the emissive-Le glow buffer so
   // the camera-visible glow on an emitter-referenced mesh reflects the emitter Le.
-  const emissiveCoreMats = applyMeshAreaLeOverridesToCoreMaterials(scene, coreMaterials);
   const emissiveLeBuf = packBVHEmissiveLeFromCore(geo.triMaterialIds, emissiveCoreMats, triCount);
 
   const emitterSlice = coreEmitterBuffers(scene, {
@@ -867,6 +924,7 @@ function buildReSTIRSceneBVHFromCoreMerged(
   const merged = mergeWorldSpaceFromCore(scene, {
     positionStride: 4,
     splitMaterialsByCastShadow: true,
+    materialDedupKey: primitiveMaterialOwnershipKey(scene),
   });
   const triCount = merged.indices.length / 3;
   const mneeFacetDomains = packMergedMneeFacetDomains(triCount);
@@ -886,22 +944,27 @@ function buildReSTIRSceneBVHFromCoreMerged(
     triCount,
   );
   const beerBuf = packBVHBeerColorsFromCore(merged.triMaterialId, merged.materials, triCount);
-  const materialTextureAtlas = packMaterialTextureAtlas(merged.materials, merged.triMaterialId, triCount, {
-    indices: merged.indices,
-    uv0: merged.uvs,
-    ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}),
-    uvSets: highUvSets,
-  });
-  // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
-  const roughMetalBuf = packBVHRoughMetalFromCore(merged.triMaterialId, merged.materials, triCount);
   // H23 — apply mesh-area emitter Le overrides (same as TLAS path) so the emissive
   // glow buffer reflects the emitter Le for mesh-area-referenced primitives.
-  const emissiveMergedMats = buildMeshAreaLeOverrides(scene, merged.materials, options);
+  const emissiveMergedMats = buildMeshAreaLeOverrides(
+    scene,
+    merged.materials,
+    options,
+    merged,
+  );
   const mergedMatsForEmissive = merged.materials.map((m, slot) => {
     const override = emissiveMergedMats.get(slot);
     if (override == null) return toProductionEmissiveRadiance(m);
     return applyMeshAreaLeOverride(m, override);
   });
+  const materialTextureAtlas = packMaterialTextureAtlas(merged.materials, merged.triMaterialId, triCount, {
+    indices: merged.indices,
+    uv0: merged.uvs,
+    ...(mergedUv1 != null ? { uv1: mergedUv1 } : {}),
+    uvSets: highUvSets,
+  }, mergedMatsForEmissive);
+  // B1 — per-triangle roughness+metalness lane (diffuse-default invariant inside).
+  const roughMetalBuf = packBVHRoughMetalFromCore(merged.triMaterialId, merged.materials, triCount);
   const emissiveLeBuf = packBVHEmissiveLeFromCore(merged.triMaterialId, mergedMatsForEmissive, triCount);
   const emitterSlice = coreEmitterBuffers(scene, {
     ...options,

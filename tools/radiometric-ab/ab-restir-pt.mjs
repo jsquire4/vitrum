@@ -11,7 +11,7 @@
  * (A1, kernel.wgsl.ts:308-312).  The estimator split is E0-direct-only in
  * the megakernel + rpt_result indirect from the resolve pass.  If the split
  * is double-count-free and unbiased, the converged mean should agree with
- * the plain path tracer (restirPtReuse:false).
+ * the plain path tracer (`oneEdgeReconnectionReuse:false`).
  *
  * This A/B tests:
  *   (a) Unbiasedness: equal-spp global mean luminance must agree within 10%,
@@ -46,6 +46,10 @@ import {
   PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS,
   radiometricResultProvenance,
 } from "./resultProvenance.mjs";
+import {
+  buildRestirPtCaptureConfig,
+  buildRestirPtResult,
+} from "./restirPtResultContract.mjs";
 
 console.log("=== A/B #3: ReSTIR-PT reuse on vs off (bias check + variance) ===");
 console.log(`ICD: ${Deno.env.get("VK_ICD_FILENAMES") ?? "(not set)"}`);
@@ -217,8 +221,7 @@ if (verdict === "PASS") {
 console.log("");
 
 // ── Write results JSON ────────────────────────────────────────────────────────
-const results = {
-  schema: "vitrum.radiometric-ab.result.v1",
+const results = buildRestirPtResult({
   provenance: await radiometricResultProvenance(
     import.meta.url,
     "tools/radiometric-ab/ab-restir-pt.mjs",
@@ -228,14 +231,13 @@ const results = {
       sourceRoots: PT_RADIOMETRIC_RUNTIME_SOURCE_ROOTS,
     },
   ),
-  ab: "restir-pt-reuse-on-vs-off",
   date: new Date().toISOString(),
   resolution: { W, H },
   roi: ROI,
   meanFrames: MEAN_FRAMES,
   varianceRuns: VAR_RUNS,
   varianceFramesPerRun: VAR_FRAMES,
-  captureConfig: {
+  captureConfig: buildRestirPtCaptureConfig({
     scene: "cornell-indirect-v1",
     traceTier: "full",
     colorSpace: "linear",
@@ -247,22 +249,15 @@ const results = {
     meanFrames: MEAN_FRAMES,
     varianceRuns: VAR_RUNS,
     varianceFramesPerRun: VAR_FRAMES,
-    arms: {
-      base: { oneEdgeReconnectionReuse: false },
-      candidate: {
-        oneEdgeReconnectionReuse: true,
-        effectiveMClamp: 20,
-      },
-    },
+    effectiveMClamp: 20,
     seeds: ptRadiometricSeedManifest(MEAN_FRAMES, VAR_RUNS, VAR_FRAMES),
-  },
+  }),
   deviceIdentity,
   base: { globalLum: baseGlobalLum, roiLum: baseROILum, variance: baseVar },
   rpt:  { globalLum: rptGlobalLum,  roiLum: rptROILum,  variance: rptVar },
   globalRelErr,
   roiRelErr,
   varRatio,
-  weightMode: "shared-max-log-with-f32-output-storage",
   reservoirWeightStats,
   pairedSeedAnalysis: {
     confidenceLevel: 0.95,
@@ -279,7 +274,7 @@ const results = {
   meanAgreement,
   varianceNotWorse,
   verdict,
-};
+});
 
 const outPath = new URL("./results-restir-pt.json", import.meta.url).pathname;
 await Deno.writeTextFile(outPath, JSON.stringify(results, null, 2));

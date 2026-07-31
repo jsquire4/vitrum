@@ -40,7 +40,7 @@
  *   offset 352: ppgMixAlpha                 (f32 = 4 bytes) — PPG MIS mixing weight α
  *   offset 356: lightTreeEnabled            (u32 = 4 bytes) — DI light-tree selection gate (was _ppgPad0)
  *   offset 360: lightTreeNodeCount          (u32 = 4 bytes) — packed light-tree node count (was _ppgPad1)
- *   offset 364: _abiPadNrcGate              (u32 = 4 bytes; zero)
+ *   offset 364: restirReservoirScale        (u32 = 4 bytes)
  *   offset 368: regirOrigin                 (vec3f = 12 bytes) — ReGIR grid AABB min
  *   offset 380: regirInvCellSize            (f32 = 4 bytes) — 1 / cellSize
  *   offset 384: regirDims                   (vec3u = 12 bytes) — grid cell counts
@@ -48,7 +48,7 @@
  *   offset 400: regirCandidatesPerCell      (u32 = 4 bytes) — M per sub-reservoir
  *   offset 404: regirSurvivorsPerCell       (u32 = 4 bytes) — K survivors per cell
  *   offset 408: regirGridFloatOffset        (u32 = 4 bytes) — grid-region float offset in combined buffer
- *   offset 412: _abiPadRetiredGrisToggle    (u32 = 4 bytes; zero)
+ *   offset 412: rayOriginBias               (f32 = 4 bytes; scene-relative)
  *   offset 416: sunAngular.x                (f32 = 4 bytes) — direct sun cone radius in radians
  *   offset 420: sunAngular.y                (u32 bits) — GRIS history epoch
  *   offset 424: sunAngular.z                (f32) — generic refractive-caustic strategy
@@ -61,6 +61,7 @@ import {
   WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS,
   WALKAROUND_UBO_SIZE_BYTES,
 } from './constants.js';
+import { assertWalkaroundEnvironmentRgbScaleEnvelopeF32 } from '../environment/environmentRadianceScale.js';
 
 /**
  * T5 — shade flag bit masks packed into `stainedGlassFlags`. Bits 0/1 are the
@@ -169,6 +170,32 @@ export const REGIR_OFF: RegirUboState = {
 };
 
 /**
+ * Word indices whose bit patterns are owned by WGSL u32 fields. Some valid u32
+ * values decode as NaN/Infinity through the overlapping Float32Array view, so a
+ * final float-lane validation pass must skip exactly these ABI slots.
+ */
+const WALKAROUND_UBO_U32_LANES = new Set([
+  51, 52, 53, 54,
+  68, 75, 79,
+  83, 84, 85, 86, 87, 89, 90, 91,
+  96, 97, 98, 99, 100, 101, 102,
+  105, 107,
+]);
+
+function assertFiniteWalkaroundUboFloatLanes(f32: Float32Array): void {
+  for (let index = 0; index < f32.length; index += 1) {
+    if (WALKAROUND_UBO_U32_LANES.has(index)) continue;
+    const value = f32[index]!;
+    if (!Number.isFinite(value)) {
+      throw new RangeError(
+        `[walkaround-ubo] Float32 lane ${index} (byte offset ${index * 4}) ` +
+          `must be finite before GPU upload; packed ${String(value)}.`,
+      );
+    }
+  }
+}
+
+/**
  * Pure packing core — fills and returns the 432-byte WalkaroundUBO ArrayBuffer
  * from structured inputs. No GPU types involved; safe to call in Node / Vitest.
  *
@@ -183,10 +210,25 @@ export function packWalkaroundUBO(
   regir: RegirUboState = REGIR_OFF,
   checkerboard: CheckerboardUboState = CHECKERBOARD_OFF,
   grisHistoryEpoch = 0,
+  restirReservoirScale = 1,
 ): ArrayBuffer {
+  if (
+    !Number.isSafeInteger(restirReservoirScale)
+    || restirReservoirScale < 1
+    || restirReservoirScale > 4
+  ) {
+    throw new RangeError(
+      '[walkaround-ubo] restirReservoirScale must be an integer in [1, 4].',
+    );
+  }
   const data = new ArrayBuffer(WALKAROUND_UBO_SIZE_BYTES);
   const f32  = new Float32Array(data);
   const u32  = new Uint32Array(data);
+  const packedSky = assertWalkaroundEnvironmentRgbScaleEnvelopeF32(
+    inputs.lighting.skyTint,
+    inputs.lighting.skyIrradiance,
+    'scalar-sky radiance',
+  );
 
   f32.set(inputs.camera.viewMatrix,     0);    //  0..15 (64 bytes)
   f32.set(inputs.camera.projMatrix,    16);    // 16..31 (64 bytes)
@@ -203,10 +245,10 @@ export function packWalkaroundUBO(
   f32[57] = inputs.lighting.primaryLightDir[1];
   f32[58] = inputs.lighting.primaryLightDir[2];
   f32[59] = inputs.lighting.primaryLightIntensity;
-  f32[60] = inputs.lighting.skyTint[0];
-  f32[61] = inputs.lighting.skyTint[1];
-  f32[62] = inputs.lighting.skyTint[2];
-  f32[63] = inputs.lighting.skyIrradiance;
+  f32[60] = packedSky.value[0];
+  f32[61] = packedSky.value[1];
+  f32[62] = packedSky.value[2];
+  f32[63] = packedSky.scale;
   // Library-generality tunables (audit follow-up).
   f32[64] = inputs.lighting.emitterDist2Floor;
   f32[65] = inputs.lighting.directFireflyClamp;
@@ -254,7 +296,7 @@ export function packWalkaroundUBO(
   u32[90] = (inputs.lighting.lightTreeNodeCount ?? 0) >>> 0; // offset 360 — lightTreeNodeCount
   // NRC selection is construction-time pipeline composition. The former
   // runtime mirror had no shader reads; keep its aligned slot explicitly zero.
-  u32[91] = 0; // offset 364 — _abiPadNrcGate
+  u32[91] = restirReservoirScale >>> 0;
   // ReGIR grid state (offsets 368..412). When ReGIR is off every field is 0,
   // so the kernel's `regirEnabled == 0` gate keeps RIS on the light-tree path
   // bit-for-bit (and the grid-build pass early-returns).
@@ -270,9 +312,9 @@ export function packWalkaroundUBO(
   u32[100] = r.candidatesPerCell >>> 0; // offset 400 — regirCandidatesPerCell (M)
   u32[101] = r.survivorsPerCell >>> 0;  // offset 404 — regirSurvivorsPerCell (K)
   u32[102] = r.gridFloatOffset >>> 0;   // offset 408 — regirGridFloatOffset
-  // Reserved zero ABI word for the retired GRIS structural toggle. Keeping
-  // the slot avoids shifting the epoch and caustic controls.
-  u32[103] = 0; // offset 412 — _abiPadRetiredGrisToggle
+  // Scene-relative secondary-ray origin offset. Reuses the retired GRIS word,
+  // so the sunAngular block remains at its stable offset.
+  f32[103] = inputs.filter.rayOriginBias; // offset 412 — rayOriginBias
   const sunAngularRadius = inputs.lighting.sunAngularRadius;
   f32[104] = typeof sunAngularRadius === 'number' && Number.isFinite(sunAngularRadius)
     ? Math.max(0, sunAngularRadius)
@@ -289,6 +331,11 @@ export function packWalkaroundUBO(
     ((mneeChainLength & 0xff) << 8) |
     ((mneeMultiplicityTrials & 0xff) << 16); // offset 428 — bounded MNEE/SMS config bits
 
+  // Last ABI boundary: even if an upstream constructor/frame validator misses
+  // a Number-range value, no NaN/Infinity may reach a WGSL f32 field. The
+  // explicit u32 list above prevents valid integer bit patterns from producing
+  // false positives through this overlapping Float32Array view.
+  assertFiniteWalkaroundUboFloatLanes(f32);
   return data;
 }
 
@@ -311,7 +358,15 @@ export function updateUBO(
    *  zero, so the UBO is byte-identical to the pre-checkerboard layout. */
   checkerboard: CheckerboardUboState = CHECKERBOARD_OFF,
   grisHistoryEpoch = 0,
+  restirReservoirScale = 1,
 ): void {
-  const data = packWalkaroundUBO(inputs, ppg, regir, checkerboard, grisHistoryEpoch);
+  const data = packWalkaroundUBO(
+    inputs,
+    ppg,
+    regir,
+    checkerboard,
+    grisHistoryEpoch,
+    restirReservoirScale,
+  );
   device.queue.writeBuffer(uboBuffer, 0, data);
 }

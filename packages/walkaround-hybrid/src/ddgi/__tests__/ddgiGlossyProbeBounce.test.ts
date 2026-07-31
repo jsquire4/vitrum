@@ -138,10 +138,11 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('beerTint: vec3f,');
     expect(src).toContain('out.transmission = ddgiSampleTransmissionMapForHit(hit, scalarTransmission);');
     expect(src).toContain('ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint),');
-    expect(src).toContain('var transmitted = vec3f(0.0);');
-    expect(src).toContain('sampleSkyColor(exitR.direction).r');
+    expect(src).toContain('let transmitted = vec3f(');
+    expect(src).toContain('fn ddgiTraceGlassChannel(');
+    expect(src).toContain('sampleSkyColor(exitBtdf.direction)');
     expect(src).toContain('radiance = mix(');
-    expect(src).toContain('transmitted * probeMat.beerTint,');
+    expect(src).toContain('            transmitted,');
     expect(src).toContain('probeMat.transmission * frameParams.glassMixScale,');
   });
 
@@ -166,10 +167,12 @@ describe('B2 — WGSL structural pins: specular complement', () => {
 
   it('1j. readable emissive maps modulate direct probe-hit surface emission', () => {
     const src = wgsl();
-    expect(src).toContain('@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<f32>;');
+    expect(src).toContain('@group(1) @binding(3) var ddgiMaterialTextureAtlas: texture_2d_array<u32>;');
     expect(src).toContain('@group(1) @binding(4) var ddgiMaterialMapMeta: texture_2d<f32>;');
     expect(src).toContain('fn ddgiSampleEmissiveMap(hit: IntersectionResult, scalarEmission: vec3f) -> vec3f');
-    expect(src).toContain('let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);');
+    expect(src).toContain('let surfaceEmission = select(');
+    expect(src).toContain('ddgiSampleEmissiveMap(hit, scalarSurfaceEmission),');
+    expect(src).toContain('(mat.flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0u');
   });
 
   it('1k. readable extension maps modulate DDGI probe-hit specular response', () => {
@@ -322,11 +325,12 @@ describe('H18 — material-emissive direct probe hits', () => {
   it('adds packed surface emission after glass mix and before writing hit radiance', () => {
     const src = wgsl();
     expect(src).toContain('let scalarSurfaceEmission = vec3f(');
-    expect(src).toContain('let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);');
+    expect(src).toContain('let surfaceEmission = select(');
+    expect(src).toContain('ddgiSampleEmissiveMap(hit, scalarSurfaceEmission),');
     expect(src).toContain('radiance = radiance + surfaceEmission + bakedOutgoing;');
 
-    const glassMix = src.indexOf('transmitted * probeMat.beerTint,');
-    const mapSample = src.indexOf('let surfaceEmission = ddgiSampleEmissiveMap(hit, scalarSurfaceEmission);');
+    const glassMix = src.indexOf('let transmitted = vec3f(');
+    const mapSample = src.indexOf('ddgiSampleEmissiveMap(hit, scalarSurfaceEmission),');
     const emissionAdd = src.indexOf(
       'radiance = radiance + surfaceEmission + bakedOutgoing;',
     );

@@ -74,10 +74,17 @@ function gtaoSimilarityWeight(
   bilateralDepthSigma: number,
 ): number {
   const depthDelta = Math.abs(centerDepth - sampleDepth);
-  const sigma = Math.max(1e-6, bilateralDepthSigma);
-  const depthW = Math.exp(-depthDelta / (2 * sigma * sigma));
   const nDot = Math.max(0, dot3(centerNormal, sampleNormal));
-  return depthW * nDot ** 16;
+  const normW = nDot ** 16;
+  if (!(sampleDepth > 0)) return 0;
+  if (!(bilateralDepthSigma > 0)) {
+    return depthDelta === 0 ? normW : 0;
+  }
+  const depthW = Math.exp(
+    -(depthDelta * depthDelta) /
+      (2 * bilateralDepthSigma * bilateralDepthSigma),
+  );
+  return depthW * normW;
 }
 
 function gtaoUpsampleReference(params: {
@@ -96,7 +103,7 @@ function gtaoUpsampleReference(params: {
   const halfHeight = Math.trunc(fullHeight / ds);
   const center = normalDepthAt(normalDepth, fullX, fullY);
 
-  if (center.depth < 1e-4) return [1, 1, 1];
+  if (!(center.depth > 0)) return [1, 1, 1];
 
   const halfX = Math.trunc(fullX / ds);
   const halfY = Math.trunc(fullY / ds);
@@ -305,6 +312,11 @@ function makeDispatchCtx(
     lightTreeBindGroup: {} as unknown as GPUBindGroup,
     wgX: Math.ceil(width / 8), wgY: Math.ceil(height / 8),
     wgX16: 0, wgY16: 0, halfWgX: 0, halfWgY: 0,
+    restirReservoirScale: 1,
+    restirDiWgX: Math.ceil(width / 8),
+    restirDiWgY: Math.ceil(height / 8),
+    restirGiWgX: Math.ceil(Math.max(1, Math.floor(width / 2)) / 8),
+    restirGiWgY: Math.ceil(Math.max(1, Math.floor(height / 2)) / 8),
     checkerboardWgX: 0, checkerboardWgY: 0,
     checkerboardOn: false, frameParity: 0,
     welfordPing: 0,
@@ -452,6 +464,51 @@ describe('gtaoUpsample reference behavior — per-channel bilateral reconstructi
     expect(ao[1]).toBeCloseTo((0.4 + 0.4 + 0.7 + 0.2) / 4, 12);
     expect(ao[2]).toBeCloseTo((0.8 + 0.2 + 0.3 + 0.6) / 4, 12);
   });
+
+  it.each([1e-20, 1e20])(
+    'preserves the same bilateral result when world depths and sigma scale by %g',
+    (worldScale) => {
+      const baselineNormalDepth = flatNormalDepth(4, 4);
+      baselineNormalDepth[1]![3] = { normal: [0, 0, 1], depth: 1.5 };
+      baselineNormalDepth[3]![1] = { normal: [0, 0, 1], depth: 2 };
+      baselineNormalDepth[3]![3] = { normal: [0, 0, 1], depth: 2.5 };
+      const baseline = gtaoUpsampleReference({
+        fullX: 1,
+        fullY: 1,
+        fullWidth: 4,
+        fullHeight: 4,
+        downscale: 2,
+        normalDepth: baselineNormalDepth,
+        aoHalf,
+        bilateralDepthSigma: 0.5,
+      });
+
+      const normalDepth = flatNormalDepth(4, 4);
+      normalDepth[1]![3] = { normal: [0, 0, 1], depth: 1.5 * worldScale };
+      normalDepth[3]![1] = { normal: [0, 0, 1], depth: 2 * worldScale };
+      normalDepth[3]![3] = { normal: [0, 0, 1], depth: 2.5 * worldScale };
+      for (const row of normalDepth) {
+        for (const sample of row) {
+          if (sample.depth === 1) sample.depth = worldScale;
+        }
+      }
+
+      const ao = gtaoUpsampleReference({
+        fullX: 1,
+        fullY: 1,
+        fullWidth: 4,
+        fullHeight: 4,
+        downscale: 2,
+        normalDepth,
+        aoHalf,
+        bilateralDepthSigma: 0.5 * worldScale,
+      });
+
+      expect(ao[0]).toBeCloseTo(baseline[0], 12);
+      expect(ao[1]).toBeCloseTo(baseline[1], 12);
+      expect(ao[2]).toBeCloseTo(baseline[2], 12);
+    },
+  );
 });
 
 // ── Shaders read the downscale (no hardcoded ÷2) ─────────────────────────────
@@ -476,6 +533,17 @@ describe('GTAO shaders — downscale-driven (no hardcoded /2u)', () => {
     expect(GTAO_UPSAMPLE_WGSL).not.toContain('fullDims / 2u');
     expect(GTAO_UPSAMPLE_WGSL).not.toContain('gid.xy / 2u');
     expect(GTAO_UPSAMPLE_WGSL).not.toContain('sampleHalf * 2u + 1u');
+  });
+
+  it('uses exact miss classification and no fixed world-distance denominator floor', () => {
+    expect(GTAO_WGSL).toContain('if (!(centerDepth > 0.0))');
+    expect(GTAO_WGSL).toContain('if (viewDist > 0.0)');
+    expect(GTAO_WGSL).not.toContain('centerDepth < 1e-4');
+    expect(GTAO_WGSL).not.toContain('max(viewDist, 1e-4)');
+    expect(GTAO_UPSAMPLE_WGSL).toContain('if (!(sampleDepth > 0.0))');
+    expect(GTAO_UPSAMPLE_WGSL).not.toContain(
+      'max(1e-6, up_gtao.bilateralDepthSigma)',
+    );
   });
 });
 

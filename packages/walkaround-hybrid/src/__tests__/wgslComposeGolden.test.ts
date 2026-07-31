@@ -162,15 +162,31 @@ function digest(code: string): { sha256: string; length: number } {
 // KHR punctual-range + SMS hygiene (2026-07-29): every walkaround punctual
 // route uses the unsquared KHR range window, and the SMS multiplicity helper
 // returns only its consumed weight rather than carrying three unread fields.
+// Final completeness closure (2026-07-29): runtime-sized light tables, explicit
+// material-presence metadata, atlas alias validation, and one-/two-sided
+// emissive transport intentionally changed these shared roots. The semantic
+// unit oracles and full shader gate are required alongside these byte pins.
+// Transport/material ABI closure (2026-07-30): compact material ABI v2,
+// authored atlas addressing, ordered material/instance-owned glass media,
+// canonical Beer attenuation, and finite DDGI miss observations intentionally
+// changed the reviewed shared roots below.
+// Finite-f32 environment closure (2026-07-30): all scalar/HDRI environment
+// products now route through one fail-closed scaling helper. Compact material
+// decode and DDGI runtime-light hardening are included in these live-source
+// digests; focused semantic tests and the shader gate accompany this repin.
+// Material-atlas radiance closure (2026-07-30): emissive/light-map products
+// now fail dark when an opaque GPU source yields negative or non-finite
+// radiance. The semantic atlas preflight suite and the 78/78 WGSL compile gate
+// passed before these six material-atlas-bearing roots were re-pinned.
 const GOLDENS: Record<string, { sha256: string; length: number }> = {
-  risGi: { sha256: 'f5d0e7459eb04e1336c28fcb0336bb5a28d908df45829a42102ad800af4316f5', length: 259801 },
-  risGiNrc: { sha256: 'f78a9679af5f733f3359edb2d3b874e8456dcceaec3dc77aaedf7943d6361d4d', length: 311447 },
-  temporalGi: { sha256: '2c5d702e7f76117c75093c1dc4bc829321b8b93a9ea718d70b16d0e5cb5ad053', length: 226791 },
-  spatialGi: { sha256: '4169a1e606df663d9d425d29034f2fe78ef01d98cfc2c430ec26231ae3574efb', length: 227298 },
-  shade: { sha256: 'eff07b5eca0ca635975a42b0e194f90201c825e478063cdd63bc72ff473f6f1d', length: 382511 },
-  transparentOit: { sha256: '8742f758d2e6b3c8ae5b7fbef98ea2cd23fb752a7e41f1d6b2f0dd28bbcd2701', length: 254601 },
-  regir: { sha256: '62f583e58df25a1bdada3d3c9211174401301af079677a55de34c49a4fbd4e38', length: 135114 },
-  regirBuild: { sha256: '63e0b9bd14434dcfec6dd222559af94f68e11f05dc4c56ddd556d462322fa824', length: 133948 },
+  risGi: { sha256: '2f70a979fda64ca5e611174a2cc092ee80ba6ed5bd97bfa70f2a55080a64a717', length: 282999 },
+  risGiNrc: { sha256: 'a7117df00a9ccecb55003d4008e2fa1a2d510c95a8e7138f5bc3c432dea46050', length: 338910 },
+  temporalGi: { sha256: '38b792ebb6f744cec29ac9b310906c2b7e1533dccf20fc658a5cf8bba479581a', length: 248467 },
+  spatialGi: { sha256: '87a525b3bcbac9423d55c0d2fc8941eba54013f6d681c64105ed5788eef674a3', length: 248968 },
+  shade: { sha256: '0a7f744eeef5a80046fdc25903f226cc85671d972e993dcb47db6b39145b1f6d', length: 425891 },
+  transparentOit: { sha256: '033600739dce899e06600b218ab3af93f2815dee46b2f78a55e4cfd7ba452220', length: 271612 },
+  regir: { sha256: 'f81c6ceaba92b25776f45bca294a7de4cddcc2932dc5adbf7ec872dde33f07a5', length: 146928 },
+  regirBuild: { sha256: '0089a9a02a2a76d70a4fced94fb68c6489559fe6bac6175153082cf628b858de', length: 145451 },
 };
 
 interface Case { name: string; code: () => string; }

@@ -88,6 +88,7 @@ export function validateCascadeDims(
   }
 
   let previousRayGrid = 0;
+  let previousIntervalFarF32 = 0;
   for (let i = 0; i < dims.length; i += 1) {
     const dim = dims[i];
     if (dim == null || !Array.isArray(dim.probes) || dim.probes.length !== 3) {
@@ -123,12 +124,29 @@ export function validateCascadeDims(
 
     assertFiniteNumber(dim.intervalNear, `${label}[${i}].intervalNear`);
     assertFiniteNumber(dim.intervalFar, `${label}[${i}].intervalFar`);
-    if (dim.intervalNear < 0 || dim.intervalFar <= dim.intervalNear) {
+    const intervalNearF32 = Math.fround(dim.intervalNear);
+    const intervalFarF32 = Math.fround(dim.intervalFar);
+    if (intervalNearF32 < 0 || intervalFarF32 <= intervalNearF32) {
       throw new Error(
-        `${label}[${i}] interval must satisfy 0 <= intervalNear < intervalFar; ` +
-        `received ${dim.intervalNear}..${dim.intervalFar}`,
+        `${label}[${i}] f32 interval must satisfy 0 <= intervalNear < intervalFar; ` +
+        `received ${dim.intervalNear}..${dim.intervalFar} ` +
+        `(f32 ${intervalNearF32}..${intervalFarF32})`,
       );
     }
+    if (i === 0 && intervalNearF32 !== 0) {
+      throw new Error(
+        `${label}[0].intervalNear must be 0 after f32 conversion; ` +
+        `received ${dim.intervalNear}`,
+      );
+    }
+    if (i > 0 && intervalNearF32 !== previousIntervalFarF32) {
+      throw new Error(
+        `${label}[${i}].intervalNear must equal the previous cascade intervalFar ` +
+        `after f32 conversion; received ${intervalNearF32}, expected ` +
+        `${previousIntervalFarF32}`,
+      );
+    }
+    previousIntervalFarF32 = intervalFarF32;
   }
 
   return dims;

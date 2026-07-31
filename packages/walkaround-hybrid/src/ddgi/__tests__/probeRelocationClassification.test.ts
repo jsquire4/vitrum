@@ -320,7 +320,9 @@ describe('DDGI packed probe-state shader contract', () => {
     expect(irr).not.toContain('/ f32(RAYS_PER_PROBE)');
     expect(irr).toContain('rayResults[baseIdx]._pad0 < 0.5');
     expect(vis).toContain('rayResults[baseIdx]._pad0 < 0.5');
-    expect(vis).toMatch(/validRayCount > 0u[\s\S]*65504\.0/);
+    expect(vis).toMatch(
+      /validRayCount > 0u[\s\S]*newDepth = missDepth;[\s\S]*newDepthSq = missDepth \* missDepth/,
+    );
     expect(vis).toMatch(/Every ray was invalid[\s\S]*newDepth = 0\.0/);
   });
 

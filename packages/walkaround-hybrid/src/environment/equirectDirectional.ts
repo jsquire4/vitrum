@@ -20,9 +20,10 @@
  * Provenance: PBRT (Pharr/Jakob/Humphreys) §12.6 InfiniteAreaLight; the marginal/
  * conditional layout follows gkjohnson/three-gpu-pathtracer EquirectHdrInfoUniform
  * (MIT, see CREDITS.md) as ported THREE-free in pt-webgl2's equirectHdrInfo.ts.
- * This implementation includes the sinθ solid-angle term omitted by the
- * provenance fork, so the per-texel pdf is a true directional pdf matching
- * pt-webgpu and enabling correct env-importance MIS bookkeeping.
+ * This implementation weights each row by its exact spherical-band area
+ * (cos(theta0) - cos(theta1)), rather than the midpoint sin(theta)
+ * approximation. The resulting per-texel pdf is a true piecewise-constant
+ * directional density matching the uniform-solid-angle residual sampler.
  */
 
 export interface DirectionalEnvData {
@@ -31,12 +32,19 @@ export interface DirectionalEnvData {
   /** Equirect height in texels. */
   readonly height: number;
   /**
-   * Radiance + per-texel directional pdf, RGBA32F, row-major (width × height).
-   * .rgb = unit-intensity radiance (host applies intensity at sample time);
-   * .a   = solid-angle pdf p(ω) of selecting this texel (the importance pdf the
-   *        WGSL importance sampler returns; 0 for all-black maps).
+   * Unit-intensity radiance, RGBA32F, row-major (width × height). RGB contains
+   * the unclamped finite source radiance and alpha is one. The sampling density
+   * deliberately lives in {@link pdf}: radiance and a sharp importance density
+   * both routinely exceed the finite range of rgba16float.
    */
   readonly map: Float32Array;
+  /**
+   * Per-texel solid-angle density p(ω), packed R32F (width × height). This is
+   * the density returned by the WGSL importance sampler. It is derived from the
+   * uploaded Float32 CDF intervals and is zero for bins flattened by CDF
+   * quantization (an all-black map is rejected by the builder).
+   */
+  readonly pdf: Float32Array;
   /**
    * Forward marginal row CDF, 1 × height, value in .r of an RGBA32F texel.
    * The shader binary-searches the first entry strictly greater than ξ.
@@ -47,7 +55,7 @@ export interface DirectionalEnvData {
    * at one; zero-weight rows carry a uniform fallback CDF.
    */
   readonly conditional: Float32Array;
-  /** Unnormalised sinθ-weighted luminance integral (0 ⇒ all-black, no IBL). */
+  /** Unnormalised exact-cell-solid-angle luminance sum (0 ⇒ all-black). */
   readonly totalWeight: number;
 }
 
@@ -73,16 +81,19 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
   if (pixelCount <= 0) return null;
 
   const map = new Float32Array(pixelCount * 4);
+  const pdf = new Float32Array(pixelCount);
   const cdfConditional = new Float32Array(pixelCount);
   const cdfMarginal = new Float32Array(height);
 
-  // Per-row sinθ (the solid-angle weight is constant across a row). PBRT uses the
-  // row-centre θ = (y+0.5)/height · π.
+  // The exact solid angle of every cell in a row differs only by the constant
+  // azimuth width. That constant cancels during normalization, so use the exact
+  // spherical-band factor cos(theta0) - cos(theta1) as the row weight.
   let totalWeight = 0;
   let cumulativeMarginal = 0;
   for (let y = 0; y < height; y += 1) {
-    const theta = ((y + 0.5) / height) * Math.PI;
-    const sinTheta = Math.max(Math.sin(theta), 0);
+    const theta0 = (y / height) * Math.PI;
+    const theta1 = ((y + 1) / height) * Math.PI;
+    const rowSolidAngleFactor = Math.max(Math.cos(theta0) - Math.cos(theta1), 0);
     let cumulativeRow = 0;
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
@@ -96,7 +107,8 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
       map[i * 4] = rr;
       map[i * 4 + 1] = gg;
       map[i * 4 + 2] = bb;
-      const weight = colorToLuminance(rr, gg, bb) * sinTheta;
+      map[i * 4 + 3] = 1;
+      const weight = colorToLuminance(rr, gg, bb) * rowSolidAngleFactor;
       cumulativeRow += weight;
       totalWeight += weight;
       cdfConditional[i] = cumulativeRow;
@@ -106,6 +118,7 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
       for (let x = 0; x < width; x += 1) {
         cdfConditional[base + x] = cdfConditional[base + x]! / cumulativeRow;
       }
+      cdfConditional[base + width - 1] = 1;
     } else {
       // A zero-weight row has zero marginal probability, but keeping its
       // conditional CDF valid makes the GPU lookup total even at exact
@@ -124,21 +137,30 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
   for (let y = 0; y < height; y += 1) {
     cdfMarginal[y] = cdfMarginal[y]! / cumulativeMarginal;
   }
+  cdfMarginal[height - 1] = 1;
 
   // Per-texel solid-angle pdf p(ω) = pmf_texel / dω_texel, where
-  //   pmf_texel = weight_texel / totalWeight
-  //   dω_texel  = (2π/width)·(π/height)·sinθ   (equirect texel solid angle)
-  // This is the directional pdf the WGSL importance sampler returns (.a lane),
-  // matching pt-webgpu's environmentPacking per-texel pdf exactly.
-  const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
+  //   pmf_texel is the product of the adjacent uploaded Float32 marginal and
+  //   conditional CDF deltas
+  //   dω_texel  = (2π/width)·(cos(theta0) - cos(theta1))
+  // This single-sources the reported density from the exact distribution the
+  // shader's binary searches implement. Tiny bins flattened by Float32
+  // quantization are unsampleable and therefore report zero rather than an
+  // idealized positive MIS density.
+  const dPhi = (2 * Math.PI) / width;
   for (let y = 0; y < height; y += 1) {
-    const theta = ((y + 0.5) / height) * Math.PI;
-    const sinTheta = Math.max(Math.sin(theta), 1e-5);
+    const theta0 = (y / height) * Math.PI;
+    const theta1 = ((y + 1) / height) * Math.PI;
+    const rowSolidAngleFactor = Math.max(Math.cos(theta0) - Math.cos(theta1), 0);
+    const cellSolidAngle = dPhi * rowSolidAngleFactor;
+    const priorMarginal = y === 0 ? 0 : cdfMarginal[y - 1]!;
+    const rowPmf = cdfMarginal[y]! - priorMarginal;
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
-      const weight = colorToLuminance(map[i * 4]!, map[i * 4 + 1]!, map[i * 4 + 2]!) * sinTheta;
-      const pmf = weight / totalWeight;
-      map[i * 4 + 3] = pmf / (dOmegaBase * sinTheta);
+      const priorConditional = x === 0 ? 0 : cdfConditional[i - 1]!;
+      const columnPmf = cdfConditional[i]! - priorConditional;
+      const pmf = rowPmf * columnPmf;
+      pdf[i] = cellSolidAngle > 0 ? pmf / cellSolidAngle : 0;
     }
   }
 
@@ -158,5 +180,5 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
     }
   }
 
-  return { width, height, map, marginal, conditional, totalWeight };
+  return { width, height, map, pdf, marginal, conditional, totalWeight };
 }

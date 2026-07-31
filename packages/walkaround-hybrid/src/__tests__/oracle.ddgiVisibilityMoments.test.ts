@@ -49,7 +49,7 @@ import { describe, expect, it } from 'vitest';
 
 const f32 = Math.fround;
 const BVH_INTERSECT_INFINITY = 1e20; // shared-bvh bvhIntersect.wgsl.ts:192
-const DDGI_VISIBILITY_OPEN_SKY_MOMENT = 65504;
+const DDGI_VISIBILITY_OPEN_SKY_DISTANCE = 16;
 
 // IEEE-754 binary16 round-trip (rgba16float storage). Round-to-nearest-even,
 // overflow → ±Infinity. Only magnitude behavior matters for this oracle.
@@ -90,20 +90,22 @@ interface ProbeRay {
 function blendVisibilityTexel(
   texelDir: V3,
   rays: ProbeRay[],
-  options: { skipMisses?: boolean } = {},
+  options: { rawMissSentinel?: boolean } = {},
 ): { mean: number; meanSq: number } {
-  const skipMisses = options.skipMisses ?? true;
   let newDepth = 0;
   let newDepthSq = 0;
   let totalWeight = 0;
   for (const ray of rays) {
     if (ray.hitDistance < 0.0) continue; // L217 backface skip
     if (ray.hitDistance < 0.05) continue; // L225 self-intersection skip
-    if (skipMisses && ray.hitDistance >= BVH_INTERSECT_INFINITY * 0.1) continue;
+    const distance = ray.hitDistance >= BVH_INTERSECT_INFINITY * 0.1 &&
+      options.rawMissSentinel !== true
+      ? DDGI_VISIBILITY_OPEN_SKY_DISTANCE
+      : ray.hitDistance;
     const w = Math.max(0, dot(texelDir, ray.direction)); // L226
     if (w <= 0) continue;
     const weight = f32(w * w); // L231 pow(w, 2.0)
-    const d = f32(ray.hitDistance); // L232
+    const d = f32(distance); // finite miss substitution, then moment accumulation
     newDepth = f32(newDepth + f32(d * weight)); // L233
     newDepthSq = f32(newDepthSq + f32(f32(d * d) * weight)); // L234  (d² = 1e40 → +Inf in f32)
     totalWeight = f32(totalWeight + weight); // L235
@@ -112,8 +114,11 @@ function blendVisibilityTexel(
     newDepth = f32(newDepth / totalWeight); // L238
     newDepthSq = f32(newDepthSq / totalWeight); // L239
   } else {
-    newDepth = f32(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
-    newDepthSq = f32(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
+    newDepth = f32(DDGI_VISIBILITY_OPEN_SKY_DISTANCE);
+    newDepthSq = f32(
+      DDGI_VISIBILITY_OPEN_SKY_DISTANCE *
+      DDGI_VISIBILITY_OPEN_SKY_DISTANCE,
+    );
   }
   // Steady-state hysteresis (header note) + rgba16float storage (L247).
   return { mean: f16(newDepth), meanSq: f16(newDepthSq) };
@@ -177,7 +182,11 @@ describe('HYB-DDGI-01 oracle — sky-miss rays poison visibility moments', () =>
   });
 
   it('historical characterization: ONE sky miss among 32 rays → chebyshev = 1.0 (full leak)', () => {
-    const { mean, meanSq } = blendVisibilityTexel(texelDir, coneRays(true), { skipMisses: false });
+    const { mean, meanSq } = blendVisibilityTexel(
+      texelDir,
+      coneRays(true),
+      { rawMissSentinel: true },
+    );
     // d² = 1e40 overflows f32 → meanSq is +Inf BEFORE storage quantization:
     expect(meanSq, 'depthSq moment overflows f32 (1e20² = 1e40 > 3.4e38)').toBe(Infinity);
     // The depth mean is ~1e20·w/ΣW ≈ 1e19 in f32 → +Inf after rgba16float
@@ -215,16 +224,33 @@ describe('HYB-DDGI-01 oracle — sky-miss rays poison visibility moments', () =>
     expect(cheb).toBe(1.0);
   });
 
-  it('REGRESSION HYB-DDGI-01: one sky miss does not disable occlusion', () => {
-    const { mean, meanSq } = blendVisibilityTexel(texelDir, coneRays(true));
-    const cheb = chebyshevVisibility(mean, meanSq, probeDist);
-    expect(cheb).toBeLessThan(0.05);
+  it('REGRESSION HYB-DDGI-01: a mixed hit/miss cell retains the open observation with finite moments', () => {
+    const control = blendVisibilityTexel(texelDir, coneRays(false));
+    const mixed = blendVisibilityTexel(texelDir, coneRays(true));
+    expect(Number.isFinite(mixed.mean)).toBe(true);
+    expect(Number.isFinite(mixed.meanSq)).toBe(true);
+    expect(mixed.mean).toBeGreaterThan(control.mean);
+    const controlVisibility = chebyshevVisibility(
+      control.mean,
+      control.meanSq,
+      probeDist,
+    );
+    const mixedVisibility = chebyshevVisibility(
+      mixed.mean,
+      mixed.meanSq,
+      probeDist,
+    );
+    expect(mixedVisibility).toBeGreaterThan(controlVisibility);
+    expect(mixedVisibility).toBeLessThanOrEqual(1);
   });
 
   it('REGRESSION HYB-DDGI-01: an all-sky visibility texel stays open instead of becoming a zero-depth occluder', () => {
     const { mean, meanSq } = blendVisibilityTexel(texelDir, openSkyRays());
-    expect(mean).toBe(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
-    expect(meanSq).toBe(DDGI_VISIBILITY_OPEN_SKY_MOMENT);
+    expect(mean).toBe(DDGI_VISIBILITY_OPEN_SKY_DISTANCE);
+    expect(meanSq).toBe(
+      DDGI_VISIBILITY_OPEN_SKY_DISTANCE *
+      DDGI_VISIBILITY_OPEN_SKY_DISTANCE,
+    );
     const cheb = chebyshevVisibility(mean, meanSq, probeDist);
     expect(cheb).toBe(1.0);
   });

@@ -208,7 +208,9 @@ describe('WS1 codegen — smooth-normal helper + consumption', () => {
   });
 
   it('material atlas transforms derived fallback tangent frames for TLAS hits', () => {
-    expect(MATERIAL_ATLAS_WGSL).toMatch(/let\s+dp1\s*=\s*p1\.xyz\s*-\s*p0\.xyz/);
+    expect(MATERIAL_ATLAS_WGSL).toMatch(/var\s+dp1\s*=\s*p1\.xyz\s*-\s*p0\.xyz/);
+    expect(MATERIAL_ATLAS_WGSL).toContain('dp1 = dp1 / positionScale;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('dp2 = dp2 / positionScale;');
     expect(MATERIAL_ATLAS_WGSL).toMatch(/let\s+tOk\s*=\s*isTlas\s*&&\s*tBase\s*\+\s*2u\s*<\s*tlasLocalToWorldColumnCount\(\)/);
     expect(MATERIAL_ATLAS_WGSL).toMatch(/tangent\s*=\s*transformDirectionCols\(\s*tlasLoadLocalToWorldColumn\(tBase\)/);
     expect(MATERIAL_ATLAS_WGSL).toMatch(/bitangent\s*=\s*transformDirectionCols\(\s*tlasLoadLocalToWorldColumn\(tBase\)/);

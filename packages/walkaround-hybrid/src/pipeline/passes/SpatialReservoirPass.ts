@@ -65,7 +65,9 @@ export class SpatialReservoirPass extends SharedBindGroupPass {
   }
 
   override dispatch(ctx: PassDispatchContext): void {
-    if (ctx.checkerboardOn) {
+    const checkerboardReservoirDispatch =
+      ctx.checkerboardOn && ctx.restirReservoirScale === 1;
+    if (checkerboardReservoirDispatch) {
       // The compact dispatch overwrites only active-parity destinations.
       // Seed the whole round-one destination from temporal/current first so
       // gap pixels remain valid inputs to round two and valid terminal history
@@ -80,9 +82,9 @@ export class SpatialReservoirPass extends SharedBindGroupPass {
         reservoirCurrentBuffer.size,
       );
     }
-    const dispatchOverride = ctx.checkerboardOn
+    const dispatchOverride = checkerboardReservoirDispatch
       ? { x: ctx.checkerboardWgX, y: ctx.checkerboardWgY }
-      : undefined;
+      : { x: ctx.restirDiWgX, y: ctx.restirDiWgY };
     const firstLabel = this.passLabels[0]!;
     dispatchSharedBindGroupPass(ctx, this._pipeline, {
       label: firstLabel,

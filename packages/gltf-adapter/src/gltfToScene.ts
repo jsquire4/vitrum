@@ -4620,34 +4620,41 @@ function _convertPunctualLight(
     );
   }
 
-  // glTF lights point along -Z in local space; world -Z column is at indices 8,9,10.
+  if (lightType === 'point') {
+    return {
+      kind: 'point',
+      id,
+      color,
+      intensity,
+      position: [px, py, pz],
+      ...(light.range != null && light.range > 0 ? { distance: light.range } : {}),
+      decay: 2,
+    };
+  }
+
+  // glTF spot and directional lights point along -Z in local space; world -Z
+  // column is at indices 8,9,10. Normalize in a max-scaled domain so every
+  // finite nonzero authored transform remains a valid direction.
   const lzx = -(worldMat[8] ?? 0);
   const lzy = -(worldMat[9] ?? 0);
   const lzz = -(worldMat[10] ?? 0);
-  const lzLen = Math.hypot(lzx, lzy, lzz);
-  if (!Number.isFinite(lzLen) || lzLen <= 1e-10) {
+  const directionScale = Math.max(Math.abs(lzx), Math.abs(lzy), Math.abs(lzz));
+  if (!(directionScale > 0) || !Number.isFinite(directionScale)) {
     throwImportBoundaryError(
       'missing-punctual-light',
       lightPath,
       '[vitrum/gltf-adapter] KHR_lights_punctual node transform has no finite light direction.',
     );
   }
-  const dirX = lzx / lzLen;
-  const dirY = lzy / lzLen;
-  const dirZ = lzz / lzLen;
+  const scaledX = lzx / directionScale;
+  const scaledY = lzy / directionScale;
+  const scaledZ = lzz / directionScale;
+  const inverseDirectionLength = 1 / Math.hypot(scaledX, scaledY, scaledZ);
+  const dirX = scaledX * inverseDirectionLength;
+  const dirY = scaledY * inverseDirectionLength;
+  const dirZ = scaledZ * inverseDirectionLength;
 
   switch (lightType) {
-    case 'point':
-      return {
-        kind: 'point',
-        id,
-        color,
-        intensity,
-        position: [px, py, pz],
-        ...(light.range != null && light.range > 0 ? { distance: light.range } : {}),
-        decay: 2, // glTF punctual always uses physical inverse-square falloff
-      };
-
     case 'spot': {
       const inner = light.spot?.innerConeAngle ?? 0;
       const outer = light.spot?.outerConeAngle ?? Math.PI / 4;

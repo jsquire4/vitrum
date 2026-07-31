@@ -31,7 +31,7 @@ ${reservoirGiAccessorsWgsl({
 @compute @workgroup_size(8, 8, 1)
 fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let fullDims = ubo.screenSize;
-  let halfDims = fullDims / 2u;
+  let halfDims = restirGiDimensions();
   if (any(gid.xy >= halfDims)) { return; }
   let pixelIdx = gid.y * halfDims.x + gid.x;
   let epoch = grisHistoryEpoch();
@@ -67,7 +67,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   domainM[0] = min(rCenter.M, M_CLAMP_SPATIAL);
   domainPixel[0] = pixelIdx;
   domainSurface[0] = castPrimary(
-    gid.xy * 2u + vec2u(1u),
+    restirGiFullPixel(gid.xy),
     fullDims,
     ubo.cameraPos,
     invVP,
@@ -100,6 +100,12 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
      || q.prefixVertexCount != GI_PREFIX_RECONNECTABLE) {
       continue;
     }
+    if (
+      restirReservoirScaleValue() > 1u
+      && q.receiverMaterialKey != rCenter.receiverMaterialKey
+    ) {
+      continue;
+    }
     if (dot(rCenter.nv, q.nv) < ubo.restirGiSpatialNormalDotMin) { continue; }
     if (abs(dot(q.xv - rCenter.xv, rCenter.nv))
         > ubo.restirGiSpatialCoplanarTol) {
@@ -114,7 +120,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     );
     if (Jq <= 0.0) { continue; }
     let qSurface = castPrimary(
-      vec2u(u32(qx), u32(qy)) * 2u + vec2u(1u),
+      restirGiFullPixel(vec2u(u32(qx), u32(qy))),
       fullDims,
       ubo.cameraPos,
       invVP,
@@ -244,6 +250,7 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   var out = emptyReservoirGI();
   out.xv = rCenter.xv;
   out.nv = rCenter.nv;
+  out.receiverMaterialKey = rCenter.receiverMaterialKey;
   if (maxCandidateLogWeight != GRIS_LOG_ZERO) {
     for (var i: u32 = 0u; i < domainCount; i = i + 1u) {
       let candidate = domains[i];

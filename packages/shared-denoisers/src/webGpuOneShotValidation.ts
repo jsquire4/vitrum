@@ -1,4 +1,5 @@
 import { alignedTextureCopyBytesPerRow } from './webGpuTextureCopy.js';
+import { float32ToFloat16Bits } from './halfFloat.js';
 
 export interface FiniteNumberBounds {
   readonly min?: number;
@@ -52,6 +53,28 @@ export function assertFiniteFloatSlice(
   for (let i = 0; i < usedLength; i += 1) {
     if (!Number.isFinite(value[i])) {
       throw new Error(`${label}: ${name}[${i}] must be finite; received ${String(value[i])}`);
+    }
+  }
+}
+
+/**
+ * Reject values that are finite in float32 but become NaN or infinity when
+ * stored in a binary16 texture.
+ */
+export function assertFiniteFloat16Slice(
+  label: string,
+  name: string,
+  value: ArrayLike<number>,
+  usedLength: number,
+): void {
+  assertFiniteFloatSlice(label, name, value, usedLength);
+  for (let i = 0; i < usedLength; i += 1) {
+    const halfBits = float32ToFloat16Bits(value[i]!);
+    if ((halfBits & 0x7c00) === 0x7c00) {
+      throw new Error(
+        `${label}: ${name}[${i}] must be representable as finite float16; ` +
+        `received ${String(value[i])}`,
+      );
     }
   }
 }

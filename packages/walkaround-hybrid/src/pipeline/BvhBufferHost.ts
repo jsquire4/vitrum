@@ -21,6 +21,7 @@ import {
   type EmissiveTexture,
 } from './bvhEmissiveTexture.js';
 import {
+  destroyMaterialTextureAtlasGpu,
   uploadMaterialTextureAtlas,
   type MaterialTextureAtlasPayload,
   type MaterialTextureAtlasGpu,
@@ -41,9 +42,9 @@ import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
 import type { CollectedBvhMutation } from './CollectingBvhUpdateSink.js';
 import { PipelineResourceCache } from './PipelineResourceCache.js';
 import {
+  createEnvironmentCandidate,
   createPlaceholderEnvironment,
-  uploadEnvironment,
-  clearEnvironment,
+  disposeEnvironment,
   type EnvironmentTextures,
 } from './environmentTexture.js';
 import type { DirectionalEnvData } from '../environment/equirectDirectional.js';
@@ -88,7 +89,7 @@ export interface SceneBindGroupResources {
    *  ReSTIR/shade GGX BRDF + glossy/metal GI target read it via
    *  `decodeRoughMetal(triIndex)`. Same r32uint layout as `bvhBeer`. */
   bvhRoughMetalTextureView: GPUTextureView;
-  /** Phase-3D material-map RGBA32F array texture. */
+  /** Packed material-map r32uint array texture. */
   materialTextureAtlasView: GPUTextureView;
   /** Phase-3D first slice — per-triangle baseColorMap layer/UV metadata. */
   baseColorMapMetaTextureView: GPUTextureView;
@@ -103,7 +104,21 @@ export interface SceneBindGroupResources {
   envMapTextureView: GPUTextureView;
   envMarginalTextureView: GPUTextureView;
   envConditionalTextureView: GPUTextureView;
+  envPdfTextureView: GPUTextureView;
   envParamsBuffer: GPUBuffer;
+}
+
+export interface DirectionalEnvironmentBindings {
+  readonly textureView: GPUTextureView;
+  readonly sampler: GPUSampler;
+  readonly rotationY: number;
+  readonly intensity: number;
+  readonly hasDirectionalEnvironment: boolean;
+}
+
+export interface PreparedEnvironmentReplacement extends PreparedSceneMutation {
+  /** Fully-created candidate binding; valid before `commit()`. */
+  readonly bindings: DirectionalEnvironmentBindings;
 }
 
 /**
@@ -375,7 +390,11 @@ export class BvhBufferHost {
     this._bvhRoughMetalTriCount = bvhBuffers.bvhRoughMetal.count;
     this._bvhRoughMetalTexture = uploadBeerTexture(
       device, bvhBuffers.bvhRoughMetal.cpuData, this._bvhRoughMetalTriCount);
-    this._materialTextureAtlas = uploadMaterialTextureAtlas(device, bvhBuffers.materialTextureAtlas);
+    this._materialTextureAtlas = uploadMaterialTextureAtlas(
+      device,
+      bvhBuffers.materialTextureAtlas,
+      { replicatedResidentCopies: 2 },
+    );
     // WS1 — per-vertex world-space normals (stride-4 vec4f, .w unused). Same
     // data the DDGI / emitter paths already use (shared.normals).
     this._bvhTangentTexture = uploadTangentTexture(
@@ -429,14 +448,81 @@ export class BvhBufferHost {
     rotationY: number,
     intensity: number,
   ): void {
-    if (this._env == null) {
-      this._env = createPlaceholderEnvironment(device);
+    const prepared = this.prepareEnvironmentReplacement(
+      device,
+      data,
+      rotationY,
+      intensity,
+    );
+    prepared.commit();
+    prepared.finalize();
+  }
+
+  /**
+   * Stage a complete directional-environment generation and every texture view
+   * that can fail during dependent DDGI preparation. Publication is a
+   * non-allocating pointer swap; retirement remains a separate final phase.
+   */
+  prepareEnvironmentReplacement(
+    device: GPUDevice,
+    data: DirectionalEnvData | null,
+    rotationY: number,
+    intensity: number,
+  ): PreparedEnvironmentReplacement {
+    const previous = this._env;
+    const candidate = createEnvironmentCandidate(
+      device,
+      data,
+      rotationY,
+      intensity,
+    );
+    let bindings: DirectionalEnvironmentBindings;
+    try {
+      // Eagerly create every view used by the scene group, not only the map
+      // view handed to DDGI. A createView failure must leave the live
+      // generation and its params buffer untouched.
+      const textureView = this._resourceCache.textureView(candidate.map);
+      this._resourceCache.textureView(candidate.pdf);
+      this._resourceCache.textureView(candidate.marginal);
+      this._resourceCache.textureView(candidate.conditional);
+      bindings = {
+        textureView,
+        sampler: candidate.sampler,
+        rotationY: candidate.rotationY,
+        intensity: candidate.intensity,
+        hasDirectionalEnvironment:
+          candidate.hasDirectionalEnvironment,
+      };
+    } catch (error) {
+      disposeEnvironment(candidate);
+      throw error;
     }
-    if (data == null) {
-      this._env = clearEnvironment(device, this._env);
-    } else {
-      this._env = uploadEnvironment(device, this._env, data, rotationY, intensity);
-    }
+
+    let committed = false;
+    let closed = false;
+    return {
+      bindings,
+      commit: () => {
+        if (closed || committed) return;
+        this._env = candidate;
+        committed = true;
+      },
+      rollback: () => {
+        if (closed) return;
+        if (committed) this._env = previous;
+        disposeEnvironment(candidate);
+        closed = true;
+      },
+      finalize: () => {
+        if (closed) return;
+        if (!committed) {
+          disposeEnvironment(candidate);
+        } else if (previous != null) {
+          disposeEnvironment(previous);
+        }
+        closed = true;
+      },
+    };
   }
 
   updateAnalyticLights(device: GPUDevice, scene: Scene): void {
@@ -567,13 +653,7 @@ export class BvhBufferHost {
    *  placeholder (black, zero intensity) when no HDRI has been uploaded; RC
    *  still binds it, but `hasDirectionalEnvironment=false` selects the same
    *  flat scalar-sky fallback used by the main/ReSTIR miss paths. */
-  envBindings(): {
-    textureView: GPUTextureView;
-    sampler: GPUSampler;
-    rotationY: number;
-    intensity: number;
-    hasDirectionalEnvironment: boolean;
-  } | null {
+  envBindings(): DirectionalEnvironmentBindings | null {
     if (this._env == null) return null;
     return {
       textureView: this._resourceCache.textureView(this._env.map),
@@ -624,6 +704,7 @@ export class BvhBufferHost {
       envMapTextureView: this._resourceCache.textureView(this._env!.map),
       envMarginalTextureView: this._resourceCache.textureView(this._env!.marginal),
       envConditionalTextureView: this._resourceCache.textureView(this._env!.conditional),
+      envPdfTextureView: this._resourceCache.textureView(this._env!.pdf),
       envParamsBuffer: this._env!.paramsBuffer,
     };
   }
@@ -656,10 +737,10 @@ export class BvhBufferHost {
     addTex('bvhRoughMetalTexture', this._bvhRoughMetalTexture, 'r32uint');
     if (this._materialTextureAtlas != null) {
       section.materialTextureAtlas = {
-        width: this._materialTextureAtlas.atlasDim,
-        height: this._materialTextureAtlas.atlasDim,
-        depthOrArrayLayers: this._materialTextureAtlas.atlasLayerCount,
-        format: 'rgba32float' as GPUTextureFormat,
+        width: this._materialTextureAtlas.atlasWidth,
+        height: this._materialTextureAtlas.atlasHeight,
+        depthOrArrayLayers: this._materialTextureAtlas.atlasArrayLayerCount,
+        format: 'r32uint' as GPUTextureFormat,
       };
       section.baseColorMapMetaTexture = {
         width: this._materialTextureAtlas.baseColorMetaWidth,
@@ -671,6 +752,12 @@ export class BvhBufferHost {
     addTex('bvhTangentTexture', this._bvhTangentTexture, 'rgba32float');
     addTex('bvhVertexColorTexture', this._bvhVertexColorTexture, 'rgba32float');
     addTex('analyticLightsTexture', this._analyticLightsTexture, 'rgba32float');
+    if (this._env != null) {
+      addTex('environmentRadianceTexture', this._env.map, 'rgba32float');
+      addTex('environmentPdfTexture', this._env.pdf, 'r32float');
+      addTex('environmentMarginalTexture', this._env.marginal, 'r32float');
+      addTex('environmentConditionalTexture', this._env.conditional, 'r32float');
+    }
 
     return { staticScene: section };
   }
@@ -723,7 +810,11 @@ export class BvhBufferHost {
     candidate._regirGridBytes = this._regirGridBytes;
     candidate._sceneStorageArenaPayload = this._sceneStorageArenaPayload;
     try {
-      candidate._uploadGeometryReplacementUnsafe(device, bvhBuffers);
+      candidate._uploadGeometryReplacementUnsafe(
+        device,
+        bvhBuffers,
+        this._materialTextureAtlas?.allocatedBytes ?? 0,
+      );
       candidate._updateEmittersUnsafe(device, bvhBuffers);
     } catch (error) {
       candidate.dispose();
@@ -744,7 +835,11 @@ export class BvhBufferHost {
     candidate._regirGridBytes = this._regirGridBytes;
     candidate._sceneStorageArenaPayload = this._sceneStorageArenaPayload;
     try {
-      candidate._uploadGeometryReplacementUnsafe(device, bvhBuffers);
+      candidate._uploadGeometryReplacementUnsafe(
+        device,
+        bvhBuffers,
+        this._materialTextureAtlas?.allocatedBytes ?? 0,
+      );
       candidate._updateEmittersUnsafe(device, bvhBuffers);
     } catch (error) {
       candidate.dispose();
@@ -914,7 +1009,14 @@ export class BvhBufferHost {
         }
       }
       if (mutation.atlas) {
-        candidate._materialTextureAtlas = uploadMaterialTextureAtlas(device, mutation.atlas);
+        candidate._materialTextureAtlas = uploadMaterialTextureAtlas(
+          device,
+          mutation.atlas,
+          {
+            retainedBytes: this._materialTextureAtlas?.allocatedBytes ?? 0,
+            replicatedResidentCopies: 2,
+          },
+        );
         hasAtlas = true;
       }
       if (arenaPatches.length > 0) {
@@ -1169,11 +1271,17 @@ export class BvhBufferHost {
     materialTextureAtlas: MaterialTextureAtlasPayload,
   ): void {
     if (!this.initialized) return;
-    const next = uploadMaterialTextureAtlas(device, materialTextureAtlas);
+    const next = uploadMaterialTextureAtlas(
+      device,
+      materialTextureAtlas,
+      {
+        retainedBytes: this._materialTextureAtlas?.allocatedBytes ?? 0,
+        replicatedResidentCopies: 2,
+      },
+    );
     const previous = this._materialTextureAtlas;
     this._materialTextureAtlas = next;
-    previous?.atlasTexture.destroy();
-    previous?.baseColorMetaTexture.destroy();
+    destroyMaterialTextureAtlasGpu(previous);
   }
 
   private _uploadGeometryReplacementUnsafe(
@@ -1181,7 +1289,8 @@ export class BvhBufferHost {
     bvhBuffers: Pick<
       SceneBVHBuffers,
       'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
-  >,
+    >,
+    retainedAtlasBytes = 0,
   ): void {
     this._uploadSceneStorageArena(
       device,
@@ -1194,7 +1303,14 @@ export class BvhBufferHost {
     this._bvhRoughMetalTriCount = bvhBuffers.bvhRoughMetal.count;
     this._bvhRoughMetalTexture = uploadBeerTexture(
       device, bvhBuffers.bvhRoughMetal.cpuData, this._bvhRoughMetalTriCount);
-    this._materialTextureAtlas = uploadMaterialTextureAtlas(device, bvhBuffers.materialTextureAtlas);
+    this._materialTextureAtlas = uploadMaterialTextureAtlas(
+      device,
+      bvhBuffers.materialTextureAtlas,
+      {
+        retainedBytes: retainedAtlasBytes,
+        replicatedResidentCopies: 2,
+      },
+    );
     this._bvhEmissiveTriCount = bvhBuffers.bvhEmissiveLe.count;
     this._bvhEmissiveTexture = uploadEmissiveTexture(
       device, new Float32Array(bvhBuffers.bvhEmissiveLe.cpuData), this._bvhEmissiveTriCount);
@@ -1215,17 +1331,13 @@ export class BvhBufferHost {
     destroyResource(this._bvhBeerTexture?.texture);
     destroyResource(this._bvhEmissiveTexture?.texture);
     destroyResource(this._bvhRoughMetalTexture?.texture);
-    destroyResource(this._materialTextureAtlas?.atlasTexture);
-    destroyResource(this._materialTextureAtlas?.baseColorMetaTexture);
+    destroyMaterialTextureAtlasGpu(this._materialTextureAtlas);
     destroyResource(this._bvhTangentTexture?.texture);
     destroyResource(this._bvhVertexColorTexture?.texture);
     destroyResource(this._lightTreeBuffer);
     destroyResource(this._analyticLightsTexture?.texture);
     if (this._env != null) {
-      destroyResource(this._env.map);
-      destroyResource(this._env.marginal);
-      destroyResource(this._env.conditional);
-      destroyResource(this._env.paramsBuffer);
+      disposeEnvironment(this._env);
       this._env = null;
     }
     this._sceneStorageArenaBuffers = [null, null, null];

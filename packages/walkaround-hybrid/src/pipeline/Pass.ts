@@ -170,6 +170,12 @@ export interface PassDispatchContext {
   readonly wgY16: number;
   readonly halfWgX: number;
   readonly halfWgY: number;
+  /** Active integer ReSTIR grid scale and exact 8x8 dispatch dimensions. */
+  readonly restirReservoirScale: number;
+  readonly restirDiWgX: number;
+  readonly restirDiWgY: number;
+  readonly restirGiWgX: number;
+  readonly restirGiWgY: number;
   /** Checkerboard sparse-dispatch workgroup counts — `ceil(ceil(W/2)/8)` ×
    *  `ceil(H/8)` (ceil-based, distinct from the floor-based half-res
    *  `halfWgX/halfWgY`). Shared by RIS/Shade/SpatialReservoir when
@@ -256,6 +262,10 @@ export function dispatchSharedBindGroupPass(
     /** Dispatch at half resolution (`halfWgX/halfWgY`) instead of full
      *  (`wgX/wgY`). Used by the Sprint-16 gi-ris pass. */
     readonly halfRes?: boolean;
+    /** Dispatch over the active ReSTIR-DI reservoir grid. */
+    readonly restirDi?: boolean;
+    /** Dispatch over the active ReSTIR-GI reservoir grid. */
+    readonly restirGi?: boolean;
     /** Additional bind groups bound at explicit slots AFTER the shared
      *  0/1/2 (+ optional 3) groups — e.g. the NRC `@group(4)` group for the
      *  gi-ris compile-time NRC variant. Bound in array order; each entry's
@@ -281,6 +291,7 @@ export function dispatchSharedBindGroupPass(
     encoder, computeDesc,
     frameBindGroup, sceneBindGroup, uboBindGroup, hybridLayersBindGroup, shadeHybridLayersBindGroup,
     wgX, wgY, halfWgX, halfWgY,
+    restirDiWgX, restirDiWgY, restirGiWgX, restirGiWgY,
   } = ctx;
   const pass = encoder.beginComputePass(computeDesc(opts.label));
   pass.setPipeline(pipeline);
@@ -293,8 +304,24 @@ export function dispatchSharedBindGroupPass(
   if (opts.extraGroups) {
     for (const { slot, group } of opts.extraGroups) pass.setBindGroup(slot, group);
   }
-  const dx = opts.dispatchOverride ? opts.dispatchOverride.x : (opts.halfRes ? halfWgX : wgX);
-  const dy = opts.dispatchOverride ? opts.dispatchOverride.y : (opts.halfRes ? halfWgY : wgY);
+  const dx = opts.dispatchOverride
+    ? opts.dispatchOverride.x
+    : opts.restirDi
+      ? restirDiWgX
+      : opts.restirGi
+        ? restirGiWgX
+        : opts.halfRes
+          ? halfWgX
+          : wgX;
+  const dy = opts.dispatchOverride
+    ? opts.dispatchOverride.y
+    : opts.restirDi
+      ? restirDiWgY
+      : opts.restirGi
+        ? restirGiWgY
+        : opts.halfRes
+          ? halfWgY
+          : wgY;
   pass.dispatchWorkgroups(dx, dy, 1);
   pass.end();
 }
@@ -322,6 +349,9 @@ export abstract class SharedBindGroupPass implements Pass {
   protected readonly useShadeHybridLayers: boolean = false;
   /** Dispatch at half resolution (gi-ris override). */
   protected readonly halfRes: boolean = false;
+  /** Dispatch over the active ReSTIR-DI/GI grid. */
+  protected readonly restirDi: boolean = false;
+  protected readonly restirGi: boolean = false;
 
   protected readonly _pipeline: GPUComputePipeline;
 
@@ -342,6 +372,8 @@ export abstract class SharedBindGroupPass implements Pass {
         useHybridLayers: this.useHybridLayers,
         useShadeHybridLayers: this.useShadeHybridLayers,
         halfRes: this.halfRes,
+        restirDi: this.restirDi,
+        restirGi: this.restirGi,
       });
     }
   }

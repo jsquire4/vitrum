@@ -143,7 +143,7 @@ describe('mergeDDGILightsDedupSun', () => {
     const authored = buildDdgiLightingMutationInputs(base, scene);
     expect(authored.lights[0]?.direction?.x).toBeCloseTo(-0.6);
     expect(authored.lights[0]?.direction?.y).toBeCloseTo(-0.8);
-    expect(authored.lights[0]?.direction?.z).toBeCloseTo(-0);
+    expect(authored.lights[0]?.direction?.z).toBeCloseTo(0);
 
     const overridden = buildDdgiLightingMutationInputs(
       { ...base, primaryLightDir: [1, 0, 0] },
@@ -151,8 +151,8 @@ describe('mergeDDGILightsDedupSun', () => {
     );
     expect(overridden.lights[0]?.direction).toEqual({
       x: -1,
-      y: -0,
-      z: -0,
+      y: 0,
+      z: 0,
     });
   });
 });

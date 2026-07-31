@@ -242,22 +242,36 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
     );
   });
 
-  it('temporal: COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL', () => {
-    // restirPHat pulls materialAtlas before environmentSample, then temporal
-    // adds the shared primary-cast helper.
+  it('temporal: common + pHat + rich-material primary-cast closure + temporal', () => {
+    // restirPHat pulls materialAtlas before environmentSample. The primary-cast
+    // helper additionally pulls the rich ReSTIR-GI material decoder.
     expect(composeWgsl(TEMPORAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + TEMPORAL_WGSL,
+      COMMON_WGSL +
+      MATERIAL_ATLAS_WGSL +
+      EMITTER_LE_AT_XI_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
+      RESTIR_PHAT_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
+      RESTIR_CAST_PRIMARY_WGSL +
+      TEMPORAL_WGSL,
     );
   });
 
-  it('spatial: COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL', () => {
+  it('spatial: common + pHat + rich-material primary-cast closure + spatial', () => {
     // Same dependency chain as temporal.
     expect(composeWgsl(SPATIAL_MODULE, WGSL_MODULES)).toBe(
-      COMMON_WGSL + MATERIAL_ATLAS_WGSL + EMITTER_LE_AT_XI_WGSL + ENVIRONMENT_SAMPLE_WGSL + RESTIR_PHAT_WGSL + RESTIR_CAST_PRIMARY_WGSL + SPATIAL_WGSL,
+      COMMON_WGSL +
+      MATERIAL_ATLAS_WGSL +
+      EMITTER_LE_AT_XI_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
+      RESTIR_PHAT_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
+      RESTIR_CAST_PRIMARY_WGSL +
+      SPATIAL_WGSL,
     );
   });
 
-  it('shade: COMMON_WGSL + MATERIAL_ATLAS_WGSL + SURFACE_TEXTURES_WGSL + DDGI_SAMPLE_WGSL + DDGI_GRID_UBO_WGSL + OCTAHEDRAL_CORE_WGSL + SAMPLE_CASCADE_C0_WGSL + STAINED_GLASS_SHADE_WGSL + SHADE_WGSL', () => {
+  it('shade: complete include-once closure in declared dependency order', () => {
     // W8 Phase 3 (2026-05-18) — original shade composition.
     //
     // T5 (2026-05-28) — SHADE_MODULE.requires ends with 'stainedGlassShade'.
@@ -277,10 +291,12 @@ describe('composeWgsl — bit-identical to pre-R6 concat patterns', () => {
       SURFACE_TEXTURES_WGSL +
       DDGI_SAMPLE_WGSL +
       DDGI_GRID_UBO_WGSL +
+      ENVIRONMENT_SAMPLE_WGSL +
+      RESTIR_GI_MATERIAL_WGSL +
+      GRIS_REUSE_WGSL +
       OCTAHEDRAL_CORE_WGSL +
       SAMPLE_CASCADE_C0_WGSL +
       STAINED_GLASS_SHADE_WGSL +
-      ENVIRONMENT_SAMPLE_WGSL +
       MANIFOLD_SMS_SOLVER_WGSL +
       MANIFOLD_CAUSTICS_WGSL +
       REFRACTIVE_CAUSTICS_WGSL +

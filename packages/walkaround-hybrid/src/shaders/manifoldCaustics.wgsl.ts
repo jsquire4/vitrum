@@ -41,6 +41,7 @@ struct SmsEndpoint {
   xi: vec2f,
   area: f32,
   castShadowDisabled: u32,
+  twoSided: u32,
   analyticDirection: vec3f,
   cosInner: f32,
   cosOuter: f32,
@@ -64,6 +65,7 @@ fn smsInvalidEndpoint() -> SmsEndpoint {
   endpoint.xi = vec2f(0.0);
   endpoint.area = 0.0;
   endpoint.castShadowDisabled = 0u;
+  endpoint.twoSided = 0u;
   endpoint.analyticDirection = vec3f(0.0);
   endpoint.cosInner = 1.0;
   endpoint.cosOuter = 0.0;
@@ -169,7 +171,10 @@ fn smsEnvironmentAvailable() -> bool {
   if (envHasMap()) {
     return envParams.intensity > 0.0 && envParams.intensity < INFINITY;
   }
-  return smsPositiveFiniteRgb(ubo.skyTint * ubo.skyIrradiance);
+  return smsPositiveFiniteRgb(walkaroundScaleEnvironmentRadiance(
+    ubo.skyTint,
+    ubo.skyIrradiance,
+  ));
 }
 
 fn smsEndpointFamilyCount(analyticLayout: SmsAnalyticLayout) -> u32 {
@@ -300,7 +305,10 @@ fn smsSampleAreaEndpoint(
   out.bitangent = bitangent;
   out.xi = xi;
   out.area = sample.area;
-  out.castShadowDisabled = select(0u, 1u, emitter.castShadowDisabled > 0.5);
+  out.castShadowDisabled = select(
+    0u, 1u, emitterTriCastShadowDisabled(emitter),
+  );
+  out.twoSided = select(0u, 1u, emitterTriIsTwoSided(emitter));
   return out;
 }
 
@@ -324,7 +332,10 @@ fn smsSampleEnvironmentEndpoint(
     let radius = sqrt(max(0.0, 1.0 - y * y));
     let phi = 2.0 * PI * xi.y;
     direction = vec3f(radius * cos(phi), y, radius * sin(phi));
-    radiance = ubo.skyTint * ubo.skyIrradiance;
+    radiance = walkaroundScaleEnvironmentRadiance(
+      ubo.skyTint,
+      ubo.skyIrradiance,
+    );
     directionalPdf = 1.0 / (4.0 * PI);
   }
   if (!smsPositiveFiniteRgb(radiance) ||
@@ -456,7 +467,7 @@ fn smsMultiplicitySeed(
 fn smsMaterialMapAbsent(triIndex: u32, metaOffset: u32) -> bool {
   let mapDescriptor = textureLoad(
     baseColorMapMeta,
-    baseColorMapMetaCoord(triIndex * MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset),
+    baseColorMapMetaCoord(triIndex, metaOffset),
     0,
   );
   return i32(mapDescriptor.x) < 0;
@@ -552,15 +563,18 @@ fn smsTraceReachesFacet(
   out.reachesFacet = 0u;
   out.alphaTransmittance = 1.0;
   let delta = targetPosition - origin;
-  let distanceToTarget = length(delta);
+  let distanceToTarget = safe_length(delta);
   if (!(distanceToTarget > 0.0) || !(distanceToTarget < INFINITY)) { return out; }
-  let direction = delta / distanceToTarget;
-  let step = max(1e-4, ubo.triIntersectEpsilon * 4.0);
+  let direction = safe_normalize(delta);
+  let step = walkaroundRayOriginBias();
   var traveled = step;
   var ray = Ray();
   ray.origin = origin + direction * traveled;
   ray.direction = direction;
-  let tolerance = max(8.0 * ubo.triIntersectEpsilon, 32.0 * SMS_F32_EPSILON * distanceToTarget);
+  let tolerance = max(
+    8.0 * walkaroundRayOriginBias(),
+    32.0 * SMS_F32_EPSILON * distanceToTarget,
+  );
   for (var layer = 0u; layer < 32u; layer = layer + 1u) {
     let hit = traceSceneFirstHit(
       ubo.bvhMode, ubo.tlasNodeCount, ray, ubo.triIntersectEpsilon,
@@ -627,18 +641,18 @@ fn smsChainIdentityVisible(
 
 fn smsEndpointTransport(endpoint: SmsEndpoint, firstVertex: vec3f) -> vec3f {
   var direction: vec3f;
-  var distanceToSource = 1e20;
+  var distanceToSource = INFINITY;
   var distanceSquaredToSource = 1.0;
   var scalar = 1.0;
   if (endpoint.sourceMode == 1u) {
     direction = endpoint.towardLight;
   } else {
     let delta = endpoint.position - firstVertex;
-    distanceSquaredToSource = dot(delta, delta);
-    if (!(distanceSquaredToSource > 0.0) ||
-        !(distanceSquaredToSource < INFINITY)) { return vec3f(0.0); }
-    distanceToSource = sqrt(distanceSquaredToSource);
-    direction = delta / distanceToSource;
+    distanceToSource = safe_length(delta);
+    if (!(distanceToSource > 0.0) ||
+        !(distanceToSource < INFINITY)) { return vec3f(0.0); }
+    distanceSquaredToSource = distanceToSource * distanceToSource;
+    direction = safe_normalize(delta);
   }
   if (endpoint.family == SMS_SOURCE_ANALYTIC) {
     // The generalized finite-endpoint determinant already carries the
@@ -651,20 +665,26 @@ fn smsEndpointTransport(endpoint: SmsEndpoint, firstVertex: vec3f) -> vec3f {
       distanceToSource, endpoint.cutoffDistance, endpoint.decay, ubo.emitterDist2Floor,
     ) * distanceSquaredToSource;
   } else if (endpoint.family == SMS_SOURCE_AREA) {
-    if (dot(endpoint.normal, -direction) <= 0.0) { return vec3f(0.0); }
+    let signedCosine = dot(endpoint.normal, -direction);
+    let emitterCosine = select(
+      max(signedCosine, 0.0),
+      abs(signedCosine),
+      endpoint.twoSided != 0u,
+    );
+    if (emitterCosine <= 0.0) { return vec3f(0.0); }
   }
   if (!(scalar > 0.0) || !(scalar < INFINITY)) { return vec3f(0.0); }
   var visibility = vec3f(1.0);
   if (endpoint.castShadowDisabled == 0u) {
-    let maximum = select(distanceToSource, 1e20, endpoint.sourceMode == 1u);
+    let maximum = select(distanceToSource, INFINITY, endpoint.sourceMode == 1u);
     // Every covered material-transmission boundary must appear explicitly in
     // geometry.facets. An unselected refractive boundary on this external
     // segment is an occluder; alpha-only holes/blend coverage remain visible.
     visibility = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       ubo.bvhMode, ubo.tlasNodeCount,
-      firstVertex + direction * (ubo.triIntersectEpsilon * 4.0),
+      firstVertex + direction * walkaroundRayOriginBias(),
       direction,
-      max(0.0, maximum - ubo.triIntersectEpsilon * 8.0),
+      max(0.0, maximum - walkaroundRayEndMargin()),
       ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer, true,
     );

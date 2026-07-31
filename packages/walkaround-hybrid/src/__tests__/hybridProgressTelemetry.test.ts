@@ -269,6 +269,7 @@ function makeFrameDeps(opts: {
       device: makeStubDevice(),
       maxBounces: 2,
       tunables: { glassMixScale: 1, triIntersectEpsilon: 1e-5 } as unknown as HybridEngineFrameDeps['flags']['tunables'],
+      rayOriginBias: 1e-3,
       rcWeight: 0,
     },
   };

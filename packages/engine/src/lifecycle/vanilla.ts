@@ -1105,6 +1105,31 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
   const RAF_SELF_STOP_THRESHOLD = 5;
   let consecutiveThrows = 0;
 
+  const handleFrameFailure = (
+    err: unknown,
+    phase: 'attach:frame-preparation' | 'attach:renderFrame',
+    operation: 'frame preparation' | 'renderFrame',
+  ): boolean => {
+    consecutiveThrows++;
+    if (consecutiveThrows >= RAF_SELF_STOP_THRESHOLD) {
+      stopped = true;
+      if (rafHandle != null) {
+        cancelAnimationFrame(rafHandle);
+        rafHandle = null;
+      }
+      reportError(err, { phase, recoverable: false });
+      console.error(
+        `[attachVitrum] ${operation} threw ${RAF_SELF_STOP_THRESHOLD} consecutive times; ` +
+        'RAF loop stopped. Dispose and recreate the engine to recover.',
+        err,
+      );
+      return true;
+    }
+    reportError(err, { phase, recoverable: true });
+    console.error(`[attachVitrum] ${operation} threw:`, err);
+    return false;
+  };
+
   const tick = (now: number = currentFrameTimeMs()): void => {
     if (stopped) return;
     rafHandle = requestAnimationFrame(tick);
@@ -1114,31 +1139,42 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       reportError(err, { phase: 'attach:scene-controller', backend: engine.backendId, recoverable: true });
       console.error('[attachVitrum] sceneController.advance threw:', err);
     }
-    opts.camera.updateMatrixWorld();
-    const view = asMat4(new Float32Array(opts.camera.matrixWorldInverse.elements));
-    const proj = asMat4(new Float32Array(opts.camera.projectionMatrix.elements));
-    // A2 — acquire the per-frame swap-chain view for WebGPU backends.
-    const swapChainView = acquireSwapChainView(webgpuSwapChain.context, (err) => {
-      reportError(err, { phase: 'attach:swapchain', recoverable: true });
-    });
-    const quality = resolveQualityOption(opts.quality);
+    if (stopped || disposed) return;
 
-    const input = composeAttachVitrumFrameInput({
-      viewMatrix: view,
-      projMatrix: proj,
-      cameraPosition: [opts.camera.position.x, opts.camera.position.y, opts.camera.position.z],
-      ...(prevView ? { prevViewMatrix: prevView } : {}),
-      ...(prevProj ? { prevProjMatrix: prevProj } : {}),
-      viewport: { width: viewportW, height: viewportH, devicePixelRatio: viewportDpr },
-      frameIndex,
-      ...(quality ? { quality } : {}),
-      ...(swapChainView != null
-        ? {
-            swapChainView,
-            ...(webgpuSwapChain.format != null ? { swapChainFormat: webgpuSwapChain.format } : {}),
-          }
-        : {}),
-    });
+    let view: Mat4;
+    let proj: Mat4;
+    let input: FrameInput;
+    try {
+      opts.camera.updateMatrixWorld();
+      view = asMat4(new Float32Array(opts.camera.matrixWorldInverse.elements));
+      proj = asMat4(new Float32Array(opts.camera.projectionMatrix.elements));
+      // A2 — acquire the per-frame swap-chain view for WebGPU backends.
+      const swapChainView = acquireSwapChainView(webgpuSwapChain.context, (err) => {
+        reportError(err, { phase: 'attach:swapchain', recoverable: true });
+      });
+      const quality = resolveQualityOption(opts.quality);
+      if (stopped || disposed) return;
+
+      input = composeAttachVitrumFrameInput({
+        viewMatrix: view,
+        projMatrix: proj,
+        cameraPosition: [opts.camera.position.x, opts.camera.position.y, opts.camera.position.z],
+        ...(prevView ? { prevViewMatrix: prevView } : {}),
+        ...(prevProj ? { prevProjMatrix: prevProj } : {}),
+        viewport: { width: viewportW, height: viewportH, devicePixelRatio: viewportDpr },
+        frameIndex,
+        ...(quality ? { quality } : {}),
+        ...(swapChainView != null
+          ? {
+              swapChainView,
+              ...(webgpuSwapChain.format != null ? { swapChainFormat: webgpuSwapChain.format } : {}),
+            }
+          : {}),
+      });
+    } catch (err) {
+      handleFrameFailure(err, 'attach:frame-preparation', 'frame preparation');
+      return;
+    }
     try {
       const output = engine.renderFrame(input);
       // Reset the consecutive-throw counter on any successful frame.
@@ -1148,31 +1184,17 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       // (pt-webgpu, or the progressive facade after handoff) blit its texture to
       // the canvas. A no-op for swapchain backends that present themselves.
       presentOffscreenFrame(output);
-    } catch (err) {
-      consecutiveThrows++;
-      if (consecutiveThrows >= RAF_SELF_STOP_THRESHOLD) {
-        // H31-d: engine is persistently broken — stop the loop and report
-        // non-recoverable so the host knows the engine has halted.
-        stopped = true;
-        if (rafHandle != null) {
-          cancelAnimationFrame(rafHandle);
-          rafHandle = null;
-        }
-        reportError(err, { phase: 'attach:renderFrame', recoverable: false });
-        console.error(
-          `[attachVitrum] renderFrame threw ${RAF_SELF_STOP_THRESHOLD} consecutive times; ` +
-          'RAF loop stopped. Dispose and recreate the engine to recover.',
-          err,
-        );
-        return;
+      // Temporal host state describes the last frame that actually reached a
+      // renderer output. A throttled/paused skip has no matching history image,
+      // and a thrown frame likewise cannot become the reprojection predecessor.
+      if (output.kind === 'rendered') {
+        prevView = view;
+        prevProj = proj;
+        frameIndex++;
       }
-      // Recoverable: surface the error but keep the loop alive.
-      reportError(err, { phase: 'attach:renderFrame', recoverable: true });
-      console.error('[attachVitrum] renderFrame threw:', err);
+    } catch (err) {
+      if (handleFrameFailure(err, 'attach:renderFrame', 'renderFrame')) return;
     }
-    prevView = view;
-    prevProj = proj;
-    frameIndex++;
   };
 
   // Subscribe only after every callback target (including the RAF tick and

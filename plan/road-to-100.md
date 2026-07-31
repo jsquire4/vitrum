@@ -1,12 +1,17 @@
 # Road to 100 — code completion
 
-**Source audit date:** 2026-07-29
+**Source audit date:** 2026-07-30
 
-**Audit freeze:** remediation base HEAD
-`edccc87a6d2f1db0d286224aace21ae54ca6a81d`; SHA-256
-`f8111e1459bcd7cb8c9fce08b3c382a0097fef7f9b5d7d3b823e580dd4c4232e`
-for the bytewise path-sorted `packages/*/src` path-and-content manifest
-(repository-relative POSIX path, NUL, raw content, NUL; 1,258 files)
+**Final source manifest:** 1,674 files; SHA-256
+`17cf324ec075e7a18bb02e1d79192380780a1fcf7954a462570b649dc1908388`;
+bytewise path-sorted
+path-and-content records (repository-relative POSIX path, NUL, raw content,
+NUL) covering executable source, tests, shaders, examples, proof tooling,
+runtime WASM, dependency locks, and configuration under `packages`, `examples`,
+`scripts`, and `tools`, plus root package, dependency, TypeScript, and lint
+configuration. Generated builds, dependency caches, captured evidence, training
+data, and output-only directories are excluded. Reproduce with
+`npm run road-to-100-source-manifest`.
 
 **Authority:** current production source under `packages/*/src`
 
@@ -18,16 +23,12 @@ ideas are not implementation authority.
 
 ## Bottom line
 
-At the current production source, every executable semantic defect found by the
-2026-07-27 deep audit, the 2026-07-28 external completeness audit, the
-2026-07-29 complete code-gap audit, and the independent post-fix adversarial
-sweeps has an implementation and focused regression in the frozen source tree.
-No additional production code is presently known to be required for the
-declared profiles. The frozen-tree convergence run and source-manifest refresh
-recorded below are complete. This record describes the source tree committed
-alongside it, not an earlier uncommitted remediation snapshot. A future failing
-gate reopens this plan only when it exposes a current production-code defect
-under the rule below.
+The current source review's implementation queue is closed on the final
+remediation tree. The execution baseline was commit
+`a596e6413af4c6fc2809ba4670ce1b81c332ab0f`.
+The source manifest above is the final freeze for this pass. The previous
+closed-program records remain historical evidence only; they do not override a
+reachable failure in current source.
 
 Production code has no provisional feature-maturity channel. Optional algorithms
 use stable typed options and capability fields. A mode is implemented under its
@@ -61,14 +62,99 @@ implemented and reported end to end.
 
 ## Current code-gap queue
 
+Each row closes only after a pre-fix failing proof, implementation, package and
+workspace convergence, applicable numerical/render evidence, independent source
+review, and coordinator verification of the live call path.
+
+| ID | Current-source gap | Primary source | Status |
+| --- | --- | --- | --- |
+| C0 | Public primitive mutation accepts an inexact broad partial type | `packages/core/src/scene/patchScene.ts` | Closed |
+| V1 | ReSTIR A/B producer and validator use incompatible result shapes | `tools/radiometric-ab` | Closed |
+| V2 | Non-finite GPU values can disappear before byte-domain validation | `tools/behavioral-gate` | Closed |
+| V3 | GLSL gate compiles stages without proving shipped programs link | `tools/shader-gate/glslGate.mjs` | Closed |
+| V4 | Mechanical gap-closure mode can report proof success for identical roles | `tools/benchmark-runner/run-gap-closure-verification.mjs` | Closed |
+| V5 | Walkaround radiometric regions assume a fixed 128-pixel domain | `tools/radiometric-ab/walkaround-ab.mjs` | Closed |
+| V6 | Browser capture selectors can silently choose an unintended canvas | `tools/benchmark-runner/capture-adapter-playwright.mjs` | Closed |
+| V7 | DZN/status numeric and selector assumptions fail open | `tools/behavioral-gate` | Closed |
+| S1 | Material signatures collapse distinct packed float32 values | `packages/shared-bvh/src/materialSignature.ts` | Closed |
+| S2 | Scene/BVH fingerprints omit behavior-affecting packed state | `packages/shared-bvh/src/sceneBvh.ts` | Closed |
+| S3 | Displacement CPU sampling disagrees with texture sampler semantics | `packages/shared-bvh/src/vertexDisplacement.ts` | Closed |
+| S4 | `tlas: false` can select an invalid direct-BLAS representation | `packages/shared-bvh/src/scenePack.ts` | Closed |
+| H1 | Incremental material edits can leave the walkaround atlas and dependents stale | `packages/walkaround-hybrid/src/HybridEnginePrimitiveUpdates.ts` | Closed |
+| H2 | RC optional material metadata can black valid opaque lighting | `packages/walkaround-rc/src/cascadeDispatch.ts` | Closed |
+| H3 | RC alias validation and shader offsets can resolve different layouts | `packages/walkaround-rc/src/cascadeDispatch.ts` | Closed |
+| T1 | BDPT delta-technique recurrence terminates before all valid alternatives | `packages/shared-samplers/src/bdptMIS.ts` | Closed |
+| T2 | Full WebGPU surface-owned work executes before the medium-event race | `packages/pt-webgpu/src/wgsl/pathTrace/kernel.wgsl.ts` | Closed |
+| T3 | Mesh-emitter sidedness is inconsistent across estimators and backends | `packages/pt-webgpu/src/scene/emitterPacking.ts` | Closed |
+| T4 | WebGL2 shadow-disabled finite lights retain an absent MIS competitor | `packages/pt-webgl2/src/glsl/render/direct_light_contribution_function.glsl.js` | Closed |
+| T5 | Progressive preview radiance contaminates the canonical terminal accumulator | `packages/engine/src/progressiveHandoff.ts` | Closed |
+| T6 | WebGL2 repeats the same geometry sample when the host frame seed repeats | `packages/pt-webgl2/src/index.ts` | Closed |
+| T7 | WebGL2 accepted camera, distance, visibility, and BDPT endpoint domains can enter non-finite or identity-ambiguous transport | `packages/pt-webgl2/src/gl/frameUniformsPacker.ts` | Closed |
+| T8 | Environment radiance scaling and live replacement can overflow receiver products or publish a split resource generation | `packages/pt-webgpu/src/environmentRadianceScale.ts` | Closed |
+| T9 | Presentation can double-encode sRGB, clip wide-target raw HDR, or publish infinity to a narrower attachment | `packages/walkaround-hybrid/src/presentationTarget.ts` | Closed |
+| F1 | WebGPU lite tier advertises volume fields it does not transport coherently | `packages/pt-webgpu/src/wgsl/pathTrace/kernelLite.wgsl.ts` | Closed |
+| F2 | Capsule and H-channel intersection routines return invalid boundaries | `packages/pt-webgpu/src/wgsl/pathTrace/intersectionCore.wgsl.ts` | Closed |
+| F3 | Native emissive analytic primitives have no complete light-sampling path | `packages/pt-webgpu/src/scene/emitterPacking.ts` | Closed |
+| F4 | ReSTIR-PT consumes one more shaded vertex than the configured bounce budget | `packages/pt-webgpu/src/wgsl/pathTrace/restirPtProducer.wgsl.ts` | Closed |
+| F5 | WebGL2 rejects otherwise-supported filtered or mipmapped emissive maps | `packages/pt-webgl2/src/scene/meshAreaLights.ts` | Closed |
+| N1 | SVGF reprojection demodulates previous radiance with current albedo | `packages/shared-denoisers/src/svgfRealCpu.ts` | Closed |
+| N2 | SVGF packed history can exceed its 16-bit domain | `packages/shared-denoisers/src/svgfRealConstants.ts` | Closed |
+| N3 | Float32 validation does not prove a value is finite after float16 conversion | `packages/shared-denoisers/src/halfFloat.ts` | Closed |
+| N4 | One-shot BMFR demodulates historical radiance with current-frame albedo | `packages/shared-denoisers/src/bmfrWebGPU.ts` | Closed |
+| A1 | glTF zero-valued clearcoat and iridescence state is discarded | `packages/gltf-adapter/src/gltfToScene.ts` | Closed |
+| A2 | Analytic bounds and engine-scale derivation are incomplete | `packages/engine/src/sceneAABB.ts` | Closed |
+| A3 | CPU analytic picking is not exact for the declared shape set | `packages/shared-bvh/src/pickPrimitiveCpu.ts` | Closed |
+| A4 | Analytic fallback tessellation has no complete allocation budget | `packages/core/src/scene/analyticToMesh.ts` | Closed |
+| A5 | Reflected skin deformation does not update tangent handedness | `packages/core/src/skinSolver.ts` | Closed |
+| A6 | Custom decoded texture pixels can publish non-finite values | `packages/gltf-adapter/src/texturePipeline.ts` | Closed |
+| L1 | `attachVitrum` does not contain every frame-preparation exception | `packages/engine/src/lifecycle/vanilla.ts` | Closed |
+| L2 | A transient false DDGI initialization result becomes sticky | `packages/walkaround-hybrid/src/ddgi/DDGI.ts` | Closed |
+| L3 | One-pixel GTAO dimensions can collapse to zero in shaders | `packages/walkaround-hybrid/src/shaders/gtao.wgsl.ts` | Closed |
+| E1 | Executable examples disagree on camera, resize, DPR, and bounds handling | `examples` | Closed |
+
 There are no open implementation rows.
 
-If a future convergence run finds a source defect, add one bounded row with its
-reachable failure mode and focused regression. Do not create proof-only, host-only,
-distribution, governance, cross-host-evidence, or future-feature rows in this
-queue.
+Do not create proof-only, host-only, distribution, governance,
+cross-host-evidence, or future-feature rows in this queue.
 
 ## Closed implementation programs
+
+### 2026-07-30 final adversarial source closure
+
+- Native WebGL2 now identifies the exact sampled light through NEE, visibility,
+  forward-hit MIS, and bounded BDPT; spot/directional packing and analytic
+  endpoints share one finite representation. Max-float ray sentinels remain
+  unbounded rather than becoming giant finite occluders. Stable normalization,
+  distance, inverse-square, cone, slab, and log-domain MIS helpers prevent
+  accepted finite inputs from producing NaN/Infinity or losing the represented
+  technique.
+- WebGL2 frame validation is sample-independent and runs before program, target,
+  accumulator, or debug-state mutation. It proves the packed camera-origin and
+  transport domains, secondary-origin headroom, homogeneous division, and
+  active thin-lens arithmetic. Aperture scaling mirrors shader-ordered f32
+  operations, anamorphic scaling never evaluates an unsafe reciprocal, and
+  refocusing uses a common scale instead of subtracting large world-space
+  points. Zero-aperture equirectangular input remains the exact pinhole path;
+  physically incoherent active equirectangular thin-lens input is rejected.
+- WebGPU PT, walkaround, DDGI, RC, ReSTIR, NRC, SPPM, and BDPT environment
+  consumers use staged finite-f32 radiance products. Host packers validate the
+  scalar and map/global/material envelopes before publication, allow legitimate
+  per-channel underflow, and reject overflow or complete positive-map collapse.
+  Environment replacement prepares independent GPU resources, makes DDGI accept
+  candidate bindings before the provider pointer swap, and retires the previous
+  generation only after CPU, provider, and consumers agree.
+- Exposure now saturates only at finite float32 inside the shared TS/WGSL/GLSL
+  operator. Final presentation is bounded at the concrete target instead:
+  unorm/sRGB and RGB10A2, per-channel R11G11B10 float, RGBA16F, or RGBA32F.
+  Therefore `tonemap:'none'` preserves exposed HDR above 65,504 on a float32
+  target without allowing the fixed half-float path-tracer outputs to publish
+  infinity. Walkaround resolves one transfer policy before frame mutation and
+  threads it through initialization, dynamic pipeline replacement, full,
+  throttled, sky-only, and capture paths, applying exactly one sRGB OETF.
+- The final shader inventory also exposed a stale CWBVH portable-composition
+  harness call after the live range-intersection signature changed. The harness
+  now invokes the exact shipped signature, restoring the source-derived WGSL
+  gate rather than weakening or excluding that module.
 
 ### 2026-07-29 complete code-gap audit remediation
 
@@ -445,7 +531,7 @@ implementation rows.
 | `npm run proof-check` | PASS — source/Road, radiometric, ReSTIR-PT specialty, and renderer-fidelity proofs |
 | `npm run typecheck` | PASS — all configured workspaces |
 | `npm run build` | PASS — all seven configured example production builds |
-| `npm test` | PASS — 84/84 root script tests across 11 files and 8,284/8,284 workspace tests across 704 Vitest files (8,368 tests across 715 files combined; 3,099 walkaround-hybrid tests across 280 files) |
+| `npm test` | PASS — 104/104 root script tests across 13 files and 8,433/8,433 workspace tests across 709 Vitest files (8,537 tests across 722 files combined; 3,121 walkaround-hybrid tests across 280 files) |
 | `npm run lint` | PASS — 0 errors and 0 warnings |
 | WGSL compile gate (`--no-pipeline-gate`) | PASS — 78/78 modules and 29/29 portable shipped walkaround/RC roots; no native pipeline-graph claim |
 | `npm run shader-gate -- --bdpt-mask-parity-only` | PASS — 32,400/32,400 bounded CPU/WGSL strategy-mask cases agree |

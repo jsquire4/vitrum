@@ -83,9 +83,10 @@ afterEach(() => {
 });
 
 describe('BMFR overlap fit + resolve', () => {
-  it('blends remodulated history with the current fit in one albedo-demodulated domain', async () => {
+  it('demodulates history with its own albedo before blending in the current lighting domain', async () => {
     const device = createStubDevice();
-    const rho = 0.5;
+    const currentRho = 0.5;
+    const historyRho = 0.25;
     const temporalAlpha = 0.2;
 
     // Identity-reconstruction oracle for one pixel: reproduce the resolve
@@ -110,7 +111,8 @@ describe('BMFR overlap fit + resolve', () => {
       device: device as unknown as GPUDevice,
       rgb: new Float32Array([1, 1, 1]),
       historyRgb: new Float32Array([0.5, 0.5, 0.5]),
-      albedoRgb: new Float32Array([rho, rho, rho]),
+      historyAlbedoRgb: new Float32Array([historyRho, historyRho, historyRho]),
+      albedoRgb: new Float32Array([currentRho, currentRho, currentRho]),
       worldPosRgb: new Float32Array([0, 0, 1]),
       width: 1,
       height: 1,
@@ -121,13 +123,14 @@ describe('BMFR overlap fit + resolve', () => {
       [GPUDevice, GPUTexture, Float32Array, number, number]
     >;
     expect(Array.from(uploads[0]![2])).toEqual([2, 2, 2]);
-    expect(Array.from(uploads[2]![2])).toEqual([1, 1, 1]);
+    expect(Array.from(uploads[2]![2])).toEqual([2, 2, 2]);
     // Correct remodulated-domain EMA:
-    // (1 - 0.2) * 0.5 history + 0.2 * 1.0 current = 0.6.
+    // both frames contain lighting 2 under different albedos; blend stays 2,
+    // then the current 0.5 albedo remodulates the result to radiance 1.
     expect(Array.from(result)).toEqual([
-      expect.closeTo(0.6, 6),
-      expect.closeTo(0.6, 6),
-      expect.closeTo(0.6, 6),
+      expect.closeTo(1, 6),
+      expect.closeTo(1, 6),
+      expect.closeTo(1, 6),
     ]);
   });
 

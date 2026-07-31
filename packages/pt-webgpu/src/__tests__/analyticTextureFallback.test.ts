@@ -55,4 +55,33 @@ describe('pt-webgpu mapped analytic fallback classification', () => {
       /mapped-sphere.*native analytic hits do not expose mesh UVs.*no fallbackMesh/,
     );
   });
+
+  it('lowers an implicitly emissive analytic to one mesh shared by forward hits and NEE', () => {
+    const scene: Scene = {
+      primitives: [{
+        kind: 'analytic',
+        id: 'glowing-sphere',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        material: {
+          baseColor: [1, 1, 1],
+          roughness: 0.4,
+          metallic: 0,
+          emissive: [3, 2, 1],
+          emissiveIntensity: 2,
+        },
+      }],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const packed = buildPackedScene(scene);
+    expect(packed.analyticCount).toBe(0);
+    expect(packed.triangleCount).toBeGreaterThan(0);
+    expect(packed.meshAreaLightCount).toBe(packed.triangleCount);
+    expect(packed.warnings.join('\n')).toMatch(
+      /glowing-sphere.*emissive analytic.*mesh fallback.*light-sampling support/i,
+    );
+  });
+
 });

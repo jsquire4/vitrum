@@ -34,9 +34,12 @@ import {
   packSVGFReprojUniforms,
 } from '../src/svgfRealBindings.js';
 import { SVGF_REPROJECTION_WGSL } from '../src/wgsl/svgfReprojection.wgsl.js';
+import { SVGF_REAL_ATROUS_WGSL } from '../src/wgsl/svgfAtrous.wgsl.js';
+import { SVGF_7X7_SPATIAL_FALLBACK_WGSL } from '../src/wgsl/svgf7x7SpatialFallback.wgsl.js';
 import {
   SVGF_HISTORY_MIN_FOR_MOMENTS,
 } from '../src/wgsl/svgfVarianceFromMoments.wgsl.js';
+import { SVGF_REAL_MAX_HISTORY_LENGTH } from '../src/svgfRealConstants.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -227,11 +230,68 @@ describe('svgfReprojCPU — identity (no motion, consistent geometry)', () => {
     // A rounded CPU oracle would incorrectly produce 4 here.
     expect(result.historyLengthOut[0]).toBe(3);
   });
+
+  it('saturates accepted history at the shared 16-bit maximum', () => {
+    const W = 1, H = 1;
+    const color = makeColor(W, H, 0.2, 0.2, 0.2);
+    const { depth1, norm, objId } = makeGeo(W, H, 1, 0, 0, 1);
+    const result = svgfReprojCPU({
+      currColor: color,
+      prevColor: color,
+      motionVec: new Float32Array(2),
+      currDepth: depth1,
+      currNormal: norm,
+      currObjId: objId,
+      prevDepth: depth1,
+      prevNormal: norm,
+      prevObjId: objId,
+      historyLengthIn: new Uint32Array([SVGF_REAL_MAX_HISTORY_LENGTH]),
+      momentsIn: new Float32Array(2),
+      width: W,
+      height: H,
+    });
+
+    expect(result.historyLengthOut[0]).toBe(SVGF_REAL_MAX_HISTORY_LENGTH);
+    expect(SVGF_REPROJECTION_WGSL).toMatch(
+      new RegExp(
+        `newHistory\\s*=\\s*min\\([\\s\\S]*?${SVGF_REAL_MAX_HISTORY_LENGTH}u`,
+      ),
+    );
+  });
 });
 
 // ── Test 2: Disocclusion reset ───────────────────────────────────────────────
 
 describe('svgfReprojCPU — disocclusion reset', () => {
+  it.each([1e-20, 1, 1e20])(
+    'keeps relative-depth disocclusion classification invariant at world scale %g',
+    (worldScale) => {
+      const W = 1;
+      const H = 1;
+      const color = makeColor(W, H, 0.5, 0.5, 0.5);
+      const { norm, objId } = makeGeo(W, H, worldScale, 0, 0, 1);
+      const result = svgfReprojCPU({
+        currColor: color,
+        prevColor: makeColor(W, H, 9, 9, 9),
+        motionVec: new Float32Array(2),
+        currDepth: new Float32Array([worldScale]),
+        currNormal: norm,
+        currObjId: objId,
+        prevDepth: new Float32Array([1.2 * worldScale]),
+        prevNormal: norm,
+        prevObjId: objId,
+        historyLengthIn: new Uint32Array([32]),
+        momentsIn: new Float32Array([9, 81]),
+        width: W,
+        height: H,
+        sigmaDepth: 0.05,
+      });
+
+      expect(result.historyLengthOut[0]).toBe(1);
+      expect(result.colorOut[0]).toBeCloseTo(0.5, 6);
+    },
+  );
+
   it('explicitly rejects signed glass depth history', () => {
     const W = 1, H = 1;
     const current = makeColor(W, H, 0.25, 0.5, 0.75);
@@ -542,6 +602,51 @@ describe('svgf7x7FallbackCPU — spatial variance for new pixels', () => {
     // Pixel (3,3) borders the bright surface, but its same-surface samples
     // are constant black. A box estimate would be large here.
     expect(result[3 * W + 3]).toBeLessThan(0.01);
+  });
+
+  it.each([1e-20, 1e20])(
+    'keeps short-history depth-edge rejection invariant at world scale %g',
+    (worldScale) => {
+      const W = 7;
+      const H = 7;
+      const px = W * H;
+      const color = new Float32Array(px * 3);
+      const depth = new Float32Array(px);
+      const normal = makeGeo(W, H, worldScale, 0, 0, 1).norm;
+      for (let y = 0; y < H; y += 1) {
+        for (let x = 0; x < W; x += 1) {
+          const i = y * W + x;
+          const value = x < 4 ? 0 : 10;
+          color[i * 3] = value;
+          color[i * 3 + 1] = value;
+          color[i * 3 + 2] = value;
+          depth[i] = (x < 4 ? 1 : 10) * worldScale;
+        }
+      }
+
+      const result = svgf7x7FallbackCPU({
+        currColor: color,
+        currNormal: normal,
+        currDepth: depth,
+        historyIn: new Uint32Array(px),
+        varianceIn: new Float32Array(px),
+        width: W,
+        height: H,
+      });
+
+      expect(result[3 * W + 3]).toBeLessThan(0.01);
+    },
+  );
+
+  it('contains no fixed world-depth floor in the CPU-parity shader paths', () => {
+    expect(SVGF_REPROJECTION_WGSL).not.toContain(
+      'sigmaDepth * max(zCurr, zPrev) + 1e-4',
+    );
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).not.toContain(
+      'let depthScale = max(1e-3',
+    );
+    expect(SVGF_REAL_ATROUS_WGSL).toContain('if (centerDepth == 0.0)');
+    expect(SVGF_REAL_ATROUS_WGSL).not.toContain('abs(centerDepth) <= 1e-8');
   });
 });
 

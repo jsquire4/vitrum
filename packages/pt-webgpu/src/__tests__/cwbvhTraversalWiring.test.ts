@@ -79,6 +79,38 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
     expect(wgsl).not.toContain('dot(row0, nLocal)');
   });
 
+  it('uses the canonical triangle payload for binary and CWBVH hit attributes', () => {
+    const binaryStart = PT_WEBGPU_TRACE_WGSL.indexOf('fn traceMeshBvh(');
+    const binaryEnd = PT_WEBGPU_TRACE_WGSL.indexOf(
+      '\nfn traceAnalyticShapes(',
+      binaryStart,
+    );
+    const binary = PT_WEBGPU_TRACE_WGSL.slice(binaryStart, binaryEnd);
+    expect(binary).toContain('let triHit = mollerTrumboreCore(');
+    expect(binary).toContain('tMin,');
+    expect(binary).toContain('var shadeNormal = triHit.normal;');
+    expect(binary).toContain('let frontFace = triHit.det > 0.0;');
+    expect(binary).toContain(
+      'let shadeBaryVW = vec2f(triHit.bary.y, triHit.bary.z);',
+    );
+    expect(binary).not.toContain('let geometricNormal = cross(');
+    expect(binary).not.toContain('let d00 = dot(ab, ab);');
+    expect(binary).not.toContain('let denom = d00 * d11 - d01 * d01;');
+
+    const composed = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
+    const wideStart = composed.indexOf('fn traceMeshCwbvhClosest(');
+    const wideEnd = composed.indexOf(
+      '\nfn traceTlasClosestCwbvhFallback(',
+      wideStart,
+    );
+    const wide = composed.slice(wideStart, wideEnd);
+    expect(wide).toContain('var shadeNormal = cHit.normal * cHit.side;');
+    expect(wide).toContain(
+      'var shadeBaryVW = vec2f(cHit.barycoord.y, cHit.barycoord.z);',
+    );
+    expect(wide).not.toContain('safe_normalize(cross(b - a, c - a))');
+  });
+
   it('routes visibility through sided CWBVH closest candidates', () => {
     const wgsl = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
     expect(wgsl).toContain('fn traceClosestRaw(ray: Ray, tMin: f32, tMax: f32) -> SceneHit');

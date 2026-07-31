@@ -61,7 +61,8 @@ function fakeInputs(): PipelineFrameInputs {
     },
     gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
     filter: {
-      triIntersectEpsilon: 1e-5, glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1],
+      triIntersectEpsilon: 1e-5, rayOriginBias: 1e-3,
+      glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
     },
@@ -200,8 +201,12 @@ describe('shade + resolve consume the SAME parity source', () => {
     expect(RIS_WGSL).toContain('ubo.checkerboardOn == 1u');
     expect(RIS_WGSL).toContain('(gid.y + ubo.frameParity) & 1u');
     expect(RIS_WGSL).toContain('gid.x * 2u + startCol');
-    // OFF default keeps pix == gid.xy ⇒ full-res dispatch, bit-identity.
-    expect(RIS_WGSL).toContain('var pix = gid.xy;');
+    // OFF default keeps the reservoir coordinate at gid.xy ⇒ full-res
+    // dispatch, bit-identity. The final full-resolution pixel is derived from
+    // that coordinate so the independent ReSTIR reservoir-scale mode can
+    // share the same kernel.
+    expect(RIS_WGSL).toContain('var reservoirCoord = gid.xy;');
+    expect(RIS_WGSL).toContain('let pix = restirDiFullPixel(reservoirCoord);');
   });
 
   it('resolve.wgsl gap-fills the COMPLEMENT — (px+py)&1 == frameParity is the SHADED half', () => {

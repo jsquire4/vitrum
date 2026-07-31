@@ -104,8 +104,20 @@ describe('GPU normal-skinning WGSL', () => {
   });
 
   it('with-normals kernel normalizes the output normal and guards degeneracy', () => {
-    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('let nlen = length(outN)');
-    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain('nlen > 1e-12');
+    // Scale first so both subnormal and near-max-f32 normals can be
+    // normalized without length() underflow/overflow.
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain(
+      'let normalScale = max(abs(outN.x), max(abs(outN.y), abs(outN.z)))',
+    );
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain(
+      'let scaledNormal = outN / normalScale',
+    );
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain(
+      'let scaledLength = length(scaledNormal)',
+    );
+    expect(GPU_SKIN_BVH_WITH_NORMALS_WGSL).toContain(
+      'safeN = scaledNormal / scaledLength',
+    );
   });
 
   it('mirrors CPU rank-2 cofactor handling instead of applying the raw singular matrix', () => {

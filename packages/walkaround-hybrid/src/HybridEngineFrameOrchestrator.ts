@@ -25,9 +25,16 @@ import type { RCSubsystem } from './HybridEngineRC.js';
 import type { Tunables } from './HybridEngineTuning.js';
 import type { HybridRenderLayer } from './HybridEnginePublic.js';
 import type { WalkaroundGPUPipeline } from './pipeline/WalkaroundGPUPipeline.js';
+import type { PipelineFrameInputs } from './pipeline/pipelineFrameInputs.js';
 import { WALKAROUND_DEFAULT_SUN_ANGULAR_RADIUS } from './pipeline/constants.js';
 import type { SceneBVHBuffers } from './restir/bvhCore.js';
 import type { GpuSkinningSubsystem } from './skin/GpuSkinningSubsystem.js';
+import { packLightingRgbScaleEnvelopeF32 } from './lightingFloat32.js';
+import {
+  clampHybridPresentationRgb,
+  resolveHybridPresentationTarget,
+} from './presentationTarget.js';
+import { scaleWalkaroundEnvironmentRadianceF32 } from './environment/environmentRadianceScale.js';
 
 export const HYBRID_FRAME_SKIP_OUTPUT: FrameOutput = {
   kind: 'skipped',
@@ -98,20 +105,23 @@ function presentSkyOnly(
   skyTint: readonly [number, number, number],
   skyIrradiance: number,
   quality: FrameInput['quality'],
+  exposure: number,
+  applySoftwareSrgbOetf: boolean,
+  swapChainFormat: GPUTextureFormat,
 ): FrameOutput {
-  const hdr: [number, number, number] = [
-    Math.max(0, skyTint[0] * skyIrradiance),
-    Math.max(0, skyTint[1] * skyIrradiance),
-    Math.max(0, skyTint[2] * skyIrradiance),
-  ];
+  const hdr = scaleWalkaroundEnvironmentRadianceF32(
+    skyTint,
+    skyIrradiance,
+  );
   const tonemapped = applyTonemap(
     hdr,
     quality?.tonemap ?? 'aces',
-    quality?.exposure ?? 1,
+    exposure,
   );
-  const presented = quality?.outputColorSpace === 'linear'
-    ? tonemapped
-    : tonemapped.map(linearToSrgb) as [number, number, number];
+  const encoded = applySoftwareSrgbOetf
+    ? tonemapped.map(linearToSrgb) as [number, number, number]
+    : tonemapped;
+  const presented = clampHybridPresentationRgb(encoded, swapChainFormat);
   const encoder = device.createCommandEncoder({ label: 'hybrid-sky-only-present' });
   const pass = encoder.beginRenderPass({
     label: 'hybrid-sky-only-present',
@@ -227,7 +237,11 @@ interface HybridEngineFrameControl {
    *  engine internal-dim bookkeeping, both owned by the engine. */
   applyResolutionFactor: (factor: number | undefined, nowMs: number) => { width: number; height: number };
   runSkinning: () => void;
-  presentLastFrame: (view: GPUTextureView) => void;
+  presentLastFrame: (
+    view: GPUTextureView,
+    format: GPUTextureFormat,
+    composite: PipelineFrameInputs['composite'],
+  ) => void;
 }
 
 /** Telemetry subscribers, debug timings, and debug surface. */
@@ -262,6 +276,8 @@ interface HybridEngineFrameFlags {
   isLayerEnabled: (layer: HybridRenderLayer) => boolean;
   device: GPUDevice;
   tunables: Tunables;
+  /** Scene-diagonal-relative secondary-ray origin offset. */
+  rayOriginBias: number;
   rcWeight: number;
   /** Exact construction-time estimator selection. refractive-trace is a
    * bounded sampler and must never be conflated with manifold-nee. */
@@ -429,13 +445,6 @@ export function fingerprintHybridPipelineRebuildKey(
   return `__s:${key}`;
 }
 
-export function getPreferredSwapChainFormat(): GPUTextureFormat {
-  return (typeof navigator !== 'undefined' && 'gpu' in navigator
-    ? (navigator.gpu as { getPreferredCanvasFormat?: () => GPUTextureFormat })
-        .getPreferredCanvasFormat?.() ?? 'bgra8unorm'
-    : 'bgra8unorm');
-}
-
 /**
  * D2.9 — dispatch one RC frame and push the resulting inputs into the
  * pipeline. Extracted from `runDdgiAndRc` to isolate the 55-line RC assembly.
@@ -474,24 +483,21 @@ function dispatchRcAndSetInputs(
     const dirEmitter = scene?.emitters.find((e) => e.kind === 'directional');
     const I = dirEmitter?.intensity ?? deps.lighting.primaryLightIntensity;
     const sunCastShadowDisabled = dirEmitter?.castShadow === false;
-    const sunColor: [number, number, number] = dirEmitter != null
-      ? [
-          dirEmitter.color[0] * I,
-          dirEmitter.color[1] * I,
-          dirEmitter.color[2] * I,
-        ]
-      : [I, I, I];  // legacy fallback: achromatic (no scene directional)
+    const sunColor = packLightingRgbScaleEnvelopeF32(
+      dirEmitter?.color ?? [1, 1, 1],
+      I,
+      'RC sun',
+    ).scaled;
 
     // A7: env texture forwarded from the main pipeline so the last-cascade
     // env sample reads the real HDRI. The placeholder remains bound when no
     // directional payload is active, while the explicit flag selects the same
     // flat scalar sky radiance used by main/ReSTIR shading.
     const rcEnvBindings = pipeline.getEnvBindings();
-    const scalarSkyRadiance: readonly [number, number, number] = [
-      deps.lighting.skyTint[0] * deps.lighting.skyIrradiance,
-      deps.lighting.skyTint[1] * deps.lighting.skyIrradiance,
-      deps.lighting.skyTint[2] * deps.lighting.skyIrradiance,
-    ];
+    const scalarSkyRadiance = scaleWalkaroundEnvironmentRadianceF32(
+      deps.lighting.skyTint,
+      deps.lighting.skyIrradiance,
+    );
     const rcMaterialAtlasBindings = pipeline.getMaterialAtlasBindings();
     const rcSceneGeometryBindings = pipeline.getSceneGeometryBufferBindings();
 
@@ -709,6 +715,21 @@ export function runHybridEngineFrame(
   deps: HybridEngineFrameDeps,
   input: FrameInput,
 ): FrameOutput {
+  // Resolve the attachment transfer policy before any engine/GPU/debug state
+  // can advance. HybridEngine supplies an explicit validated format; retaining
+  // the fallback here keeps direct orchestrator harnesses honest as well.
+  const presentationTarget = resolveHybridPresentationTarget(
+    input.swapChainFormat,
+    input.quality?.outputColorSpace,
+    'HybridEngine.renderFrame',
+  );
+  const composite: PipelineFrameInputs['composite'] = {
+    tonemapMode: TONEMAP_MODE_INDEX[input.quality?.tonemap ?? 'aces'],
+    // Match the f32 UBO and shader value exactly, including subnormals.
+    exposure: Math.fround(input.quality?.exposure ?? 1.0),
+    outputColorSpace: presentationTarget.outputColorSpace === 'linear' ? 1 : 0,
+  };
+
   if (deps.flags.state === 'paused' || deps.flags.state === 'disposed' || deps.flags.state === 'error') {
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
@@ -744,6 +765,9 @@ export function runHybridEngineFrame(
       deps.lighting.skyTint,
       deps.lighting.skyIrradiance,
       input.quality,
+      composite.exposure,
+      presentationTarget.applySoftwareSrgbOetf,
+      presentationTarget.format,
     );
   }
   if (!pipeline) {
@@ -769,7 +793,11 @@ export function runHybridEngineFrame(
     if (dbg) dbg.skipFrameInterval++;
     const skipSwapView = input.swapChainView as GPUTextureView | undefined;
     if (skipSwapView) {
-      deps.control.presentLastFrame(skipSwapView);
+      deps.control.presentLastFrame(
+        skipSwapView,
+        presentationTarget.format,
+        composite,
+      );
     }
     return HYBRID_FRAME_SKIP_OUTPUT;
   }
@@ -777,8 +805,6 @@ export function runHybridEngineFrame(
 
   const t0 = now;
   const swapView = input.swapChainView as GPUTextureView | undefined;
-  const swapFmt =
-    (input.swapChainFormat as GPUTextureFormat | undefined) ?? getPreferredSwapChainFormat();
 
   if (!swapView) {
     if (dbg) dbg.skipNoSwapView++;
@@ -843,7 +869,7 @@ export function runHybridEngineFrame(
       screenHeight:   internal.height,
       frameSeed:      input.frameSeed,
       swapChainView:  swapView,
-      swapChainFormat: swapFmt,
+      swapChainFormat: presentationTarget.format,
     },
     lighting: {
       emitterCount:        bvh.emitters?.count ?? 0,
@@ -896,6 +922,7 @@ export function runHybridEngineFrame(
     },
     filter: {
       triIntersectEpsilon:  deps.flags.tunables.triIntersectEpsilon,
+      rayOriginBias:        deps.flags.rayOriginBias,
       glassMixScale:        deps.flags.tunables.glassMixScale,
       indirectFireflyClamp: deps.filter.indirectFireflyClamp,
       atrousDirectSigmas:   deps.filter.atrousDirectSigmas,
@@ -917,11 +944,7 @@ export function runHybridEngineFrame(
     // outputColorSpace: 'display-p3' is not in the contract ('srgb' | 'linear' only),
     // so no console.warn needed here. If a future extension adds 'display-p3', wire it
     // to a warn-once + fallback to 'srgb' at this boundary.
-    composite: {
-      tonemapMode:      TONEMAP_MODE_INDEX[input.quality?.tonemap ?? 'aces'],
-      exposure:         input.quality?.exposure ?? 1.0,
-      outputColorSpace: input.quality?.outputColorSpace === 'linear' ? 1 : 0,
-    },
+    composite,
   });
 
   emitFrameTelemetry(deps, pipeline, performance.now() - t0, now);

@@ -44,11 +44,20 @@ vi.mock('../materialTextureAtlas.js', () => ({
     atlasTextureView: {},
     baseColorMetaTexture: { destroy: vi.fn() },
     baseColorMetaTextureView: {},
-    atlasDim: 1,
-    atlasLayerCount: 1,
+    atlasWidth: 1,
+    atlasHeight: 1,
+    atlasArrayLayerCount: 1,
     baseColorMetaWidth: 2,
     baseColorMetaHeight: 1,
+    allocatedBytes: 24,
   })),
+  destroyMaterialTextureAtlasGpu: vi.fn((atlas: {
+    atlasTexture?: { destroy(): void };
+    baseColorMetaTexture?: { destroy(): void };
+  } | null | undefined) => {
+    try { atlas?.atlasTexture?.destroy(); } catch { /* best-effort retirement */ }
+    try { atlas?.baseColorMetaTexture?.destroy(); } catch { /* best-effort retirement */ }
+  }),
 }));
 
 vi.mock('../bvhTangentTexture.js', () => ({
@@ -79,6 +88,7 @@ vi.mock('../analyticLightsTexture.js', () => ({
 // the host helper so the test stays device-free (same pattern as beer/emissive).
 const mockEnv = () => ({
   map: { createView: vi.fn(() => ({})), destroy: vi.fn() },
+  pdf: { createView: vi.fn(() => ({})), destroy: vi.fn() },
   marginal: { createView: vi.fn(() => ({})), destroy: vi.fn() },
   conditional: { createView: vi.fn(() => ({})), destroy: vi.fn() },
   sampler: {},
@@ -269,7 +279,7 @@ describe('BvhBufferHost', () => {
     expect(mem['bvhBeerTexture']).toMatchObject({ width: 4096, height: 1, format: 'r32uint' });
     expect(mem['bvhEmissiveTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
     expect(mem['bvhTangentTexture']).toMatchObject({ width: 4096, height: 1, format: 'rgba32float' });
-    expect(mem['materialTextureAtlas']).toMatchObject({ width: 1, height: 1, depthOrArrayLayers: 1, format: 'rgba32float' });
+    expect(mem['materialTextureAtlas']).toMatchObject({ width: 1, height: 1, depthOrArrayLayers: 1, format: 'r32uint' });
     expect(mem['baseColorMapMetaTexture']).toMatchObject({ width: 2, height: 1, depthOrArrayLayers: 1, format: 'rgba32float' });
     host.dispose();
   });

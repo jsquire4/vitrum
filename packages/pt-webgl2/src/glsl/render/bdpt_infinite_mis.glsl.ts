@@ -23,15 +23,32 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
         ) {
 
                 vec3 delta = destinationPosition - fromPosition;
-                float distanceSquared = dot( delta, delta );
-                if ( pdf <= 0.0 || distanceSquared <= 0.0 ) return 0.0;
+                if (
+                        pdf < 0.0 || isnan( pdf ) || isinf( pdf ) ||
+                        any( isnan( delta ) ) || any( isinf( delta ) )
+                ) return -1.0;
+                // PBRT MISWeight's Remap0 is applied after the SA→area
+                // conversion. A zero continuous density at a delta event (or
+                // tangent destination) is a neutral ratio, while the explicit
+                // connection-edge mask below determines strategy eligibility.
+                if ( pdf == 0.0 ) return 1.0;
+                if ( all( equal( delta, vec3( 0.0 ) ) ) ) return pdf;
+                float distance = vitrumLengthVec3( delta );
+                if ( ! ( distance > 0.0 ) ) return -1.0;
                 float destinationCosine = destinationIsMedium
                         ? 1.0
                         : abs( dot(
                                 destinationNormal,
-                                delta * inversesqrt( distanceSquared )
+                                delta / distance
                         ) );
-                return pdf * destinationCosine / distanceSquared;
+                if ( isnan( destinationCosine ) || isinf( destinationCosine ) ) {
+                        return -1.0;
+                }
+                if ( destinationCosine == 0.0 ) return 1.0;
+                float areaPdf = vitrumPositiveProductOverSquare(
+                        pdf, destinationCosine, distance
+                );
+                return areaPdf > 0.0 ? areaPdf : -1.0;
 
         }
 
@@ -46,11 +63,22 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
                 // An infinite emitter launches parallel rays from the scene
                 // bounding disk.  Disk area maps to receiver area by orthogonal
                 // projection; a finite-point 1/r^2 Jacobian is not applicable.
+                if (
+                        ! receiverIsMedium &&
+                        (
+                                ! vitrumFiniteNonZeroVec3( receiverNormal ) ||
+                                ! vitrumFiniteNonZeroVec3( receiverToSource )
+                        )
+                ) return 0.0;
                 float projection = receiverIsMedium
                         ? 1.0
                         : abs( dot(
-                                normalize( receiverNormal ),
-                                normalize( receiverToSource )
+                                vitrumNormalizeVec3(
+                                        receiverNormal, vec3( 0.0, 1.0, 0.0 )
+                                ),
+                                vitrumNormalizeVec3(
+                                        receiverToSource, vec3( 0.0, 1.0, 0.0 )
+                                )
                         ) );
                 return launchPdf * projection;
 
@@ -119,7 +147,11 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
                 ) {
 
                         vec3 previousPosition = eyePosition[ eyeDepth - 1 ];
-                        vec3 toPrevious = normalize( previousPosition - currentPosition );
+                        vec3 previousDelta = previousPosition - currentPosition;
+                        if ( ! vitrumFiniteNonZeroVec3( previousDelta ) ) return 0.0;
+                        vec3 toPrevious = vitrumNormalizeVec3(
+                                previousDelta, vec3( 0.0, 1.0, 0.0 )
+                        );
                         bool currentConnectionDelta = false;
                         float currentSwappedPdf = bsdfPdfResult(
                                 receiverToSource,
@@ -144,11 +176,7 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
                                 eyeNormal[ eyeDepth ],
                                 eyeMedium[ eyeDepth ]
                         );
-                        if (
-                                ! transitionBlocked &&
-                                launchAreaPdf > 0.0 &&
-                                incomingEyeAreaPdf > 0.0
-                        ) {
+                        if ( launchAreaPdf > 0.0 && incomingEyeAreaPdf > 0.0 ) {
 
                                 // Both launchPdf and neePdf contain the same
                                 // source-direction measure.  It is a continuous
@@ -161,7 +189,7 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
                                         log( launchToNeeRatio ) -
                                         log( incomingEyeAreaPdf );
                                 logPdfs[ 2 ] = logRatio;
-                                validPdfs[ 2 ] = true;
+                                validPdfs[ 2 ] = ! transitionBlocked;
 
                                 for ( int strategy = 3; strategy < BDPT_MAX_INFINITE_STRATEGIES; strategy ++ ) {
 
@@ -171,10 +199,9 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
                                         ) break;
                                         int destinationDepth = eyeDepth - strategy + 2;
                                         if ( destinationDepth < 1 ) break;
-                                        if (
+                                        bool connectionIsDelta =
                                                 eyeSpecular[ destinationDepth ] ||
-                                                eyeSpecular[ destinationDepth - 1 ]
-                                        ) break;
+                                                eyeSpecular[ destinationDepth - 1 ];
 
                                         vec3 lightwardPosition = strategy == 3
                                                 ? currentPosition
@@ -199,7 +226,7 @@ export const BDPT_INFINITE_MIS_GLSL = /* glsl */ `
                                         if ( forwardAreaPdf <= 0.0 || reverseAreaPdf <= 0.0 ) break;
                                         logRatio += log( forwardAreaPdf ) - log( reverseAreaPdf );
                                         logPdfs[ strategy ] = logRatio;
-                                        validPdfs[ strategy ] = true;
+                                        validPdfs[ strategy ] = ! connectionIsDelta;
 
                                 }
 

@@ -53,20 +53,36 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
     let primaryIorRgb = materialDispersionIorRgb(
       hit.indices.w, decodeIor(glassPrimaryPacked),
     );
-    let primaryThickness = materialOpticalThickness(hit.indices.w);
+    var primaryThickness = materialOpticalThickness(hit.indices.w);
+    let primaryThicknessTexel = sampleMaterialAtlasRawAtOffset(
+      hit.indices.w,
+      MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+      hit.uv,
+      materialAtlasUv1ForHit(hit),
+    );
+    if (primaryThicknessTexel.x >= 0.0) {
+      primaryThickness = primaryThickness *
+        clamp(primaryThicknessTexel.g, 0.0, 1.0);
+    }
     let d = primaryRay.direction;
     // The geometric surface owns enter/exit classification. The mapped
     // shading normal owns Fresnel/refraction, oriented into the corresponding
     // geometric hemisphere and rejected if it cannot oppose the incident ray.
-    let primaryEntering = dot(d, geoNormal) < 0.0;
+    let primaryEntering = hit.side >= 0.0;
     let primaryAlignedNormal = select(-normal, normal, dot(normal, geoNormal) >= 0.0);
-    let primaryFaceNormal = select(-primaryAlignedNormal, primaryAlignedNormal, primaryEntering);
+    let primaryFaceNormal = select(
+      -primaryAlignedNormal,
+      primaryAlignedNormal,
+      dot(d, primaryAlignedNormal) < 0.0,
+    );
     if (dot(d, primaryFaceNormal) >= 0.0) {
       storeReservoirGI_rw(pixelIdxGi, emptyReservoirGI());
       return;
     }
-    let primaryIncidentIor = select(primaryIorRgb, vec3f(1.0), primaryEntering);
-    let primaryTargetIor = select(vec3f(1.0), primaryIorRgb, primaryEntering);
+    // The primary ray starts in air. A thin sheet is reciprocal regardless of
+    // winding; a bulk back face is rejected below because no entry was tracked.
+    let primaryIncidentIor = vec3f(1.0);
+    let primaryTargetIor = primaryIorRgb;
     let primaryBtdf = ggxSampleDielectricTransmission(
       primaryFaceNormal,
       -d,
@@ -96,6 +112,8 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
     var mediumDepth: u32 = 0u;
     var mediumIor: array<vec3f, 4>;
     var mediumTri: array<u32, 4>;
+    var mediumMaterialWord: array<u32, 4>;
+    var mediumInstance: array<u32, 4>;
     var mediumBeer: array<vec3f, 4>;
     var mediumThickness: array<f32, 4>;
     var refractDir = primaryBtdf.direction;
@@ -125,6 +143,8 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
         );
         mediumIor[0] = primaryIorRgb;
         mediumTri[0] = hit.indices.w;
+        mediumMaterialWord[0] = glassPrimaryPacked;
+        mediumInstance[0] = hit.instanceIndex;
         mediumBeer[0] = beer;
         mediumThickness[0] = primaryThickness;
         mediumDepth = 1u;
@@ -162,7 +182,7 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
       refractDir = primaryExitBtdf.direction;
     }
 
-    var walkOrigin = pos + refractDir * NORMAL_BIAS_GI;
+    var walkOrigin = pos + refractDir * walkaroundRayOriginBias();
     var walkHit: IntersectionResult;
     var walkHitPos: vec3f;
     var walkHitNormal: vec3f;
@@ -185,10 +205,11 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
       if (mediumDepth > 0u) {
         let top = mediumDepth - 1u;
         if (!(mediumThickness[top] > 0.0)) { break; }
-        let distanceScale = walkHit.dist / mediumThickness[top];
+        let segmentDistance = walkHit.dist + walkaroundRayOriginBias();
+        let distanceScale = segmentDistance / mediumThickness[top];
         let rgbBeer = pow(clamp(mediumBeer[top], vec3f(0.0), vec3f(1.0)), vec3f(distanceScale));
         glassPathThroughput = glassPathThroughput * materialSpectralAttenuation(
-          mediumTri[top], walkHit.dist, rgbBeer,
+          mediumTri[top], segmentDistance, rgbBeer,
         );
       }
       if (max(glassPathThroughput.r, max(glassPathThroughput.g, glassPathThroughput.b)) <= 0.0) {
@@ -236,8 +257,18 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
       );
       let walkRough = faceLayerRoughness(walkRm.x, walkLayer);
       let walkIor = materialDispersionIorRgb(walkHit.indices.w, decodeIor(walkWord));
-      let walkThickness = materialOpticalThickness(walkHit.indices.w);
-      let entering = dot(refractDir, walkHit.normal) < 0.0;
+      var walkThickness = materialOpticalThickness(walkHit.indices.w);
+      let walkThicknessTexel = sampleMaterialAtlasRawAtOffset(
+        walkHit.indices.w,
+        MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+        walkHit.uv,
+        materialAtlasUv1ForHit(walkHit),
+      );
+      if (walkThicknessTexel.x >= 0.0) {
+        walkThickness = walkThickness *
+          clamp(walkThicknessTexel.g, 0.0, 1.0);
+      }
+      let entering = walkHit.side >= 0.0;
       if (walkThickness > 0.0 && !entering && mediumDepth == 0u) { break; }
       let interfaceCost = select(1u, 2u, walkThickness <= 0.0);
       if (interfaceCount + interfaceCost > GLASS_WALK_MAX_INTERFACES) { break; }
@@ -247,19 +278,35 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
         walkMappedNormal,
         dot(walkMappedNormal, walkHit.normal) >= 0.0,
       );
-      let faceNormal = select(-alignedNormal, alignedNormal, entering);
+      let faceNormal = select(
+        -alignedNormal,
+        alignedNormal,
+        dot(refractDir, alignedNormal) < 0.0,
+      );
       if (dot(refractDir, faceNormal) >= 0.0) { break; }
       var incidentIor = vec3f(1.0);
       if (mediumDepth > 0u) {
         incidentIor = mediumIor[mediumDepth - 1u];
-      } else if (!entering) {
+      } else if (walkThickness > 0.0 && !entering) {
         incidentIor = walkIor;
       }
-      var targetIor = vec3f(1.0);
-      if (entering) {
+      var targetIor = walkIor;
+      if (walkThickness <= 0.0) {
+        // Reciprocal sheet: enclosing medium -> sheet -> enclosing medium.
         targetIor = walkIor;
-      } else if (mediumDepth > 1u) {
-        targetIor = mediumIor[mediumDepth - 2u];
+      } else if (entering) {
+        targetIor = walkIor;
+      } else {
+        let top = mediumDepth - 1u;
+        if (
+          mediumMaterialWord[top] != walkWord ||
+          mediumInstance[top] != walkHit.instanceIndex
+        ) {
+          break;
+        }
+        if (mediumDepth > 1u) {
+          targetIor = mediumIor[mediumDepth - 2u];
+        }
       }
       let interfaceBtdf = ggxSampleDielectricTransmission(
         faceNormal,
@@ -307,7 +354,7 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
           (exitBtdf.weight / exitBtdf.transmission) *
           faceLayerTransmission(exitLayer) * walkTransmission;
         refractDir = exitBtdf.direction;
-        walkOrigin = walkHitPos + refractDir * NORMAL_BIAS_GI;
+        walkOrigin = walkHitPos + refractDir * walkaroundRayOriginBias();
         continue;
       }
 
@@ -327,6 +374,8 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
         );
         mediumIor[mediumDepth] = walkIor;
         mediumTri[mediumDepth] = walkHit.indices.w;
+        mediumMaterialWord[mediumDepth] = walkWord;
+        mediumInstance[mediumDepth] = walkHit.instanceIndex;
         mediumBeer[mediumDepth] = walkBeer;
         mediumThickness[mediumDepth] = walkThickness;
         mediumDepth = mediumDepth + 1u;
@@ -334,7 +383,7 @@ export const RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL = /* wgsl */ `  const GLASS_WALK
         mediumDepth = mediumDepth - 1u;
       }
       refractDir = nextDir;
-      walkOrigin = walkHitPos + refractDir * NORMAL_BIAS_GI;
+      walkOrigin = walkHitPos + refractDir * walkaroundRayOriginBias();
     }
 
     if (!foundSurface) {
@@ -370,6 +419,13 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
       walkReceiverWord,
       safe_normalize(-refractDir),
     );
+    rGlass.receiverMaterialKey = restir_gi_receiver_domain_key(
+      walkHit.matColorPacked,
+      walkReceiverWord,
+      walkHit.indices.w,
+      select(0u, walkHit.instanceIndex, ubo.bvhMode == 1u),
+      walkReceiverPayload,
+    );
 
     let tier_raw_g = textureLoad(gi_tier, vec2i(fullPx), 0).r;
     let tier_g = clamp(tier_raw_g, 1u, 4u);
@@ -395,7 +451,10 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
         continue;
       }
 
-      let bounceRay = Ray(walkHitPos + walkHit.normal * NORMAL_BIAS_GI, wi);
+      let bounceRay = Ray(
+        walkHitPos + walkHit.normal * walkaroundRayOriginBias(),
+        wi,
+      );
       let bounceHit = traceSceneFirstHitAlphaMaskTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
 
@@ -430,7 +489,7 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
         );
         Lo_g = xsPayload_g.Lo;
       } else {
-        xs_g = walkHitPos + wi * RECONNECT_MAX_DIST;
+        xs_g = walkHitPos + wi * walkaroundReconnectMaxDistance();
         ns_g = -wi;
         Lo_g = envRadiance(wi);
       }
@@ -439,18 +498,27 @@ export const RIS_GI_GLASS_RESERVOIR_LOOP_WGSL = /* wgsl */ `    var rGlass: Rese
       // of the same estimator. Fold its RGB Fresnel, mapped transmission, and
       // distance-dependent Beer/spectral throughput into both the selected
       // payload and p-hat; shade must not apply those factors a second time.
+      if (sampleKind_g == GI_SAMPLE_ENVIRONMENT) {
+        Lo_g = walkaroundScaleEnvironmentRadiance(
+          Lo_g,
+          walkReceiverPayload.envMapIntensity,
+        );
+      }
       Lo_g = Lo_g * glassPathThroughput;
 
       var candidateVisibility_g: f32 = 1.0;
       var pHat_g: f32;
-      var tMax_g = 1e20;
+      var tMax_g = INFINITY;
       if (sampleKind_g == GI_SAMPLE_SURFACE) {
-        tMax_g = max(0.0, length(xs_g - walkHitPos) - 2e-3);
+        tMax_g = max(
+          0.0,
+          safe_length(xs_g - walkHitPos) - walkaroundRayEndMargin(),
+        );
       }
       let shadowTintCandidate_g = traceSceneAlphaTintTransmittanceTextured(
         ubo.bvhMode, ubo.tlasNodeCount,
 
-        walkHitPos + walkHit.normal * NORMAL_BIAS_GI,
+        walkHitPos + walkHit.normal * walkaroundRayOriginBias(),
         wi, tMax_g, ubo.triIntersectEpsilon,
         bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
       );

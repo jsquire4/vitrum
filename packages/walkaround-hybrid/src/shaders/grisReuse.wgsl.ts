@@ -21,7 +21,6 @@ export const GRIS_REUSE_WGSL = /* wgsl */ `// ==================================
 // canonical receiver measure with the inverse shift determinant.
 // ============================================================
 
-const GRIS_NORMAL_BIAS: f32 = 1e-3;
 const GRIS_MAX_FINITE_F32: f32 = 3.402823466e38;
 const GRIS_LOG_ZERO: f32 = -3.402823466e38;
 
@@ -33,11 +32,12 @@ fn grisFiniteVec3(value: vec3f) -> bool {
 
 fn grisSafeDirection(value: vec3f) -> vec3f {
   if (!grisFiniteVec3(value)) { return vec3f(0.0); }
-  let lengthSquared = dot(value, value);
-  if (!reservoirGiFinite(lengthSquared) || !(lengthSquared > 1e-12)) {
+  let scale = max(abs(value.x), max(abs(value.y), abs(value.z)));
+  if (!(scale > 0.0)) {
     return vec3f(0.0);
   }
-  return value * inverseSqrt(lengthSquared);
+  let scaled = value / scale;
+  return scaled / length(scaled);
 }
 
 fn grisHistoryEpoch() -> u32 {
@@ -54,10 +54,24 @@ fn grisReconnectionGeometryTerm(x1: vec3f, x2: vec3f, n2: vec3f) -> f32 {
     return 0.0;
   }
   let d = x2 - x1;
-  let dist2 = dot(d, d);
-  if (!reservoirGiFinite(dist2) || !(dist2 > 1e-12)) { return 0.0; }
-  let result = abs(dot(n2, d * inverseSqrt(dist2))) / dist2;
-  return select(0.0, result, reservoirGiFinite(result) && result > 0.0);
+  let distanceScale = max(abs(d.x), max(abs(d.y), abs(d.z)));
+  let normalScale = max(abs(n2.x), max(abs(n2.y), abs(n2.z)));
+  if (!(distanceScale > 0.0) || !(normalScale > 0.0)) { return 0.0; }
+  let scaledDistance = d / distanceScale;
+  let scaledNormal = n2 / normalScale;
+  let distanceLength = length(scaledDistance);
+  let normalLength = length(scaledNormal);
+  let cosine = abs(dot(
+    scaledNormal / normalLength,
+    scaledDistance / distanceLength,
+  ));
+  if (!(cosine > 0.0) || !reservoirGiFinite(cosine)) { return 0.0; }
+  let inverseDistanceScale = 1.0 / distanceScale;
+  let result =
+    cosine * inverseDistanceScale * inverseDistanceScale /
+    (distanceLength * distanceLength);
+  if (!reservoirGiFinite(result)) { return GRIS_MAX_FINITE_F32; }
+  return max(result, 0.0);
 }
 
 fn grisDirection(sampleKind: u32, xv: vec3f, xs: vec3f, storedDirection: vec3f) -> vec3f {
@@ -69,7 +83,7 @@ fn grisDirection(sampleKind: u32, xv: vec3f, xs: vec3f, storedDirection: vec3f) 
 
 fn grisMappedXs(sampleKind: u32, xv: vec3f, xs: vec3f, storedDirection: vec3f) -> vec3f {
   if (sampleKind == GI_SAMPLE_ENVIRONMENT) {
-    return xv + grisSafeDirection(storedDirection) * 100.0;
+    return xv + grisSafeDirection(storedDirection) * walkaroundReconnectMaxDistance();
   }
   return xs;
 }
@@ -93,7 +107,17 @@ fn grisMaterialTargetAt(
   storedLo: vec3f,
 ) -> f32 {
   let wi = grisDirection(sampleKind, xv, xs, storedDirection);
-  let Lo = grisMappedLo(sampleKind, storedDirection, storedLo);
+  var Lo = grisMappedLo(sampleKind, storedDirection, storedLo);
+  if (
+    sampleKind == GI_SAMPLE_ENVIRONMENT &&
+    receiverSurface.hit &&
+    length(receiverSurface.pos - xv) <= 5e-2
+  ) {
+    Lo = walkaroundScaleEnvironmentRadiance(
+      Lo,
+      receiverSurface.envMapIntensity,
+    );
+  }
   if (!grisFiniteVec3(nv) || !grisFiniteVec3(Lo)
    || !(dot(wi, wi) > 0.0)) { return 0.0; }
   let mappedXs = grisMappedXs(sampleKind, xv, xs, storedDirection);
@@ -117,17 +141,17 @@ fn grisProxyVisibilityAt(
   let wi = grisDirection(sampleKind, xv, xs, storedDirection);
   if (!grisFiniteVec3(xv) || !grisFiniteVec3(nv)
    || !(dot(wi, wi) > 0.0)) { return 0.0; }
-  var tMax = 1e20;
+  var tMax = INFINITY;
   if (sampleKind == GI_SAMPLE_SURFACE) {
-    let d = length(xs - xv);
-    if (d <= 2.0 * GRIS_NORMAL_BIAS) { return 0.0; }
-    tMax = d - 2.0 * GRIS_NORMAL_BIAS;
+    let d = safe_length(xs - xv);
+    if (d <= walkaroundRayEndMargin()) { return 0.0; }
+    tMax = d - walkaroundRayEndMargin();
   }
   if (max(0.0, dot(nv, wi)) <= 0.0) { return 0.0; }
   let tint = traceSceneAlphaTintTransmittanceTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
 
-    xv + nv * GRIS_NORMAL_BIAS, wi, tMax, ubo.triIntersectEpsilon,
+    xv + nv * walkaroundRayOriginBias(), wi, tMax, ubo.triIntersectEpsilon,
     bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
   );
   let visibility = luminance(tint);

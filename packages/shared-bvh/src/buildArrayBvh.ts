@@ -310,9 +310,9 @@ export interface BuildArrayBvhOpts {
   /**
    * Maximum interior depth. Defaults to the canonical live-traversal-safe
    * budget and may only be lowered for stricter callers or adversarial tests.
-   * Reaching the cap emits the remaining triangles as one leaf; if that leaf
-   * would exceed the packed 16-bit triangle-count field, the build fails
-   * synchronously instead of producing a tree a live GPU traversal can drop.
+   * Reaching the cap is legal only when the remaining subset already fits
+   * `maxLeafTriangles`; otherwise the build fails synchronously rather than
+   * violating either the caller's hard leaf cap or the traversal-depth cap.
    */
   maxDepth?: number;
 }
@@ -466,10 +466,10 @@ export function buildArrayBvh(
     nodeIndex: number,
     label: string,
   ): number => {
-    if (subset.length > 0xffff) {
+    if (subset.length > maxLeafTriangles) {
       throw new Error(
-        `[@vitrum/shared-bvh/buildArrayBvh] ${label}triangle count ${subset.length} exceeds the ` +
-        `16-bit limit (0xFFFF = 65535). Split the mesh into smaller primitives before packing.`,
+        `[@vitrum/shared-bvh/buildArrayBvh] ${label}triangle count ${subset.length} exceeds ` +
+        `maxLeafTriangles=${maxLeafTriangles}. The configured leaf maximum is a hard bound.`,
       );
     }
     const leafOffset = orderedTriangles.length;
@@ -536,7 +536,14 @@ export function buildArrayBvh(
     // Stop before allocating either child. Keeping the cap outside the
     // centroid scan makes the depth invariant independent of input ordering.
     if (depth >= maxDepth) {
-      return makeLeaf(node, subset, nodeIndex, 'Depth-cap leaf ');
+      const encodingSuffix = subset.length > 0xffff
+        ? ' and the packed 16-bit limit (0xFFFF = 65535)'
+        : '';
+      throw new Error(
+        `[@vitrum/shared-bvh/buildArrayBvh] maxDepth=${maxDepth} prevents enforcing ` +
+        `maxLeafTriangles=${maxLeafTriangles}: depth ${depth} still contains ` +
+        `${subset.length} triangles${encodingSuffix}. Raise maxDepth or split the mesh.`,
+      );
     }
 
     // Compute centroid AABB for bin placement.
@@ -646,31 +653,44 @@ export function buildArrayBvh(
       }
     }
 
-    // If SAH didn't find a split cheaper than making a leaf, create a leaf.
-    // (This happens when all centroids are co-planar on every axis, or when
-    // the SAH cost exceeds N.)
-    if (bestCost >= leafCost || bestCost === Infinity) {
-      return makeLeaf(node, subset, nodeIndex, 'Forced-leaf ');
-    }
-
-    // Partition at the chosen bin boundary.
-    const span = cMax[bestAxis]! - cMin[bestAxis]!;
-    const left: TriangleRecord[] = [];
-    const right: TriangleRecord[] = [];
-    for (const r of subset) {
-      const t = (r.centroid[bestAxis]! - cMin[bestAxis]!) / span;
-      const binIdx = Math.min(numBins - 1, Math.floor(t * numBins));
-      if (binIdx <= bestSplit) {
-        left.push(r);
-      } else {
-        right.push(r);
+    let splitAxis = bestAxis;
+    let left: TriangleRecord[] = [];
+    let right: TriangleRecord[] = [];
+    if (bestCost < leafCost && bestCost !== Infinity) {
+      // Partition at the chosen bin boundary.
+      const span = cMax[bestAxis]! - cMin[bestAxis]!;
+      for (const r of subset) {
+        const t = (r.centroid[bestAxis]! - cMin[bestAxis]!) / span;
+        const binIdx = Math.min(numBins - 1, Math.floor(t * numBins));
+        if (binIdx <= bestSplit) {
+          left.push(r);
+        } else {
+          right.push(r);
+        }
       }
     }
 
-    // Degenerate partition: SAH chose a split that put everything on one side.
-    // Fall back to a leaf to avoid infinite recursion.
+    // A configured leaf maximum is a hard bound. If SAH prefers a leaf, all
+    // centroids coincide, or finite-precision binning degenerates, fall back to
+    // a deterministic balanced median/index split instead of emitting an
+    // arbitrarily large leaf.
     if (left.length === 0 || right.length === 0) {
-      return makeLeaf(node, subset, nodeIndex, 'Degenerate-partition leaf ');
+      splitAxis = 0;
+      let widestSpan = cMax[0] - cMin[0];
+      for (let axis = 1; axis < 3; axis += 1) {
+        const axisSpan = cMax[axis]! - cMin[axis]!;
+        if (axisSpan > widestSpan) {
+          splitAxis = axis;
+          widestSpan = axisSpan;
+        }
+      }
+      const ordered = [...subset].sort((a, b) => {
+        const delta = a.centroid[splitAxis]! - b.centroid[splitAxis]!;
+        return delta !== 0 ? delta : a.triIndex - b.triIndex;
+      });
+      const midpoint = Math.floor(ordered.length / 2);
+      left = ordered.slice(0, midpoint);
+      right = ordered.slice(midpoint);
     }
 
     // Recurse. Left subtree is built first (its root is nodeIndex + 1).
@@ -681,7 +701,7 @@ export function buildArrayBvh(
     // Left child is always nodeIndex + 1 (the immediately-following node).
     // Invariant: 1 ≤ rightChildOrTriOffset < totalNodes for all interior nodes.
     node.rightChildOrTriOffset = rightChild - nodeIndex;
-    node.splitAxisOrTriCount = bestAxis;
+    node.splitAxisOrTriCount = splitAxis;
     return nodeIndex;
   };
 

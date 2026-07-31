@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RCDispatcher } from '../src/cascadeDispatch.js';
 
 describe('RCDispatcher bind group layout', () => {
-  it('declares rgba32float material atlas textures as unfilterable', () => {
+  it('declares the packed material atlas as uint while retaining float metadata textures', () => {
     const g = globalThis as unknown as { GPUShaderStage?: { COMPUTE: number } };
     g.GPUShaderStage ??= { COMPUTE: 4 };
 
@@ -26,7 +26,7 @@ describe('RCDispatcher bind group layout', () => {
       (entries.get(binding) as (GPUBindGroupLayoutEntry & { texture?: GPUTextureBindingLayout }) | undefined)?.texture;
 
     expect(textureEntry(16)).toMatchObject({
-      sampleType: 'unfilterable-float',
+      sampleType: 'uint',
       viewDimension: '2d-array',
     });
     expect(textureEntry(17)).toMatchObject({

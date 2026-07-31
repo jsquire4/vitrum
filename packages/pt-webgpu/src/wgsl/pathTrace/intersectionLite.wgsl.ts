@@ -17,7 +17,10 @@ fn hitMaterialId(hit: SceneHit) -> u32 {
 }
 
 fn nextSidedTraversalCursor(cursor: f32, hitDist: f32) -> f32 {
-  let step = max(max(params.triIntersectEpsilon, 1e-5), abs(hitDist) * 1e-6);
+  let step = max(
+    max(params.triIntersectEpsilon, 1.175494351e-38),
+    abs(hitDist) * (4.0 * 1.192092896e-7),
+  );
   let fromHit = hitDist + step;
   return select(fromHit, cursor + step, !(fromHit > cursor));
 }

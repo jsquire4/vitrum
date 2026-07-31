@@ -108,10 +108,13 @@ export function sanitizeNeuralNormal(
   const sx = sanitizeNeuralSigned(x);
   const sy = sanitizeNeuralSigned(y);
   const sz = sanitizeNeuralSigned(z);
-  const lengthSquared = sx * sx + sy * sy + sz * sz;
-  if (!Number.isFinite(lengthSquared) || lengthSquared < 1e-6) return [0, 1, 0];
-  const inverseLength = 1 / Math.sqrt(lengthSquared);
-  return [sx * inverseLength, sy * inverseLength, sz * inverseLength];
+  const scale = Math.max(Math.abs(sx), Math.abs(sy), Math.abs(sz));
+  if (!(scale > 0) || !Number.isFinite(scale)) return [0, 1, 0];
+  const nx = sx / scale;
+  const ny = sy / scale;
+  const nz = sz / scale;
+  const inverseLength = 1 / Math.hypot(nx, ny, nz);
+  return [nx * inverseLength, ny * inverseLength, nz * inverseLength];
 }
 
 function wgslNumber(value: number): string {
@@ -161,10 +164,15 @@ fn neuralSanitizeNormal(value: vec3f) -> vec3f {
     neuralSanitizeSigned(value.y),
     neuralSanitizeSigned(value.z),
   );
-  let lengthSquared = dot(finiteValue, finiteValue);
-  let safe = select(vec3f(0.0, 1.0, 0.0), finiteValue,
-                    neuralFinite(lengthSquared) && lengthSquared >= 1e-6);
-  return normalize(safe);
+  let scale = max(
+    abs(finiteValue.x),
+    max(abs(finiteValue.y), abs(finiteValue.z)),
+  );
+  if (!(scale > 0.0) || !neuralFinite(scale)) {
+    return vec3f(0.0, 1.0, 0.0);
+  }
+  let scaled = finiteValue / scale;
+  return scaled / length(scaled);
 }
 `;
 }

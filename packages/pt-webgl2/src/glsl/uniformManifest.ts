@@ -85,6 +85,8 @@ export const UNIFORM_MANIFEST = [
   // ── image ─────────────────────────────────────────────────────────────────
   { glslName: 'resolution',            glslType: 'vec2',             frameKey: 'resolution' },
   { glslName: 'opacity',               glslType: 'float',            frameKey: 'internal' },
+  { glslName: 'uTileOrigin',           glslType: 'vec2',             frameKey: 'internal' },
+  { glslName: 'uAccumHistory',         glslType: 'sampler2D',        frameKey: 'samplerOrStruct' },
 ] as const satisfies readonly UniformManifestEntry[];
 
 // ── D10.5: compile-time exhaustiveness gate ───────────────────────────────────
@@ -112,6 +114,8 @@ export const UNIFORM_MANIFEST = [
 //   tonemapMode          — drives PresentPass only; no PT shader uniform counterpart
 //   exposure             — drives PresentPass only; no PT shader uniform counterpart
 //   outputColorSpace     — drives PresentPass only; no PT shader uniform counterpart
+//   rayOriginBias        — declared before common helpers because RAY_OFFSET is
+//                          expanded while those helpers are parsed
 
 type _ManifestFrameKey = (typeof UNIFORM_MANIFEST)[number]['frameKey'];
 type _HandledSeparately =
@@ -126,7 +130,8 @@ type _HandledSeparately =
   | 'dof'
   | 'tonemapMode'
   | 'exposure'
-  | 'outputColorSpace';
+  | 'outputColorSpace'
+  | 'rayOriginBias';
 
 // Compile-time assertion: every FrameUniforms key must be in the manifest OR in
 // _HandledSeparately. If a new field is added to FrameUniforms without updating
@@ -167,7 +172,9 @@ const UNIFORM_DECLS = /* glsl */ `
 					uniform LightsInfo lights;
 
 						// B4 — mesh-area triangle lights (NEE). uMeshLights packs 6 texels per
-						// emissive triangle (meshAreaLights.ts layout); uMeshLightCount triangles;
+						// emissive triangle (meshAreaLights.ts layout, including an exact
+						// BVH target face id split across s5.r/a as low/high u16 words);
+						// uMeshLightCount triangles;
 						// the sampler uses uTotalEmissivePower =
 						// Σ luminance(radiance)·area so mapped texel-cell
 						// lights are selected by emitted power, and forward-hit MIS can recover the
@@ -205,8 +212,10 @@ const UNIFORM_DECLS = /* glsl */ `
 					uniform int seed;
 
 					// image
-					uniform vec2 resolution;
-					uniform float opacity;
+						uniform vec2 resolution;
+						uniform float opacity;
+						uniform vec2 uTileOrigin;
+						uniform sampler2D uAccumHistory;
 
 					varying vec2 vUv;
 

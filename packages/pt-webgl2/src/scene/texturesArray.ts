@@ -18,6 +18,13 @@
 
 import type { MaterialSpec } from '@vitrum/core';
 import {
+  packNonNegativeRadianceScalarF32,
+  packRadianceRgbProductF32,
+  packRadianceRgbScaleF32,
+  type RadianceRgb,
+} from '@vitrum/shared-bvh';
+import { resolveEmissiveIntensity } from '@vitrum/shared-samplers';
+import {
   finiteFloat16Bits,
   float16BitsToFloat32,
   float32ToFloat16Bits,
@@ -638,8 +645,16 @@ function inspectHandlePixels(
       `dataType "${dataType}" requires ${expected}, received ${backingType}`,
     );
   }
+  // A Float32 payload is already in a linear numeric domain unless the host
+  // explicitly labels it sRGB. This matches the shared decoder and prevents an
+  // unhinted HDR emissive payload from being clamped to [0, 1] and decoded a
+  // second time merely because emissiveMap is a color-role map.
   const sourceColorSpace =
-    hint?.colorSpace === 'srgb' || hint?.colorSpace === 'linear' ? hint.colorSpace : undefined;
+    hint?.colorSpace === 'srgb' || hint?.colorSpace === 'linear'
+      ? hint.colorSpace
+      : dataType === 'float32'
+        ? 'linear'
+        : undefined;
   return {
     width,
     height,
@@ -1217,6 +1232,7 @@ function validateTextureAtlasPlan(
 
 function materializeTextureAtlasPlan(
   plan: TextureAtlasPlan,
+  materials: readonly MaterialSpec[],
   options?: TextureAtlasBuildOptions,
 ): TextureAtlas {
   const {
@@ -1267,7 +1283,7 @@ function materializeTextureAtlasPlan(
       options,
     );
   });
-  return {
+  const atlas: TextureAtlas = {
     data,
     storageClass,
     format: storageClass === 'hdr' ? 'rgba16f' : 'rgba8unorm',
@@ -1288,6 +1304,103 @@ function materializeTextureAtlasPlan(
     sourceDimensions,
     sourcePlacements,
   };
+  validateMaterialRadianceEnvelope(atlas, materials);
+  return atlas;
+}
+
+type RadianceTextureRef =
+  | NonNullable<MaterialSpec['emissiveMap']>
+  | NonNullable<MaterialSpec['lightMap']>;
+
+/**
+ * Validate the exact binary16 texels that WebGL samples against the exact
+ * binary32 material factor that the materials texture publishes. This runs
+ * after CPU atlas materialization but before any WebGL allocation or upload.
+ */
+function validateRadianceMapUse(
+  atlas: TextureAtlas,
+  ref: RadianceTextureRef,
+  colorSpace: TextureSampleColorSpace,
+  factor: RadianceRgb,
+  label: string,
+): void {
+  const handle = ref.handle;
+  if (handle == null) return;
+  const placement = atlas.layerOfByColorSpace.placements?.[colorSpace].get(handle);
+  if (placement == null) {
+    throw new Error(
+      `[pt-webgl2] internal HDR material texture placement missing for ${label}.`,
+    );
+  }
+  const maxReachableLod =
+    ref.mipFilter != null && ref.mipFilter !== 'none'
+      ? Math.floor(Math.log2(Math.max(placement.width, placement.height)))
+      : 0;
+  for (let lod = 0; lod <= maxReachableLod; lod += 1) {
+    const level = atlas.mipLevels[lod];
+    if (level == null || !(level.data instanceof Uint16Array)) {
+      throw new Error(
+        `[pt-webgl2] internal HDR material texture mip ${lod} missing for ${label}.`,
+      );
+    }
+    const originX = Math.floor(placement.x / 2 ** lod);
+    const originY = Math.floor(placement.y / 2 ** lod);
+    const width = Math.max(1, Math.floor(placement.width / 2 ** lod));
+    const height = Math.max(1, Math.floor(placement.height / 2 ** lod));
+    const layerBase = placement.layer * level.dim * level.dim * 4;
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const offset =
+          layerBase + ((originY + y) * level.dim + originX + x) * 4;
+        const texel: RadianceRgb = [
+          float16BitsToFloat32(level.data[offset] ?? 0),
+          float16BitsToFloat32(level.data[offset + 1] ?? 0),
+          float16BitsToFloat32(level.data[offset + 2] ?? 0),
+        ];
+        packRadianceRgbProductF32(
+          factor,
+          texel,
+          `${label} mip ${lod} texel (${x}, ${y}) radiance`,
+        );
+      }
+    }
+  }
+}
+
+function validateMaterialRadianceEnvelope(
+  atlas: TextureAtlas,
+  materials: readonly MaterialSpec[],
+): void {
+  if (atlas.storageClass !== 'hdr') return;
+  materials.forEach((material, materialIndex) => {
+    if (material.emissiveMap != null) {
+      const emissiveFactor = packRadianceRgbScaleF32(
+        material.emissive ?? [0, 0, 0],
+        resolveEmissiveIntensity(material.emissiveIntensity),
+        `pt-webgl2 material ${materialIndex} emissiveMap factor`,
+      ).scaled;
+      validateRadianceMapUse(
+        atlas,
+        material.emissiveMap,
+        'srgb',
+        emissiveFactor,
+        `pt-webgl2 material ${materialIndex}.emissiveMap`,
+      );
+    }
+    if (material.lightMap != null) {
+      const lightMapIntensity = packNonNegativeRadianceScalarF32(
+        material.lightMapIntensity ?? 1,
+        `pt-webgl2 material ${materialIndex}.lightMapIntensity`,
+      );
+      validateRadianceMapUse(
+        atlas,
+        material.lightMap,
+        'linear',
+        [lightMapIntensity, lightMapIntensity, lightMapIntensity],
+        `pt-webgl2 material ${materialIndex}.lightMap`,
+      );
+    }
+  });
 }
 
 /**
@@ -1303,7 +1416,7 @@ export function packTextureAtlas(
   const plan = planTextureAtlas(materials, options);
   if (plan == null) return null;
   validateTextureAtlasPlan(plan, options);
-  return materializeTextureAtlasPlan(plan, options);
+  return materializeTextureAtlasPlan(plan, materials, options);
 }
 
 export interface MaterialTextureAtlases {
@@ -1403,11 +1516,19 @@ export function packMaterialTextureAtlases(
     ldr:
       prepared.ldrPlan == null
         ? null
-        : materializeTextureAtlasPlan(prepared.ldrPlan, prepared.ldrOptions),
+        : materializeTextureAtlasPlan(
+            prepared.ldrPlan,
+            materials,
+            prepared.ldrOptions,
+          ),
     hdr:
       prepared.hdrPlan == null
         ? null
-        : materializeTextureAtlasPlan(prepared.hdrPlan, prepared.hdrOptions),
+        : materializeTextureAtlasPlan(
+            prepared.hdrPlan,
+            materials,
+            prepared.hdrOptions,
+          ),
   };
 }
 

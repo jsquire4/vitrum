@@ -26,6 +26,10 @@ import {
 } from './wgslModules.js';
 import type { CompositePass } from './passes/index.js';
 import type { FrameResources } from './resourceManager.js';
+import {
+  assertHybridSwapChainFormat,
+  hybridCompositeFragmentConstants,
+} from '../presentationTarget.js';
 
 const CAPTURE_FORMAT: GPUTextureFormat = 'rgba8unorm';
 
@@ -73,6 +77,10 @@ export class FrameCaptureHelper {
     bglCache: BGLCache,
     res: FrameResources,
   ): Promise<Float32Array | null> {
+    assertHybridSwapChainFormat(
+      swapChainFormat,
+      'FrameCaptureHelper.captureFrame.swapChainFormat',
+    );
     if (width <= 0 || height <= 0) return null;
 
     // ── Resolve / lazily compile the capture render pipeline ──────────────
@@ -102,6 +110,9 @@ export class FrameCaptureHelper {
             module: compFragSM,
             entryPoint: 'fragMain',
             targets: [{ format: CAPTURE_FORMAT }],
+            // The capture target is non-sRGB. Preserve the requested output
+            // transfer by running the OETF in the fragment shader.
+            constants: hybridCompositeFragmentConstants(CAPTURE_FORMAT),
           },
           primitive: { topology: 'triangle-list' },
         });

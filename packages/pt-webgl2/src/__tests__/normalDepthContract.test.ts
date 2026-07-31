@@ -15,6 +15,10 @@ describe('normalDepth output contract', () => {
     expect(glsl).toContain('if ( ! gbufWritten )');
     expect(glsl).not.toContain('if ( state.firstRay && ! gbufWritten )');
     expect(glsl).toContain(
+      'gbufLinearDepth = vitrumSaturatedLengthVec3(',
+    );
+    expect(glsl).toContain('geometricHitPoint - primaryRayOrigin');
+    expect(glsl).not.toContain(
       'gbufLinearDepth = distance( ray.origin + ray.direction * surfaceHit.dist, primaryRayOrigin );',
     );
     expect(glsl).toContain('gNormalDepth = vec4( gbufNormalEnc, gbufLinearDepth );');

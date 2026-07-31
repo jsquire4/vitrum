@@ -47,6 +47,7 @@ describe('B3 — directional IBL composes into ris/risGi/shade', () => {
       expect(countOccurrences(src, 'fn envImportanceSample(')).toBe(1);
       expect(countOccurrences(src, 'struct EnvParams {')).toBe(1);
       expect(countOccurrences(src, '@group(1) @binding(15) var env_map')).toBe(1);
+      expect(countOccurrences(src, '@group(1) @binding(18) var env_pdf')).toBe(1);
       expect(countOccurrences(src, '@group(1) @binding(19) var<uniform> envParams')).toBe(1);
       // The helpers reference symbols that MUST be in scope by composition order.
       expect(src).toContain('fn safe_normalize');
@@ -89,6 +90,9 @@ describe('Wave 4 — env DI NEE candidate call sites', () => {
     expect(src).toContain('fn envMarginalRowFromCdf(');
     expect(src).toContain('fn envConditionalColumnFromCdf(');
     expect(src).toContain('if (cdf <= xi)');
+    expect(src).toContain('(f32(xTexel) + rand_f32(rng)) / f32(w)');
+    expect(src).toContain('mix(cos(theta0), cos(theta1), rand_f32(rng))');
+    expect(src).not.toContain('(f32(xTexel) + 0.5) / f32(w)');
     expect(src).not.toContain('floor(xiV * f32(h))');
     expect(src).not.toContain('floor(xiU * f32(w))');
   });

@@ -155,6 +155,7 @@ struct RptSuffixMaterial {
   thinFilm: ThinFilmInterface,
   envMapIntensity: f32,
   isUnlit: bool,
+  emissionAdmitted: bool,
 }
 
 // Trace a suffix segment through stochastic/masked alpha the same way the main
@@ -162,7 +163,7 @@ struct RptSuffixMaterial {
 // origin, so callers reconstruct hit positions against the ray that actually hit.
 fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, PtRngState>) -> RptAlphaTraceHit {
   var ray = rayIn;
-  var hit = traceClosest(ray, 1e-4, INFINITY);
+  var hit = traceClosest(ray, ptRayTMin(), INFINITY);
   var valid = true;
   let surfaceHitLimit = sceneSurfaceHitLimit();
   var surfaceHitCount = 0u;
@@ -179,8 +180,9 @@ fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, PtRngState>) -> RptA
       hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
     );
     if (!passesThrough) { break; }
-    ray.origin = ray.origin + ray.direction * (hit.dist + 1e-4);
-    hit = traceClosest(ray, 1e-4, INFINITY);
+    ray.origin =
+      ray.origin + ray.direction * (hit.dist + ptRayTMin());
+    hit = traceClosest(ray, ptRayTMin(), INFINITY);
   }
   var out: RptAlphaTraceHit;
   out.hit = hit;
@@ -212,7 +214,10 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);
   out.roughness = clamp(mat.roughness * ormSample.g, 0.0, 1.0);
   out.metallic = clamp(mat.metallic * ormSample.b, 0.0, 1.0);
-  out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;
+  out.emissive = ptFiniteNonNegativeRadianceProduct(
+    mat.emissive,
+    sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb,
+  );
   out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
   out.ior = mat.ior;
   if (params.spectralEnabled != 0u && mat.dispersionAbbe > 0.0) {
@@ -266,6 +271,7 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
   out.anisotropyRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
   out.envMapIntensity = materialEnvMapIntensity(matId);
   out.isUnlit = mat.isUnlit;
+  out.emissionAdmitted = isFrontFace || mat.doubleSided;
 
   let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
   let layerRoughness = select(mat.backLayerRoughness, mat.frontLayerRoughness, isFrontFace);
@@ -293,12 +299,12 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
 
 fn rptSampleDirectionalCone(rng: ptr<function, PtRngState>, axisIn: vec3f, angularDiameter: f32) -> vec3f {
   var sampleDir = safe_normalize(axisIn);
-  if (angularDiameter > 0.0) {
-    let cosHalfAngle = cos(angularDiameter * 0.5);
+  if (!ptDirectionalConeIsDelta(angularDiameter)) {
     let xi1 = rand_f32(rng);
     let xi2 = rand_f32(rng);
-    let cosTheta = mix(cosHalfAngle, 1.0, xi1);
-    let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    let sinCosTheta = ptDirectionalConeSinCos(angularDiameter, xi1);
+    let sinTheta = sinCosTheta.x;
+    let cosTheta = sinCosTheta.y;
     let phi = 6.28318530718 * xi2;
     let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sampleDir.x) > 0.9);
     let basisY = normalize(cross(sampleDir, tangentX));
@@ -362,8 +368,14 @@ fn rptDirectAtVertex(
       let lightDir = rptSampleDirectionalCone(rng, dDirAD.xyz, angDiam);
       let nDotL = max(0.0, dot(normal, lightDir));
       if (nDotL > 0.0) {
-        let shadowRay = Ray(pos + normal * 1e-3, lightDir);
-        if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY, rng)) {
+        let shadowRay = Ray(
+          pos + normal * ptRayOriginBias(),
+          lightDir,
+        );
+        if (
+          dirShadowDisabled ||
+          !traceAny(shadowRay, ptRayTMin(), INFINITY, rng)
+        ) {
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
             baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, lightDir,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
@@ -391,33 +403,45 @@ fn rptDirectAtVertex(
     let rshapeR = rectAreaLights[rb + 3u];
     let rr = rshapeR.rgb;
     let isDiscR = abs(rshapeR.w - 1.0) < 0.5;
+    let areaMeasure = measureAreaVector(
+      ru, rv, select(4.0, PI, isDiscR),
+    );
     let xi1r = rand_f32(rng);
     let xi2r = rand_f32(rng);
     var lpos: vec3f;
-    var area: f32;
     if (isDiscR) {
       let disc = concentricDiscSample(
         vec2f(xi1r * 2.0 - 1.0, xi2r * 2.0 - 1.0),
       );
       lpos = rpos + ru * disc.x + rv * disc.y;
-      area = PI * length(cross(ru, rv));
     } else {
       lpos = rpos + ru * (xi1r * 2.0 - 1.0) + rv * (xi2r * 2.0 - 1.0);
-      area = 4.0 * length(cross(ru, rv));
     }
     let toLight = lpos - pos;
-    let dist2 = dot(toLight, toLight);
-    if (dist2 <= 0.0 || area <= 0.0) { continue; }
-    let dist = sqrt(dist2);
-    let wi = toLight / dist;
+    let dist = safe_length(toLight);
+    if (!(dist > 0.0) || areaMeasure.valid == 0u) { continue; }
+    let wi = safe_normalize(toLight);
     let nDotL = max(dot(normal, wi), 0.0);
     if (nDotL > 0.0) {
-      let lightNormal = safe_normalize(cross(ru, rv));
+      let lightNormal = areaMeasure.normal;
       let cosLight = max(dot(lightNormal, -wi), 0.0);
       if (cosLight > 0.0) {
-        let lightPdf = dist2 / (cosLight * area);
-        let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
+        let lightPdf =
+          ptAreaToSolidAnglePdf(dist, cosLight, areaMeasure);
+        if (!(lightPdf > 0.0)) { continue; }
+        let shadowRay = Ray(
+          pos + normal * ptRayOriginBias(),
+          wi,
+        );
+        if (
+          rectShadowDisabled ||
+          !traceAny(
+            shadowRay,
+            ptRayTMin(),
+            ptFiniteSegmentTMax(dist),
+            rng,
+          )
+        ) {
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
             baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
@@ -442,14 +466,26 @@ fn rptDirectAtVertex(
     let ptDecay   = ptExtra.y;
     let ptShadowDisabled = ptExtra.z > 0.5;
     let toPoint = lp - pos;
-    let dist2 = max(dot(toPoint, toPoint), 1e-5);
-    let dist = sqrt(dist2);
-    if (ptMaxDist > 0.0 && dist > ptMaxDist) { continue; }
-    let wi = toPoint / dist;
+    let dist = safe_length(toPoint);
+    if (!(dist > 0.0) || (ptMaxDist > 0.0 && dist > ptMaxDist)) {
+      continue;
+    }
+    let wi = safe_normalize(toPoint);
     let nDotL = max(0.0, dot(normal, wi));
     if (nDotL > 0.0) {
-      let shadowRay = Ray(pos + normal * 1e-3, wi);
-      if (ptShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
+      let shadowRay = Ray(
+        pos + normal * ptRayOriginBias(),
+        wi,
+      );
+      if (
+        ptShadowDisabled ||
+        !traceAny(
+          shadowRay,
+          ptRayTMin(),
+          ptFiniteSegmentTMax(dist),
+          rng,
+        )
+      ) {
         let attenuation = pointSpotDistanceAttenuation(dist, ptMaxDist, ptDecay);
         let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
           baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, wi,
@@ -479,16 +515,28 @@ fn rptDirectAtVertex(
     let spDecay   = spExtra.y;
     let spShadowDisabled = spExtra.z > 0.5;
     let toSpot = spos - pos;
-    let dist2 = max(dot(toSpot, toSpot), 1e-5);
-    let dist = sqrt(dist2);
-    if (spMaxDist > 0.0 && dist > spMaxDist) { continue; }
-    let wi = toSpot / dist;
+    let dist = safe_length(toSpot);
+    if (!(dist > 0.0) || (spMaxDist > 0.0 && dist > spMaxDist)) {
+      continue;
+    }
+    let wi = safe_normalize(toSpot);
     let coneCos = dot(-wi, spotDir);
     if (coneCos >= cosOuter) {
       let nDotL = max(0.0, dot(normal, wi));
       if (nDotL > 0.0) {
-        let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (spShadowDisabled || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
+        let shadowRay = Ray(
+          pos + normal * ptRayOriginBias(),
+          wi,
+        );
+        if (
+          spShadowDisabled ||
+          !traceAny(
+            shadowRay,
+            ptRayTMin(),
+            ptFiniteSegmentTMax(dist),
+            rng,
+          )
+        ) {
           let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
           let attenuation = pointSpotDistanceAttenuation(dist, spMaxDist, spDecay);
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
@@ -523,19 +571,33 @@ fn rptDirectAtVertex(
       mi, vec3f(uu, vv, ww), lpos,
     );
     let toLight = lpos - pos;
-    let dist2 = dot(toLight, toLight);
-    let area = 0.5 * length(cross(b - a, c - a));
-    if (dist2 <= 0.0 || area <= 0.0) { continue; }
-    let dist = sqrt(dist2);
-    let wi = toLight / dist;
+    let dist = safe_length(toLight);
+    let areaMeasure = measureAreaVector(b - a, c - a, 0.5);
+    if (!(dist > 0.0) || areaMeasure.valid == 0u) { continue; }
+    let wi = safe_normalize(toLight);
     let nDotL = max(dot(normal, wi), 0.0);
     if (nDotL > 0.0) {
-      let lightNormal = safe_normalize(cross(b - a, c - a));
-      let cosLight = max(dot(lightNormal, -wi), 0.0);
+      let lightNormal = areaMeasure.normal;
+      let cosLight = meshAreaLightCosineTowardReceiver(
+        mi, lightNormal, -wi,
+      );
       if (cosLight > 0.0) {
-        let lightPdf = dist2 / (cosLight * area);
-        let shadowRay = Ray(pos + normal * 1e-3, wi);
-        if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), rng)) {
+        let lightPdf =
+          ptAreaToSolidAnglePdf(dist, cosLight, areaMeasure);
+        if (!(lightPdf > 0.0)) { continue; }
+        let shadowRay = Ray(
+          pos + normal * ptRayOriginBias(),
+          wi,
+        );
+        if (
+          meshAreaLights[mb + 3u].w > 0.5 ||
+          !traceAny(
+            shadowRay,
+            ptRayTMin(),
+            ptFiniteSegmentTMax(dist),
+            rng,
+          )
+        ) {
           let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
             baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, wi,
             clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
@@ -567,8 +629,11 @@ fn rptDirectAtVertex(
     }
     let nDotL = max(dot(normal, envDir), 0.0);
     if (nDotL > 1e-6) {
-      let shadowRay = Ray(pos + normal * 1e-3, envDir);
-      if (!traceAny(shadowRay, 1e-4, INFINITY, rng)) {
+      let shadowRay = Ray(
+        pos + normal * ptRayOriginBias(),
+        envDir,
+      );
+      if (!traceAny(shadowRay, ptRayTMin(), INFINITY, rng)) {
         let brdf = evaluateFiniteSameSideBrdfFullWithClearcoatNormal(
           baseColor, roughness, metallic, transmission, normal, clearcoatNormal, wo, envDir,
           clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
@@ -583,7 +648,14 @@ fn rptDirectAtVertex(
         // Mirror the megakernel environment estimators: spectral mode evaluates
         // env radiance at the hero wavelength, and the current surface's
         // envMapIntensity scales both the NEE and BSDF-escape halves.
-        let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envMapIntensity;
+        let envColorOut = ptScaleEnvironmentRadiance(
+          select(
+            envColor,
+            spectralEmissionAtHero(envColor, heroLambda),
+            params.spectralEnabled != 0u,
+          ),
+          envMapIntensity,
+        );
         let misWeight = powerHeuristic(envPdf, continuationPdf);
         contrib = contrib + suffixThroughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8);
       }
@@ -644,7 +716,7 @@ fn rptComputeLoAtReconnection(
 
     // Emission of this suffix vertex along wo (toward xv at b==0). Gated so an
     // onward diffuse bounce's NEE does not double-count the next hit's emission.
-    if (!prevAllowsAreaMis) {
+    if (!prevAllowsAreaMis && sm.emissionAdmitted) {
       Lo = Lo + suffixThroughput * emissive;
     }
     // Direct lighting (NEE) at this suffix vertex.
@@ -691,7 +763,10 @@ fn rptComputeLoAtReconnection(
     suffixThroughput = suffixThroughput * fOnward * nDotNext / max(cosSample.pdf, 1e-8);
     prevAllowsAreaMis = true; // diffuse onward bounce: next emission handled by NEE/MIS.
 
-    let nextTrace = rptTraceClosestAfterAlpha(Ray(pos + normal * 1e-3, nextDir), rng);
+    let nextTrace = rptTraceClosestAfterAlpha(
+      Ray(pos + normal * ptRayOriginBias(), nextDir),
+      rng,
+    );
     if (!nextTrace.valid) { return rptInvalidSuffixEstimate(); }
     let nextHit = nextTrace.hit;
     if (!nextHit.didHit) {
@@ -699,7 +774,11 @@ fn rptComputeLoAtReconnection(
       let envContribution = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
       let envNeePdf = environmentNeeProposalPdf(nextDir, normal);
       let escapeMisWeight = powerHeuristic(cosSample.pdf, envNeePdf);
-      Lo = Lo + suffixThroughput * envContribution * sm.envMapIntensity * escapeMisWeight;
+      let receiverEnvironment = ptScaleEnvironmentRadiance(
+        envContribution,
+        sm.envMapIntensity,
+      );
+      Lo = Lo + suffixThroughput * receiverEnvironment * escapeMisWeight;
       break;
     }
     pos = nextTrace.rayOrigin + nextDir * nextHit.dist;
@@ -775,7 +854,7 @@ fn rptSourceDirectionalPdfFull(
   roughness: f32,
   metallic: f32,
   transmission: f32,
-  ior: f32,
+  etaTOverI: f32,
   normal: vec3f,
   clearcoatNormal: vec3f,
   wo: vec3f,
@@ -795,7 +874,7 @@ fn rptSourceDirectionalPdfFull(
   thinFilm: ThinFilmInterface,
 ) -> f32 {
   return brdfDirectionalPdfFullSampledWithClearcoatNormal(
-    baseColor, roughness, metallic, transmission, ior, normal, clearcoatNormal, wo, wi,
+    baseColor, roughness, metallic, transmission, etaTOverI, normal, clearcoatNormal, wo, wi,
     clearcoat, clearcoatRoughness, sheen, sheenRoughness,
     iridescence, iridescenceIor, iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity,
@@ -809,6 +888,14 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
   let pixelIdx = gid.y * params.width + gid.x;
+
+  // A reconnection candidate contains the camera-visible vertex xv and at
+  // least the suffix root xs. With a one-vertex path budget no such candidate
+  // exists; leave the ordinary megakernel as the sole estimator.
+  if (params.maxBounces < 2u) {
+    storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
+    return;
+  }
 
   var rng = pcgInit(gid.x, gid.y, ptRngFrameKey(params.frameSeed, params.frameIndex));
   let jitter = vec2f(rand_f32(&rng), rand_f32(&rng));
@@ -830,7 +917,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   let vMatId = hitMaterialId(vHit);
   let vMat = decodeMaterial(vMatId);
   let xv = primaryRay.origin + primaryRay.direction * vHit.dist;
-  let vIsFront = dot(vHit.normal, primaryRay.direction) < 0.0;
+  let vIsFront = vHit.frontFace;
   var nv = select(-vHit.normal, vHit.normal, vIsFront);
   nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex, vIsFront);
   nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
@@ -994,7 +1081,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   // ~0 anyway), so dropping the single frame's sample is the correct, unbiased
   // choice; the temporal history is re-seeded the next non-degenerate frame.
   let pdfSrc = rptSourceDirectionalPdfFull(
-    baseColorV, roughnessV, metallicV, 0.0, iorV, nv, clearcoatNormalV, woV, wiRecon,
+    baseColorV, roughnessV, metallicV, 0.0, etaTOverIV, nv, clearcoatNormalV, woV, wiRecon,
     clearcoatV, clearcoatRoughnessV, sheenV, sheenRoughnessV,
     iridescenceV, iridescenceIorV, iridescenceThicknessMinV, iridescenceThicknessMaxV,
     specularColorV, specularIntensityV,
@@ -1005,7 +1092,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     return;
   }
 
-  let reconRay = Ray(xv + nv * 1e-3, wiRecon);
+  let reconRay = Ray(xv + nv * ptRayOriginBias(), wiRecon);
   let sTrace = rptTraceClosestAfterAlpha(reconRay, &rng);
   let sHit = sTrace.hit;
   if (!sTrace.valid) {
@@ -1029,9 +1116,9 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     let reconDirToXv = safe_normalize(xv - xs); // wo at xs (Lo is measured here)
     let sReservoirMat = rptSuffixMaterialAtHit(sHit, reconRay.direction, reconDirToXv, heroLambda);
     ns = sReservoirMat.normal;
-    // The suffix owns the same authored path-depth budget as the ordinary
-    // megakernel; silently truncating it to four bounces changes the estimator.
-    let suffixBounces = max(1u, params.maxBounces);
+    // xv was already shaded above. Charge it against the same vertex budget as
+    // the ordinary megakernel, leaving xs and onward vertices the remainder.
+    let suffixBounces = params.maxBounces - 1u;
     let suffixEstimate = rptComputeLoAtReconnection(
       &rng, xs, sHit, reconRay.direction, reconDirToXv, heroLambda, suffixBounces,
     );

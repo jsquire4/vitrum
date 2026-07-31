@@ -51,7 +51,10 @@ ${CWBVH_MATERIAL_TRANSMISSION_PREDICATE_WGSL}
 const CWBVH_CHILDREN: u32 = 8u;
 const CWBVH_CHILD_BOUNDS_PACKED_U32: u32 = 3u;
 const CWBVH_INTERSECT_STACK_DEPTH: u32 = ${CWBVH_INTERSECT_STACK_DEPTH}u;
-const CWBVH_INTERSECT_INFINITY: f32 = 1e20;
+// Largest finite f32 rounded safely below +Inf. Keep the traversal sentinel
+// outside every finite representable ray interval rather than silently
+// capping valid scenes at ~1e20 world units.
+const CWBVH_INTERSECT_INFINITY: f32 = 3.402823e38;
 const CWBVH_CHILD_EMPTY: u32 = 0u;
 const CWBVH_CHILD_NODE: u32 = 1u;
 const CWBVH_CHILD_LEAF: u32 = 2u;
@@ -78,6 +81,11 @@ struct CwbvhRay {
 struct CwbvhAabb {
   boundsMin: vec3f,
   boundsMax: vec3f,
+};
+
+struct CwbvhAabbEntryResult {
+  didHit: bool,
+  t: f32,
 };
 
 struct CwbvhIntersectionResult {
@@ -160,15 +168,20 @@ fn cwbvhAabbEntry(
   bmin: vec3f,
   bmax: vec3f,
   tMax: f32,
-) -> f32 {
+) -> CwbvhAabbEntryResult {
+  var result: CwbvhAabbEntryResult;
+  result.didHit = false;
+  result.t = CWBVH_INTERSECT_INFINITY;
   let t0 = (bmin - origin) * invDir;
   let t1 = (bmax - origin) * invDir;
   let tNear = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
   let tFar = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
   if (tNear > tFar || tFar < 0.0 || tNear > tMax) {
-    return CWBVH_INTERSECT_INFINITY;
+    return result;
   }
-  return tNear;
+  result.didHit = true;
+  result.t = tNear;
+  return result;
 }
 
 fn cwbvhBoundsAreValid(bmin: vec3f, bmax: vec3f) -> bool {
@@ -183,7 +196,6 @@ fn cwbvhBoundsAreValid(bmin: vec3f, bmax: vec3f) -> bool {
 
 fn cwbvhIntersectFirstHitRangeFromRoot(
   ray: CwbvhRay,
-  triEps: f32,
   tMin: f32,
   tMax: f32,
   nodeCount: u32,
@@ -250,8 +262,14 @@ fn cwbvhIntersectFirstHitRangeFromRoot(
         best.status = CWBVH_STATUS_INVALID_LAYOUT;
         return best;
       }
-      let childT = cwbvhAabbEntry(ray.origin, invDir, bounds.boundsMin, bounds.boundsMax, best.dist);
-      if (childT == CWBVH_INTERSECT_INFINITY) {
+      let childEntry = cwbvhAabbEntry(
+        ray.origin,
+        invDir,
+        bounds.boundsMin,
+        bounds.boundsMax,
+        best.dist,
+      );
+      if (!childEntry.didHit) {
         continue;
       }
 
@@ -288,15 +306,18 @@ fn cwbvhIntersectFirstHitRangeFromRoot(
           let pa4 = cwbvhLoadPosition(idx.x);
           let pb4 = cwbvhLoadPosition(idx.y);
           let pc4 = cwbvhLoadPosition(idx.z);
-          let tri = mollerTrumboreCore(ray.origin, ray.direction, pa4.xyz, pb4.xyz, pc4.xyz, triEps);
+          // tMin is expressed in the same coordinate system as this ray.
+          // In TLAS traversal that is the transformed local-space threshold;
+          // a fixed world-space triangle epsilon is not distance-compatible.
+          let tri = mollerTrumboreCore(ray.origin, ray.direction, pa4.xyz, pb4.xyz, pc4.xyz, tMin);
           if (tri.hit && tri.t > tMin && tri.t < best.dist) {
             best.didHit = true;
             best.dist = tri.t;
             best.triIndex = triIdx;
             best.indices = vec4u(idx, triIdx);
             best.barycoord = tri.bary;
-            best.normal = normalize(cross(pb4.xyz - pa4.xyz, pc4.xyz - pa4.xyz)) * sign(tri.det);
             best.side = sign(tri.det);
+            best.normal = tri.normal * best.side;
             best.matColorPacked = idxEntry.w;
             let uvA = unpack2x16float(bitcast<u32>(pa4.w));
             let uvB = unpack2x16float(bitcast<u32>(pb4.w));
@@ -323,7 +344,6 @@ fn cwbvhIntersectFirstHitFromRoot(
 ) -> CwbvhIntersectionResult {
   return cwbvhIntersectFirstHitRangeFromRoot(
     ray,
-    triEps,
     triEps,
     CWBVH_INTERSECT_INFINITY,
     nodeCount,

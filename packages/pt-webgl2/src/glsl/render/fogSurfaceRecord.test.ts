@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RENDER_MAIN } from '../renderMain.glsl.js';
 import * as SurfaceRecordSource from '../shader/structs/surface_record_struct.glsl.js';
 import * as RenderStructSource from './render_structs.glsl.js';
+import * as TraceSceneSource from './trace_scene_function.glsl.js';
 
 const surfaceRecordStruct = (
   SurfaceRecordSource as unknown as Record<string, string>
@@ -9,6 +10,9 @@ const surfaceRecordStruct = (
 const renderStructs = (
   RenderStructSource as unknown as Record<string, string>
 ).render_structs!;
+const traceScene = (
+  TraceSceneSource as unknown as Record<string, string>
+).trace_scene_function!;
 
 function blockBetween(source: string, start: string, end: string): string {
   const from = source.indexOf(start);
@@ -19,6 +23,17 @@ function blockBetween(source: string, start: string, end: string): string {
 }
 
 describe('setFogSurfaceRecord', () => {
+  it('initializes miss distance before BVH traversal and fog free-flight comparison', () => {
+    const missDistance = traceScene.indexOf('surfaceHit.dist = INFINITY;');
+    const traversal = traceScene.indexOf('bool hit = bvhIntersectFirstHit(');
+    const fogComparison = traceScene.indexOf(
+      'particleDist + RAY_OFFSET < surfaceHit.dist',
+    );
+    expect(missDistance).toBeGreaterThanOrEqual(0);
+    expect(traversal).toBeGreaterThan(missDistance);
+    expect(fogComparison).toBeGreaterThan(traversal);
+  });
+
   it('initializes every SurfaceRecord field before publishing the medium vertex', () => {
     const structBody = blockBetween(
       surfaceRecordStruct,

@@ -816,6 +816,53 @@ describe('validateScene', () => {
     expect(() => validateMaterialSpec({ ...MATERIAL, attenuationDistance: Infinity })).not.toThrow();
   });
 
+  it('rejects emitter and material RGB×intensity products that overflow or disappear in Float32', () => {
+    const maxFloat32 = Math.fround(3.4028234663852886e38);
+    const minFloat32 = Math.fround(1.401298464324817e-45);
+    const emitterScene = (
+      color: [number, number, number],
+      intensity: number,
+    ): Scene => ({
+      ...sceneWith(),
+      emitters: [{
+        kind: 'point',
+        id: 'numeric-boundary',
+        position: [0, 0, 0],
+        color,
+        intensity,
+      }],
+    });
+
+    expect(() => validateScene(
+      emitterScene([maxFloat32, 0, 0], 2),
+    )).toThrow(/color.*intensity.*finite.*Float32/);
+    expect(() => validateScene(
+      emitterScene([minFloat32, 0, 0], 0.5),
+    )).toThrow(/color.*intensity.*underflow.*Float32/);
+    expect(() => validateScene(
+      emitterScene([minFloat32, 1, 0], 0.5),
+    )).not.toThrow();
+    expect(() => validateScene(
+      emitterScene([maxFloat32, 0, 0], 0),
+    )).not.toThrow();
+
+    expect(() => validateMaterialSpec({
+      ...MATERIAL,
+      emissive: [maxFloat32, 0, 0],
+      emissiveIntensity: 2,
+    })).toThrow(/emissive.*emissiveIntensity.*finite.*Float32/);
+    expect(() => validateMaterialSpec({
+      ...MATERIAL,
+      emissive: [minFloat32, 0, 0],
+      emissiveIntensity: 0.5,
+    })).toThrow(/emissive.*emissiveIntensity.*underflow.*Float32/);
+    expect(() => validateMaterialSpec({
+      ...MATERIAL,
+      emissive: [minFloat32, 1, 0],
+      emissiveIntensity: 0.5,
+    })).not.toThrow();
+  });
+
   it('enforces the Khronos IOR domain and unbounded non-negative specular color', () => {
     for (const ior of [0, 1, 1.5, 2.5]) {
       expect(() => validateMaterialSpec({ ...MATERIAL, ior })).not.toThrow();

@@ -19,6 +19,7 @@ import type {
   SceneEmitter,
   SceneEnvironment,
   ScenePrimitive,
+  ScenePrimitivePatch,
 } from '@vitrum/core';
 import {
   asBackendTexture,
@@ -52,22 +53,30 @@ import {
   buildPrimitiveListFallbackWarning,
   buildPrimitiveMutationFallbackWarning,
 } from './scene/mutationFallbackWarnings.js';
-import { packFrameUniforms } from './gl/frameUniformsPacker.js';
+import {
+  finalizeFrameUniforms,
+  preflightFrameUniforms,
+  type FrameUniformsPreflight,
+} from './gl/frameUniformsPacker.js';
 import { resolveBdptMaxLightBounces, validateAndResolveWebgl2Options } from './options.validate.js';
 export { validateWebgl2AdvancedOptions } from './options.validate.js';
-import type { FrameUniforms } from './gl/glResources.js';
 import { DEFAULT_TRACE_FEATURES, type TraceFeatures } from './featureTypes.js';
 import { OIDNFinalDispatcher, type DenoisedFrame } from './denoise/oidnFinalDispatcher.js';
 import { WebGl2FiniteDifferenceInverseSession } from './inverse/finiteDifferenceSession.js';
 import { resolveWebGl2FrameQuality, withResolvedWebGl2FrameQuality } from './frameQuality.js';
 import { validateWebGl2FrameInput, validateWebGl2PixelSize } from './frameValidation.js';
 import { WEBGL2_DEFAULT_BOUNCES } from './limits.js';
+import { accumulationSeed } from './gl/accumulationSeed.js';
 import { DEFAULT_RENDER_TARGET_BUDGET_BYTES } from './gl/renderTargetBudget.js';
 import {
   deriveSceneTraceFeatures,
   validateWebGl2PrimitiveMaterial,
   validateWebGl2SceneMaterials,
 } from './scene/sceneTraceFeatures.js';
+import {
+  computeWebgl2TransportBounds,
+  type Webgl2TransportBounds,
+} from './scene/sceneScalePolicy.js';
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_SPP_TARGET = 16;
@@ -91,49 +100,6 @@ function sameNumberArray(a: readonly number[], b: readonly number[]): boolean {
     if (a[i] !== b[i]) return false;
   }
   return true;
-}
-
-interface BdptSceneBounds {
-  readonly center: readonly [number, number, number];
-  readonly radius: number;
-}
-
-function computeBdptSceneBounds(pack: WorldSpaceMergeResult): BdptSceneBounds {
-  const positions = pack.positions;
-  const stride = pack.positionStrideFloats;
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let minZ = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
-  let maxZ = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i + 2 < positions.length; i += stride) {
-    const x = positions[i]!;
-    const y = positions[i + 1]!;
-    const z = positions[i + 2]!;
-    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) continue;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    minZ = Math.min(minZ, z);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-    maxZ = Math.max(maxZ, z);
-  }
-  if (!Number.isFinite(minX)) return { center: [0, 0, 0], radius: 1 };
-  const center: readonly [number, number, number] = [
-    (minX + maxX) * 0.5,
-    (minY + maxY) * 0.5,
-    (minZ + maxZ) * 0.5,
-  ];
-  let radiusSquared = 0;
-  for (let i = 0; i + 2 < positions.length; i += stride) {
-    const dx = positions[i]! - center[0];
-    const dy = positions[i + 1]! - center[1];
-    const dz = positions[i + 2]! - center[2];
-    const d2 = dx * dx + dy * dy + dz * dz;
-    if (Number.isFinite(d2)) radiusSquared = Math.max(radiusSquared, d2);
-  }
-  return { center, radius: Math.max(Math.sqrt(radiusSquared) * 1.001, 1e-3) };
 }
 
 function sameAccumulationSignature(
@@ -227,7 +193,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
   #scene: Scene | null = null;
   #geoPack: WorldSpaceMergeResult | null = null;
   #sceneTextures: UploadedSceneTextures | null = null;
-  #bdptSceneBounds: BdptSceneBounds = { center: [0, 0, 0], radius: 1 };
+  #bdptSceneBounds: Webgl2TransportBounds = {
+    center: [0, 0, 0],
+    radius: 1,
+    min: [0, 0, 0],
+    max: [0, 0, 0],
+  };
   #samplesAccumulated = 0;
   #resolutionFactor = 1;
   #accumulationSignature: AccumulationSignature | null = null;
@@ -434,7 +405,9 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // partitionSceneBySupport here AND buildSceneTextures re-partitioned the
     // already-filtered scene internally (uploadSceneTextures.ts) — redundant work.
     // buildSceneTextures now returns `supported`, so the filter runs a single time.
-    const built = buildSceneTextures(this.#gl, scene, this.capabilities);
+    const built = buildSceneTextures(this.#gl, scene, this.capabilities, {
+      bdpt: this.#bdpt,
+    });
     for (const w of built.warnings) {
       this.#warn({
         code: 'pt-webgl2.scene-upload-warning',
@@ -449,7 +422,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#warn(warning);
     }
     const previousTextures = this.#sceneTextures;
-    const nextBdptSceneBounds = computeBdptSceneBounds(built.merged);
+    const nextBdptSceneBounds = built.transportBounds;
     this.#sceneTextures = built.textures;
     this.#geoPack = built.merged;
     this.#bdptSceneBounds = nextBdptSceneBounds;
@@ -493,7 +466,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         renderAndReadback: (width, height, samples) =>
           this.#renderAndReadbackForInverse(width, height, samples),
         patchMaterial: (primitiveId, patch) => {
-          this.updatePrimitive(primitiveId, { material: patch } as Partial<ScenePrimitive>);
+          this.updatePrimitive(primitiveId, { material: patch });
         },
         patchEmitter: (emitterId, patch) => {
           this.updateEmitter(emitterId, patch);
@@ -547,6 +520,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       {
         method: 'addPrimitive',
         primitiveId: String(primitive.id),
+        bdpt: this.#bdpt,
       },
     );
     if (fast != null) {
@@ -596,6 +570,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       {
         method: 'removePrimitive',
         primitiveId: String(id),
+        bdpt: this.#bdpt,
       },
     );
     if (fast != null) {
@@ -614,7 +589,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.setScene(nextScene);
   }
 
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void {
+  updatePrimitive(id: string, patch: ScenePrimitivePatch): void {
     this.#guardLive('updatePrimitive');
     if (this.#scene == null) {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
@@ -645,6 +620,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#geoPack,
       nextScene,
       patch,
+      { bdpt: this.#bdpt },
     );
     if (geometryFast != null) {
       if (geometryFast.mutationFallback != null) {
@@ -669,6 +645,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       this.#geoPack,
       nextScene,
       id,
+      { bdpt: this.#bdpt },
     );
     if (fast != null) {
       this.#commitMutationSwap(nextScene, fast);
@@ -687,6 +664,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       environment: env ?? { kind: 'none' },
     };
     validateSceneEnvironment(nextScene.environment);
+    if (this.#geoPack != null) {
+      computeWebgl2TransportBounds(
+        this.#geoPack,
+        nextScene,
+        { bdpt: this.#bdpt },
+      );
+    }
     const fast = fastPathEnvironmentMutation(this.#gl, this.#sceneTextures, nextScene);
     if (fast != null) {
       this.#commitMutationSwap(nextScene, fast);
@@ -806,7 +790,6 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const activeBounces = quality.bounces;
     const targetSpp = quality.samplesTarget;
     const res = quality.resolutionFactor;
-    this.#resolutionFactor = res;
     const requestedBaseWidth = input.viewport.width;
     const requestedBaseHeight = input.viewport.height;
     const baseWidth =
@@ -816,6 +799,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     const w = Math.max(1, Math.floor(baseWidth * res));
     const h = Math.max(1, Math.floor(baseHeight * res));
     this.#gpu.validateAccumRequest(w, h);
+    const frameUniformPreflight = this.#frameUniformPreflight(
+      effectiveInput,
+      activeBounces,
+      w,
+      h,
+    );
 
     // Cold ANGLE links for the production trace graph are polled through
     // KHR_parallel_shader_compile. Until every pass is ready, return without
@@ -827,6 +816,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         isConverged: false,
       };
     }
+    this.#resolutionFactor = res;
     // Compile-pending calls must not replace the last presented/debug camera.
     this.#lastFrameInput = input;
     if (this.#gpu.ensureAccumResources(w, h)) {
@@ -852,11 +842,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // Advance the shared spectral+BDPT wavelength with the actual accumulated
     // sample even when a host repeats frameSeed. Computing this after any
     // invalidation makes reset + the same seed reproducible.
-    const frameUniforms = this.#frameUniforms(
-      effectiveInput,
-      activeBounces,
-      w,
-      h,
+    const frameUniforms = finalizeFrameUniforms(
+      frameUniformPreflight,
       this.#samplesAccumulated,
     );
     const presentationSignature: PresentationSignature = {
@@ -924,7 +911,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // monotonic frame-cost signal instead of a constant 0. The no-draw paused/
     // converged fast-outs honestly report 0 (they enqueue no work).
     const t0 = performance.now();
-    this.#gpu.drawAccumStep(this.#sceneTextures, input.frameSeed, frameUniforms);
+    const sampleSeed = accumulationSeed(
+      input.frameSeed,
+      input.frameIndex,
+      this.#samplesAccumulated,
+    );
+    this.#gpu.drawAccumStep(this.#sceneTextures, sampleSeed, frameUniforms);
     this.#samplesAccumulated = Math.min(this.#samplesAccumulated + 1, this.#maxSamplesLimit);
 
     const tex = this.#gpu.resultTexture();
@@ -1135,7 +1127,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
 
   #warnPrimitiveMutationFallback(
     id: string,
-    patch: Partial<ScenePrimitive>,
+    patch: ScenePrimitivePatch,
     mutationFallback?: {
       readonly fallbackReason: string;
       readonly nativePatchMissing: string;
@@ -1157,12 +1149,23 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     for (const warning of swap.structuredWarnings ?? []) {
       this.#warn(warning);
     }
+    const nextScene = swap.scene ?? scene;
+    const nextGeoPack = swap.geoPack ?? this.#geoPack;
+    if (nextGeoPack == null) {
+      throw new Error(
+        'pt-webgl2: an incremental scene mutation has no retained geometry pack.',
+      );
+    }
+    this.#bdptSceneBounds = computeWebgl2TransportBounds(
+      nextGeoPack,
+      nextScene,
+      { bdpt: this.#bdpt },
+    );
     this.#sceneTextures = swap.textures;
     if (swap.geoPack != null) {
       this.#geoPack = swap.geoPack;
-      this.#bdptSceneBounds = computeBdptSceneBounds(swap.geoPack);
     }
-    this.#scene = swap.scene ?? scene;
+    this.#scene = nextScene;
     try {
       retireTexturesIndependently(
         this.#gl,
@@ -1195,14 +1198,13 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
   }
 
-  #frameUniforms(
+  #frameUniformPreflight(
     input: FrameInput,
     bounces: number,
     w: number,
     h: number,
-    accumulatedSample: number,
-  ): FrameUniforms {
-    return packFrameUniforms(
+  ): FrameUniformsPreflight {
+    return preflightFrameUniforms(
       input,
       bounces,
       w,
@@ -1216,11 +1218,10 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
         backgroundAlpha: this.#backgroundAlpha,
         bdpt: this.#bdpt,
         bdptMaxLightBounces: this.#bdptMaxLightBounces,
-        bdptSceneCenter: this.#bdptSceneBounds.center,
-        bdptSceneRadius: this.#bdptSceneBounds.radius,
+        cameraType: this.#cameraType,
+        transportBounds: this.#bdptSceneBounds,
         dof: this.#dof,
       },
-      accumulatedSample,
     );
   }
 

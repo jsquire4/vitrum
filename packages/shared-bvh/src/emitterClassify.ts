@@ -17,6 +17,10 @@ import {
   MATERIAL_TRANSMISSIVE_COLOR_THRESHOLD,
   MATERIAL_DEFAULT_TRI_COLOR,
 } from './materialEntry.js';
+import {
+  packRadianceRgbProductF32,
+  packRadianceRgbScaleF32,
+} from './radianceFloat32.js';
 import { srgbToLinear, resolveReadableTexture } from './textureDecode.js';
 
 interface ReadableTextureHandle {
@@ -118,6 +122,29 @@ function readableTextureDimensions(ref: TextureRef | undefined): { width: number
 }
 
 /**
+ * Decode the RGB lanes of the library's public raw-channel convention:
+ * one channel is luminance (`R → RRR`), two channels are chromatic
+ * (`RG → RG0`), and three/four channels use their authored RGB lanes.
+ *
+ * Alpha is deliberately irrelevant here; emitter classification consumes only
+ * radiance. Keeping this normalization beside every shared CPU texel read makes
+ * the classifier agree with backend texture uploaders instead of inheriting
+ * JavaScript's accidental out-of-range/aliasing behavior.
+ */
+function decodeReadableTextureRgb(
+  src: ArrayLike<number>,
+  base: number,
+  stride: number,
+  decode: (value: number) => number,
+): [number, number, number] {
+  const r = decode(Number(src[base] ?? 0));
+  if (stride === 1) return [r, r, r];
+  const g = decode(Number(src[base + 1] ?? 0));
+  if (stride === 2) return [r, g, 0];
+  return [r, g, decode(Number(src[base + 2] ?? 0))];
+}
+
+/**
  * True only when every RGB texel needed by CPU emitter-distribution builders is
  * present and finite. This is deliberately stricter than the sampling helpers:
  * a production backend may use it to fail closed instead of silently replacing
@@ -142,9 +169,7 @@ export function isTextureRefCpuReadable(
   if (src.length !== pixelCount * stride) return false;
   for (let p = 0; p < pixelCount; p += 1) {
     const base = p * stride;
-    const r = decode(Number(src[base]));
-    const g = decode(Number(src[base + (stride > 1 ? 1 : 0)]));
-    const b = decode(Number(src[base + (stride > 2 ? 2 : 0)]));
+    const [r, g, b] = decodeReadableTextureRgb(src, base, stride, decode);
     if (!Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b)) return false;
   }
   return true;
@@ -173,9 +198,7 @@ function averageReadableTextureRgb(
   let n = 0;
   for (let p = 0; p < pixelCount; p += 1) {
     const base = p * stride;
-    let pr = decode(Number(src[base] ?? 0));
-    let pg = decode(Number(src[base + (stride > 1 ? 1 : 0)] ?? 0));
-    let pb = decode(Number(src[base + (stride > 2 ? 2 : 0)] ?? 0));
+    let [pr, pg, pb] = decodeReadableTextureRgb(src, base, stride, decode);
     if (needsSrgbDecode) {
       pr = srgbToLinear(pr);
       pg = srgbToLinear(pg);
@@ -243,9 +266,7 @@ function readTextureRgbAtTexel(
   const ix = Math.min(width - 1, Math.max(0, Math.floor(x)));
   const iy = Math.min(height - 1, Math.max(0, Math.floor(y)));
   const base = (iy * width + ix) * stride;
-  let r = decode(Number(src[base] ?? 0));
-  let g = decode(Number(src[base + (stride > 1 ? 1 : 0)] ?? 0));
-  let b = decode(Number(src[base + (stride > 2 ? 2 : 0)] ?? 0));
+  let [r, g, b] = decodeReadableTextureRgb(src, base, stride, decode);
   if (needsSrgbDecode) {
     r = srgbToLinear(r);
     g = srgbToLinear(g);
@@ -286,9 +307,7 @@ export function sampleReadableTextureRgbAtUv(
   const x = Math.min(width - 1, Math.max(0, Math.floor(wrapped[0] * width)));
   const y = Math.min(height - 1, Math.max(0, Math.floor(wrapped[1] * height)));
   const base = (y * width + x) * stride;
-  let r = decode(Number(src[base] ?? 0));
-  let g = decode(Number(src[base + (stride > 1 ? 1 : 0)] ?? 0));
-  let b = decode(Number(src[base + (stride > 2 ? 2 : 0)] ?? 0));
+  let [r, g, b] = decodeReadableTextureRgb(src, base, stride, decode);
   if (needsSrgbDecode) {
     r = srgbToLinear(r);
     g = srgbToLinear(g);
@@ -306,7 +325,11 @@ export function materialSpecScalarEmissiveLe(
   const ei = material.emissiveIntensity ?? 1;
   if (!(ei > 0)) return null;
   if (em[0] <= 0 && em[1] <= 0 && em[2] <= 0) return null;
-  const out: [number, number, number] = [em[0] * ei, em[1] * ei, em[2] * ei];
+  const out = packRadianceRgbScaleF32(
+    em,
+    ei,
+    'material emissive',
+  ).scaled;
   return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
 }
 
@@ -330,11 +353,11 @@ export function materialSpecEmissiveLeAtUv(
       ? uv1!
       : selectedHighUv!;
   const map = sampleReadableTextureRgbAtUv(ref, uv, 'srgb') ?? [1, 1, 1];
-  const out: [number, number, number] = [
-    scalar[0] * map[0],
-    scalar[1] * map[1],
-    scalar[2] * map[2],
-  ];
+  const out = packRadianceRgbProductF32(
+    scalar,
+    map,
+    'material emissive-map radiance',
+  );
   return (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) ? null : out;
 }
 
@@ -581,11 +604,11 @@ export function forEachEmissiveMapTexelSubTriangle(
     texelY: number,
   ): [number, number, number] | null => {
     const resolved = resolveTexelRadiance == null
-      ? [
-          scalar[0] * texelRgb[0],
-          scalar[1] * texelRgb[1],
-          scalar[2] * texelRgb[2],
-        ] as const
+      ? packRadianceRgbProductF32(
+          scalar,
+          texelRgb,
+          `material emissive-map texel (${texelX}, ${texelY}) radiance`,
+        )
       : resolveTexelRadiance(material, texelRgb, texelX, texelY);
     if (resolved == null) return null;
     if (
@@ -723,11 +746,11 @@ export function materialSpecEmissiveLe(
   const scalar = materialSpecScalarEmissiveLe(material);
   if (scalar == null) return null;
   const map = averageReadableTextureRgb(material.emissiveMap, 'srgb') ?? [1, 1, 1];
-  const out: [number, number, number] = [
-    scalar[0] * map[0],
-    scalar[1] * map[1],
-    scalar[2] * map[2],
-  ];
+  const out = packRadianceRgbProductF32(
+    scalar,
+    map,
+    'material average emissive-map radiance',
+  );
   if (out[0] <= 0 && out[1] <= 0 && out[2] <= 0) return null;
   return out;
 }
@@ -735,8 +758,10 @@ export function materialSpecEmissiveLe(
 /**
  * Apply RGB Beer-Lambert absorption to a tint color given a sample
  * thickness / attenuation-distance pair: `c' = c^(thickness/attDist)`
- * (per channel, with no artificial channel floor). Missing parameters mean no
- * authored absorption; malformed present parameters are rejected.
+ * (per channel, with no artificial channel floor). The executable material
+ * defaults are thickness=0 and attenuationDistance=+Infinity, so either
+ * omitted operand produces the no-absorption identity `(1,1,1)`. Malformed
+ * present parameters are rejected.
  *
  * Tuple in/out helper used by per-triangle color and Beer-lane packing.
  */
@@ -746,7 +771,7 @@ export function applyBeerLambertColor(
   attDist: number | undefined,
 ): [number, number, number] {
   if (thickness === undefined || attDist === undefined) {
-    return [attCol[0], attCol[1], attCol[2]];
+    return [1, 1, 1];
   }
   if (!Number.isFinite(thickness) || thickness < 0) {
     throw new RangeError(`applyBeerLambertColor: thickness must be finite and >= 0 (got ${String(thickness)}).`);
@@ -776,7 +801,7 @@ export function applyBeerLambertColor(
  *
  * A transmissive material with no explicit `attenuationColor` is treated as
  * white `(1,1,1)`, and an absent `attenuationDistance` behaves like Infinity
- * (→ {@link applyBeerLambertColor} passthrough). A core `MaterialSpec`'s
+ * (→ {@link applyBeerLambertColor} identity). A core `MaterialSpec`'s
  * `baseColor` is required and non-null, so the warm-gray fallback only fires for
  * the no-material case (`packBVH*Tri` passes the literal default when
  * `materials[matId]` is missing) or for defensively-empty loose inputs.
@@ -800,7 +825,7 @@ export function materialSpecTriColor(
       return applyBeerLambertColor(
         attenColor,
         material.thickness,
-        material.attenuationDistance, // undefined → Infinity-equivalent passthrough
+        material.attenuationDistance, // undefined → Infinity-equivalent identity
       );
     }
     return [attenColor[0], attenColor[1], attenColor[2]];
@@ -846,9 +871,10 @@ export function materialSpecSkipEmitter(material: MaterialSpec): boolean {
  * surface has no positive source term.
  *
  *  1. **Emissive** (`emissive.rgb · emissiveIntensity` positive) → direct
- *     emitter with `color = Le`, `intensity = emissiveIntensity` (default 1).
- *     Shares {@link materialSpecEmissiveLe} with the camera-glow packer so the
- *     NEE radiance and the camera glow Le are identical.
+ *     emitter with `color = Le`, `intensity = 1`. The authored scalar is
+ *     already folded into `color`; returning it again would invite callers to
+ *     apply the intensity twice. Shares {@link materialSpecEmissiveLe} with
+ *     the camera-glow packer so NEE and camera-visible radiance are identical.
  *  2. Otherwise → `null`. Transmission is transport, never emission; inventing
  *     a sun-shaped source at glass boundaries double-counts radiance.
  *
@@ -867,7 +893,7 @@ export function classifyTriangleEmitterCore(
   // 1. Emissive surface → direct emitter (shares the camera-glow Le source).
   const emissiveLe = materialSpecEmissiveLe(material);
   if (emissiveLe != null) {
-    return { color: emissiveLe, intensity: material.emissiveIntensity ?? 1 };
+    return { color: emissiveLe, intensity: 1 };
   }
 
   // Transmission redirects incident radiance; it is not a source term. Treating

@@ -12,6 +12,8 @@ export const attenuate_hit_function = /* glsl */`
 	bool attenuateHit(
 		RenderState state,
 		Ray ray, float rayDist,
+		bool hasTargetFace,
+		uint targetFaceIndex,
 		out vec3 color
 	) {
 
@@ -23,8 +25,9 @@ export const attenuate_hit_function = /* glsl */`
                 bool isShadowRay = state.isShadowRay;
                 FogMaterial fogMaterial = state.fogMaterial;
                 MediumStack mediumStack = state.mediumStack;
+                bool finiteRayDistance = ! vitrumIsInfiniteDistance( rayDist );
 
-		vec3 startPoint = ray.origin;
+		float traveledDistance = 0.0;
 
 		// hit results
 		SurfaceHit surfaceHit;
@@ -56,8 +59,9 @@ export const attenuate_hit_function = /* glsl */`
                                 surfaceHit.side,
                                 surfaceHit.dist
                         );
-                        float traveled = distance( startPoint, ray.origin );
-                        float remainingDistance = max( rayDist - traveled, 0.0 );
+                        float remainingDistance = finiteRayDistance
+                                ? max( rayDist - traveledDistance, 0.0 )
+                                : INFINITY;
                         float segmentDistance = surfaceFound
                                 ? min( max( surfaceHit.dist, 0.0 ), remainingDistance )
                                 : remainingDistance;
@@ -71,7 +75,21 @@ export const attenuate_hit_function = /* glsl */`
                                 );
                         }
                         #endif
-                        if ( ! surfaceFound || surfaceHit.dist > remainingDistance ) {
+                        if ( ! surfaceFound ) {
+                                result = false;
+                                break;
+                        }
+                        if (
+                                hasTargetFace &&
+                                surfaceHit.faceIndices.w == targetFaceIndex
+                        ) {
+                                result = false;
+                                break;
+                        }
+                        if (
+                                finiteRayDistance &&
+                                surfaceHit.dist >= remainingDistance
+                        ) {
                                 result = false;
                                 break;
                         }
@@ -89,9 +107,12 @@ export const attenuate_hit_function = /* glsl */`
 				Material material;
 				readMaterialInfo( materials, materialIndex, material );
 
-				// adjust the ray to the new surface
-				bool isEntering = surfaceHit.side == 1.0;
-				ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
+					// adjust the ray to the new surface
+					bool isEntering = surfaceHit.side == 1.0;
+					if ( finiteRayDistance ) {
+						traveledDistance += max( surfaceHit.dist, 0.0 );
+					}
+					ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
 
 				#if FEATURE_FOG
 

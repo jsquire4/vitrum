@@ -3,8 +3,12 @@
  * then same-frame CPU BVH refit (nodes-only upload) via `applyGpuSkinnedRefit`.
  */
 
-import type { Scene, ScenePrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
-import { combineSkinMatrices, solveSkin } from '@vitrum/core';
+import type { Scene, ScenePrimitivePatch, SkinnedMeshPrimitive } from '@vitrum/core';
+import {
+  combineSkinMatrices,
+  solveSkin,
+  sparseArrayOwnIndices,
+} from '@vitrum/core';
 import { GPU_SKIN_BVH_WITH_NORMALS_WGSL } from './gpuSkinBvh.wgsl.js';
 import type { ReSTIRBvhMode, SceneBVHBuffers } from '../restir/bvhTypes.js';
 import {
@@ -42,7 +46,7 @@ export interface GpuSkinningHost {
   getPrimitiveTlasBindings(): SceneBVHBuffers['primitiveTlasBindings'] | null;
   /** CPU-skin fallback path: push solved positions/normals through the
    *  standard incremental geometry update. */
-  updatePrimitive(id: string, patch: Partial<ScenePrimitive>): void;
+  updatePrimitive(id: string, patch: ScenePrimitivePatch): void;
   /** GPU-skin path: refit BVH nodes after the compute pass wrote world
    *  positions directly into the live `bvhPositions` buffer. */
   applyGpuSkinnedRefit(id: string, localPositions?: Float32Array, localNormals?: Float32Array): void;
@@ -55,7 +59,7 @@ export interface GpuSkinningHost {
 
 export interface SkinningBatchUpdate {
   readonly id: string;
-  readonly patch: Partial<SkinnedMeshPrimitive>;
+  readonly patch: ScenePrimitivePatch;
   readonly gpuWritten: boolean;
 }
 
@@ -63,15 +67,13 @@ const UNIFORM = 0x40;
 const STORAGE = 0x80;
 const COPY_DST = 0x02;
 
-/** Epsilon for the bindMatrix identity comparison. The GPU skin kernel only
- *  applies the blended bone matrices (`combineSkinMatrices`), NOT the
+/** The GPU skin kernel only applies the blended bone matrices
+ *  (`combineSkinMatrices`), NOT the
  *  bindMatrix / bindMatrixInverse wrapping that the CPU `solveSkin` honours,
  *  so a primitive with a non-identity bindMatrix would skin WRONG on the GPU
  *  path. We route those to the CPU solver (same fallback shape as `hasMorph`).
  *  glTF-typical bind is identity, so the GPU fast path is preserved for the
  *  common case. */
-const BIND_IDENTITY_EPS = 1e-6;
-
 /** Column-major identity (== `THREE.Matrix4` default). */
 const IDENTITY_MAT4 = new Float32Array([
   1, 0, 0, 0,
@@ -81,8 +83,8 @@ const IDENTITY_MAT4 = new Float32Array([
 ]);
 
 /**
- * True when the primitive carries a `bindMatrix` that is NOT (within
- * {@link BIND_IDENTITY_EPS}) the identity. An absent or identity bindMatrix
+ * True when the primitive carries a stored-f32 `bindMatrix` that is not exactly
+ * identity. An absent or identity bindMatrix
  * returns false — the GPU fast path is safe because the kernel's
  * `combineSkinMatrices(bones, boneInverses)` collapses to the same transform
  * the CPU solver computes when `hasBind` is false. A non-identity bind makes
@@ -97,7 +99,7 @@ function hasNonIdentityBind(prim: SkinnedMeshPrimitive): boolean {
   if (bm == null || prim.bindMatrixInverse == null) return false;
   if (bm.length !== 16) return true; // malformed → don't trust the fast path
   for (let i = 0; i < 16; i += 1) {
-    if (Math.abs(bm[i]! - IDENTITY_MAT4[i]!) > BIND_IDENTITY_EPS) return true;
+    if (bm[i] !== IDENTITY_MAT4[i]) return true;
   }
   return false;
 }
@@ -127,6 +129,184 @@ interface MeshGpuState {
   readonly boundNormalBuffer: GPUBuffer;
   readonly boundNormalOffset: number;
   readonly boundNormalSize: number | undefined;
+}
+
+interface SkinRunSnapshot {
+  readonly inputReferences: readonly unknown[];
+  readonly bones: Float32Array;
+  readonly boneInverses: Float32Array;
+  readonly morphWeights?: Float32Array;
+  readonly bindMatrix?: Float32Array;
+  readonly bindMatrixInverse?: Float32Array;
+  readonly matrixWorldAtBuild?: Float32Array;
+  readonly skinInfluencesPerVertex: number;
+  readonly bvhMode: ReSTIRBvhMode | null;
+  readonly positionBuffer: GPUBuffer | null;
+  readonly positionOffset: number;
+  readonly positionSize: number | undefined;
+  readonly normalBuffer: GPUBuffer | null;
+  readonly normalOffset: number;
+  readonly normalSize: number | undefined;
+  readonly rangeVertexStart: number;
+  readonly rangeVertexCount: number;
+  readonly tlasVertexStart: number;
+  readonly tlasVertexCount: number;
+}
+
+function pushTargetListReferences(
+  target: unknown[],
+  list: ReadonlyArray<Float32Array> | undefined,
+): void {
+  target.push(list);
+  if (list == null) return;
+  for (const stream of list) target.push(stream);
+}
+
+function pushSparseStreamReferences(
+  target: unknown[],
+  streams: ReadonlyArray<Float32Array | undefined> | undefined,
+): void {
+  target.push(streams);
+  if (streams == null) return;
+  for (const index of sparseArrayOwnIndices(streams)) {
+    target.push(streams[index]);
+  }
+}
+
+function pushSparseTargetReferences(
+  target: unknown[],
+  lanes:
+    | SkinnedMeshPrimitive['morphTargetUvSets']
+    | SkinnedMeshPrimitive['morphTargetColorSets'],
+): void {
+  target.push(lanes);
+  if (lanes == null) return;
+  for (const index of sparseArrayOwnIndices(lanes)) {
+    pushTargetListReferences(target, lanes[index]);
+  }
+}
+
+function skinInputReferences(
+  primitive: SkinnedMeshPrimitive,
+): readonly unknown[] {
+  const references: unknown[] = [
+    primitive.positions,
+    primitive.normals,
+    primitive.skinIndices,
+    primitive.skinWeights,
+    primitive.bones,
+    primitive.boneInverses,
+    primitive.bindMatrix,
+    primitive.bindMatrixInverse,
+    primitive.morphWeights,
+    primitive.tangents,
+    primitive.uvs,
+    primitive.uv1,
+    primitive.colors,
+    primitive.transform,
+  ];
+  pushSparseStreamReferences(references, primitive.uvSets);
+  pushSparseStreamReferences(references, primitive.colorSets);
+  pushTargetListReferences(references, primitive.morphTargets);
+  pushTargetListReferences(references, primitive.morphTargetNormals);
+  pushTargetListReferences(references, primitive.morphTargetTangents);
+  pushTargetListReferences(references, primitive.morphTargetUvs);
+  pushTargetListReferences(references, primitive.morphTargetUv1s);
+  pushTargetListReferences(references, primitive.morphTargetColors);
+  pushSparseTargetReferences(references, primitive.morphTargetUvSets);
+  pushSparseTargetReferences(references, primitive.morphTargetColorSets);
+  return references;
+}
+
+function bindingOffset(binding: GPUBufferBinding | null): number {
+  return Number(binding?.offset ?? 0);
+}
+
+function bindingSize(binding: GPUBufferBinding | null): number | undefined {
+  return binding?.size == null ? undefined : Number(binding.size);
+}
+
+function makeSkinRunSnapshot(
+  primitive: SkinnedMeshPrimitive,
+  bvhMode: ReSTIRBvhMode | null,
+  positionBinding: GPUBufferBinding | null,
+  normalBinding: GPUBufferBinding | null,
+  range: SceneBVHBuffers['meshVertexRanges'][number] | undefined,
+  tlasBinding: SceneBVHBuffers['primitiveTlasBindings'][number] | undefined,
+): SkinRunSnapshot {
+  return {
+    inputReferences: skinInputReferences(primitive),
+    bones: new Float32Array(primitive.bones),
+    boneInverses: new Float32Array(primitive.boneInverses),
+    ...(primitive.morphWeights != null
+      ? { morphWeights: new Float32Array(primitive.morphWeights) }
+      : {}),
+    ...(primitive.bindMatrix != null
+      ? { bindMatrix: new Float32Array(primitive.bindMatrix) }
+      : {}),
+    ...(primitive.bindMatrixInverse != null
+      ? { bindMatrixInverse: new Float32Array(primitive.bindMatrixInverse) }
+      : {}),
+    ...(range != null
+      ? { matrixWorldAtBuild: new Float32Array(range.matrixWorldAtBuild) }
+      : {}),
+    skinInfluencesPerVertex: primitive.skinInfluencesPerVertex ?? 4,
+    bvhMode,
+    positionBuffer: positionBinding?.buffer ?? null,
+    positionOffset: bindingOffset(positionBinding),
+    positionSize: bindingSize(positionBinding),
+    normalBuffer: normalBinding?.buffer ?? null,
+    normalOffset: bindingOffset(normalBinding),
+    normalSize: bindingSize(normalBinding),
+    rangeVertexStart: range?.vertexStart ?? -1,
+    rangeVertexCount: range?.vertexCount ?? -1,
+    tlasVertexStart: tlasBinding?.vertexStart ?? -1,
+    tlasVertexCount: tlasBinding?.vertexCount ?? -1,
+  };
+}
+
+function exactFloat32Equal(
+  a: Float32Array | undefined,
+  b: Float32Array | undefined,
+): boolean {
+  if (a === b) return true;
+  if (a == null || b == null || a.length !== b.length) return false;
+  for (let index = 0; index < a.length; index += 1) {
+    if (!Object.is(a[index], b[index])) return false;
+  }
+  return true;
+}
+
+function skinRunSnapshotEqual(
+  a: SkinRunSnapshot | undefined,
+  b: SkinRunSnapshot,
+): boolean {
+  if (a == null || a.inputReferences.length !== b.inputReferences.length) {
+    return false;
+  }
+  for (let index = 0; index < a.inputReferences.length; index += 1) {
+    if (a.inputReferences[index] !== b.inputReferences[index]) return false;
+  }
+  return (
+    exactFloat32Equal(a.bones, b.bones) &&
+    exactFloat32Equal(a.boneInverses, b.boneInverses) &&
+    exactFloat32Equal(a.morphWeights, b.morphWeights) &&
+    exactFloat32Equal(a.bindMatrix, b.bindMatrix) &&
+    exactFloat32Equal(a.bindMatrixInverse, b.bindMatrixInverse) &&
+    exactFloat32Equal(a.matrixWorldAtBuild, b.matrixWorldAtBuild) &&
+    a.skinInfluencesPerVertex === b.skinInfluencesPerVertex &&
+    a.bvhMode === b.bvhMode &&
+    a.positionBuffer === b.positionBuffer &&
+    a.positionOffset === b.positionOffset &&
+    a.positionSize === b.positionSize &&
+    a.normalBuffer === b.normalBuffer &&
+    a.normalOffset === b.normalOffset &&
+    a.normalSize === b.normalSize &&
+    a.rangeVertexStart === b.rangeVertexStart &&
+    a.rangeVertexCount === b.rangeVertexCount &&
+    a.tlasVertexStart === b.tlasVertexStart &&
+    a.tlasVertexCount === b.tlasVertexCount
+  );
 }
 
 function packVec4Positions(positions: Float32Array, count: number): Float32Array {
@@ -178,6 +358,7 @@ export class GpuSkinningSubsystem {
   readonly #device: GPUDevice;
   readonly #preferGpu: boolean;
   readonly #meshes = new Map<string, MeshGpuState>();
+  readonly #lastAcceptedRuns = new Map<string, SkinRunSnapshot>();
   /** Primitives whose last accepted frame published non-zero UV/color morphs.
    *  The first zero-weight frame must restore their authored base streams. */
   readonly #activeRenderStreamMorphs = new Set<string>();
@@ -193,6 +374,7 @@ export class GpuSkinningSubsystem {
       destroyMeshState(state);
     }
     this.#meshes.clear();
+    this.#lastAcceptedRuns.clear();
     this.#activeRenderStreamMorphs.clear();
     this.#bvhPipeline = null;
   }
@@ -212,11 +394,19 @@ export class GpuSkinningSubsystem {
     const skinned = scene.primitives.filter(
       (primitive): primitive is SkinnedMeshPrimitive => primitive.kind === 'skinned-mesh',
     );
+    const liveIds = new Set(skinned.map((primitive) => String(primitive.id)));
+    for (const [id, state] of this.#meshes) {
+      if (liveIds.has(id)) continue;
+      destroyMeshState(state);
+      this.#meshes.delete(id);
+    }
+    for (const id of this.#lastAcceptedRuns.keys()) {
+      if (!liveIds.has(id)) this.#lastAcceptedRuns.delete(id);
+    }
     if (skinned.length === 0) {
       this.#activeRenderStreamMorphs.clear();
       return;
     }
-    const liveIds = new Set(skinned.map((primitive) => String(primitive.id)));
     for (const id of this.#activeRenderStreamMorphs) {
       if (!liveIds.has(id)) this.#activeRenderStreamMorphs.delete(id);
     }
@@ -242,12 +432,14 @@ export class GpuSkinningSubsystem {
     };
     const solvedPatch = (
       primitive: SkinnedMeshPrimitive,
-    ): Partial<SkinnedMeshPrimitive> => solvedSkinRenderPatch(
+    ): ScenePrimitivePatch => solvedSkinRenderPatch(
       primitive,
       solveSkin(primitive),
       restoreAuthoredRenderStreams.get(String(primitive.id)) === true,
-    );
-    const fallback = new Map<string, Partial<SkinnedMeshPrimitive>>();
+    ) as ScenePrimitivePatch;
+    const fallback = new Map<string, ScenePrimitivePatch>();
+    const pendingSnapshots = new Map<string, SkinRunSnapshot>();
+    const dirtySkinned: SkinnedMeshPrimitive[] = [];
     const gpuJobs: Array<{
       readonly primitive: SkinnedMeshPrimitive;
       readonly id: string;
@@ -267,6 +459,22 @@ export class GpuSkinningSubsystem {
           ? tlasBindings?.find((binding) => binding.primitiveId === id)
           : null;
       if (tlasBinding != null) baseVertex = tlasBinding.vertexStart;
+      const snapshot = makeSkinRunSnapshot(
+        primitive,
+        bvhMode,
+        bvhPositionBinding,
+        bvhNormalBinding,
+        range,
+        tlasBinding ?? undefined,
+      );
+      pendingSnapshots.set(id, snapshot);
+      if (
+        !restoresRenderStreams &&
+        skinRunSnapshotEqual(this.#lastAcceptedRuns.get(id), snapshot)
+      ) {
+        continue;
+      }
+      dirtySkinned.push(primitive);
       const canUseGpu =
         bvhPositionBinding != null &&
         bvhNormalBinding != null &&
@@ -287,6 +495,8 @@ export class GpuSkinningSubsystem {
         gpuJobs.push({ primitive, id, range, baseVertex });
       }
     }
+
+    if (dirtySkinned.length === 0) return;
 
     const fallbackNeedsTopology = [...fallback.values()].some(
       (patch) =>
@@ -309,12 +519,16 @@ export class GpuSkinningSubsystem {
         })),
         null,
       );
+      for (const primitive of skinned) {
+        const id = String(primitive.id);
+        this.#lastAcceptedRuns.set(id, pendingSnapshots.get(id)!);
+      }
       acceptRenderStreamMorphState();
       return;
     }
 
     let skinCommands: GPUCommandBuffer | null = null;
-    const gpuPatches = new Map<string, Partial<SkinnedMeshPrimitive>>();
+    const gpuPatches = new Map<string, ScenePrimitivePatch>();
     if (gpuJobs.length > 0) {
       const encoder = this.#device.createCommandEncoder({ label: 'vitrum.gpuSkinBvh' });
       for (const job of gpuJobs) {
@@ -350,7 +564,7 @@ export class GpuSkinningSubsystem {
       skinCommands = encoder.finish();
     }
 
-    const updates: SkinningBatchUpdate[] = skinned.map((primitive) => {
+    const updates: SkinningBatchUpdate[] = dirtySkinned.map((primitive) => {
       const id = String(primitive.id);
       const gpuPatch = gpuPatches.get(id);
       return {
@@ -360,6 +574,10 @@ export class GpuSkinningSubsystem {
       };
     });
     host.applySkinningBatch(updates, skinCommands);
+    for (const primitive of dirtySkinned) {
+      const id = String(primitive.id);
+      this.#lastAcceptedRuns.set(id, pendingSnapshots.get(id)!);
+    }
     acceptRenderStreamMorphState();
   }
 

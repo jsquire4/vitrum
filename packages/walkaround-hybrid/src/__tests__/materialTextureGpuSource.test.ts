@@ -4,7 +4,9 @@ import { createWalkaroundWebGpuTextureSource } from '../materialTextureSource.js
 import {
   MATERIAL_ATLAS_GENERATE_MIP_WGSL,
   MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL,
+  materialTextureAtlasFingerprintParts,
   packMaterialTextureAtlas,
+  planMaterialTextureAtlasLayout,
   uploadMaterialTextureAtlas,
 } from '../pipeline/materialTextureAtlas.js';
 
@@ -58,6 +60,7 @@ function makeDestinationTexture(descriptor: GPUTextureDescriptor) {
 
 function makeUploadHarness(failBeginComputePass = false) {
   const destinations: ReturnType<typeof makeDestinationTexture>[] = [];
+  const mappedRanges: ArrayBuffer[] = [];
   const createTexture = vi.fn((descriptor: GPUTextureDescriptor) => {
     const destination = makeDestinationTexture(descriptor);
     destinations.push(destination);
@@ -69,11 +72,15 @@ function makeUploadHarness(failBeginComputePass = false) {
   const createComputePipeline = vi.fn(() => ({}));
   const createBindGroup = vi.fn(() => ({}));
   const bufferDestroy = vi.fn();
-  const createBuffer = vi.fn((descriptor: GPUBufferDescriptor) => ({
-    getMappedRange: vi.fn(() => new ArrayBuffer(Number(descriptor.size))),
-    unmap: vi.fn(),
-    destroy: bufferDestroy,
-  }));
+  const createBuffer = vi.fn((descriptor: GPUBufferDescriptor) => {
+    const mappedRange = new ArrayBuffer(Number(descriptor.size));
+    mappedRanges.push(mappedRange);
+    return {
+      getMappedRange: vi.fn(() => mappedRange),
+      unmap: vi.fn(),
+      destroy: bufferDestroy,
+    };
+  });
   const dispatchWorkgroups = vi.fn();
   const pass = {
     setPipeline: vi.fn(),
@@ -86,6 +93,7 @@ function makeUploadHarness(failBeginComputePass = false) {
     return pass;
   });
   const finish = vi.fn(() => ({}));
+  const copyTextureToTexture = vi.fn();
   const writeTexture = vi.fn();
   const submit = vi.fn();
   const device = {
@@ -97,7 +105,11 @@ function makeUploadHarness(failBeginComputePass = false) {
     createComputePipeline,
     createBindGroup,
     createBuffer,
-    createCommandEncoder: vi.fn(() => ({ beginComputePass, finish })),
+    createCommandEncoder: vi.fn(() => ({
+      beginComputePass,
+      copyTextureToTexture,
+      finish,
+    })),
     queue: { writeTexture, submit },
   } as unknown as GPUDevice;
   return {
@@ -109,15 +121,61 @@ function makeUploadHarness(failBeginComputePass = false) {
     createBuffer,
     bufferDestroy,
     dispatchWorkgroups,
+    copyTextureToTexture,
     beginComputePass,
     writeTexture,
     submit,
+    mappedRanges,
   };
 }
 
 describe('walkaround explicit WebGPU material texture sources', () => {
-  it('preflights atlas layer bytes before allocating an over-budget GPU-source atlas', () => {
-    const device = {} as GPUDevice;
+  it('preflights metadata clones, mip staging, and renderer replicas before GPU allocation', () => {
+    const harness = makeUploadHarness();
+    const payload = packMaterialTextureAtlas(
+      [{
+        baseColor: [1, 1, 1],
+        roughness: 0.5,
+        metallic: 0,
+        baseColorMap: {
+          handle: {
+            width: 2,
+            height: 2,
+            data: new Uint8Array(16).fill(255),
+            __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+          },
+          mipFilter: 'linear',
+        },
+      }],
+      new Uint32Array([0]),
+      1,
+    );
+    expect(() => uploadMaterialTextureAtlas(
+      harness.device,
+      payload,
+      { maxCpuTransactionBytes: 1 },
+    )).toThrow(/Material atlas CPU transaction requires/);
+    expect(harness.createTexture).not.toHaveBeenCalled();
+
+    const plan = planMaterialTextureAtlasLayout(
+      payload,
+      harness.device.limits,
+    );
+    expect(() => uploadMaterialTextureAtlas(
+      harness.device,
+      payload,
+      {
+        replicatedResidentCopies: 2,
+        maxTransactionBytes:
+          plan.candidatePeakBytes + plan.allocatedBytes - 1,
+      },
+    )).toThrow(/peer replicas/);
+    expect(harness.createTexture).not.toHaveBeenCalled();
+  });
+
+  it('preflights the transaction budget before allocating a GPU-source atlas', () => {
+    const harness = makeUploadHarness();
+    const device = harness.device;
     const makeSource = (colorSpace: 'srgb' | 'linear') => {
       const { texture } = makeSourceTexture({ width: 4096, height: 4096 });
       return createWalkaroundWebGpuTextureSource(device, texture, {
@@ -131,16 +189,19 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       metallic: 0,
       baseColorMap: { handle: makeSource('srgb') },
       normalMap: { handle: makeSource('linear') },
-      roughnessMap: { handle: makeSource('linear') },
     };
 
-    expect(() => packMaterialTextureAtlas(
+    const payload = packMaterialTextureAtlas(
       [material],
       new Uint32Array([0]),
       1,
-    )).toThrow(
-      /material texture atlas requires 536870912 CPU bytes, above the .*per-allocation staging budget/,
     );
+    expect(() => uploadMaterialTextureAtlas(
+      device,
+      payload,
+      { maxTransactionBytes: 1 },
+    )).toThrow(/Material atlas transaction requires .*above the 1-byte transaction budget/);
+    expect(harness.createTexture).not.toHaveBeenCalled();
   });
 
   it('pins source format, transfer function, selected subresource, and identity', () => {
@@ -178,9 +239,47 @@ describe('walkaround explicit WebGPU material texture sources', () => {
     });
     expect(Object.isFrozen(first)).toBe(true);
     expect(second.sourceId).toBeGreaterThan(first.sourceId);
+    expect([second.compatibilityKeyLo, second.compatibilityKeyHi]).not.toEqual(
+      [first.compatibilityKeyLo, first.compatibilityKeyHi],
+    );
   });
 
-  it('snapshots an exact immutable CPU mirror and retains its texels in the CPU atlas', () => {
+  it('uses stable content revisions for portable GI compatibility and session keys otherwise', () => {
+    const device = {} as GPUDevice;
+    const { texture } = makeSourceTexture();
+    const make = (contentRevision?: string) =>
+      createWalkaroundWebGpuTextureSource(device, texture, {
+        format: 'rgba8unorm',
+        colorSpace: 'srgb',
+        ...(contentRevision == null ? {} : { contentRevision }),
+      });
+    const atlasFingerprint = (source: ReturnType<typeof make>): number[] => {
+      const payload = packMaterialTextureAtlas(
+        [{
+          baseColor: [1, 1, 1],
+          roughness: 0.5,
+          metallic: 0,
+          baseColorMap: { handle: source },
+        }],
+        new Uint32Array([0]),
+        1,
+      );
+      return Array.from(
+        materialTextureAtlasFingerprintParts(payload)[0] as Uint32Array,
+      );
+    };
+
+    expect(atlasFingerprint(make())).not.toEqual(atlasFingerprint(make()));
+    expect(atlasFingerprint(make('asset-a@sha256:123'))).toEqual(
+      atlasFingerprint(make('asset-a@sha256:123')),
+    );
+    expect(atlasFingerprint(make('asset-a@sha256:123'))).not.toEqual(
+      atlasFingerprint(make('asset-a@sha256:456')),
+    );
+    expect(() => make('')).toThrow(/contentRevision/);
+  });
+
+  it('snapshots an exact immutable CPU mirror without changing GPU-backed atlas identity', () => {
     const device = {} as GPUDevice;
     const { texture } = makeSourceTexture({ width: 2, height: 2 });
     const pixels = new Uint8Array([
@@ -211,13 +310,24 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       new Uint32Array([0]),
       1,
     );
-    expect(payload.gpuSourceLayers).toEqual([{ layer: 0, source, decodeSrgb: false }]);
-    expect(Array.from(payload.atlasData)).toEqual(Array.from(new Float32Array([
-      1, 0, 0, 1,
-      0, 1, 0, 1,
-      0, 0, 1, 1,
-      128 / 255, 64 / 255, 32 / 255, 1,
-    ])));
+    expect(payload.gpuSourceLayers).toEqual([
+      expect.objectContaining({
+        layer: 0,
+        source,
+        encoding: 0,
+        mipLevelCount: 1,
+        decodeSrgb: false,
+      }),
+    ]);
+    expect(payload.atlasLayers).toEqual([
+      expect.objectContaining({
+        kind: 'gpu',
+        layer: 0,
+        width: 2,
+        height: 2,
+        source,
+      }),
+    ]);
   });
 
   it('rejects CPU mirrors that cannot exactly identify the selected GPU subresource', () => {
@@ -247,6 +357,17 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       colorSpace: 'linear',
       cpuMirror: { ...base, data: new Uint8Array(15) },
     })).toThrow(/length must be exactly 16/);
+
+    const singleChannel = makeSourceTexture({
+      width: 2,
+      height: 2,
+      format: 'r8unorm',
+    }).texture;
+    expect(() => createWalkaroundWebGpuTextureSource(device, singleChannel, {
+      format: 'r8unorm',
+      colorSpace: 'linear',
+      cpuMirror: base,
+    })).toThrow(/cpuMirror\.channels must match.*r8unorm \(1\)/);
   });
 
   it('rejects guessed formats, incompatible native-sRGB declarations, and invalid subresources', () => {
@@ -290,15 +411,33 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       1,
     );
 
-    expect(payload.atlasDim).toBe(4);
-    expect(payload.atlasLayerCount).toBe(2);
-    expect(payload.atlasMipLevelCount).toBe(3);
+    expect(payload.atlasLayers).toEqual([
+      expect.objectContaining({
+        kind: 'cpu',
+        layer: 0,
+        width: 2,
+        height: 2,
+        mipLevelCount: 1,
+      }),
+      expect.objectContaining({
+        kind: 'gpu',
+        layer: 1,
+        width: 4,
+        height: 4,
+        mipLevelCount: 1,
+      }),
+    ]);
     expect(payload.readableBaseColorLayerCount).toBe(1);
     expect(payload.readableNormalLayerCount).toBe(1);
-    expect(payload.gpuSourceLayers).toEqual([{ layer: 1, source, decodeSrgb: false }]);
-    expect(Array.from(payload.atlasData.slice(4 * 4 * 4))).toEqual(
-      Array.from(new Float32Array(4 * 4 * 4)),
-    );
+    expect(payload.gpuSourceLayers).toEqual([
+      expect.objectContaining({
+        layer: 1,
+        source,
+        encoding: 0,
+        mipLevelCount: 1,
+        decodeSrgb: false,
+      }),
+    ]);
   });
 
   it('rejects raw GPUTexture handles and sRGB sources used for linear-data maps', () => {
@@ -329,21 +468,28 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       colorSpace: 'srgb',
     });
     const payload = packMaterialTextureAtlas(
-      [materialWithMaps(source)],
+      [{
+        ...materialWithMaps(source),
+        baseColorMap: { handle: source, mipFilter: 'linear' },
+      }],
       new Uint32Array([0]),
       1,
     );
 
     const uploaded = uploadMaterialTextureAtlas(harness.device, payload);
 
-    expect(harness.destinations).toHaveLength(2);
+    expect(harness.destinations).toHaveLength(3);
     expect(harness.destinations[0]?.descriptor).toMatchObject({
-      size: { width: 4, height: 4, depthOrArrayLayers: 1 },
-      mipLevelCount: 3,
-      format: 'rgba32float',
+      mipLevelCount: 1,
+      format: 'r32uint',
     });
     expect(Number(harness.destinations[0]?.descriptor.usage) & 0x08).toBe(0x08);
-    expect(harness.writeTexture).toHaveBeenCalledTimes(2);
+    expect(harness.destinations[1]?.descriptor).toMatchObject({
+      size: { width: 4, height: 4, depthOrArrayLayers: 1 },
+      mipLevelCount: 3,
+      format: 'r32uint',
+    });
+    expect(harness.writeTexture).toHaveBeenCalledTimes(1);
     expect(harness.createShaderModule.mock.calls.map((call) => call[0]?.code)).toEqual([
       MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL,
       MATERIAL_ATLAS_GENERATE_MIP_WGSL,
@@ -361,7 +507,7 @@ describe('walkaround explicit WebGPU material texture sources', () => {
           binding: 1,
           storageTexture: expect.objectContaining({
             access: 'write-only',
-            format: 'rgba32float',
+            format: 'r32uint',
             viewDimension: '2d-array',
           }),
         }),
@@ -371,7 +517,7 @@ describe('walkaround explicit WebGPU material texture sources', () => {
         expect.objectContaining({
           binding: 0,
           texture: expect.objectContaining({
-            sampleType: 'unfilterable-float',
+            sampleType: 'uint',
             viewDimension: '2d-array',
           }),
         }),
@@ -379,10 +525,11 @@ describe('walkaround explicit WebGPU material texture sources', () => {
           binding: 1,
           storageTexture: expect.objectContaining({
             access: 'write-only',
-            format: 'rgba32float',
+            format: 'r32uint',
             viewDimension: '2d-array',
           }),
         }),
+        expect.objectContaining({ binding: 2, buffer: { type: 'uniform' } }),
       ],
     ]);
     expect(sourceTexture.createView).toHaveBeenCalledWith(expect.objectContaining({
@@ -396,9 +543,126 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       [1, 1, 1],
     ]);
     expect(harness.submit).toHaveBeenCalledTimes(1);
-    expect(harness.bufferDestroy).toHaveBeenCalledTimes(1);
+    expect(harness.copyTextureToTexture).toHaveBeenCalledTimes(3);
+    expect(harness.bufferDestroy).toHaveBeenCalledTimes(3);
+    expect(harness.destinations[1]?.destroy).toHaveBeenCalledTimes(1);
     expect(sourceTexture.destroy).not.toHaveBeenCalled();
-    expect(uploaded.atlasDim).toBe(4);
+    expect(uploaded.atlasWidth).toBeGreaterThanOrEqual(1);
+    expect(uploaded.atlasHeight).toBeGreaterThanOrEqual(1);
+    expect(uploaded.atlasArrayLayerCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('re-encodes native-sRGB textureLoad results before packed sRGB storage', () => {
+    const harness = makeUploadHarness();
+    const sourceTexture = makeSourceTexture({ format: 'rgba8unorm-srgb' });
+    const source = createWalkaroundWebGpuTextureSource(
+      harness.device,
+      sourceTexture.texture,
+      { format: 'rgba8unorm-srgb', colorSpace: 'srgb' },
+    );
+    const payload = packMaterialTextureAtlas(
+      [materialWithMaps(source)],
+      new Uint32Array([0]),
+      1,
+    );
+
+    uploadMaterialTextureAtlas(harness.device, payload);
+
+    expect(harness.mappedRanges).toHaveLength(1);
+    expect(Array.from(new Uint32Array(harness.mappedRanges[0]!))).toEqual([
+      4, 4, 0, 1, 1, 4, 0, 0,
+    ]);
+    expect(MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL)
+      .toContain('if (params.encodeSrgb != 0u)');
+    expect(MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL)
+      .toContain('value = atlasEncodeSrgb(value);');
+  });
+
+  it.each([
+    ['r8unorm', 1],
+    ['rg8unorm', 2],
+  ] as const)(
+    'publishes %s channel count and normalizes it through the public raw-map rule',
+    (format, expectedChannels) => {
+      const harness = makeUploadHarness();
+      const sourceTexture = makeSourceTexture({ format });
+      const source = createWalkaroundWebGpuTextureSource(
+        harness.device,
+        sourceTexture.texture,
+        { format, colorSpace: 'linear' },
+      );
+      const payload = packMaterialTextureAtlas(
+        [materialWithMaps(source)],
+        new Uint32Array([0]),
+        1,
+      );
+
+      uploadMaterialTextureAtlas(harness.device, payload);
+
+      expect(harness.mappedRanges).toHaveLength(1);
+      expect(Array.from(new Uint32Array(harness.mappedRanges[0]!))).toEqual([
+        4, 4, 0, 1, 0, expectedChannels, 0, 0,
+      ]);
+      expect(MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL)
+        .toContain('value = vec4f(value.rrr, 1.0);');
+      expect(MATERIAL_ATLAS_GPU_SOURCE_CONVERT_WGSL)
+        .toContain('value = vec4f(value.rg, 0.0, 1.0);');
+    },
+  );
+
+  it('reuses one scratch mip chain across five GPU-backed material maps', () => {
+    const harness = makeUploadHarness();
+    const source = (
+      colorSpace: 'srgb' | 'linear',
+      cpuMirror = false,
+    ) => {
+      const texture = makeSourceTexture();
+      return createWalkaroundWebGpuTextureSource(
+        harness.device,
+        texture.texture,
+        {
+          format: 'rgba8unorm',
+          colorSpace,
+          ...(cpuMirror
+            ? {
+                cpuMirror: {
+                  width: 4,
+                  height: 4,
+                  channels: 4 as const,
+                  dataType: 'uint8' as const,
+                  colorSpace,
+                  data: new Uint8Array(4 * 4 * 4).fill(255),
+                },
+              }
+            : {}),
+        },
+      );
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      baseColorMap: { handle: source('srgb') },
+      emissiveMap: { handle: source('srgb', true) },
+      specularColorMap: { handle: source('srgb') },
+      sheenColorMap: { handle: source('srgb') },
+      normalMap: { handle: source('linear') },
+    };
+    const payload = packMaterialTextureAtlas(
+      [material],
+      new Uint32Array([0]),
+      1,
+    );
+
+    uploadMaterialTextureAtlas(harness.device, payload);
+
+    expect(payload.gpuSourceLayers).toHaveLength(5);
+    expect(harness.destinations).toHaveLength(3);
+    expect(harness.destinations.filter(({ descriptor }) =>
+      descriptor.label === 'vitrum.materialTextureAtlas.gpu-source.scratch',
+    )).toHaveLength(1);
+    expect(harness.dispatchWorkgroups).toHaveBeenCalledTimes(5);
+    expect(harness.copyTextureToTexture).toHaveBeenCalledTimes(5);
   });
 
   it('fails preflight before destination allocation for device, format, and usage mismatches', () => {
@@ -421,13 +685,11 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       format: 'depth24plus',
       colorSpace: 'linear',
     });
-    const unsupportedPayload = packMaterialTextureAtlas(
+    expect(() => packMaterialTextureAtlas(
       [materialWithMaps({ width: 1, height: 1, data: new Uint8Array(4) }, unsupported)],
       new Uint32Array([0]),
       1,
-    );
-    expect(() => uploadMaterialTextureAtlas(otherHarness.device, unsupportedPayload))
-      .toThrow(/unsupported format depth24plus/);
+    )).toThrow(/Unsupported material texture GPU format depth24plus/);
     expect(otherHarness.createTexture).not.toHaveBeenCalled();
 
     const noBindingTexture = makeSourceTexture({ usage: 0 });

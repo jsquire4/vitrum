@@ -91,9 +91,10 @@ describe('PTEngineWebGL2 auxiliary MRT semantics', () => {
     expect(second.albedo).toBe(first.albedo);
     expect(second.samplesAccumulated).toBe(2);
 
-    // Each sample is: unblended MRT trace + candidate replay + additive no-loop
-    // resolve + one radiance-only running-mean composite + present.
-    expect(drawArrays).toHaveBeenCalledTimes(10);
+    // Each sample is: shader-accumulated MRT trace + candidate replay +
+    // additive no-loop resolve + present. No third radiance target/composite
+    // draw remains.
+    expect(drawArrays).toHaveBeenCalledTimes(8);
     expect(enable.mock.calls.some(([cap]) => cap === gl.BLEND)).toBe(true);
     expect(disable.mock.calls.some(([cap]) => cap === gl.BLEND)).toBe(true);
 
@@ -104,8 +105,8 @@ describe('PTEngineWebGL2 auxiliary MRT semantics', () => {
         '__u' in location &&
         (location as { __u: string }).__u === 'opacity')
       .map(([, value]) => value);
-    // Raw MRT samples keep coverage alpha unweighted; only the radiance
-    // composite applies the progressive 1/(N+1) factor.
-    expect(opacityValues).toEqual([1, 1, 1, 1, 1, 1, 1, 0.5]);
+    // Main and resolve share the progressive 1/(N+1) factor; the candidate
+    // replay records an unweighted proposal.
+    expect(opacityValues).toEqual([1, 1, 1, 0.5, 1, 0.5]);
   });
 });

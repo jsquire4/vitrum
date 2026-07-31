@@ -10,7 +10,10 @@ import {
   isTlasOnlyVersionBump,
 } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './bvhTypes.js';
-import type { MaterialTextureAtlasPayload } from '../pipeline/materialTextureAtlas.js';
+import {
+  materialTextureAtlasFingerprintParts,
+  type MaterialTextureAtlasPayload,
+} from '../pipeline/materialTextureAtlas.js';
 import {
   packDDGIMaterialsFromCoreN,
   packDDGIMaterialsN,
@@ -81,9 +84,15 @@ export interface RestirBvhSnapshot {
 
 function materialAtlasMetadata(atlas: MaterialTextureAtlasPayload): Uint32Array {
   return new Uint32Array([
-    atlas.atlasDim,
-    atlas.atlasLayerCount,
-    atlas.atlasMipLevelCount,
+    atlas.atlasLayers.length,
+    atlas.atlasLayers.reduce(
+      (maximum, layer) => Math.max(maximum, layer.mipLevelCount),
+      0,
+    ),
+    atlas.atlasLayers.reduce(
+      (sum, layer) => sum + layer.width * layer.height,
+      0,
+    ),
     atlas.gpuSourceLayers.length,
     atlas.baseColorMetaWidth,
     atlas.baseColorMetaHeight,
@@ -109,18 +118,6 @@ function materialAtlasMetadata(atlas: MaterialTextureAtlasPayload): Uint32Array 
     atlas.readableThicknessLayerCount,
     atlas.readableBumpLayerCount,
   ]);
-}
-
-function materialAtlasGpuSourceIdentity(atlas: MaterialTextureAtlasPayload): Uint32Array {
-  const words = new Uint32Array(atlas.gpuSourceLayers.length * 4);
-  atlas.gpuSourceLayers.forEach((entry, index) => {
-    const base = index * 4;
-    words[base] = entry.layer;
-    words[base + 1] = entry.source.sourceId >>> 0;
-    words[base + 2] = Math.floor(entry.source.sourceId / 0x1_0000_0000) >>> 0;
-    words[base + 3] = entry.decodeSrgb ? 1 : 0;
-  });
-  return words;
 }
 
 export function makeRestirBvhSnapshot(
@@ -186,10 +183,9 @@ export function makeRestirBvhSnapshot(
   const atlas = buffers.materialTextureAtlas;
   const materialContentVersion = fingerprintBuffersExact(
     materialBytes,
-    atlas.atlasData,
     atlas.baseColorMetaData,
     materialAtlasMetadata(atlas),
-    materialAtlasGpuSourceIdentity(atlas),
+    ...materialTextureAtlasFingerprintParts(atlas),
   );
 
   return {

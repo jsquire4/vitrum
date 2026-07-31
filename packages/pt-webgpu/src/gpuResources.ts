@@ -235,7 +235,7 @@ class SppmResources {
   /**
    * A4-progressive — per-pixel SPPM statistics buffer.
    * SppmPixelStats[W×H×2] = separate surface/volume
-   * {tau.rgb, radius2, N, _pad×3} records × 32 bytes = 64 bytes/px.
+   * {tau.rgb, linearRadius, N, _pad×3} records × 32 bytes = 64 bytes/px.
    * Allocated in `ensureSppmPixelStatsBuffer`; reset (GPU-cleared) whenever
    * the PT accumulator resets. Bound at group(3) binding(9).
    */
@@ -2225,8 +2225,8 @@ export class GpuResources {
    * dims (freshly created or already cached); `false` on the lite tier or when
    * the requested size exceeds the device's maxBufferSize / maxStorageBufferBindingSize.
    *
-   * On (re)allocation the buffer is GPU-cleared so every pixel's (τ, R², N)
-   * starts at zero — the gather treats R²=0 as "first frame" and seeds from r₀².
+   * On (re)allocation the buffer is GPU-cleared so every pixel's (τ, R, N)
+   * starts at zero — the gather treats R=0 as "first frame" and seeds from r₀.
    * Called each frame from `renderFrame` just before `buildBindGroups`; also
    * called from `reset()` + `setScene()` so the stats are wiped when the view
    * moves or a new scene is loaded.

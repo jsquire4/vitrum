@@ -150,11 +150,27 @@ function buildShadingTangentFrame(
   const uv2 = uvForVertex(2);
   const duv1 = [uv1[0] - uv0[0], uv1[1] - uv0[1]] as const;
   const duv2 = [uv2[0] - uv0[0], uv2[1] - uv0[1]] as const;
-  const det = duv1[0] * duv2[1] - duv2[0] * duv1[1];
-  if (Math.abs(det) < 1e-10) return { tangent: [0, 0, 0], bitangent: [0, 0, 0], valid: false };
+  const uvScale = Math.max(...duv1.map(Math.abs), ...duv2.map(Math.abs));
+  if (!(uvScale > 0) || !Number.isFinite(uvScale)) {
+    return { tangent: [0, 0, 0], bitangent: [0, 0, 0], valid: false };
+  }
+  const normalizedDuv1 = [duv1[0] / uvScale, duv1[1] / uvScale] as const;
+  const normalizedDuv2 = [duv2[0] / uvScale, duv2[1] / uvScale] as const;
+  const det =
+    normalizedDuv1[0] * normalizedDuv2[1] -
+    normalizedDuv2[0] * normalizedDuv1[1];
+  if (!(Math.abs(det) > 1e-7)) {
+    return { tangent: [0, 0, 0], bitangent: [0, 0, 0], valid: false };
+  }
   const f = 1 / det;
-  let tangent = scale(sub(scale(e1, duv2[1]), scale(e2, duv1[1])), f);
-  let bitangent = scale(add(scale(e1, -duv2[0]), scale(e2, duv1[0])), f);
+  let tangent = scale(
+    sub(scale(e1, normalizedDuv2[1]), scale(e2, normalizedDuv1[1])),
+    f,
+  );
+  let bitangent = scale(
+    add(scale(e1, -normalizedDuv2[0]), scale(e2, normalizedDuv1[0])),
+    f,
+  );
   tangent = sub(tangent, scale(normal, dot(normal, tangent)));
   tangent = normalize(tangent);
   if (Math.hypot(...tangent) < 1e-8) return { tangent: [0, 0, 0], bitangent: [0, 0, 0], valid: false };
@@ -226,6 +242,8 @@ describe('pt-webgpu normal-map tangent-frame oracle', () => {
       'let uv0 = materialUvForVertex(tri.x, gpuUvSlot);',
       'let handednessRaw = ta.w * u + tb.w * v + tc.w * w;',
       'frame.bitangent = cross(normal, tangent) * handedness;',
+      'let uvScale = max(',
+      'let normalizedDuv1 = duv1 / uvScale;',
       'let f = 1.0 / det;',
       'var normalScale = materialTexDescriptors[base + 5u].w;',
       'tn.x = tn.x * normalScale;',
@@ -322,6 +340,26 @@ describe('pt-webgpu normal-map tangent-frame oracle', () => {
     );
     vecClose(frame.tangent, [1, 0, 0]);
     vecClose(frame.bitangent, [0, -1, 0]);
+  });
+
+  it('derives the same frame for a uniformly tiny UV island', () => {
+    const tinyUv: TriangleFixture = {
+      ...TRI,
+      uvs: [
+        [0, 0, 0, 0],
+        [1e-8, 0, 0, 0],
+        [0, 1e-8, 0, 0],
+      ],
+    };
+    const frame = buildShadingTangentFrame(
+      tinyUv,
+      [0.2, 0.3],
+      NORMAL,
+    );
+
+    expect(frame.valid).toBe(true);
+    vecClose(frame.tangent, [1, 0, 0]);
+    vecClose(frame.bitangent, [0, 1, 0]);
   });
 
   it('normalScale damps tangent-space xy tilt before normalization', () => {

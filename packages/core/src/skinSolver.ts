@@ -30,6 +30,9 @@
  * deformed surface. For glTF-typical use bindMatrix is identity and the
  * pipeline collapses to `deformedPos = skinMatrix · morphedPos`,
  * `deformedNormal = (skinMatrix₃⁻¹)ᵀ · morphedNormal`.
+ * Tangent directions use `L` while their xyzw handedness is multiplied by the
+ * orientation sign of `L`; a reflected deformation must flip `w` so the
+ * reconstructed bitangent remains the deformation of the authored bitangent.
  *
  * Per-bone `combined = bones · boneInverses` is precomputed once per call
  * (boneCount 4x4 matrix muls) instead of once per vertex×bone.
@@ -235,6 +238,36 @@ export function mat3InverseTranspose(m: ArrayLike<number>, out?: Float32Array): 
   r[3] = c10 * inv; r[4] = c11 * inv; r[5] = c12 * inv;
   r[6] = c20 * inv; r[7] = c21 * inv; r[8] = c22 * inv;
   return r;
+}
+
+/**
+ * Orientation sign of a row-major 3×3 linear transform. Normalizing by the
+ * largest component makes the determinant-sign test invariant to uniformly
+ * tiny or huge finite scales. Singular/rank-deficient transforms have no
+ * invertible orientation, so preserve the authored tangent handedness.
+ */
+function mat3OrientationSign(m: ArrayLike<number>): -1 | 1 {
+  const matrixScale = Math.max(
+    Math.abs(m[0]!), Math.abs(m[1]!), Math.abs(m[2]!),
+    Math.abs(m[3]!), Math.abs(m[4]!), Math.abs(m[5]!),
+    Math.abs(m[6]!), Math.abs(m[7]!), Math.abs(m[8]!),
+  );
+  if (!(matrixScale > 0) || !Number.isFinite(matrixScale)) return 1;
+
+  const m00 = m[0]! / matrixScale;
+  const m01 = m[1]! / matrixScale;
+  const m02 = m[2]! / matrixScale;
+  const m10 = m[3]! / matrixScale;
+  const m11 = m[4]! / matrixScale;
+  const m12 = m[5]! / matrixScale;
+  const m20 = m[6]! / matrixScale;
+  const m21 = m[7]! / matrixScale;
+  const m22 = m[8]! / matrixScale;
+  const determinant =
+    m00 * (m11 * m22 - m12 * m21) -
+    m01 * (m10 * m22 - m12 * m20) +
+    m02 * (m10 * m21 - m11 * m20);
+  return determinant < 0 ? -1 : 1;
 }
 
 /**
@@ -902,8 +935,14 @@ export function solveSkin(
     positions[v * 3 + 0] = outX;
     positions[v * 3 + 1] = outY;
     positions[v * 3 + 2] = outZ;
-    const invLen = 1 / Math.sqrt(dnx * dnx + dny * dny + dnz * dnz + 1e-20);
-    dnx *= invLen; dny *= invLen; dnz *= invLen;
+    const normalScale = Math.max(Math.abs(dnx), Math.abs(dny), Math.abs(dnz));
+    if (normalScale > 0 && Number.isFinite(normalScale)) {
+      dnx /= normalScale; dny /= normalScale; dnz /= normalScale;
+      const invLen = 1 / Math.hypot(dnx, dny, dnz);
+      dnx *= invLen; dny *= invLen; dnz *= invLen;
+    } else {
+      dnx = 0; dny = 0; dnz = 0;
+    }
     normals[v * 3 + 0] = dnx;
     normals[v * 3 + 1] = dny;
     normals[v * 3 + 2] = dnz;
@@ -911,12 +950,19 @@ export function solveSkin(
       let dtx = linRowMajor[0] * tx0 + linRowMajor[1] * ty0 + linRowMajor[2] * tz0;
       let dty = linRowMajor[3] * tx0 + linRowMajor[4] * ty0 + linRowMajor[5] * tz0;
       let dtz = linRowMajor[6] * tx0 + linRowMajor[7] * ty0 + linRowMajor[8] * tz0;
-      const tInvLen = 1 / Math.sqrt(dtx * dtx + dty * dty + dtz * dtz + 1e-20);
-      dtx *= tInvLen; dty *= tInvLen; dtz *= tInvLen;
+      const tangentScale = Math.max(Math.abs(dtx), Math.abs(dty), Math.abs(dtz));
+      if (tangentScale > 0 && Number.isFinite(tangentScale)) {
+        dtx /= tangentScale; dty /= tangentScale; dtz /= tangentScale;
+        const tInvLen = 1 / Math.hypot(dtx, dty, dtz);
+        dtx *= tInvLen; dty *= tInvLen; dtz *= tInvLen;
+      } else {
+        dtx = 0; dty = 0; dtz = 0;
+      }
       tangents[v * 4 + 0] = dtx;
       tangents[v * 4 + 1] = dty;
       tangents[v * 4 + 2] = dtz;
-      tangents[v * 4 + 3] = prim.tangents[v * 4 + 3] ?? 1;
+      tangents[v * 4 + 3] =
+        (prim.tangents[v * 4 + 3] ?? 1) * mat3OrientationSign(linRowMajor);
     }
   }
 

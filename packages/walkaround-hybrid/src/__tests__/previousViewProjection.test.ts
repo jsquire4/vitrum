@@ -130,6 +130,7 @@ function makeFrameDeps(capture: { inputs: PipelineFrameInputs | null }): HybridE
         triIntersectEpsilon: 1e-5,
         glassMixScale: 0.7,
       },
+      rayOriginBias: 1e-3,
       rcWeight: 0,
     },
   };
@@ -176,6 +177,7 @@ function makePipelineInputs(
     },
     filter: {
       triIntersectEpsilon: 1e-5,
+      rayOriginBias: 1e-3,
       glassMixScale: 0.7,
       indirectFireflyClamp: [1, 1, 1],
       atrousDirectSigmas: [128, 5, 0.05],

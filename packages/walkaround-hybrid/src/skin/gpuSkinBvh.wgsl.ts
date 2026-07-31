@@ -71,7 +71,7 @@ fn mat3InverseTranspose(c0: vec3f, c1: vec3f, c2: vec3f) -> mat3x3f {
   // below rank 2 and erase the normal.
   let componentScale = max(max(abs(c0), abs(c1)), abs(c2));
   let matrixScale = max(componentScale.x, max(componentScale.y, componentScale.z));
-  if (matrixScale <= 0.0) {
+  if (!(matrixScale > 0.0) || matrixScale > 3.402823e38) {
     return mat3x3f(vec3f(0.0), vec3f(0.0), vec3f(0.0));
   }
   let n0 = c0 / matrixScale;
@@ -168,8 +168,15 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     outN = wnt * outN;
   }
 
-  let nlen = length(outN);
-  let safeN = select(vec3f(0.0), outN / nlen, nlen > 1e-12);
+  let normalScale = max(abs(outN.x), max(abs(outN.y), abs(outN.z)));
+  var safeN = vec3f(0.0);
+  if (normalScale > 0.0 && normalScale <= 3.402823e38) {
+    let scaledNormal = outN / normalScale;
+    let scaledLength = length(scaledNormal);
+    if (scaledLength > 0.0 && scaledLength <= 3.402823e38) {
+      safeN = scaledNormal / scaledLength;
+    }
+  }
 
   bvhPositions[outIdx] = vec4f(outPos, uvPack);
   // WS1 (2026-05-29) — write the skinned normal into the SHARED merged

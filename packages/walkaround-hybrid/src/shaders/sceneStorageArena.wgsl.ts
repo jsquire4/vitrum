@@ -26,8 +26,38 @@ struct EmitterTri {
   normal: vec3f,
   area: f32,
   Le: vec3f,
-  castShadowDisabled: f32,
+  emitterFlags: f32,
 };
+
+const EMITTER_TRI_CAST_SHADOW_DISABLED: u32 = 1u;
+const EMITTER_TRI_TWO_SIDED: u32 = 2u;
+
+fn emitterTriFlags(emitter: EmitterTri) -> u32 {
+  return u32(max(emitter.emitterFlags, 0.0));
+}
+
+fn emitterTriCastShadowDisabled(emitter: EmitterTri) -> bool {
+  return (
+    emitterTriFlags(emitter) & EMITTER_TRI_CAST_SHADOW_DISABLED
+  ) != 0u;
+}
+
+fn emitterTriIsTwoSided(emitter: EmitterTri) -> bool {
+  return (emitterTriFlags(emitter) & EMITTER_TRI_TWO_SIDED) != 0u;
+}
+
+/** towardReceiver points away from the sampled emitter surface. */
+fn emitterTriCosineTowardReceiver(
+  emitter: EmitterTri,
+  towardReceiver: vec3f,
+) -> f32 {
+  let signedCosine = dot(emitter.normal, towardReceiver);
+  return select(
+    max(signedCosine, 0.0),
+    abs(signedCosine),
+    emitterTriIsTwoSided(emitter),
+  );
+}
 
 @group(1) @binding(0) var<storage, read> bvhSceneGeometryArena: array<u32>;
 @group(1) @binding(1) var<storage, read> sceneTlasArena: array<u32>;
@@ -219,7 +249,7 @@ fn sceneLoadEmitter(index: u32) -> EmitterTri {
   emitter.normal = sceneLightingVec4f(word + 12u).xyz;
   emitter.area = bitcast<f32>(sceneLightingU32(word + 15u));
   emitter.Le = sceneLightingVec4f(word + 16u).xyz;
-  emitter.castShadowDisabled = bitcast<f32>(sceneLightingU32(word + 19u));
+  emitter.emitterFlags = bitcast<f32>(sceneLightingU32(word + 19u));
   return emitter;
 }
 

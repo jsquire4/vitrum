@@ -79,10 +79,20 @@ describe('RC TLAS normal/tangent frame oracle', () => {
     const normalMap = functionBody(PROBE_RAY_CAST_WGSL, 'rcApplyNormalMapAtOffsetForHit');
     expect(smooth).toContain('tlasTransformNormalFromLocalCols(');
     expect(smooth).toContain('tlasLoadWorldToLocalColumn(base)');
-    expect(tangentFrame).toContain('dp1 = rcTransformDirectionCols(l2w0, l2w1, l2w2, dp1);');
-    expect(tangentFrame).toContain('dp2 = rcTransformDirectionCols(l2w0, l2w1, l2w2, dp2);');
+    expect(tangentFrame).toContain(
+      'let positionScale = max(rcMaxAbsVec3(dp1), rcMaxAbsVec3(dp2));',
+    );
+    expect(tangentFrame).toContain('dp1 = dp1 / positionScale;');
+    expect(tangentFrame).toContain('dp2 = dp2 / positionScale;');
+    expect(tangentFrame).toContain(
+      'tangent = rcTransformDirectionCols(l2w0, l2w1, l2w2, tangent);',
+    );
+    expect(tangentFrame).toContain(
+      'bitangent = rcTransformDirectionCols(l2w0, l2w1, l2w2, bitangent);',
+    );
     expect(tangentFrame).toContain('rcTangentHandednessForLocalToWorld(l2w0, l2w1, l2w2)');
-    expect(normalMap).toContain('tangentSampleLen2 <= 1e-20');
+    expect(normalMap).toContain('if (!rcCanNormalize(tangentSampleRaw))');
+    expect(normalMap).toContain('rcSafeNormalizeOr(\n    tangentSampleRaw,');
     expect(normalMap).toContain('rcSafeNormalizeOr(perturbedRaw, fallbackNormal)');
   });
 });

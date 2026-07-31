@@ -36,26 +36,27 @@ export function generateTangents(
     3,
     `${allocationPath} accumulator element count`,
   );
-  const totalElementCount = checkedTangentSum(
+  const outputBytes = checkedTangentProduct(
     tangentElementCount,
+    Float32Array.BYTES_PER_ELEMENT,
+    `${allocationPath} output byte length`,
+  );
+  const accumulatorBytes = checkedTangentProduct(
     checkedTangentProduct(
       accumulatorElementCount,
       2,
       `${allocationPath} accumulator total`,
     ),
-    `${allocationPath} total element count`,
+    Float64Array.BYTES_PER_ELEMENT,
+    `${allocationPath} accumulator byte length`,
   );
   resourceLedger?.chargeDecodedGeometryBytes(
-    checkedTangentProduct(
-      totalElementCount,
-      Float32Array.BYTES_PER_ELEMENT,
-      `${allocationPath} byte length`,
-    ),
+    checkedTangentSum(outputBytes, accumulatorBytes, `${allocationPath} byte length`),
     allocationPath,
   );
   const tangents = new Float32Array(tangentElementCount);
-  const tanAccum = new Float32Array(accumulatorElementCount);
-  const bitanAccum = new Float32Array(accumulatorElementCount);
+  const tanAccum = new Float64Array(accumulatorElementCount);
+  const bitanAccum = new Float64Array(accumulatorElementCount);
   const triCount = indices ? Math.floor(indices.length / 3) : Math.floor(vertexCount / 3);
   let validTriangleCount = 0;
 
@@ -82,16 +83,27 @@ export function generateTangents(
     const du2 = (uvs[i2 * 2] ?? 0) - u0;
     const dv2 = (uvs[i2 * 2 + 1] ?? 0) - v0;
 
-    const denom = du1 * dv2 - du2 * dv1;
-    if (Math.abs(denom) < 1e-12) continue;
+    const uvScale = Math.max(
+      Math.abs(du1),
+      Math.abs(dv1),
+      Math.abs(du2),
+      Math.abs(dv2),
+    );
+    if (!(uvScale > 0) || !Number.isFinite(uvScale)) continue;
+    const ndu1 = du1 / uvScale;
+    const ndv1 = dv1 / uvScale;
+    const ndu2 = du2 / uvScale;
+    const ndv2 = dv2 / uvScale;
+    const denom = ndu1 * ndv2 - ndu2 * ndv1;
+    if (!Number.isFinite(denom) || Math.abs(denom) <= 1e-7) continue;
     validTriangleCount += 1;
     const r = 1 / denom;
-    const tx = (dv2 * e1x - dv1 * e2x) * r;
-    const ty = (dv2 * e1y - dv1 * e2y) * r;
-    const tz = (dv2 * e1z - dv1 * e2z) * r;
-    const bx = (du1 * e2x - du2 * e1x) * r;
-    const by = (du1 * e2y - du2 * e1y) * r;
-    const bz = (du1 * e2z - du2 * e1z) * r;
+    const tx = (ndv2 * e1x - ndv1 * e2x) * r;
+    const ty = (ndv2 * e1y - ndv1 * e2y) * r;
+    const tz = (ndv2 * e1z - ndv1 * e2z) * r;
+    const bx = (ndu1 * e2x - ndu2 * e1x) * r;
+    const by = (ndu1 * e2y - ndu2 * e1y) * r;
+    const bz = (ndu1 * e2z - ndu2 * e1z) * r;
 
     accumulateTangentFrame(tanAccum, bitanAccum, i0, tx, ty, tz, bx, by, bz);
     accumulateTangentFrame(tanAccum, bitanAccum, i1, tx, ty, tz, bx, by, bz);
@@ -120,25 +132,25 @@ export function generateTangents(
     tx -= nx * ndt;
     ty -= ny * ndt;
     tz -= nz * ndt;
-    let len = Math.sqrt(tx * tx + ty * ty + tz * tz);
+    let tangentScale = Math.max(Math.abs(tx), Math.abs(ty), Math.abs(tz));
 
-    if (len < 1e-8) {
+    if (!(tangentScale > 0) || !Number.isFinite(tangentScale)) {
       const sign = nz >= 0 ? 1 : -1;
       const a = -1 / (sign + nz);
       const b = nx * ny * a;
       tx = 1 + sign * nx * nx * a;
       ty = sign * b;
       tz = -sign * nx;
-      const fallbackLength = Math.sqrt(tx * tx + ty * ty + tz * tz) || 1;
-      tx /= fallbackLength;
-      ty /= fallbackLength;
-      tz /= fallbackLength;
-      len = 1;
+      tangentScale = Math.max(Math.abs(tx), Math.abs(ty), Math.abs(tz));
     }
 
-    tangents[v * 4] = tx / len;
-    tangents[v * 4 + 1] = ty / len;
-    tangents[v * 4 + 2] = tz / len;
+    const sx = tx / tangentScale;
+    const sy = ty / tangentScale;
+    const sz = tz / tangentScale;
+    const inverseLength = 1 / Math.hypot(sx, sy, sz);
+    tangents[v * 4] = sx * inverseLength;
+    tangents[v * 4 + 1] = sy * inverseLength;
+    tangents[v * 4 + 2] = sz * inverseLength;
     tangents[v * 4 + 3] = handedness;
   }
 
@@ -172,8 +184,8 @@ function checkedTangentSum(left: number, right: number, label: string): number {
 }
 
 function accumulateTangentFrame(
-  tangents: Float32Array,
-  bitangents: Float32Array,
+  tangents: Float64Array,
+  bitangents: Float64Array,
   vertex: number,
   tx: number,
   ty: number,

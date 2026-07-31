@@ -198,6 +198,32 @@ describe('DDGI owned update lifecycle', () => {
     ddgi.dispose();
   });
 
+  it('retries a false result when the probe pass reports a transient init failure', async () => {
+    const ddgi = new DDGI();
+    const init = vi.spyOn(ddgi.pass, 'init')
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const runFrame = vi.spyOn(ddgi.pass, 'runFrame').mockResolvedValue(true);
+    ddgi.setProbeUpdateDivisor(1);
+
+    // ProbeUpdatePass clears this guard when pipeline compilation fails, which
+    // distinguishes that retryable false result from a definitive no-device
+    // result where the guard remains set.
+    (ddgi.pass as unknown as { _initAttempted: boolean })._initAttempted = false;
+    await ddgi.updateFrame({ coreScene: scene, device, enabled: true });
+
+    expect(ddgi.state()).toBe('initializing');
+    expect(runFrame).not.toHaveBeenCalled();
+
+    (ddgi as unknown as { _lastFrameTs: number })._lastFrameTs = 0;
+    await ddgi.updateFrame({ coreScene: scene, device, enabled: true });
+
+    expect(init).toHaveBeenCalledTimes(2);
+    expect(runFrame).toHaveBeenCalledTimes(1);
+    expect(ddgi.ready).toBe(true);
+    ddgi.dispose();
+  });
+
   const contentMutations: readonly [
     string,
     (ddgi: DDGI) => void,

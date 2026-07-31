@@ -33,7 +33,7 @@ function makeStubDevice(): GPUDevice {
     limits: {
       maxStorageBuffersPerShaderStage: 32,
       maxStorageTexturesPerShaderStage: 8,
-      maxSampledTexturesPerShaderStage: 16,
+      maxSampledTexturesPerShaderStage: 17,
       maxSamplersPerShaderStage: 16,
       maxBindGroupsPlusVertexBuffers: 8,
       maxBindGroups: 4,
@@ -161,6 +161,7 @@ function makeCaptureHarness(W: number, H: number) {
   const drawCalls: Array<[number, number, number, number]> = [];
   const copyToBufferCalls: Array<{ bytesPerRow: number; width: number; height: number }> = [];
   const renderPassBeginCalls: number[] = [];
+  const renderPipelineDescriptors: GPURenderPipelineDescriptor[] = [];
 
   // Enough bytes for a 256-row-aligned rgba8 readback.
   const bpr = Math.ceil((W * 4) / 256) * 256;
@@ -223,7 +224,7 @@ function makeCaptureHarness(W: number, H: number) {
     limits: {
       maxStorageBuffersPerShaderStage: 32,
       maxStorageTexturesPerShaderStage: 8,
-      maxSampledTexturesPerShaderStage: 16,
+      maxSampledTexturesPerShaderStage: 17,
       maxSamplersPerShaderStage: 16,
       maxBindGroupsPlusVertexBuffers: 8,
       maxBindGroups: 4,
@@ -260,7 +261,10 @@ function makeCaptureHarness(W: number, H: number) {
     createComputePipeline: vi.fn(() => ({})),
     createComputePipelineAsync: vi.fn(() => Promise.resolve({})),
     createRenderPipeline: vi.fn(() => mockPipeline),
-    createRenderPipelineAsync: vi.fn(() => Promise.resolve(mockPipeline)),
+    createRenderPipelineAsync: vi.fn((desc: GPURenderPipelineDescriptor) => {
+      renderPipelineDescriptors.push(desc);
+      return Promise.resolve(mockPipeline);
+    }),
     createBindGroupLayout: vi.fn(() => mockBgl),
     createPipelineLayout: vi.fn(() => ({})),
     createBindGroup: vi.fn(() => ({})),
@@ -280,7 +284,16 @@ function makeCaptureHarness(W: number, H: number) {
     popErrorScope: vi.fn(() => Promise.resolve(null)),
   } as unknown as GPUDevice;
 
-  return { device, drawCalls, copyToBufferCalls, renderPassBeginCalls, stagingBuffer, offscreenTex, bpr };
+  return {
+    device,
+    drawCalls,
+    copyToBufferCalls,
+    renderPassBeginCalls,
+    renderPipelineDescriptors,
+    stagingBuffer,
+    offscreenTex,
+    bpr,
+  };
 }
 
 describe('WalkaroundGPUPipeline.captureOutputFrame — mock-device harness', () => {
@@ -339,6 +352,15 @@ describe('WalkaroundGPUPipeline.captureOutputFrame — mock-device harness', () 
     expect(copyCall.bytesPerRow % 256).toBe(0); // GPUTextureCopyView alignment
     expect(copyCall.width).toBe(W);
     expect(copyCall.height).toBe(H);
+    expect(harness.renderPipelineDescriptors).toHaveLength(1);
+    expect(
+      harness.renderPipelineDescriptors[0]?.fragment?.constants,
+    ).toEqual({
+      VT_ATTACHMENT_SRGB: 0,
+      VT_TARGET_MAX_R: 1,
+      VT_TARGET_MAX_G: 1,
+      VT_TARGET_MAX_B: 1,
+    });
 
     // Null out _res and _initialized before dispose so destroyFrameResources is not
     // called on the partial-mock _res (the mock only stubs the fields that

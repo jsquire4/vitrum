@@ -98,10 +98,25 @@ describe('HybridEngine runtime controls', () => {
 
       const setPipelineInterval = vi.fn();
       const updateDirectionalEnvironment = vi.fn();
+      const prepareDirectionalEnvironment = vi.fn((
+        data: unknown,
+        rotationY: number,
+        intensity: number,
+      ) => ({
+        envBindings: null,
+        commit: vi.fn(() => {
+          updateDirectionalEnvironment(data, rotationY, intensity);
+        }),
+        rollback: vi.fn(),
+        finalize: vi.fn(),
+      }));
       const pipeline = {
         setPpgDispatchInterval: setPipelineInterval,
         setDenoiserPassEnabled: vi.fn(),
+        getEnvBindings: vi.fn(() => null),
+        prepareDirectionalEnvironment,
         updateDirectionalEnvironment,
+        requestAccumReset: vi.fn(),
         dispose: vi.fn(),
       } as unknown as WalkaroundGPUPipeline;
       coordinator.host.publishPipeline(pipeline);
@@ -155,12 +170,35 @@ describe('HybridEngine runtime controls', () => {
       const textureView = {} as GPUTextureView;
       const sampler = {} as GPUSampler;
       const updateDirectionalEnvironment = vi.fn();
-      const getEnvBindings = vi.fn(() => ({ textureView, sampler }));
+      const getEnvBindings = vi.fn(() => null);
+      const preparedCommit = vi.fn();
+      const preparedFinalize = vi.fn();
+      const prepareDirectionalEnvironment = vi.fn((
+        data: unknown,
+        rotationY: number,
+        intensity: number,
+      ) => ({
+        envBindings: {
+          textureView,
+          sampler,
+          rotationY,
+          intensity,
+          hasDirectionalEnvironment: true,
+        },
+        commit: vi.fn(() => {
+          preparedCommit();
+          updateDirectionalEnvironment(data, rotationY, intensity);
+        }),
+        rollback: vi.fn(),
+        finalize: preparedFinalize,
+      }));
       const pipeline = {
         setPpgDispatchInterval: vi.fn(),
         setDenoiserPassEnabled: vi.fn(),
+        prepareDirectionalEnvironment,
         updateDirectionalEnvironment,
         getEnvBindings,
+        requestAccumReset: vi.fn(),
         dispose: vi.fn(),
       } as unknown as WalkaroundGPUPipeline;
       const setDdgiEnvironment = vi
@@ -171,14 +209,21 @@ describe('HybridEngine runtime controls', () => {
 
       expect(updateDirectionalEnvironment).toHaveBeenCalledWith(
         resolved.directional,
-        0.35,
+        resolved.rotationY,
+        1.75,
+      );
+      expect(prepareDirectionalEnvironment).toHaveBeenCalledWith(
+        resolved.directional,
+        resolved.rotationY,
         1.75,
       );
       expect(getEnvBindings).toHaveBeenCalledTimes(1);
+      expect(preparedCommit).toHaveBeenCalledTimes(1);
+      expect(preparedFinalize).toHaveBeenCalledTimes(1);
       expect(setDdgiEnvironment).toHaveBeenCalledWith(
         textureView,
         sampler,
-        0.35,
+        resolved.rotationY,
         1.75,
         true,
       );

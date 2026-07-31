@@ -28,6 +28,8 @@ type Internals = {
   _lastTrainingReadbackErrorMessage: string | null;
   _fluxReadbackInFlight: boolean;
   _trainingEpochState: 'collecting' | 'readback' | 'retry-pending' | 'failed' | 'disposed';
+  _width: number;
+  _height: number;
   _fluxReadbackBuffer: GPUBuffer | null;
   _cellCountReadbackBuffer: GPUBuffer | null;
   _mergeFluxAndRefine(
@@ -614,6 +616,83 @@ describe('PPG refine publication transaction', () => {
     await flushMicrotasks();
     for (const buffer of gpu.staging) {
       expect(buffer.destroy).toHaveBeenCalledOnce();
+    }
+  });
+});
+
+describe('PPG resize transaction', () => {
+  it('restores resources and every published lifecycle field after rollback', () => {
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device);
+    const resources = frameResources();
+    const previous = resources.ppg as AllocatedPPG;
+    made.state._frameResourcesGeneration = 11;
+    made.state._fluxReadbackInFlight = true;
+    made.state._trainingEpochState = 'retry-pending';
+    made.state._trainingReadbackFailures = 2;
+    made.state._trainingDispatchesSinceRefine = 5;
+    made.state._lastTrainingReadbackErrorMessage = 'retained failure';
+    made.state._width = 16;
+    made.state._height = 12;
+
+    const mutation = made.value.prepareResize(resources, 32, 24, 7);
+    const candidate = resources.ppg as AllocatedPPG;
+    expect(candidate).not.toBe(previous);
+    // Preparation may populate the isolated frame candidate, but it must not
+    // publish coordinator lifecycle state.
+    expect(made.state._frameResourcesGeneration).toBe(11);
+    expect(made.state._trainingEpochState).toBe('retry-pending');
+    expect(made.state._width).toBe(16);
+    expect(made.state._height).toBe(12);
+
+    mutation.commit();
+    expect(made.state._frameResourcesGeneration).toBe(12);
+    expect(made.state._trainingEpochState).toBe('collecting');
+    expect(made.state._width).toBe(32);
+    expect(made.state._height).toBe(24);
+
+    mutation.rollback();
+    expect(resources.ppg).toBe(previous);
+    expect(made.state._frameResourcesGeneration).toBe(11);
+    expect(made.state._fluxReadbackInFlight).toBe(true);
+    expect(made.state._trainingEpochState).toBe('retry-pending');
+    expect(made.state._trainingReadbackFailures).toBe(2);
+    expect(made.state._trainingDispatchesSinceRefine).toBe(5);
+    expect(made.state._lastTrainingReadbackErrorMessage).toBe('retained failure');
+    expect(made.state._width).toBe(16);
+    expect(made.state._height).toBe(12);
+    for (const buffer of ppgBuffers(previous)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
+    }
+    for (const buffer of ppgBuffers(candidate)) {
+      expect(buffer.destroy).toHaveBeenCalledOnce();
+    }
+  });
+
+  it('retires the prior PPG generation only after successful finalization', () => {
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device);
+    const resources = frameResources();
+    const previous = resources.ppg as AllocatedPPG;
+
+    const mutation = made.value.prepareResize(resources, 32, 24, 7);
+    const candidate = resources.ppg as AllocatedPPG;
+    mutation.commit();
+
+    for (const buffer of ppgBuffers(previous)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
+    }
+    for (const buffer of ppgBuffers(candidate)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
+    }
+
+    mutation.finalize();
+    expect(resources.ppg).toBe(candidate);
+    for (const buffer of ppgBuffers(previous)) {
+      expect(buffer.destroy).toHaveBeenCalledOnce();
+    }
+    for (const buffer of ppgBuffers(candidate)) {
+      expect(buffer.destroy).not.toHaveBeenCalled();
     }
   });
 });

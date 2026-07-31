@@ -24,6 +24,10 @@ function targetForFixedDomain(lo: Vec3): number {
   return 0.2126 * fCos[0] * lo[0] + 0.7152 * fCos[1] * lo[1] + 0.0722 * fCos[2] * lo[2];
 }
 
+function interfaceEtaTOverI(frontFace: boolean, ior: number): number {
+  return frontFace ? ior : 1 / ior;
+}
+
 describe('ReSTIR-PT producer stored-Lo target domain', () => {
   it('keeps one-candidate W exactly reciprocal to the source pdf after HDR packing', () => {
     const rawLo: Vec3 = [0.49, 0.49, 2048.4];
@@ -74,5 +78,58 @@ describe('ReSTIR-PT producer stored-Lo target domain', () => {
     expect(
       RESTIR_PT_PRODUCER_WGSL.slice(seedStart, finalise).match(/rptCanonicalizeStoredLo\(Lo\)/g),
     ).toHaveLength(1);
+  });
+});
+
+describe('ReSTIR-PT visible-vertex interface contract', () => {
+  it('uses geometric winding rather than the interpolated shading normal for side', () => {
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'let vIsFront = vHit.frontFace;',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).not.toContain(
+      'let vIsFront = dot(vHit.normal, primaryRay.direction) < 0.0;',
+    );
+  });
+
+  it('maps the intrinsic IOR to the incident-side ratio used by sampling and PDF', () => {
+    expect(interfaceEtaTOverI(true, 1.5)).toBeCloseTo(1.5, 15);
+    expect(interfaceEtaTOverI(false, 1.5)).toBeCloseTo(2 / 3, 15);
+
+    const etaStart = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let etaTOverIV = select(',
+    );
+    const pdfStart = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'let pdfSrc = rptSourceDirectionalPdfFull(',
+      etaStart,
+    );
+    const pdfEnd = RESTIR_PT_PRODUCER_WGSL.indexOf('\n  );', pdfStart);
+    const pdfCall = RESTIR_PT_PRODUCER_WGSL.slice(pdfStart, pdfEnd);
+    expect(etaStart).toBeGreaterThanOrEqual(0);
+    expect(pdfStart).toBeGreaterThan(etaStart);
+    expect(pdfCall).toContain(
+      'baseColorV, roughnessV, metallicV, 0.0, etaTOverIV,',
+    );
+    expect(pdfCall).not.toContain(
+      'baseColorV, roughnessV, metallicV, 0.0, iorV,',
+    );
+  });
+
+  it('names the PDF helper contract etaTOverI and forwards it unchanged', () => {
+    const helperStart = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      'fn rptSourceDirectionalPdfFull(',
+    );
+    const helperEnd = RESTIR_PT_PRODUCER_WGSL.indexOf(
+      '\n}\n',
+      helperStart,
+    );
+    const helper = RESTIR_PT_PRODUCER_WGSL.slice(
+      helperStart,
+      helperEnd + 3,
+    );
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(helper).toContain('etaTOverI: f32,');
+    expect(helper).toContain(
+      'baseColor, roughness, metallic, transmission, etaTOverI,',
+    );
   });
 });

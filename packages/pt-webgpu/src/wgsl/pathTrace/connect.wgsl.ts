@@ -79,8 +79,8 @@ fn environmentLookup(dir: vec3f) -> EnvironmentLookup {
   }
   let texel = environmentMapTexels[idx];
   return EnvironmentLookup(
-    texel.rgb * max(params.environmentHdriIntensity, 0.0),
-    max(texel.w, 1e-8),
+    ptScaleEnvironmentRadiance(texel.rgb, params.environmentHdriIntensity),
+    texel.w,
   );
 }
 
@@ -94,9 +94,8 @@ fn environmentPdf(dir: vec3f) -> f32 {
 
 // Environment-map importance sampler. Returns a BsdfSample where
 // .value is the emitted radiance along .wi and .pdf <= 0 signals failure
-// (no environment map, or empty CDF). Same RNG consumption (one rand_f32 call)
-// and identical sampled direction / radiance / pdf as the prior pointer-out
-// signature it replaces.
+// (no environment map, or empty CDF). One variate selects the discrete cell
+// and two residual variates sample uniformly over that cell's solid angle.
 fn sampleEnvironmentImportance(rng: ptr<function, PtRngState>) -> BsdfSample {
   var result: BsdfSample;
   result.wi = vec3f(0.0, 1.0, 0.0);
@@ -121,21 +120,20 @@ fn sampleEnvironmentImportance(rng: ptr<function, PtRngState>) -> BsdfSample {
   let idx = min(lo, count - 1u);
   let x = idx % dims.x;
   let y = idx / dims.x;
-  let u = (f32(x) + 0.5) / f32(dims.x);
-  let v = (f32(y) + 0.5) / f32(dims.y);
-  let phi = (u - 0.5) * (2.0 * PI);
-  let theta = v * PI;
-  let sinTheta = sin(theta);
-  // dir is in unrotated-map space (the CDF is built from the unrotated map).
-  let mapDir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
+  let cellXi = vec2f(rand_f32(rng), rand_f32(rng));
+  // mapDir is in unrotated-map space (the CDF is built from the unrotated map).
+  let mapDir = sampleEnvironmentCellDirection(x, y, dims, cellXi);
   let texel = environmentMapTexels[idx];
   // H6: rotate the map-space sample direction by +rotationY to get the world-space
   // light direction for a CCW-rotated environment dome.
   // rotationY = 0 → rotateYPos is identity → zero-rotation invariant.
   let rotY = params.environmentTint.w;
   result.wi = safe_normalize(rotateYPos(mapDir, rotY));
-  result.value = texel.rgb * max(params.environmentHdriIntensity, 0.0);
-  result.pdf = max(texel.w, 1e-8);
+  result.value = ptScaleEnvironmentRadiance(
+    texel.rgb,
+    params.environmentHdriIntensity,
+  );
+  result.pdf = texel.w;
   return result;
 }
 
@@ -152,7 +150,7 @@ fn environmentImportanceSamplerReady() -> bool {
 // normal hidden in the infinite-root light subpath.
 fn environmentNeeProposalPdf(dir: vec3f, normal: vec3f) -> f32 {
   if (environmentImportanceSamplerReady()) {
-    return max(environmentPdf(dir), 1e-8);
+    return environmentPdf(dir);
   }
   return 0.25 * INV_PI;
 }
@@ -163,21 +161,41 @@ fn meshAreaLightBase(index: u32) -> u32 {
   return index * MESH_AREA_LIGHT_VEC4_STRIDE;
 }
 
+fn meshAreaLightIsTwoSided(index: u32) -> bool {
+  return meshAreaLights[meshAreaLightBase(index) + 6u].w > 0.5;
+}
+
+// towardReceiver points away from the sampled light surface. One-sided
+// emitters retain their authored winding; double-sided materials expose the
+// same Le over both hemispheres.
+fn meshAreaLightCosineTowardReceiver(
+  index: u32,
+  geometricNormal: vec3f,
+  towardReceiver: vec3f,
+) -> f32 {
+  let signedCosine = dot(geometricNormal, towardReceiver);
+  return select(
+    max(signedCosine, 0.0),
+    abs(signedCosine),
+    meshAreaLightIsTwoSided(index),
+  );
+}
+
 fn meshAreaLightWeightsAtPoint(index: u32, point: vec3f) -> vec3f {
   let base = meshAreaLightBase(index);
   let a = meshAreaLights[base].xyz;
   let ab = meshAreaLights[base + 1u].xyz - a;
   let ac = meshAreaLights[base + 2u].xyz - a;
   let ap = point - a;
-  let d00 = dot(ab, ab);
-  let d01 = dot(ab, ac);
-  let d11 = dot(ac, ac);
-  let d20 = dot(ap, ab);
-  let d21 = dot(ap, ac);
-  let denom = d00 * d11 - d01 * d01;
-  if (denom <= 0.0) { return vec3f(1.0, 0.0, 0.0); }
-  let wb = (d11 * d20 - d01 * d21) / denom;
-  let wc = (d00 * d21 - d01 * d20) / denom;
+  let areaMeasure = measureAreaVector(ab, ac, 0.5);
+  let areaCoordinates = solveAreaVectorCoordinates(
+    ab, ac, ap, areaMeasure,
+  );
+  if (areaCoordinates.z == 0.0) {
+    return vec3f(1.0, 0.0, 0.0);
+  }
+  let wb = areaCoordinates.x;
+  let wc = areaCoordinates.y;
   return vec3f(1.0 - wb - wc, wb, wc);
 }
 
@@ -239,7 +257,7 @@ fn sampleMeshAreaLightRadiance(
   let worldArea = uvCAndMaterial.w;
   if (worldArea <= 0.0) { return vec3f(0.0); }
   let cameraDistance = max(
-    length(worldPosition - params.cameraPos.xyz), 1e-3,
+    safe_length(worldPosition - params.cameraPos.xyz), ptRayTMin(),
   );
   let pixelsPerMeter =
     0.5 * f32(max(params.width, params.height)) / cameraDistance;
@@ -261,7 +279,10 @@ fn sampleMeshAreaLightRadiance(
     layerIdx, uv, sourceBaseSize, wrapMode,
     policyLod, filterMode, mipPolicy,
   );
-  return meshAreaLights[base + 6u].rgb * texel.rgb;
+  return ptFiniteNonNegativeRadianceProduct(
+    meshAreaLights[base + 6u].rgb,
+    texel.rgb,
+  );
 }
 
 // Intersect the BSDF sample ray against rect/disc area light index li.
@@ -279,30 +300,29 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   let vAxis = rectAreaLights[rb + 2u].xyz;
   let rshape = rectAreaLights[rb + 3u];
   let isDisc = abs(rshape.w - 1.0) < 0.5;
-  let axisCross = cross(uAxis, vAxis);
-  let axisCrossLen2 = dot(axisCross, axisCross);
-  if (axisCrossLen2 <= 0.0) { return false; }
-  let lightNormal = axisCross * inverseSqrt(axisCrossLen2);
+  let areaMeasure = measureAreaVector(
+    uAxis, vAxis, select(4.0, PI, isDisc),
+  );
+  if (areaMeasure.valid == 0u) { return false; }
+  let lightNormal = areaMeasure.normal;
   let denom = dot(lightNormal, rayDir);
   if (denom == 0.0) {
     return false;
   }
   let t = dot(lightNormal, rectPos - rayOrigin) / denom;
-  if (t <= 1e-4) {
+  if (t <= ptRayTMin()) {
     return false;
   }
   let p = rayOrigin + rayDir * t;
   let rel = p - rectPos;
-  let uLen2 = dot(uAxis, uAxis);
-  let vLen2 = dot(vAxis, vAxis);
-  if (uLen2 <= 0.0 || vLen2 <= 0.0) { return false; }
-  // Solve the full 2×2 Gram system. Independent projection is only correct
-  // for orthogonal axes and misclassifies sheared affine discs/rectangles.
-  let uv = dot(uAxis, vAxis);
-  let relU = dot(rel, uAxis);
-  let relV = dot(rel, vAxis);
-  let uCoord = (relU * vLen2 - relV * uv) / axisCrossLen2;
-  let vCoord = (relV * uLen2 - relU * uv) / axisCrossLen2;
+  // Solve through the dominant 2D projection. This preserves the exact affine
+  // coordinates without squaring the axes into an overflow-prone Gram matrix.
+  let areaCoordinates = solveAreaVectorCoordinates(
+    uAxis, vAxis, rel, areaMeasure,
+  );
+  if (areaCoordinates.z == 0.0) { return false; }
+  let uCoord = areaCoordinates.x;
+  let vCoord = areaCoordinates.y;
   // Containment test: disc uses circle (u²+v²≤1), rect uses square (|u|,|v|≤1).
   let inside = select(
     abs(uCoord) <= 1.0 && abs(vCoord) <= 1.0,
@@ -318,14 +338,10 @@ fn intersectRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   }
   // Area formula: the unit-disc parameterisation has Jacobian |u×v|;
   // disc → π·|u×v|, rect → 4·|u×v|.
-  let area = select(
-    4.0 * sqrt(axisCrossLen2),
-    PI * sqrt(axisCrossLen2),
-    isDisc,
-  );
-  if (area <= 0.0) { return false; }
+  let lightPdf = ptAreaToSolidAnglePdf(t, cosLight, areaMeasure);
+  if (!(lightPdf > 0.0)) { return false; }
   *distOut = t;
-  *lightPdfOut = (t * t) / (cosLight * area);
+  *lightPdfOut = lightPdf;
   return true;
 }
 
@@ -337,21 +353,23 @@ fn intersectMeshAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distOut: 
   let a = meshAreaLights[mb].xyz;
   let b = meshAreaLights[mb + 1u].xyz;
   let c = meshAreaLights[mb + 2u].xyz;
-  let t = intersectTriangle(rayOrigin, rayDir, a, b, c);
-  if (t <= 1e-4 || t >= INFINITY) {
+  let t = intersectTriangle(rayOrigin, rayDir, a, b, c, ptRayTMin());
+  if (t <= ptRayTMin() || t >= INFINITY) {
     return false;
   }
-  let triangleCross = cross(b - a, c - a);
-  let triangleCrossLength = length(triangleCross);
-  if (triangleCrossLength <= 0.0) { return false; }
-  let lightNormal = triangleCross / triangleCrossLength;
-  let cosLight = max(dot(lightNormal, -rayDir), 0.0);
+  let areaMeasure = measureAreaVector(b - a, c - a, 0.5);
+  if (areaMeasure.valid == 0u) { return false; }
+  let lightNormal = areaMeasure.normal;
+  let cosLight = meshAreaLightCosineTowardReceiver(
+    li, lightNormal, -rayDir,
+  );
   if (cosLight <= 0.0) {
     return false;
   }
-  let area = 0.5 * triangleCrossLength;
+  let lightPdf = ptAreaToSolidAnglePdf(t, cosLight, areaMeasure);
+  if (!(lightPdf > 0.0)) { return false; }
   *distOut = t;
-  *lightPdfOut = (t * t) / (cosLight * area);
+  *lightPdfOut = lightPdf;
   return true;
 }
 
@@ -410,7 +428,7 @@ fn bsdfAreaLightConnectionContribution(
   //      the BSDF-sampled direction is correct because the sample is a direction,
   //      not a point, so only the nearest light along that direction contributes.
   let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-  let offsetOrigin = hitPos + offsetNormal * 1e-3;
+  let offsetOrigin = hitPos + offsetNormal * ptRayOriginBias();
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
@@ -423,7 +441,9 @@ fn bsdfAreaLightConnectionContribution(
       // flag; skip the visibility test for that light (matches the NEE half so
       // both MIS strategies see the same lighting).
       let rectShadowDisabled = rectAreaLights[li * 4u].w > 0.5;
-      if ((rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3), rng)) && rectDist < bestDist) {
+      if ((rectShadowDisabled || !traceAny(
+        shadowRay, ptRayTMin(), ptFiniteSegmentTMax(rectDist), rng,
+      )) && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
         bestEmission = rectAreaLights[li * 4u + 3u].rgb;
@@ -439,7 +459,9 @@ fn bsdfAreaLightConnectionContribution(
         // SHADOW-01 — row 3.w carries castShadowDisabled (NEE parity).
         let meshBase = meshAreaLightBase(mi);
         let meshShadowDisabled = meshAreaLights[meshBase + 3u].w > 0.5;
-        if ((meshShadowDisabled || !traceAny(shadowRay, 1e-4, max(meshDist - 2e-3, 1e-3), rng)) && meshDist < bestDist) {
+        if ((meshShadowDisabled || !traceAny(
+          shadowRay, ptRayTMin(), ptFiniteSegmentTMax(meshDist), rng,
+        )) && meshDist < bestDist) {
           bestDist = meshDist;
           bestLightPdf = meshPdf;
           let lightPoint = offsetOrigin + wi * meshDist;
@@ -512,8 +534,13 @@ fn bsdfEnvironmentConnectionContribution(
   );
   if (bsdfPdf <= 0.0) { return vec3f(0.0); }
   let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-  let shadowRay = Ray(hitPos + offsetNormal * 1e-3, wi);
-  if (traceAny(shadowRay, 1e-4, INFINITY, rng)) { return vec3f(0.0); }
+  let shadowRay = Ray(
+    hitPos + offsetNormal * ptRayOriginBias(),
+    wi,
+  );
+  if (traceAny(shadowRay, ptRayTMin(), INFINITY, rng)) {
+    return vec3f(0.0);
+  }
   let env = environmentLookup(wi);
   let envLightPdf = environmentNeeProposalPdf(wi, normal);
   let ordinaryMisWeight = powerHeuristic(bsdfPdf, envLightPdf);
@@ -535,7 +562,14 @@ fn bsdfEnvironmentConnectionContribution(
   // envScale == 1.0 → byte-identical. Non-unit values scale BOTH halves identically so
   // the converged env contribution is consistent across the two MIS strategies.
   let envScale = materialEnvMapIntensity(matId);
-  let envColorOut = select(env.color, spectralEmissionAtHero(env.color, heroLambda), params.spectralEnabled != 0u) * envScale;
+  let envColorOut = ptScaleEnvironmentRadiance(
+    select(
+      env.color,
+      spectralEmissionAtHero(env.color, heroLambda),
+      params.spectralEnabled != 0u,
+    ),
+    envScale,
+  );
   return throughputAtVertex * brdf * nDotL * envColorOut * misWeight / bsdfPdf;
 }
 `;

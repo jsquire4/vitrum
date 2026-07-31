@@ -103,9 +103,9 @@ describe('SPPM homogeneous-volume production closure', () => {
       volume.radius2 * Math.sqrt(volume.radius2);
     const normalizedKernel = 1 / volumeMeasure;
     expect(normalizedKernel * volumeMeasure).toBeCloseTo(1, 14);
-    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('pow(ratio, 2.0 / 3.0)');
+    expect(SPPM_GROUP3_BINDINGS_WGSL).toContain('pow(ratio, 1.0 / 3.0)');
     expect(SPPM_GROUP3_BINDINGS_WGSL).toContain(
-      '(4.0 / 3.0) * PI * pxStats.radius2 * sqrt(pxStats.radius2)',
+      'log(4.0 / 3.0) + log(PI) + 3.0 * log(pxStats.radius)',
     );
   });
 

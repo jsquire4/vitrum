@@ -4,9 +4,10 @@
  * Unprojects a screen pixel to a world-space ray using the last frame's camera,
  * then does a closest-hit traverse of the retained core `Scene` on the CPU.
  * No GPU readback, no primitive-ID attachment — exact for triangle meshes
- * (Möller–Trumbore); analytic shapes use a world bounding sphere (approximate —
- * picking the silhouette, not the facet geometry), unless a `fallbackMesh` is
- * present (triangles are then exact).
+ * (Möller–Trumbore) and for every declared analytic shape. Analytic rays are
+ * transformed to shape-local space, preserving exact intersections under
+ * arbitrary invertible affine transforms. When a `fallbackMesh` is present,
+ * its triangles remain the authoritative pick geometry.
  *
  * Complexity: O(triangles). Acceptable for a debug-surface call that is NOT
  * per-frame. For scenes with many thousands of triangles a full BVH traversal
@@ -17,7 +18,9 @@
  * element (row, col) = m[col*4 + row].
  */
 import {
+  decodeAnalyticParams,
   solveSkin,
+  type AnalyticPrimitive,
   type Mat4,
   type Scene,
   type ScenePrimitive,
@@ -51,61 +54,218 @@ function transformPoint(m: Float32Array | undefined, p: V3): V3 {
 }
 
 // ── ray construction ─────────────────────────────────────────────────────────
-interface Ray { readonly o: V3; readonly d: V3; }
+interface Ray {
+  readonly o: V3;
+  readonly d: V3;
+}
 
 /**
- * Unproject pixel (px, py) into a world ray. Origin = camera; direction = toward
- * the far-plane unprojection of the pixel. Using NDC z = +1 (the far plane in
- * BOTH the OpenGL [-1,1] and WebGPU [0,1] depth conventions) keeps this robust
- * to which convention the host's projMatrix uses.
+ * Unproject pixel (px, py) into a world ray. The unprojected near-plane point is
+ * the origin for both perspective and orthographic projections, so picking
+ * honors near clipping and orthographic pixels receive distinct origins. The
+ * division-free homogeneous direction also supports an infinite far plane.
  */
-function screenToWorldRay(cam: PickCamera, px: number, py: number, width: number, height: number): Ray | null {
+function screenToWorldRay(
+  cam: PickCamera,
+  px: number,
+  py: number,
+  width: number,
+  height: number,
+): Ray | null {
   const ndcX = (px / width) * 2 - 1;
   const ndcY = 1 - (py / height) * 2; // screen-down → NDC-up
   const vp = mat4Mul(cam.projMatrix, cam.viewMatrix);
   const inv = invertMat4(vp as unknown as Mat4);
   if (inv == null) return null;
-  const far = mat4MulVec4(inv, ndcX, ndcY, 1, 1);
-  if (far[3] === 0) return null;
-  const farW: V3 = [far[0] / far[3], far[1] / far[3], far[2] / far[3]];
-  const o: V3 = [cam.cameraPosition[0], cam.cameraPosition[1], cam.cameraPosition[2]];
-  const d = v3Normalize(v3Sub(farW, o));
+  const farRaw = mat4MulVec4(inv, ndcX, ndcY, 1, 1);
+  const nearRaw = mat4MulVec4(inv, ndcX, ndcY, -1, 1);
+  const farScale = Math.max(...farRaw.map(Math.abs));
+  const nearScale = Math.max(...nearRaw.map(Math.abs));
+  if (
+    !(farScale > 0) || !Number.isFinite(farScale) ||
+    !(nearScale > 0) || !Number.isFinite(nearScale)
+  ) {
+    return null;
+  }
+  const far = farRaw.map((value) => value / farScale);
+  const near = nearRaw.map((value) => value / nearScale);
+  if (near[3] === 0) return null;
+  const o: V3 = [
+    near[0]! / near[3]!,
+    near[1]! / near[3]!,
+    near[2]! / near[3]!,
+  ];
+  if (!o.every(Number.isFinite)) return null;
+  const orientation =
+    far[3] === 0 ? 1 : Math.sign(far[3]! * near[3]!);
+  const d = v3Normalize([
+    (far[0]! * near[3]! - near[0]! * far[3]!) * orientation,
+    (far[1]! * near[3]! - near[1]! * far[3]!) * orientation,
+    (far[2]! * near[3]! - near[2]! * far[3]!) * orientation,
+  ]);
   if (d[0] === 0 && d[1] === 0 && d[2] === 0) return null;
   return { o, d };
 }
 
 // ── Möller–Trumbore ──────────────────────────────────────────────────────────
-const MT_EPS = 1e-7;
-/** Ray–triangle hit distance, or null. Two-sided (picks back-facing too). */
-function rayTriangle(ray: Ray, v0: V3, v1: V3, v2: V3): number | null {
-  const e1 = v3Sub(v1, v0);
-  const e2 = v3Sub(v2, v0);
-  const p = v3Cross(ray.d, e2);
-  const det = v3Dot(e1, p);
-  if (det > -MT_EPS && det < MT_EPS) return null; // parallel
-  const invDet = 1 / det;
-  const tvec = v3Sub(ray.o, v0);
-  const u = v3Dot(tvec, p) * invDet;
-  if (u < 0 || u > 1) return null;
-  const q = v3Cross(tvec, e1);
-  const v = v3Dot(ray.d, q) * invDet;
-  if (v < 0 || u + v > 1) return null;
-  const t = v3Dot(e2, q) * invDet;
-  return t > MT_EPS ? t : null;
+const MT_ANGULAR_EPSILON = 1e-7;
+const MT_BARYCENTRIC_EPSILON = 1e-6;
+
+function maxAbs3(value: V3): number {
+  return Math.max(Math.abs(value[0]), Math.abs(value[1]), Math.abs(value[2]));
 }
 
-/** Ray–sphere nearest positive hit, or null. */
+/**
+ * Roots of a·x² + 2b·x + c = 0. Inputs are spatially equilibrated by each
+ * caller, and the q-form avoids losing the far root to cancellation.
+ */
+function quadraticRootsHalfB(a: number, b: number, c: number): readonly [number, number] | null {
+  if (!(a > 0) || !Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) {
+    return null;
+  }
+  const discriminant = b * b - a * c;
+  if (!(discriminant >= 0) || !Number.isFinite(discriminant)) return null;
+  const squareRoot = Math.sqrt(discriminant);
+  if (squareRoot === 0) {
+    const root = -b / a;
+    return Number.isFinite(root) ? [root, root] : null;
+  }
+  const q = -(b + (b >= 0 ? squareRoot : -squareRoot));
+  if (q === 0 || !Number.isFinite(q)) return null;
+  const root0 = q / a;
+  const root1 = c / q;
+  if (!Number.isFinite(root0) || !Number.isFinite(root1)) return null;
+  return root0 <= root1 ? [root0, root1] : [root1, root0];
+}
+
+function scaledRayParameter(
+  scaledParameter: number,
+  spatialScale: number,
+  directionScale: number,
+): number | null {
+  const t = scaledParameter * spatialScale / directionScale;
+  return t > 0 && Number.isFinite(t) ? t : null;
+}
+
+/** Ray–triangle hit distance, or null. Two-sided (picks back-facing too). */
+function rayTriangle(ray: Ray, v0: V3, v1: V3, v2: V3): number | null {
+  const e1Raw = v3Sub(v1, v0);
+  const e2Raw = v3Sub(v2, v0);
+  const edgeScale = Math.max(
+    Math.abs(e1Raw[0]),
+    Math.abs(e1Raw[1]),
+    Math.abs(e1Raw[2]),
+    Math.abs(e2Raw[0]),
+    Math.abs(e2Raw[1]),
+    Math.abs(e2Raw[2]),
+  );
+  const directionScale = Math.max(
+    Math.abs(ray.d[0]),
+    Math.abs(ray.d[1]),
+    Math.abs(ray.d[2]),
+  );
+  if (
+    !(edgeScale > 0) ||
+    !Number.isFinite(edgeScale) ||
+    !(directionScale > 0) ||
+    !Number.isFinite(directionScale)
+  ) {
+    return null;
+  }
+  const e1: V3 = [
+    e1Raw[0] / edgeScale,
+    e1Raw[1] / edgeScale,
+    e1Raw[2] / edgeScale,
+  ];
+  const e2: V3 = [
+    e2Raw[0] / edgeScale,
+    e2Raw[1] / edgeScale,
+    e2Raw[2] / edgeScale,
+  ];
+  const direction: V3 = [
+    ray.d[0] / directionScale,
+    ray.d[1] / directionScale,
+    ray.d[2] / directionScale,
+  ];
+  const aoRaw = v3Sub(ray.o, v0);
+  const ao: V3 = [
+    aoRaw[0] / edgeScale,
+    aoRaw[1] / edgeScale,
+    aoRaw[2] / edgeScale,
+  ];
+  const n = v3Cross(e1, e2);
+  const p = v3Cross(direction, e2);
+  const det = v3Dot(e1, p);
+  const normalLength = Math.hypot(n[0], n[1], n[2]);
+  const directionLength = Math.hypot(
+    direction[0],
+    direction[1],
+    direction[2],
+  );
+  if (
+    !(normalLength > 0) ||
+    !Number.isFinite(normalLength) ||
+    !(directionLength > 0) ||
+    !Number.isFinite(directionLength) ||
+    Math.abs(det) / (normalLength * directionLength) <= MT_ANGULAR_EPSILON
+  ) {
+    return null;
+  }
+  const invDet = 1 / det;
+  const u = v3Dot(ao, p) * invDet;
+  const q = v3Cross(ao, e1);
+  const v = v3Dot(direction, q) * invDet;
+  const w = 1 - u - v;
+  if (
+    !Number.isFinite(u) ||
+    !Number.isFinite(v) ||
+    !Number.isFinite(w) ||
+    u < -MT_BARYCENTRIC_EPSILON ||
+    v < -MT_BARYCENTRIC_EPSILON ||
+    w < -MT_BARYCENTRIC_EPSILON
+  ) {
+    return null;
+  }
+  const t = (v3Dot(e2, q) * invDet * edgeScale) / directionScale;
+  if (!Number.isFinite(t)) return null;
+  return t > 0 ? t : null;
+}
+
+/** Ray–sphere nearest positive hit, or null. Supports non-unit directions. */
 function raySphere(ray: Ray, center: V3, radius: number): number | null {
-  const oc = v3Sub(ray.o, center);
-  const b = v3Dot(oc, ray.d);
-  const c = v3Dot(oc, oc) - radius * radius;
-  const disc = b * b - c;
-  if (disc < 0) return null;
-  const sq = Math.sqrt(disc);
-  const t0 = -b - sq;
-  if (t0 > MT_EPS) return t0;
-  const t1 = -b + sq;
-  return t1 > MT_EPS ? t1 : null;
+  const ocRaw = v3Sub(ray.o, center);
+  const spatialScale = Math.max(maxAbs3(ocRaw), Math.abs(radius));
+  const directionScale = maxAbs3(ray.d);
+  if (
+    !(spatialScale > 0)
+    || !Number.isFinite(spatialScale)
+    || !(directionScale > 0)
+    || !Number.isFinite(directionScale)
+  ) {
+    return null;
+  }
+  const oc: V3 = [
+    ocRaw[0] / spatialScale,
+    ocRaw[1] / spatialScale,
+    ocRaw[2] / spatialScale,
+  ];
+  const direction: V3 = [
+    ray.d[0] / directionScale,
+    ray.d[1] / directionScale,
+    ray.d[2] / directionScale,
+  ];
+  const scaledRadius = radius / spatialScale;
+  const roots = quadraticRootsHalfB(
+    v3Dot(direction, direction),
+    v3Dot(oc, direction),
+    v3Dot(oc, oc) - scaledRadius * scaledRadius,
+  );
+  if (roots == null) return null;
+  for (const root of roots) {
+    const t = scaledRayParameter(root, spatialScale, directionScale);
+    if (t != null) return t;
+  }
+  return null;
 }
 
 // ── per-primitive intersection ───────────────────────────────────────────────
@@ -130,10 +290,17 @@ function validTriangleIndices(
   i2: number,
 ): boolean {
   const count = vertexCount(positions);
-  return Number.isInteger(i0) && Number.isInteger(i1) && Number.isInteger(i2) &&
-    i0 >= 0 && i0 < count &&
-    i1 >= 0 && i1 < count &&
-    i2 >= 0 && i2 < count;
+  return (
+    Number.isInteger(i0) &&
+    Number.isInteger(i1) &&
+    Number.isInteger(i2) &&
+    i0 >= 0 &&
+    i0 < count &&
+    i1 >= 0 &&
+    i1 < count &&
+    i2 >= 0 &&
+    i2 < count
+  );
 }
 
 function intersectTriangleSoup(
@@ -143,7 +310,8 @@ function intersectTriangleSoup(
   ray: Ray,
 ): number | null {
   let best: number | null = null;
-  const triCount = indices != null ? Math.floor(indices.length / 3) : Math.floor(vertexCount(positions) / 3);
+  const triCount =
+    indices != null ? Math.floor(indices.length / 3) : Math.floor(vertexCount(positions) / 3);
   for (let t = 0; t < triCount; t++) {
     const i0 = indices != null ? indices[t * 3]! : t * 3;
     const i1 = indices != null ? indices[t * 3 + 1]! : t * 3 + 1;
@@ -159,30 +327,306 @@ function intersectTriangleSoup(
   return best;
 }
 
-/** World bounding sphere for an analytic shape (approximate pick). */
-function analyticBoundingSphere(shape: string, params: Float32Array, transform: Mat4 | undefined): { center: V3; radius: number } | null {
-  const p = (i: number): number => params[i] ?? 0;
-  let cLocal: V3;
-  let r: number;
-  switch (shape) {
-    case 'sphere': // [cx,cy,cz,radius]
-      cLocal = [p(0), p(1), p(2)]; r = p(3); break;
-    case 'box': // [cx,cy,cz,hx,hy,hz]
-      cLocal = [p(0), p(1), p(2)]; r = Math.hypot(p(3), p(4), p(5)); break;
-    case 'cylinder': // [cx,cy,cz,radius,halfHeight]
-      cLocal = [p(0), p(1), p(2)]; r = Math.hypot(p(3), p(4)); break;
-    case 'capsule': { // [ax,ay,az,bx,by,bz,radius]
-      cLocal = [(p(0) + p(3)) / 2, (p(1) + p(4)) / 2, (p(2) + p(5)) / 2];
-      r = Math.hypot(p(3) - p(0), p(4) - p(1), p(5) - p(2)) / 2 + p(6);
-      break;
+function rayAabb(ray: Ray, min: V3, max: V3): number | null {
+  const interval = rayAabbInterval(ray, min, max);
+  if (interval == null) return null;
+  const [near, far] = interval;
+  if (near > 0) return near;
+  return far > 0 ? far : null;
+}
+
+function rayAabbInterval(ray: Ray, min: V3, max: V3): readonly [number, number] | null {
+  let near = -Infinity;
+  let far = Infinity;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const origin = ray.o[axis]!;
+    const direction = ray.d[axis]!;
+    const lo = min[axis]!;
+    const hi = max[axis]!;
+    if (direction === 0) {
+      if (origin < lo || origin > hi) return null;
+      continue;
     }
-    default:
-      return null; // unknown shape (e.g. h-channel-came) → not pickable analytically
+    let t0 = (lo - origin) / direction;
+    let t1 = (hi - origin) / direction;
+    if (t0 > t1) [t0, t1] = [t1, t0];
+    near = Math.max(near, t0);
+    far = Math.min(far, t1);
+    if (near > far) return null;
   }
-  // Approximate uniform scale from the transform's first column length.
-  let scale = 1;
-  if (transform != null) scale = Math.hypot(transform[0] ?? 0, transform[1] ?? 0, transform[2] ?? 0) || 1;
-  return { center: transformPoint(transform, cLocal), radius: r * scale };
+  return [near, far];
+}
+
+/**
+ * First positive boundary of a union of axis-aligned boxes.
+ *
+ * Merging the one-dimensional ray intervals is essential when boxes overlap:
+ * taking the minimum individual-box hit can return an internal seam while the
+ * ray remains inside another member of the union.
+ */
+function rayAabbUnion(ray: Ray, boxes: ReadonlyArray<readonly [V3, V3]>): number | null {
+  const intervals = boxes
+    .map(([min, max]) => rayAabbInterval(ray, min, max))
+    .filter((interval): interval is readonly [number, number] => interval != null)
+    .sort((a, b) => a[0] - b[0]);
+  if (intervals.length === 0) return null;
+
+  let mergedNear = intervals[0]![0];
+  let mergedFar = intervals[0]![1];
+  for (let i = 1; i < intervals.length; i += 1) {
+    const [near, far] = intervals[i]!;
+    const boundaryTolerance =
+      Number.EPSILON * 16 * Math.max(Math.abs(near), Math.abs(mergedFar));
+    if (near <= mergedFar || near - mergedFar <= boundaryTolerance) {
+      mergedFar = Math.max(mergedFar, far);
+      continue;
+    }
+    if (mergedFar > 0) {
+      return mergedNear > 0 ? mergedNear : mergedFar;
+    }
+    mergedNear = near;
+    mergedFar = far;
+  }
+  if (mergedFar <= 0) return null;
+  return mergedNear > 0 ? mergedNear : mergedFar;
+}
+
+function keepNearest(current: number | null, candidate: number | null): number | null {
+  if (candidate == null) return current;
+  return current == null || candidate < current ? candidate : current;
+}
+
+function rayCylinderY(ray: Ray, center: V3, radius: number, halfHeight: number): number | null {
+  const offsetRaw: V3 = [
+    ray.o[0] - center[0],
+    ray.o[1] - center[1],
+    ray.o[2] - center[2],
+  ];
+  const spatialScale = Math.max(
+    maxAbs3(offsetRaw),
+    Math.abs(radius),
+    Math.abs(halfHeight),
+  );
+  const directionScale = maxAbs3(ray.d);
+  if (
+    !(spatialScale > 0)
+    || !Number.isFinite(spatialScale)
+    || !(directionScale > 0)
+    || !Number.isFinite(directionScale)
+  ) {
+    return null;
+  }
+  const ox = offsetRaw[0] / spatialScale;
+  const oy = offsetRaw[1] / spatialScale;
+  const oz = offsetRaw[2] / spatialScale;
+  const dx = ray.d[0] / directionScale;
+  const dy = ray.d[1] / directionScale;
+  const dz = ray.d[2] / directionScale;
+  const scaledRadius = radius / spatialScale;
+  const scaledHalfHeight = halfHeight / spatialScale;
+  let best: number | null = null;
+
+  const sideA = dx * dx + dz * dz;
+  const sideB = ox * dx + oz * dz;
+  const sideC = ox * ox + oz * oz - scaledRadius * scaledRadius;
+  const sideRoots = quadraticRootsHalfB(sideA, sideB, sideC);
+  if (sideRoots != null) {
+    for (const scaledT of sideRoots) {
+      const y = oy + scaledT * dy;
+      const t = scaledRayParameter(scaledT, spatialScale, directionScale);
+      if (t != null && y >= -scaledHalfHeight && y <= scaledHalfHeight) {
+        best = keepNearest(best, t);
+      }
+    }
+  }
+
+  if (dy !== 0) {
+    for (const capY of [-scaledHalfHeight, scaledHalfHeight]) {
+      const scaledT = (capY - oy) / dy;
+      const t = scaledRayParameter(scaledT, spatialScale, directionScale);
+      if (t == null) continue;
+      const x = ox + scaledT * dx;
+      const z = oz + scaledT * dz;
+      if (x * x + z * z <= scaledRadius * scaledRadius) {
+        best = keepNearest(best, t);
+      }
+    }
+  }
+  return best;
+}
+
+function rayCapsule(ray: Ray, endpointA: V3, endpointB: V3, radius: number): number | null {
+  const segmentRaw = v3Sub(endpointB, endpointA);
+  const offsetRaw = v3Sub(ray.o, endpointA);
+  const spatialScale = Math.max(
+    maxAbs3(segmentRaw),
+    maxAbs3(offsetRaw),
+    Math.abs(radius),
+  );
+  const directionScale = maxAbs3(ray.d);
+  if (
+    !(spatialScale > 0)
+    || !Number.isFinite(spatialScale)
+    || !(directionScale > 0)
+    || !Number.isFinite(directionScale)
+  ) {
+    return null;
+  }
+  const segment: V3 = [
+    segmentRaw[0] / spatialScale,
+    segmentRaw[1] / spatialScale,
+    segmentRaw[2] / spatialScale,
+  ];
+  const length = Math.hypot(segment[0], segment[1], segment[2]);
+  if (length === 0) return raySphere(ray, endpointA, radius);
+  const axis: V3 = [segment[0] / length, segment[1] / length, segment[2] / length];
+  const offset: V3 = [
+    offsetRaw[0] / spatialScale,
+    offsetRaw[1] / spatialScale,
+    offsetRaw[2] / spatialScale,
+  ];
+  const direction: V3 = [
+    ray.d[0] / directionScale,
+    ray.d[1] / directionScale,
+    ray.d[2] / directionScale,
+  ];
+  const scaledRadius = radius / spatialScale;
+  const directionAxis = v3Dot(direction, axis);
+  const offsetAxis = v3Dot(offset, axis);
+  const directionPerp: V3 = [
+    direction[0] - axis[0] * directionAxis,
+    direction[1] - axis[1] * directionAxis,
+    direction[2] - axis[2] * directionAxis,
+  ];
+  const offsetPerp: V3 = [
+    offset[0] - axis[0] * offsetAxis,
+    offset[1] - axis[1] * offsetAxis,
+    offset[2] - axis[2] * offsetAxis,
+  ];
+
+  let best: number | null = null;
+  const sideA = v3Dot(directionPerp, directionPerp);
+  const sideB = v3Dot(offsetPerp, directionPerp);
+  const sideC = v3Dot(offsetPerp, offsetPerp) - scaledRadius * scaledRadius;
+  const sideRoots = quadraticRootsHalfB(sideA, sideB, sideC);
+  if (sideRoots != null) {
+    for (const scaledT of sideRoots) {
+      const along = offsetAxis + scaledT * directionAxis;
+      const t = scaledRayParameter(scaledT, spatialScale, directionScale);
+      if (t != null && along >= 0 && along <= length) {
+        best = keepNearest(best, t);
+      }
+    }
+  }
+
+  const directionLengthSquared = v3Dot(direction, direction);
+  const capRoots = (centerOffset: V3): readonly [number, number] | null => {
+    return quadraticRootsHalfB(
+      directionLengthSquared,
+      v3Dot(centerOffset, direction),
+      v3Dot(centerOffset, centerOffset) - scaledRadius * scaledRadius,
+    );
+  };
+  const rootsA = capRoots(offset);
+  if (rootsA != null) {
+    for (const scaledT of rootsA) {
+      const t = scaledRayParameter(scaledT, spatialScale, directionScale);
+      if (t == null) continue;
+      const point = [
+        offset[0] + direction[0] * scaledT,
+        offset[1] + direction[1] * scaledT,
+        offset[2] + direction[2] * scaledT,
+      ] as V3;
+      if (v3Dot(point, axis) <= 0) {
+        best = keepNearest(best, t);
+      }
+    }
+  }
+  const offsetFromB = v3Sub(offset, segment);
+  const rootsB = capRoots(offsetFromB);
+  if (rootsB != null) {
+    for (const scaledT of rootsB) {
+      const t = scaledRayParameter(scaledT, spatialScale, directionScale);
+      if (t == null) continue;
+      const point = [
+        offsetFromB[0] + direction[0] * scaledT,
+        offsetFromB[1] + direction[1] * scaledT,
+        offsetFromB[2] + direction[2] * scaledT,
+      ] as V3;
+      if (v3Dot(point, axis) >= 0) {
+        best = keepNearest(best, t);
+      }
+    }
+  }
+  return best;
+}
+
+function transformRayToLocal(ray: Ray, transform: Mat4 | undefined): Ray | null {
+  if (transform == null) return ray;
+  const inverse = invertMat4(transform);
+  if (inverse == null) return null;
+  const origin = mat4MulVec4(inverse, ray.o[0], ray.o[1], ray.o[2], 1);
+  if (origin[3] === 0) return null;
+  const inverseW = 1 / origin[3];
+  const direction = mat4MulVec4(inverse, ray.d[0], ray.d[1], ray.d[2], 0);
+  const localDirection: V3 = [direction[0], direction[1], direction[2]];
+  const localDirectionScale = Math.max(
+    Math.abs(localDirection[0]),
+    Math.abs(localDirection[1]),
+    Math.abs(localDirection[2]),
+  );
+  if (!(localDirectionScale > 0) || !Number.isFinite(localDirectionScale)) return null;
+  return {
+    o: [origin[0] * inverseW, origin[1] * inverseW, origin[2] * inverseW],
+    d: localDirection,
+  };
+}
+
+function intersectAnalytic(prim: AnalyticPrimitive, worldRay: Ray): number | null {
+  const ray = transformRayToLocal(worldRay, prim.transform);
+  if (ray == null) return null;
+  switch (prim.shape) {
+    case 'sphere': {
+      const [cx, cy, cz, radius] = decodeAnalyticParams('sphere', prim.params);
+      return raySphere(ray, [cx, cy, cz], radius);
+    }
+    case 'box': {
+      const [cx, cy, cz, hx, hy, hz] = decodeAnalyticParams('box', prim.params);
+      return rayAabb(ray, [cx - hx, cy - hy, cz - hz], [cx + hx, cy + hy, cz + hz]);
+    }
+    case 'cylinder': {
+      const [cx, cy, cz, radius, halfHeight] = decodeAnalyticParams('cylinder', prim.params);
+      return rayCylinderY(ray, [cx, cy, cz], radius, halfHeight);
+    }
+    case 'capsule': {
+      const [ax, ay, az, bx, by, bz, radius] = decodeAnalyticParams('capsule', prim.params);
+      return rayCapsule(ray, [ax, ay, az], [bx, by, bz], radius);
+    }
+    case 'h-channel-came': {
+      const [length, railWidth, blockHeight, webThickness] = decodeAnalyticParams(
+        'h-channel-came',
+        prim.params,
+      );
+      const hx = length * 0.5;
+      const hy = blockHeight * 0.5;
+      const hz = railWidth * 0.5;
+      const halfWeb = webThickness * 0.5;
+      return rayAabbUnion(ray, [
+        [
+          [-hx, hy - halfWeb, -hz],
+          [hx, hy, hz],
+        ],
+        [
+          [-hx, -hy, -hz],
+          [hx, -hy + halfWeb, hz],
+        ],
+        [
+          [-hx, -hy + halfWeb, -halfWeb],
+          [hx, hy - halfWeb, halfWeb],
+        ],
+      ]);
+    }
+  }
 }
 
 function intersectPrimitive(prim: ScenePrimitive, ray: Ray): number | null {
@@ -207,10 +651,14 @@ function intersectPrimitive(prim: ScenePrimitive, ray: Ray): number | null {
     }
     case 'analytic': {
       if (prim.fallbackMesh != null) {
-        return intersectTriangleSoup(prim.fallbackMesh.positions, prim.fallbackMesh.indices, prim.transform, ray);
+        return intersectTriangleSoup(
+          prim.fallbackMesh.positions,
+          prim.fallbackMesh.indices,
+          prim.transform,
+          ray,
+        );
       }
-      const bs = analyticBoundingSphere(prim.shape, prim.params, prim.transform);
-      return bs != null ? raySphere(ray, bs.center, bs.radius) : null;
+      return intersectAnalytic(prim, ray);
     }
     default:
       return null;

@@ -320,9 +320,9 @@ fn lo_analyticNEE(
     let decay = light3.w;
 
     let toL  = lightPos - pos;
-    let dist = length(toL);
-    if (dist < 1e-4) { continue; }
-    let wi   = toL / dist;
+    let dist = safe_length(toL);
+    if (!(dist > 0.0)) { continue; }
+    let wi   = safe_normalize(toL);
     let nDotL = dot(normal, wi);
     if (nDotL <= 0.0) { continue; }
 
@@ -341,7 +341,8 @@ fn lo_analyticNEE(
       shadowT = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
         ubo.bvhMode, ubo.tlasNodeCount,
 
-        pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon,
+        pos + geoNormal * walkaroundRayOriginBias(), wi,
+        max(0.0, dist - walkaroundRayEndMargin()), ubo.triIntersectEpsilon,
         bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
         manifoldNeeOwnsMaterialTransmission());
       if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) { continue; }
@@ -402,16 +403,23 @@ fn lo_direct(
     let envDir = envDirFromXi(r.xi);
     let nDotL = max(0.0, dot(normal, envDir));
     if (nDotL <= 0.0) { return vec3f(0.0); }
-    let envColor = envRadiance(envDir) * max(envMapIntensity, 0.0);
+    let envColor = walkaroundScaleEnvironmentRadiance(
+      envRadiance(envDir),
+      envMapIntensity,
+    );
     let brdfE = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, envDir, isGlass);
     let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       ubo.bvhMode, ubo.tlasNodeCount,
 
-      pos + geoNormal * 1e-3, envDir, 1e20, ubo.triIntersectEpsilon,
+      pos + geoNormal * walkaroundRayOriginBias(), envDir, INFINITY,
+      ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
       manifoldNeeOwnsMaterialTransmission());
     let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
     if (shadowScalar <= 0.0) { return vec3f(0.0); }
+    if (restirReservoirScaleValue() > 1u) {
+      return envColor * brdfE * r.W * shadowTint;
+    }
     return envColor * brdfE * r.W * (shadowTint / vec3f(shadowScalar));
   }
 
@@ -422,13 +430,13 @@ fn lo_direct(
   // shaded contribution for large close emitters.
   let ls = sampleEmitterPoint(e, r.xi);
   let toL = ls.pos - pos;
-  let dist = length(toL);
-  if (dist <= 1e-4) { return vec3f(0.0); }
-  let wi    = toL / dist;
+  let dist = safe_length(toL);
+  if (!(dist > 0.0)) { return vec3f(0.0); }
+  let wi    = safe_normalize(toL);
   let nDotL = max(0.0, dot(normal, wi));
-  let nlDotL = max(0.0, dot(-e.normal, wi));
+  let nlDotL = emitterTriCosineTowardReceiver(e, -wi);
   if (nDotL <= 0.0 || nlDotL <= 0.0) { return vec3f(0.0); }
-  if (e.castShadowDisabled < 0.5) {
+  if (!emitterTriCastShadowDisabled(e)) {
     // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
     // (light passes through glass; per-channel tinted-visibility handles tint).
     // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
@@ -441,7 +449,8 @@ fn lo_direct(
     let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       ubo.bvhMode, ubo.tlasNodeCount,
 
-      pos + geoNormal * 1e-3, wi, dist - 2e-3, ubo.triIntersectEpsilon,
+      pos + geoNormal * walkaroundRayOriginBias(), wi,
+      max(0.0, dist - walkaroundRayEndMargin()), ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
       manifoldNeeOwnsMaterialTransmission());
     let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
@@ -450,6 +459,9 @@ fn lo_direct(
     let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
     let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, isGlass);
     let Le = sampleEmitterLeAtXi(e, r.xi);
+    if (restirReservoirScaleValue() > 1u) {
+      return Le * brdf * G * r.W * shadowTint;
+    }
     return Le * brdf * G * r.W * shadowColorCorrection;
   }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
@@ -554,7 +566,8 @@ fn lo_sunNEE(
     sunShadowT = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
       ubo.bvhMode, ubo.tlasNodeCount,
 
-      pos + geoNormal * 1e-3, toSun, 1e6, ubo.triIntersectEpsilon,
+      pos + geoNormal * walkaroundRayOriginBias(), toSun, INFINITY,
+      ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
       manifoldNeeOwnsMaterialTransmission());
     if (max(max(sunShadowT.x, sunShadowT.y), sunShadowT.z) <= 0.0) { return vec3f(0.0); }
@@ -600,8 +613,8 @@ fn lo_sunNEE(
 // discontinuity at every quad boundary.  risGi re-rolls samples each frame,
 // so the discontinuity pattern shifted every frame and the temporal
 // accumulator could not converge to a fixed point.  Blending 4 neighbours
-// with bilinear weights at half-res fractional coord (gid*0.5) eliminates
-// the quad grid.
+// with bilinear weights in the producer's center-aligned reservoir coordinate
+// eliminates the quad grid without shifting the field by half a cell.
 fn giReservoirVisibility(g: ReservoirGI) -> f32 {
   if (g.historyEpoch != bitcast<u32>(ubo.sunAngular.y)) { return 0.0; }
   return clamp(g.sampleVisibility, 0.0, 1.0);
@@ -613,11 +626,27 @@ fn giReservoirDirectionVector(g: ReservoirGI, receiverPosition: vec3f) -> vec3f 
   }
   return g.xs - receiverPosition;
 }
+
+fn coarseGiDomainCompatible(
+  g: ReservoirGI,
+  receiverPosition: vec3f,
+  receiverNormal: vec3f,
+  receiverMaterialKey: u32,
+) -> bool {
+  if (restirReservoirScaleValue() == 1u) { return true; }
+  return
+    g.receiverMaterialKey == receiverMaterialKey &&
+    dot(receiverNormal, g.nv) >= ubo.restirGiSpatialNormalDotMin &&
+    abs(dot(receiverPosition - g.xv, g.nv))
+      <= ubo.restirGiSpatialCoplanarTol;
+}
 fn lo_indirect(
   gid:     vec2u,
   dims:    vec2u,
   pos:     vec3f,
   normal:  vec3f,
+  receiverMaterialKey: u32,
+  envMapIntensity: f32,
   isGlass: bool,
   metal:   f32,
 ) -> vec3f {
@@ -639,15 +668,41 @@ ${giBilinearCornerSelectWgsl()}
     let g = loadReservoirGI_rw(giIdx);
     if (g.W <= 0.0 || g.M == 0u) { continue; }
     if (g.prefixVertexCount != GI_PREFIX_RECONNECTABLE) { continue; }
-    let grisVisibility = giReservoirVisibility(g);
+    if (!coarseGiDomainCompatible(g, pos, normal, receiverMaterialKey)) { continue; }
+    var domainJacobian = 1.0;
+    var grisVisibility = giReservoirVisibility(g);
+    if (restirReservoirScaleValue() > 1u) {
+      domainJacobian = grisDomainToCanonicalJacobian(
+        g.xv,
+        pos,
+        g.sampleKind,
+        g.xs,
+        g.ns,
+      );
+      grisVisibility = grisProxyVisibilityAt(
+        pos,
+        normal,
+        g.sampleKind,
+        g.xs,
+        g.wi_recon,
+      );
+    }
+    if (!(domainJacobian > 0.0)) { continue; }
     if (grisVisibility <= 0.0) { continue; }
     let toS = giReservoirDirectionVector(g, pos);
-    let distS = length(toS);
-    if (distS <= 1e-4) { continue; }
-    let wi = toS / distS;
+    let distS = safe_length(toS);
+    if (!(distS > 0.0)) { continue; }
+    let wi = safe_normalize(toS);
     let cosTheta = max(0.0, dot(normal, wi));
+    var receiverLo = g.Lo;
+    if (g.sampleKind == GI_SAMPLE_ENVIRONMENT) {
+      receiverLo = walkaroundScaleEnvironmentRadiance(
+        receiverLo,
+        envMapIntensity,
+      );
+    }
     // Item 24: omit albedo here; indirectCombine applies it post-denoising.
-    Lo_indirect = Lo_indirect + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;
+    Lo_indirect = Lo_indirect + receiverLo * INV_PI * cosTheta * g.W * domainJacobian * grisVisibility * bw;
     Maccum = Maccum + f32(g.M) * bw;
     totalW = totalW + bw;
   }
@@ -659,6 +714,11 @@ ${giBilinearCornerSelectWgsl()}
   if (totalW > 0.0) {
     Lo_indirect = Lo_indirect / totalW;
     Meff = Maccum / totalW;
+  } else if (restirReservoirScaleValue() > 1u) {
+    // Deterministic discontinuity fallback: never transplant a source-domain
+    // reservoir normalization across an incompatible depth/normal boundary.
+    // The DDGI atlas is receiver-local and therefore remains well-defined.
+    Lo_indirect = sampleDDGIAtPoint(pos, normal) * INV_PI;
   }
   // W8 Phase 3 — confidence-ratio (balance-heuristic) composition with the
   // Sannikov 2023 Radiance Cascades cascade-0 estimate. Both estimators
@@ -740,6 +800,10 @@ fn lo_transmittedGI(
   isGlass: bool,
 ) -> vec3f {
   if (!isGlass) { return vec3f(0.0); }
+  // A camera-transmission prefix is tied to its exact primary ray and cannot be
+  // reconnection-shifted without storing the complete refractive prefix.
+  // Scene preflight forces reservoir scale 1 whenever this lane is reachable.
+  if (restirReservoirScaleValue() > 1u) { return vec3f(0.0); }
 
   // Match lo_indirect's 4-neighbour half-res blend for transmission too. The
   // previous nearest-neighbour lookup made an entire 2x2 full-res quad inherit
@@ -763,9 +827,9 @@ ${giBilinearCornerSelectWgsl()}
     let grisVisibility = giReservoirVisibility(g);
     if (grisVisibility <= 0.0) { continue; }
     let toS = giReservoirDirectionVector(g, g.xv);
-    let distS = length(toS);
-    if (distS <= 1e-4) { continue; }
-    let wi = toS / distS;
+    let distS = safe_length(toS);
+    if (!(distS > 0.0)) { continue; }
+    let wi = safe_normalize(toS);
     let cosTheta = max(0.0, dot(g.nv, wi));
     Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;
     totalW = totalW + bw;
@@ -827,6 +891,8 @@ fn lo_indirectSpecular(
   clearcoat: vec2f,
   sheen: vec4f,
   sheenRoughness: f32,
+  receiverMaterialKey: u32,
+  envMapIntensity: f32,
   isGlass: bool,
 ) -> vec3f {
   if (isGlass) { return vec3f(0.0); }
@@ -835,20 +901,47 @@ fn lo_indirectSpecular(
     max(abs(specular.b - 1.0), abs(specular.a - 1.0)),
   );
   if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 0.0 && abs(anisotropy.x) <= 0.0 && clearcoat.x <= 0.0 && sheen.a <= 0.0 && iridescence.x <= 0.0) { return vec3f(0.0); }
-  let halfDims = dims / 2u;
-  let hx = min(gid.x / 2u, halfDims.x - 1u);
-  let hy = min(gid.y / 2u, halfDims.y - 1u);
+  let halfDims = restirGiDimensions();
+  let giCoord = restirGiCoordForFullPixel(gid);
+  let hx = giCoord.x;
+  let hy = giCoord.y;
   let giIdx = hy * halfDims.x + hx;
   let g = loadReservoirGI_rw(giIdx);
   if (g.W <= 0.0 || g.M == 0u) { return vec3f(0.0); }
   if (g.prefixVertexCount != GI_PREFIX_RECONNECTABLE) { return vec3f(0.0); }
-  let grisVisibility = giReservoirVisibility(g);
+  if (!coarseGiDomainCompatible(g, pos, normal, receiverMaterialKey)) { return vec3f(0.0); }
+  var domainJacobian = 1.0;
+  var grisVisibility = giReservoirVisibility(g);
+  if (restirReservoirScaleValue() > 1u) {
+    domainJacobian = grisDomainToCanonicalJacobian(
+      g.xv,
+      pos,
+      g.sampleKind,
+      g.xs,
+      g.ns,
+    );
+    grisVisibility = grisProxyVisibilityAt(
+      pos,
+      normal,
+      g.sampleKind,
+      g.xs,
+      g.wi_recon,
+    );
+  }
+  if (!(domainJacobian > 0.0)) { return vec3f(0.0); }
   if (grisVisibility <= 0.0) { return vec3f(0.0); }
   let toS = giReservoirDirectionVector(g, pos);
-  let distS = length(toS);
-  if (distS <= 1e-4) { return vec3f(0.0); }
-  let wi = toS / distS;
+  let distS = safe_length(toS);
+  if (!(distS > 0.0)) { return vec3f(0.0); }
+  let wi = safe_normalize(toS);
+  var receiverLo = g.Lo;
+  if (g.sampleKind == GI_SAMPLE_ENVIRONMENT) {
+    receiverLo = walkaroundScaleEnvironmentRadiance(
+      receiverLo,
+      envMapIntensity,
+    );
+  }
   // The specular-only evaluator already includes the NdotL cosine + conductor F0.
   let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
-  return g.Lo * specBrdf * g.W * grisVisibility;
+  return receiverLo * specBrdf * g.W * domainJacobian * grisVisibility;
 }`;

@@ -52,7 +52,10 @@ fn liteEnvLookup(dir: vec3f) -> vec4f {
   let x = min(u32(floor(u * f32(dims.x))), dims.x - 1u);
   let y = min(u32(floor(v * f32(dims.y))), dims.y - 1u);
   let texel = textureLoad(liteEnvTex, vec2i(i32(x), i32(y)), 0);
-  return vec4f(texel.rgb * max(params.environmentHdriIntensity, 0.0), max(texel.a, 1e-8));
+  return vec4f(
+    ptScaleEnvironmentRadiance(texel.rgb, params.environmentHdriIntensity),
+    texel.a,
+  );
 }
 
 fn sampleEnvironmentColor(dir: vec3f) -> vec3f {
@@ -63,7 +66,7 @@ fn sampleEnvironmentColor(dir: vec3f) -> vec3f {
 fn environmentPdf(dir: vec3f) -> f32 {
   let lk = liteEnvLookup(dir);
   if (lk.a <= 0.0) { return 0.0; }
-  return max(lk.a, 1e-8);
+  return lk.a;
 }
 
 // B12 — importance sample the lite env CDF via binary search over liteEnvCdfTex.
@@ -103,17 +106,16 @@ fn sampleEnvironmentImportance(rng: ptr<function, PtRngState>) -> BsdfSample {
   let idx = min(lo, count - 1u);
   let x = idx % dims.x;
   let y = idx / dims.x;
-  let u = (f32(x) + 0.5) / f32(dims.x);
-  let v = (f32(y) + 0.5) / f32(dims.y);
-  let phi = (u - 0.5) * (2.0 * PI);
-  let theta = v * PI;
-  let sinTheta = sin(theta);
-  let mapDir = vec3f(cos(phi) * sinTheta, cos(theta), sin(phi) * sinTheta);
+  let cellXi = vec2f(rand_f32(rng), rand_f32(rng));
+  let mapDir = sampleEnvironmentCellDirection(x, y, dims, cellXi);
   let texel = textureLoad(liteEnvTex, vec2i(i32(x), i32(y)), 0);
   let rotY = params.environmentTint.w;
   result.wi = safe_normalize(rotateYPos(mapDir, rotY));
-  result.value = texel.rgb * max(params.environmentHdriIntensity, 0.0);
-  result.pdf = max(texel.a, 1e-8);
+  result.value = ptScaleEnvironmentRadiance(
+    texel.rgb,
+    params.environmentHdriIntensity,
+  );
+  result.pdf = texel.a;
   return result;
 }
 
@@ -124,7 +126,7 @@ fn environmentImportanceSamplerReady() -> bool {
 
 fn environmentNeeProposalPdf(dir: vec3f, normal: vec3f) -> f32 {
   if (environmentImportanceSamplerReady()) {
-    return max(environmentPdf(dir), 1e-8);
+    return environmentPdf(dir);
   }
   return 0.25 * INV_PI;
 }
@@ -142,30 +144,29 @@ fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distO
   let vAxis = textureLoad(liteLightTex, vec2i(i32(rb + 2u), 0), 0).xyz;
   let rshape = textureLoad(liteLightTex, vec2i(i32(rb + 3u), 0), 0);
   let isDisc = abs(rshape.w - 1.0) < 0.5;
-  let axisCross = cross(uAxis, vAxis);
-  let axisCrossLen2 = dot(axisCross, axisCross);
-  if (axisCrossLen2 <= 0.0) { return false; }
-  let lightNormal = axisCross * inverseSqrt(axisCrossLen2);
+  let areaMeasure = measureAreaVector(
+    uAxis, vAxis, select(4.0, PI, isDisc),
+  );
+  if (areaMeasure.valid == 0u) { return false; }
+  let lightNormal = areaMeasure.normal;
   let denom = dot(lightNormal, rayDir);
   if (denom == 0.0) {
     return false;
   }
   let t = dot(lightNormal, rectPos - rayOrigin) / denom;
-  if (t <= 1e-4) {
+  if (t <= ptRayTMin()) {
     return false;
   }
   let p = rayOrigin + rayDir * t;
   let rel = p - rectPos;
-  let uLen2 = dot(uAxis, uAxis);
-  let vLen2 = dot(vAxis, vAxis);
-  if (uLen2 <= 0.0 || vLen2 <= 0.0) { return false; }
-  // Solve the full 2×2 Gram system. Independent projection is only correct
-  // for orthogonal axes and misclassifies sheared affine discs/rectangles.
-  let uv = dot(uAxis, vAxis);
-  let relU = dot(rel, uAxis);
-  let relV = dot(rel, vAxis);
-  let uCoord = (relU * vLen2 - relV * uv) / axisCrossLen2;
-  let vCoord = (relV * uLen2 - relU * uv) / axisCrossLen2;
+  // Solve through the dominant 2D projection. This preserves the exact affine
+  // coordinates without squaring the axes into an overflow-prone Gram matrix.
+  let areaCoordinates = solveAreaVectorCoordinates(
+    uAxis, vAxis, rel, areaMeasure,
+  );
+  if (areaCoordinates.z == 0.0) { return false; }
+  let uCoord = areaCoordinates.x;
+  let vCoord = areaCoordinates.y;
   let inside = select(
     abs(uCoord) <= 1.0 && abs(vCoord) <= 1.0,
     uCoord * uCoord + vCoord * vCoord <= 1.0,
@@ -178,14 +179,10 @@ fn intersectLiteRectAreaLightRay(li: u32, rayOrigin: vec3f, rayDir: vec3f, distO
   if (cosLight <= 0.0) {
     return false;
   }
-  let area = select(
-    4.0 * sqrt(axisCrossLen2),
-    PI * sqrt(axisCrossLen2),
-    isDisc,
-  );
-  if (area <= 0.0) { return false; }
+  let lightPdf = ptAreaToSolidAnglePdf(t, cosLight, areaMeasure);
+  if (!(lightPdf > 0.0)) { return false; }
   *distOut = t;
-  *lightPdfOut = (t * t) / (cosLight * area);
+  *lightPdfOut = lightPdf;
   return true;
 }
 
@@ -230,7 +227,7 @@ fn bsdfAreaLightConnectionContribution(
   }
 
   let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-  let offsetOrigin = hitPos + offsetNormal * 1e-3;
+  let offsetOrigin = hitPos + offsetNormal * ptRayOriginBias();
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
@@ -241,7 +238,9 @@ fn bsdfAreaLightConnectionContribution(
       let rb = liteRectLightBase() + li * 4u;
       let rectShadowDisabled = textureLoad(liteLightTex, vec2i(i32(rb), 0), 0).w > 0.5;
       let shadowRay = Ray(offsetOrigin, wi);
-      if ((rectShadowDisabled || !traceAny(shadowRay, 1e-4, max(rectDist - 2e-3, 1e-3))) && rectDist < bestDist) {
+      if ((rectShadowDisabled || !traceAny(
+        shadowRay, ptRayTMin(), ptFiniteSegmentTMax(rectDist),
+      )) && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
         bestEmission = textureLoad(liteLightTex, vec2i(i32(rb + 3u), 0), 0).rgb;
@@ -301,8 +300,11 @@ fn bsdfEnvironmentConnectionContribution(
   );
   if (bsdfPdf <= 0.0) { return vec3f(0.0); }
   let offsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-  let shadowRay = Ray(hitPos + offsetNormal * 1e-3, wi);
-  if (traceAny(shadowRay, 1e-4, INFINITY)) { return vec3f(0.0); }
+  let shadowRay = Ray(
+    hitPos + offsetNormal * ptRayOriginBias(),
+    wi,
+  );
+  if (traceAny(shadowRay, ptRayTMin(), INFINITY)) { return vec3f(0.0); }
   let envPdf = environmentNeeProposalPdf(wi, normal);
   let envRgb = sampleEnvironmentColor(wi);
   let envColor = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);

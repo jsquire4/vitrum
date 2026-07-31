@@ -32,6 +32,10 @@
  */
 
 import { CASCADE_DIMS, validateCascadeDims, type CascadeDim } from './cascadePyramid.js';
+import {
+  assertRcEnvironmentRadianceF32,
+  assertRcEnvironmentScaleF32,
+} from './environmentRadianceScale.js';
 import { PROBE_RAY_CAST_WGSL } from './wgsl/probeRayCast.wgsl.js';
 import { CASCADE_MERGE_WGSL } from './wgsl/cascadeMerge.wgsl.js';
 import { CascadeUniformsOffset } from './cascadeUniformsLayout.generated.js';
@@ -292,6 +296,7 @@ export interface RCDispatchOptsRaw {
   emittersSize?: number;
   /** Byte offsets relative to the bound emitter window. */
   emitterDataOffset?: number;
+  /** Defaults to the first byte after the resolved emitter-data range. */
   emitterAliasOffset?: number;
   emitterCount?: number;
 
@@ -339,6 +344,52 @@ export interface CascadeUniformInputs {
   readonly emitterAliasWordOffset?: number;
   /** Per-instance cascade dimensions. Defaults to {@link CASCADE_DIMS}. */
   readonly dims?:            readonly CascadeDim[];
+}
+
+interface ResolvedEmitterLayout {
+  readonly count: number;
+  readonly dataOffset: number;
+  readonly aliasOffset: number;
+  readonly dataBytes: number;
+  readonly aliasBytes: number;
+  readonly dataWordOffset: number;
+  readonly aliasWordOffset: number;
+}
+
+/**
+ * Resolve the one emitter-buffer layout used by validation and every shader
+ * uniform writer. In particular, an omitted alias offset follows the resolved
+ * data offset and data extent; it must never validate at one address and reach
+ * WGSL as zero.
+ */
+export function resolveEmitterLayout(
+  opts: Pick<
+    RCDispatchOptsRaw,
+    'emitterCount' | 'emitterDataOffset' | 'emitterAliasOffset'
+  >,
+): ResolvedEmitterLayout {
+  const count = opts.emitterCount ?? 0;
+  const dataOffset = opts.emitterDataOffset ?? 0;
+  const dataBytes = count * RC_EMITTER_STRIDE_BYTES;
+  const aliasBytes = count * RC_ALIAS_STRIDE_BYTES;
+  const defaultAliasOffset = dataOffset + dataBytes;
+  if (
+    !Number.isSafeInteger(dataBytes) ||
+    !Number.isSafeInteger(aliasBytes) ||
+    !Number.isSafeInteger(defaultAliasOffset)
+  ) {
+    throw new Error('[RCDispatcher] emitter sampling ranges exceed Number.MAX_SAFE_INTEGER.');
+  }
+  const aliasOffset = opts.emitterAliasOffset ?? defaultAliasOffset;
+  return {
+    count,
+    dataOffset,
+    aliasOffset,
+    dataBytes,
+    aliasBytes,
+    dataWordOffset: dataOffset / 4,
+    aliasWordOffset: aliasOffset / 4,
+  };
 }
 
 function assertU32(value: unknown, path: string): asserts value is number {
@@ -399,14 +450,11 @@ function validateCascadeUniformInputs(
   if (inputs.sunAngularRadius < 0 || inputs.sunAngularRadius > Math.PI) {
     throw new Error('sunAngularRadius must be in [0, PI]');
   }
-  assertFiniteF32(inputs.envIntensity, 'envIntensity');
-  if (inputs.envIntensity < 0) throw new Error('envIntensity must be nonnegative');
+  assertRcEnvironmentScaleF32(inputs.envIntensity, 'envIntensity');
   assertFiniteF32(inputs.envRotationY ?? 0, 'envRotationY');
-  assertFiniteVec3(
+  assertRcEnvironmentRadianceF32(
     inputs.scalarSkyRadiance ?? [0, 0, 0],
     'scalarSkyRadiance',
-    component => component >= 0,
-    'nonnegative',
   );
   if (typeof (inputs.hasDirectionalEnvironment ?? false) !== 'boolean') {
     throw new Error('hasDirectionalEnvironment must be boolean');
@@ -695,6 +743,7 @@ function validateDispatchOptsRaw(
   assertU32(opts.tlasNodeCount ?? 0, 'tlasNodeCount');
   assertU32(opts.emitterCount ?? 0, 'emitterCount');
   assertU32(opts.lightCount ?? 0, 'lightCount');
+  const emitterLayout = resolveEmitterLayout(opts);
 
   const hasEnvView = opts.envTextureView != null;
   const hasEnvSampler = opts.envSampler != null;
@@ -726,10 +775,10 @@ function validateDispatchOptsRaw(
       ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
     bvhMode: mode === 'tlas' ? 1 : 0,
     tlasNodeCount: opts.tlasNodeCount ?? 0,
-    emitterCount: opts.emitterCount ?? 0,
+    emitterCount: emitterLayout.count,
     lightCount: opts.lightCount ?? 0,
-    emitterDataWordOffset: (opts.emitterDataOffset ?? 0) / 4,
-    emitterAliasWordOffset: (opts.emitterAliasOffset ?? 0) / 4,
+    emitterDataWordOffset: emitterLayout.dataWordOffset,
+    emitterAliasWordOffset: emitterLayout.aliasWordOffset,
     dims,
   });
 
@@ -812,7 +861,7 @@ function validateDispatchOptsRaw(
     }
   }
 
-  const emitterCount = opts.emitterCount ?? 0;
+  const emitterCount = emitterLayout.count;
   let emitterBindingBytes = 16;
   if (opts.emittersBuf == null) {
     if (
@@ -834,18 +883,15 @@ function validateDispatchOptsRaw(
     if (emitterBindingBytes < 16 || offset > emitterBuffer.size - emitterBindingBytes) {
       throw new Error('[RCDispatcher] emitter sampling binding range must be in bounds and at least 16 bytes.');
     }
-    const dataOffset = opts.emitterDataOffset ?? 0;
-    const aliasOffset = opts.emitterAliasOffset ?? emitterCount * RC_EMITTER_STRIDE_BYTES;
+    const dataOffset = emitterLayout.dataOffset;
+    const aliasOffset = emitterLayout.aliasOffset;
     assertNonnegativeSafeInteger(dataOffset, 'emitterDataOffset');
     assertNonnegativeSafeInteger(aliasOffset, 'emitterAliasOffset');
     if (dataOffset % 4 !== 0 || aliasOffset % 4 !== 0) {
       throw new Error('[RCDispatcher] emitter data/alias offsets must be 4-byte aligned.');
     }
-    const dataBytes = emitterCount * RC_EMITTER_STRIDE_BYTES;
-    const aliasBytes = emitterCount * RC_ALIAS_STRIDE_BYTES;
-    if (!Number.isSafeInteger(dataBytes) || !Number.isSafeInteger(aliasBytes)) {
-      throw new Error('[RCDispatcher] emitter sampling ranges exceed Number.MAX_SAFE_INTEGER.');
-    }
+    const dataBytes = emitterLayout.dataBytes;
+    const aliasBytes = emitterLayout.aliasBytes;
     if (dataOffset > emitterBindingBytes - dataBytes || aliasOffset > emitterBindingBytes - aliasBytes) {
       throw new Error(
         `[RCDispatcher] emitterCount=${emitterCount} requires ${dataBytes} data bytes and ` +
@@ -999,8 +1045,8 @@ const BINDING_FIELDS: readonly BindingField<keyof DispatchBindingSignature>[] = 
   bf('emittersBuf', 'ref', (o) => o.emittersBuf ?? null),
   bf('emittersOffset', 'ref', (o) => o.emittersOffset ?? 0),
   bf('emittersSize', 'ref', (o) => o.emittersSize ?? null),
-  bf('emitterDataOffset', 'ref', (o) => o.emitterDataOffset ?? 0),
-  bf('emitterAliasOffset', 'ref', (o) => o.emitterAliasOffset ?? 0),
+  bf('emitterDataOffset', 'ref', (o) => resolveEmitterLayout(o).dataOffset),
+  bf('emitterAliasOffset', 'ref', (o) => resolveEmitterLayout(o).aliasOffset),
   bf('lightsBuf', 'ref', (o) => o.lightsBuf ?? null),
   bf('lightsOffset', 'ref', (o) => o.lightsOffset ?? 0),
   bf('lightsSize', 'ref', (o) => o.lightsSize ?? null),
@@ -1120,6 +1166,7 @@ export class RCDispatcher {
 
     // Update per-frame uniforms for each cast pass.
     const dims = this._cascadeDims;
+    const emitterLayout = resolveEmitterLayout(opts);
     for (let k = 0; k < dims.length; k++) {
       const pass = handles.castPasses[k]!;
       buildCascadeUniformDataInto(pass.cascadeParamsRaw, k, {
@@ -1141,10 +1188,10 @@ export class RCDispatcher {
           ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
         bvhMode:          opts.bvhMode === 'tlas' ? 1 : 0,
         tlasNodeCount:    opts.tlasNodeCount ?? 0,
-        emitterCount:     opts.emitterCount ?? 0,
+        emitterCount:     emitterLayout.count,
         lightCount:       opts.lightCount ?? 0,
-        emitterDataWordOffset: (opts.emitterDataOffset ?? 0) / 4,
-        emitterAliasWordOffset: (opts.emitterAliasOffset ?? 0) / 4,
+        emitterDataWordOffset: emitterLayout.dataWordOffset,
+        emitterAliasWordOffset: emitterLayout.aliasWordOffset,
         dims,
       });
       device.queue.writeBuffer(pass.cascadeParamsBuf, 0, pass.cascadeParamsRaw.buffer);
@@ -1228,12 +1275,9 @@ export class RCDispatcher {
         { binding: 14, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_emitters
         // Runtime-sized analytic/directional lights plus alias table.
         { binding: 15, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_lights
-        // Material atlas/meta are rgba32float textures read with textureLoad()
-        // in probeRayCast.wgsl. WebGPU classifies rgba32float as
-        // unfilterable-float, so strict adapters reject a filterable `float`
-        // layout even though the shader never samples through a filtering
-        // sampler.
-        { binding: 16, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d-array' } }, // rc_materialTextureAtlas
+        // The material atlas is a packed r32uint array. Metadata remains
+        // rgba32float and carries the logical-layer address directory.
+        { binding: 16, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint', viewDimension: '2d-array' } }, // rc_materialTextureAtlas
         { binding: 17, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_materialMapMeta
         { binding: 18, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } }, // rc_geom_normal
         { binding: 19, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } },       // rc_geom_tangent
@@ -1320,8 +1364,8 @@ export class RCDispatcher {
 
   /**
    * Resolve optional material-atlas bindings for RC's material-backed emitter
-   * NEE. The placeholder meta texture is filled with layer=-1 so shader helper
-   * calls fall back to scalar EmitterTri.Le when no atlas was supplied.
+   * NEE. The placeholder metadata advertises zero logical layers so shader
+   * helpers fall back to scalar EmitterTri.Le when no atlas was supplied.
    */
   private _resolveMaterialAtlasBindingRaw(
     device: GPUDevice,
@@ -1342,27 +1386,33 @@ export class RCDispatcher {
     const atlasTexture = own(device.createTexture({
       label: 'rc-material-atlas-placeholder',
       size: { width: 1, height: 1, depthOrArrayLayers: 1 },
-      format: 'rgba32float',
+      format: 'r32uint',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     }));
     device.queue.writeTexture(
       { texture: atlasTexture },
-      new Float32Array([1, 1, 1, 1]),
-      { bytesPerRow: 16, rowsPerImage: 1 },
+      new Uint32Array([0]),
+      { bytesPerRow: 4, rowsPerImage: 1 },
       { width: 1, height: 1, depthOrArrayLayers: 1 },
     );
     const metaTexture = own(device.createTexture({
       label: 'rc-material-meta-placeholder',
-      size: { width: 2, height: 1 },
+      size: { width: 4, height: 1 },
       format: 'rgba32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
     }));
+    const meta = new Float32Array(4 * 4);
+    meta.set([
+      3, 0, 0, 157,
+      0, 0, 0, 0,
+      0, 0, 0, 0,
+    ]);
     device.queue.writeTexture(
       { texture: metaTexture },
-      // First meta texel: layer=-1 => absent map. Second texel is unused transform.
-      new Float32Array([-1, 0, 0, 0, 1, 1, 1, 0]),
-      { bytesPerRow: 32 },
-      { width: 2, height: 1 },
+      // ABI-v3 header with zero materials, triangles, and logical layers.
+      meta,
+      { bytesPerRow: 64 },
+      { width: 4, height: 1 },
     );
     return {
       materialTextureAtlasView: atlasTexture.createView({ label: 'rc-material-atlas-placeholder-view', dimension: '2d-array' }),
@@ -1757,6 +1807,7 @@ export class RCDispatcher {
     const castPasses: CastPassHandles[] = [];
     const castBindGroups: GPUBindGroup[] = [];
     const cascadeDims = this._cascadeDims;
+    const emitterLayout = resolveEmitterLayout(opts);
 
     for (let k = 0; k < cascadeDims.length; k++) {
       const dim = cascadeDims[k]!;
@@ -1794,10 +1845,10 @@ export class RCDispatcher {
           ?? RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET,
         bvhMode:          opts.bvhMode === 'tlas' ? 1 : 0,
         tlasNodeCount:    opts.tlasNodeCount ?? 0,
-        emitterCount:     opts.emitterCount ?? 0,
+        emitterCount:     emitterLayout.count,
         lightCount:       opts.lightCount ?? 0,
-        emitterDataWordOffset: (opts.emitterDataOffset ?? 0) / 4,
-        emitterAliasWordOffset: (opts.emitterAliasOffset ?? 0) / 4,
+        emitterDataWordOffset: emitterLayout.dataWordOffset,
+        emitterAliasWordOffset: emitterLayout.aliasWordOffset,
         dims:             cascadeDims,
       });
       const cascadeParamsBuf = own(device.createBuffer({

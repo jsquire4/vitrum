@@ -1,5 +1,13 @@
 import type { Scene } from '@vitrum/core';
-import { bakePreethamSkyEquirect, luminance, readEnvironmentMapPixels } from '@vitrum/shared-samplers';
+import {
+  bakePreethamSkyEquirect,
+  luminance,
+  readEnvironmentMapPixels,
+} from '@vitrum/shared-samplers';
+import {
+  assertPtWebgpuEnvironmentScaleF32,
+  packPtWebgpuEnvironmentRotationF32,
+} from '../environmentRadianceScale.js';
 
 // ---------------------------------------------------------------------------
 // Preetham analytic daylight model
@@ -106,9 +114,7 @@ function describeUnknown(value: unknown): string {
 
 function strictHdriRawPayload(handle: unknown): HdriRawPayload {
   if (handle == null || typeof handle !== 'object') {
-    throw new TypeError(
-      '[vitrum/pt-webgpu] HDRI requires a CPU-readable object payload.',
-    );
+    throw new TypeError('[vitrum/pt-webgpu] HDRI requires a CPU-readable object payload.');
   }
   const record = handle as {
     readonly width?: unknown;
@@ -125,32 +131,26 @@ function strictHdriRawPayload(handle: unknown): HdriRawPayload {
   const width = Number(record.width ?? record.image?.width);
   const height = Number(record.height ?? record.image?.height);
   const data = record.data ?? record.image?.data;
-  if (!Number.isSafeInteger(width) || width < 1 ||
-      !Number.isSafeInteger(height) || height < 1) {
+  if (!Number.isSafeInteger(width) || width < 1 || !Number.isSafeInteger(height) || height < 1) {
     throw new RangeError(
       `[vitrum/pt-webgpu] HDRI dimensions must be positive safe integers; received ${String(width)}x${String(height)}.`,
     );
   }
   if (data == null || !Number.isSafeInteger(data.length)) {
-    throw new TypeError(
-      '[vitrum/pt-webgpu] HDRI lacks a CPU-readable array-like data payload.',
-    );
+    throw new TypeError('[vitrum/pt-webgpu] HDRI lacks a CPU-readable array-like data payload.');
   }
   const pixelCount = width * height;
   if (!Number.isSafeInteger(pixelCount)) {
     throw new RangeError('[vitrum/pt-webgpu] HDRI pixel count exceeds safe integer range.');
   }
-  const declaredChannels =
-    record.__vitrum_hint__?.channels ?? record.channels;
+  const declaredChannels = record.__vitrum_hint__?.channels ?? record.channels;
   const inferredChannels = data.length / pixelCount;
   const channels = declaredChannels == null ? inferredChannels : declaredChannels;
-  if (
-    channels !== 1 && channels !== 2 && channels !== 3 && channels !== 4
-  ) {
+  if (channels !== 1 && channels !== 2 && channels !== 3 && channels !== 4) {
     const receivedChannels = describeUnknown(channels);
     throw new RangeError(
       '[vitrum/pt-webgpu] HDRI channel count must be exactly 1, 2, 3, or 4; ' +
-      `received ${receivedChannels} from ${data.length} values for ${pixelCount} pixels.`,
+        `received ${receivedChannels} from ${data.length} values for ${pixelCount} pixels.`,
     );
   }
   const expectedLength = pixelCount * channels;
@@ -168,31 +168,10 @@ function strictHdriRawPayload(handle: unknown): HdriRawPayload {
   ) {
     throw new RangeError(
       `[vitrum/pt-webgpu] HDRI packing peak ${estimatedPeakBytes} bytes exceeds ` +
-      `${HDRI_PACKING_PEAK_BUDGET_BYTES}-byte budget.`,
+        `${HDRI_PACKING_PEAK_BUDGET_BYTES}-byte budget.`,
     );
   }
   return { width, height, data, channels };
-}
-
-function finiteNonNegativeF32(
-  value: number | undefined,
-  fallback: number,
-  label: string,
-): number {
-  const resolved = value ?? fallback;
-  if (!Number.isFinite(resolved) || resolved < 0) {
-    throw new RangeError(
-      `[vitrum/pt-webgpu] ${label} must be finite and non-negative; received ${String(resolved)}.`,
-    );
-  }
-  const packed = Math.fround(resolved);
-  if (!Number.isFinite(packed) || (resolved > 0 && packed === 0)) {
-    throw new RangeError(
-      `[vitrum/pt-webgpu] ${label} must remain finite and positive after Float32 packing ` +
-        `when non-zero; received ${String(resolved)}.`,
-    );
-  }
-  return packed === 0 ? 0 : packed;
 }
 
 /** Smallest positive IEEE-754 binary32 value. A positive environment power
@@ -200,10 +179,7 @@ function finiteNonNegativeF32(
  * unreachable; black/zero-intensity environments remain exactly zero. */
 const MIN_POSITIVE_F32 = 2 ** -149;
 
-function environmentLightTreePower(
-  luminanceIntegral: number,
-  intensity: number,
-): number {
+function environmentLightTreePower(luminanceIntegral: number, intensity: number): number {
   if (
     !Number.isFinite(luminanceIntegral) ||
     luminanceIntegral < 0 ||
@@ -218,9 +194,7 @@ function environmentLightTreePower(
   const power = luminanceIntegral * intensity;
   const packedPower = Math.fround(power);
   if (!Number.isFinite(power) || !Number.isFinite(packedPower)) {
-    throw new RangeError(
-      '[vitrum/pt-webgpu] environment light-tree power exceeds Float32 range.',
-    );
+    throw new RangeError('[vitrum/pt-webgpu] environment light-tree power exceeds Float32 range.');
   }
   if (luminanceIntegral === 0 || intensity === 0) return 0;
   return packedPower === 0 ? MIN_POSITIVE_F32 : packedPower;
@@ -273,17 +247,19 @@ function buildProceduralSkyEnvironmentParams(
   const len = Math.hypot(rawD[0] ?? 0, rawD[1] ?? 0, rawD[2] ?? 0);
   const sunDir: readonly [number, number, number] =
     len < 1e-8 ? [0, 1, 0] : [(rawD[0] ?? 0) / len, (rawD[1] ?? 0) / len, (rawD[2] ?? 0) / len];
-  const intensity = env.intensity ?? 1;
+  const intensity = assertPtWebgpuEnvironmentScaleF32(
+    env.intensity ?? 1,
+    'procedural-sky intensity',
+  );
 
-  const { texels, cdf, width, height, luminanceIntegral } =
-    bakePreethamSkyEquirect({
-      sunDirection: sunDir,
-      turbidity: env.turbidity ?? 2,
-      rayleigh: env.rayleigh ?? 1,
-      mieCoefficient: env.mieCoefficient ?? 0.005,
-      mieDirectionalG: env.mieDirectionalG ?? 0.8,
-      intensity,
-    });
+  const { texels, cdf, width, height, luminanceIntegral } = bakePreethamSkyEquirect({
+    sunDirection: sunDir,
+    turbidity: env.turbidity ?? 2,
+    rayleigh: env.rayleigh ?? 1,
+    mieCoefficient: env.mieCoefficient ?? 0.005,
+    mieDirectionalG: env.mieDirectionalG ?? 0.8,
+    intensity,
+  });
 
   return {
     // Tint is white: the radiance is already baked into the equirect texels.
@@ -316,15 +292,13 @@ export function environmentParams(scene: Scene): EnvironmentParams {
   // light-tree power. A JS-finite value can overflow to +inf (or underflow to
   // zero) when written to the f32 frame-parameter lane, which would otherwise
   // make the tree proxy disagree with the rendered environment.
-  const hdriIntensity = finiteNonNegativeF32(
-    scene.environment.intensity, 1, 'HDRI intensity',
+  const hdriIntensity = assertPtWebgpuEnvironmentScaleF32(
+    scene.environment.intensity ?? 1,
+    'HDRI intensity',
   );
-  const hdriRotationY = scene.environment.rotationY ?? 0;
-  if (!Number.isFinite(hdriRotationY)) {
-    throw new RangeError(
-      `[vitrum/pt-webgpu] HDRI rotationY must be finite; received ${String(hdriRotationY)}.`,
-    );
-  }
+  const hdriRotationY = packPtWebgpuEnvironmentRotationF32(
+    scene.environment.rotationY ?? 0,
+  );
   const hdri = readEnvironmentMapPixels(scene.environment.hdri);
   if (hdri == null) {
     throw new TypeError(
@@ -359,6 +333,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
     const texels = new Float32Array(pixelCount * 4);
     const cdf = new Float32Array(pixelCount + 1);
     const weights = new Float64Array(pixelCount);
+    const deltaPhi = (2 * Math.PI) / width;
     let totalWeight = 0;
     let scaledTotalWeight = 0;
     for (let i = 0; i < pixelCount; i += 1) {
@@ -366,8 +341,12 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       const g = Number(data[i * 4 + 1]);
       const b = Number(data[i * 4 + 2]);
       if (
-        !Number.isFinite(r) || !Number.isFinite(g) || !Number.isFinite(b) ||
-        r < 0 || g < 0 || b < 0 ||
+        !Number.isFinite(r) ||
+        !Number.isFinite(g) ||
+        !Number.isFinite(b) ||
+        r < 0 ||
+        g < 0 ||
+        b < 0 ||
         r > 3.4028234663852886e38 ||
         g > 3.4028234663852886e38 ||
         b > 3.4028234663852886e38
@@ -381,33 +360,24 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       texels[i * 4 + 1] = g;
       texels[i * 4 + 2] = b;
       const y = (i / width) | 0;
-      const theta = ((y + 0.5) / height) * Math.PI;
-      const sinTheta = Math.sin(theta);
-      const weight = Math.max(0, luminance(r, g, b) * sinTheta);
+      const theta0 = (y / height) * Math.PI;
+      const theta1 = ((y + 1) / height) * Math.PI;
+      const texelSolidAngle = deltaPhi * (Math.cos(theta0) - Math.cos(theta1));
+      const weight = Math.max(0, luminance(r, g, b) * texelSolidAngle);
       if (!Number.isFinite(weight) || !Number.isFinite(totalWeight + weight)) {
         throw new RangeError('[vitrum/pt-webgpu] HDRI importance integral overflowed.');
       }
       const scaledR = Math.fround(r * hdriIntensity);
       const scaledG = Math.fround(g * hdriIntensity);
       const scaledB = Math.fround(b * hdriIntensity);
-      if (
-        !Number.isFinite(scaledR) ||
-        !Number.isFinite(scaledG) ||
-        !Number.isFinite(scaledB)
-      ) {
+      if (!Number.isFinite(scaledR) || !Number.isFinite(scaledG) || !Number.isFinite(scaledB)) {
         throw new RangeError(
           `[vitrum/pt-webgpu] HDRI texel ${i} multiplied by its intensity ` +
             'must remain finite in Float32.',
         );
       }
-      const scaledWeight = Math.max(
-        0,
-        luminance(scaledR, scaledG, scaledB) * sinTheta,
-      );
-      if (
-        !Number.isFinite(scaledWeight) ||
-        !Number.isFinite(scaledTotalWeight + scaledWeight)
-      ) {
+      const scaledWeight = Math.max(0, luminance(scaledR, scaledG, scaledB) * texelSolidAngle);
+      if (!Number.isFinite(scaledWeight) || !Number.isFinite(scaledTotalWeight + scaledWeight)) {
         throw new RangeError(
           '[vitrum/pt-webgpu] intensity-scaled HDRI luminance integral overflowed.',
         );
@@ -423,25 +393,30 @@ export function environmentParams(scene: Scene): EnvironmentParams {
             'intensity underflows entirely to zero in Float32.',
         );
       }
-      const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
       let cumulative = 0;
       for (let i = 0; i < pixelCount; i += 1) {
         const pmf = weights[i]! / totalWeight;
         cumulative += pmf;
         cdf[i + 1] = cumulative;
-        const y = (i / width) | 0;
-        const theta = ((y + 0.5) / height) * Math.PI;
-        const sinTheta = Math.max(Math.sin(theta), 1e-5);
-        texels[i * 4 + 3] = pmf / (dOmegaBase * sinTheta);
       }
       cdf[0] = 0;
       cdf[pixelCount] = 1;
+      for (let i = 0; i < pixelCount; i += 1) {
+        const y = (i / width) | 0;
+        const theta0 = (y / height) * Math.PI;
+        const theta1 = ((y + 1) / height) * Math.PI;
+        const texelSolidAngle = deltaPhi * (Math.cos(theta0) - Math.cos(theta1));
+        // The shader samples the uploaded Float32 CDF, not the ideal
+        // double-precision weights above.  Rounding may flatten tiny bins, so
+        // publish the density of the distribution the binary search actually
+        // implements.  In particular, an unsampleable flattened bin must
+        // report zero rather than a positive MIS density.
+        const effectivePmf = cdf[i + 1]! - cdf[i]!;
+        texels[i * 4 + 3] = effectivePmf / texelSolidAngle;
+      }
       return {
         tint: [1, 1, 1],
-        lightTreePower: environmentLightTreePower(
-          scaledTotalWeight * dOmegaBase,
-          1,
-        ),
+        lightTreePower: environmentLightTreePower(scaledTotalWeight, 1),
         hdriIntensity,
         hdriRotationY,
         hdriWidth: width,

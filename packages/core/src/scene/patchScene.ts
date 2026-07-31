@@ -20,11 +20,20 @@
 
 import { validateAnalyticParams } from './analyticParams.js';
 import {
+  MATERIAL_SPEC_KEYS,
+  SURFACE_ABSORPTION_LAYER_KEYS,
   validateEmitterForScenePatch,
   validatePrimitiveFastFieldsForScenePatch,
   validatePrimitiveForScenePatch,
 } from './validation.js';
-import type { ScenePrimitive } from './primitives.js';
+import type {
+  AnalyticPrimitive,
+  InstancedMeshPrimitive,
+  MeshPrimitive,
+  ScenePrimitive,
+  ScenePrimitivePatch,
+  SkinnedMeshPrimitive,
+} from './primitives.js';
 import type { SceneEmitter } from './emitters.js';
 import type { Scene } from './index.js';
 
@@ -44,12 +53,213 @@ const FAST_PRIMITIVE_PATCH_FIELDS = new Set([
 type FastPrimitivePatchField =
   typeof FAST_PRIMITIVE_PATCH_FIELDS extends ReadonlySet<infer T> ? T : never;
 
+type PrimitivePatchableKey<T extends ScenePrimitive> =
+  Exclude<keyof T, 'id' | 'kind'>;
+
+type ExhaustivePrimitivePatchKeyList<
+  T extends ScenePrimitive,
+  Keys extends readonly PrimitivePatchableKey<T>[],
+> = Exclude<PrimitivePatchableKey<T>, Keys[number]> extends never
+  ? Keys
+  : never;
+
+/**
+ * Runtime patch allow-lists with a compile-time exhaustiveness pin. Adding a
+ * field to a primitive contract fails core typecheck until its mutation
+ * semantics are deliberately admitted here.
+ */
+function exhaustivePrimitivePatchKeys<T extends ScenePrimitive>() {
+  return <const Keys extends readonly PrimitivePatchableKey<T>[]>(
+    keys: ExhaustivePrimitivePatchKeyList<T, Keys>,
+  ): ReadonlySet<string> => new Set(keys.map((key) => String(key)));
+}
+
+const MESH_PATCH_KEYS = exhaustivePrimitivePatchKeys<MeshPrimitive>()([
+  'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents', 'colors',
+  'colorSets', 'vertexColorSet', 'indices', 'material', 'transform',
+  'castShadow',
+]);
+const INSTANCED_MESH_PATCH_KEYS =
+  exhaustivePrimitivePatchKeys<InstancedMeshPrimitive>()([
+    'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents', 'colors',
+    'colorSets', 'vertexColorSet', 'indices', 'material', 'instances',
+    'castShadow',
+  ]);
+const ANALYTIC_PATCH_KEYS = exhaustivePrimitivePatchKeys<AnalyticPrimitive>()([
+  'shape', 'params', 'material', 'transform', 'castShadow', 'fallbackMesh',
+]);
+const SKINNED_MESH_PATCH_KEYS =
+  exhaustivePrimitivePatchKeys<SkinnedMeshPrimitive>()([
+    'positions', 'normals', 'uvs', 'uv1', 'uvSets', 'tangents', 'colors',
+    'colorSets', 'vertexColorSet', 'indices', 'skinIndices', 'skinWeights',
+    'skinInfluencesPerVertex', 'bones', 'boneInverses', 'bindMatrix',
+    'bindMatrixInverse', 'morphTargets', 'morphTargetNormals',
+    'morphTargetTangents', 'morphTargetUvs', 'morphTargetUv1s',
+    'morphTargetUvSets', 'morphTargetColors', 'morphTargetColorSets',
+    'morphWeights', 'material', 'transform', 'castShadow',
+  ]);
+
+function primitivePatchKeys(
+  primitive: ScenePrimitive,
+): ReadonlySet<string> {
+  switch (primitive.kind) {
+    case 'mesh':
+      return MESH_PATCH_KEYS;
+    case 'instanced-mesh':
+      return INSTANCED_MESH_PATCH_KEYS;
+    case 'analytic':
+      return ANALYTIC_PATCH_KEYS;
+    case 'skinned-mesh':
+      return SKINNED_MESH_PATCH_KEYS;
+  }
+}
+
 function isMergeableRecord(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === 'object' && !Array.isArray(value) && !ArrayBuffer.isView(value);
 }
 
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+/**
+ * Incremental nested records are data, not host objects. Keeping their
+ * prototypes and descriptors inert is load-bearing: the patch merger and the
+ * complete-scene validator may read every admitted field after this check.
+ */
+function assertPlainDataPatchRecord(
+  value: unknown,
+  path: string,
+  knownKeys: ReadonlySet<string>,
+): asserts value is Record<string, unknown> {
+  if (!isMergeableRecord(value)) {
+    throw new TypeError(`${path} must be a non-array object`);
+  }
+  const prototype: unknown = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(`${path} must be a plain data object`);
+  }
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== 'string') {
+      throw new RangeError(`${path} symbol field ${String(key)} is not allowed`);
+    }
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (descriptor?.enumerable !== true) {
+      throw new RangeError(`${path} field "${key}" must be enumerable`);
+    }
+    if (!('value' in descriptor)) {
+      throw new TypeError(`${path} field "${key}" must be an own data property`);
+    }
+    if (!knownKeys.has(key)) {
+      throw new RangeError(`${path} field "${key}" is not a known contract field`);
+    }
+  }
+}
+
+/**
+ * Validate the patch object itself before reading or merging any field.
+ *
+ * Scene snapshots permit non-enumerable symbol metadata, but incremental
+ * patches deliberately do not: a patch is a bounded collection of enumerable
+ * own data properties. Rejecting accessors also guarantees validation never
+ * invokes host code while deciding what will be mutated.
+ */
+function assertPrimitivePatchShape(
+  primitive: ScenePrimitive,
+  patch: ScenePrimitivePatch,
+): void {
+  if (
+    patch == null ||
+    typeof patch !== 'object' ||
+    Array.isArray(patch) ||
+    ArrayBuffer.isView(patch)
+  ) {
+    throw new TypeError(
+      `updatePrimitive: primitive "${primitive.id}" patch must be a non-array object`,
+    );
+  }
+  const prototype: unknown = Object.getPrototypeOf(patch);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError(
+      `updatePrimitive: primitive "${primitive.id}" patch must be a plain data object`,
+    );
+  }
+
+  const knownKeys = primitivePatchKeys(primitive);
+  for (const key of Reflect.ownKeys(patch)) {
+    if (key === 'id') {
+      throw new Error(
+        `updatePrimitive: primitive "${primitive.id}" id cannot be changed or supplied`,
+      );
+    }
+    if (key === 'kind') {
+      throw new Error(
+        `updatePrimitive: primitive "${primitive.id}" kind cannot change or be supplied`,
+      );
+    }
+    if (typeof key !== 'string') {
+      throw new RangeError(
+        `updatePrimitive: primitive "${primitive.id}" patch symbol field ${String(key)} is not allowed`,
+      );
+    }
+
+    const descriptor = Object.getOwnPropertyDescriptor(patch, key);
+    if (descriptor?.enumerable !== true) {
+      throw new RangeError(
+        `updatePrimitive: primitive "${primitive.id}" patch field "${key}" must be enumerable`,
+      );
+    }
+    if (!('value' in descriptor)) {
+      throw new TypeError(
+        `updatePrimitive: primitive "${primitive.id}" patch field "${key}" must be an own data property`,
+      );
+    }
+    if (!knownKeys.has(key)) {
+      if (
+        MESH_LIKE_KINDS.has(primitive.kind) &&
+        (key === 'shape' || key === 'params' || key === 'fallbackMesh')
+      ) {
+        throw new Error(
+          `updatePrimitive: primitive "${primitive.id}" (${primitive.kind}) cannot accept analytic "${key}"`,
+        );
+      }
+      throw new RangeError(
+        `updatePrimitive: primitive "${primitive.id}" patch field "${key}" is not a known contract field`,
+      );
+    }
+  }
+
+  const materialDescriptor = Object.getOwnPropertyDescriptor(patch, 'material');
+  if (
+    materialDescriptor !== undefined &&
+    'value' in materialDescriptor &&
+    materialDescriptor.value !== undefined
+  ) {
+    const materialPath =
+      `updatePrimitive: primitive "${primitive.id}" patch material`;
+    assertPlainDataPatchRecord(
+      materialDescriptor.value,
+      materialPath,
+      MATERIAL_SPEC_KEYS,
+    );
+    for (const layerKey of LAYERED_MATERIAL_KEYS) {
+      const layerDescriptor = Object.getOwnPropertyDescriptor(
+        materialDescriptor.value,
+        layerKey,
+      );
+      if (
+        layerDescriptor !== undefined &&
+        'value' in layerDescriptor &&
+        layerDescriptor.value !== undefined
+      ) {
+        assertPlainDataPatchRecord(
+          layerDescriptor.value,
+          `${materialPath}.${layerKey}`,
+          SURFACE_ABSORPTION_LAYER_KEYS,
+        );
+      }
+    }
+  }
 }
 
 function mergeMaterialPatch(
@@ -70,7 +280,7 @@ function mergeMaterialPatch(
 
 function classifyFastPrimitivePatch(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): readonly FastPrimitivePatchField[] | undefined {
   const fields: FastPrimitivePatchField[] = [];
   for (const key of Reflect.ownKeys(patch)) {
@@ -96,7 +306,7 @@ function classifyFastPrimitivePatch(
  */
 function mergePrimitivePatch(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
   materialOverride: Record<string, unknown> | undefined,
 ): ScenePrimitive {
   const descriptors = new Map<PropertyKey, PropertyDescriptor>();
@@ -134,50 +344,27 @@ function mergePrimitivePatch(
  */
 function assertPrimitivePatch(
   primitive: ScenePrimitive,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): void {
-  if ('kind' in patch && patch.kind != null && patch.kind !== primitive.kind) {
-    throw new Error(
-      `updatePrimitive: primitive "${primitive.id}" kind cannot change from "${primitive.kind}" to "${patch.kind}"`,
-    );
-  }
-  if ('id' in patch && patch.id != null && patch.id !== primitive.id) {
-    throw new Error(`updatePrimitive: primitive "${primitive.id}" id cannot be changed`);
-  }
-
-  const nextKind = (patch.kind ?? primitive.kind);
-  if (nextKind === 'analytic') {
-    const shape = ('shape' in patch && patch.shape != null)
-      ? patch.shape
-      : primitive.kind === 'analytic'
-        ? primitive.shape
-        : undefined;
-    const params = ('params' in patch && patch.params != null)
-      ? patch.params
-      : primitive.kind === 'analytic'
-        ? primitive.params
-        : undefined;
+  assertPrimitivePatchShape(primitive, patch);
+  const uncheckedPatch = patch as Record<PropertyKey, unknown>;
+  if (primitive.kind === 'analytic') {
+    const shape = (Object.prototype.hasOwnProperty.call(uncheckedPatch, 'shape') &&
+      uncheckedPatch.shape != null)
+      ? uncheckedPatch.shape
+      : primitive.shape;
+    const params = (Object.prototype.hasOwnProperty.call(uncheckedPatch, 'params') &&
+      uncheckedPatch.params != null)
+      ? uncheckedPatch.params
+      : primitive.params;
     if (shape == null || params == null) {
       throw new Error(
         `updatePrimitive: analytic primitive "${primitive.id}" requires shape and params`,
       );
     }
-    validateAnalyticParams(shape, params);
-  }
-
-  if (MESH_LIKE_KINDS.has(nextKind) && 'shape' in patch) {
-    throw new Error(
-      `updatePrimitive: primitive "${primitive.id}" (${nextKind}) cannot accept analytic "shape"`,
-    );
-  }
-  if (MESH_LIKE_KINDS.has(nextKind) && 'params' in patch) {
-    throw new Error(
-      `updatePrimitive: primitive "${primitive.id}" (${nextKind}) cannot accept analytic "params"`,
-    );
-  }
-  if (MESH_LIKE_KINDS.has(nextKind) && 'fallbackMesh' in patch) {
-    throw new Error(
-      `updatePrimitive: primitive "${primitive.id}" (${nextKind}) cannot accept analytic "fallbackMesh"`,
+    validateAnalyticParams(
+      shape as Extract<ScenePrimitive, { kind: 'analytic' }>['shape'],
+      params as Float32Array,
     );
   }
 }
@@ -194,7 +381,7 @@ function assertPrimitivePatch(
 export function patchPrimitiveInScene(
   scene: Scene,
   id: string,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
 ): Scene {
   const primitiveIndex = scene.primitives.findIndex(
     (primitive) => String(primitive.id) === id,
@@ -211,7 +398,11 @@ export function patchPrimitiveInScene(
   // does not drop an existing `frontLayer.normalMap`/`normalScale`.
   // Non-material patch fields keep replace semantics.
   const primMat = (primitive as unknown as { material?: Record<string, unknown> }).material;
-  const patchMat = (patch as unknown as { material?: Record<string, unknown> }).material;
+  const patchMaterialDescriptor = Object.getOwnPropertyDescriptor(patch, 'material');
+  const patchMat =
+    patchMaterialDescriptor !== undefined && 'value' in patchMaterialDescriptor
+      ? patchMaterialDescriptor.value as Record<string, unknown> | undefined
+      : undefined;
   let materialOverride: Record<string, unknown> | undefined;
   if (patchMat != null && primMat != null) {
     materialOverride = mergeMaterialPatch(primMat, patchMat);

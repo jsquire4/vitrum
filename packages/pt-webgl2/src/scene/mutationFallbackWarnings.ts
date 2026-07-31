@@ -10,15 +10,15 @@
 // objects (code/message/details) are byte-identical to the pre-extraction inline
 // construction; the once-key semantics are unchanged (the caller owns the Set).
 
-import type { EngineWarning, ScenePrimitive } from '@vitrum/core';
+import type { EngineWarning, ScenePrimitivePatch } from '@vitrum/core';
 
-export function primitivePatchFields(patch: Partial<ScenePrimitive>): string[] {
+export function primitivePatchFields(patch: ScenePrimitivePatch): string[] {
   return Object.keys(patch)
     .filter((key) => key !== 'id' && key !== 'kind')
     .sort();
 }
 
-export function materialPatchFields(patch: Partial<ScenePrimitive>): string[] {
+export function materialPatchFields(patch: ScenePrimitivePatch): string[] {
   if (patch.material == null) return [];
   return Object.keys(patch.material as unknown as Record<string, unknown>).sort();
 }
@@ -155,7 +155,7 @@ export function buildPrimitiveListFallbackWarning(
  */
 export function buildPrimitiveMutationFallbackWarning(
   id: string,
-  patch: Partial<ScenePrimitive>,
+  patch: ScenePrimitivePatch,
   materialTextureFields: readonly string[],
   mutationFallback?: {
     readonly fallbackReason: string;

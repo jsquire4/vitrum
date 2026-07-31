@@ -33,8 +33,15 @@ fn sampleEmitterPoint(e: EmitterTri, xi: vec2f) -> EmitterSample {
   result.pos     = pos;
   result.normal  = e.normal;
   result.Le      = e.Le;
-  result.area    = e.area;
-  result.pdfArea = 1.0 / e.area;
+  result.area    = 0.0;
+  result.pdfArea = 0.0;
+  if (e.area > 0.0 && e.area <= 3.402823e38) {
+    let inverseArea = 1.0 / e.area;
+    if (inverseArea > 0.0 && inverseArea <= 3.402823e38) {
+      result.area = e.area;
+      result.pdfArea = inverseArea;
+    }
+  }
   return result;
 }
 

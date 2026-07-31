@@ -683,7 +683,7 @@ function needsWorldSpaceOverride(
 function isIdentityMat4(transform: Float32Array): boolean {
   const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
   if (transform.length < identity.length) return false;
-  return identity.every(
-    (expected, index) => Math.abs((transform[index] ?? 0) - expected) <= 1e-6,
-  );
+  // Forward traversal consumes the stored Float32 components exactly. Replay
+  // may elide the transform only when that same stored matrix is identity.
+  return identity.every((expected, index) => transform[index] === expected);
 }

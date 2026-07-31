@@ -306,7 +306,7 @@ describe('pt-webgl2 robustness — non-throwing warnings and post-publication re
     engine.dispose();
   });
 
-  it('keeps an incremental environment publication and retires all three superseded textures independently', async () => {
+  it('keeps an incremental environment publication and retires both superseded textures independently', async () => {
     const gl = createMockGl();
     const engine = await createPTEngine_WebGL2({ device: gl });
     engine.setScene({
@@ -329,7 +329,7 @@ describe('pt-webgl2 robustness — non-throwing warnings and post-publication re
 
     expect(() => engine.updateEnvironment?.(null)).not.toThrow();
     expect(engine.getScene?.()?.environment.kind).toBe('none');
-    expect(deleteTexture).toHaveBeenCalledTimes(3);
+    expect(deleteTexture).toHaveBeenCalledTimes(2);
     expect(warnings).toContain('pt-webgl2.texture-retirement-failed');
     engine.dispose();
   });

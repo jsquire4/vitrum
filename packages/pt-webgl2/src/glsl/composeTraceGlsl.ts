@@ -204,9 +204,68 @@ const INLINE_HELPERS = /* glsl */ `
 
 					vec3 sampleBackground( vec3 direction, vec2 uv ) {
 
-						vec3 sampleDir = sampleHemisphere( direction, uv ) * 0.5 * backgroundBlur;
+						vec3 backgroundDirection = vitrumNormalizeVec3(
+							direction,
+							vec3( 0.0, 1.0, 0.0 )
+						);
+						vec3 rotatedDirection = vitrumNormalizeVec3(
+							envRotation3x3 * backgroundDirection,
+							backgroundDirection
+						);
+						vec3 sampleDir = rotatedDirection;
 
-						sampleDir = normalize( envRotation3x3 * direction + sampleDir );
+						if (
+							backgroundBlur > 0.0 &&
+							! isnan( backgroundBlur ) &&
+							! isinf( backgroundBlur )
+						) {
+
+							vec3 blurDirection = sampleHemisphere(
+								backgroundDirection,
+								uv
+							);
+							float blurRadius = 0.5 * backgroundBlur;
+							if (
+								blurRadius > 0.0 &&
+								vitrumFiniteNonZeroVec3( blurDirection )
+							) {
+
+								vec3 perturbation = blurDirection * blurRadius;
+								float combinationScale = max(
+									max(
+										abs( rotatedDirection.x ),
+										max(
+											abs( rotatedDirection.y ),
+											abs( rotatedDirection.z )
+										)
+									),
+									max(
+										abs( perturbation.x ),
+										max(
+											abs( perturbation.y ),
+											abs( perturbation.z )
+										)
+									)
+								);
+								if (
+									combinationScale > 0.0 &&
+									! isnan( combinationScale ) &&
+									! isinf( combinationScale )
+								) {
+
+									vec3 combinedDirection =
+										rotatedDirection / combinationScale +
+										perturbation / combinationScale;
+									sampleDir = vitrumNormalizeVec3(
+										combinedDirection,
+										rotatedDirection
+									);
+
+								}
+
+							}
+
+						}
 						return environmentIntensity * sampleEquirectColor( envMapInfo.map, sampleDir );
 
 					}
@@ -370,8 +429,8 @@ function compactFeatureTierGlsl(source: string): string {
 function composePathGlsl(features: TraceFeatures, candidatePass: boolean): string {
   assertExactlyOneMaterialTier(features);
   const source = /* glsl */ `
-					#define RAY_OFFSET 1e-4
-					#define INFINITY 1e20
+					#define RAY_OFFSET max( uRayOriginBias, 1.175494351e-38 )
+					#define INFINITY 3.402823466e38
 					#ifndef NEE_CANDIDATE_PASS
 					#define NEE_CANDIDATE_PASS 0
 					#endif
@@ -379,6 +438,7 @@ function composePathGlsl(features: TraceFeatures, candidatePass: boolean): strin
 					precision highp isampler2D;
 					precision highp usampler2D;
 					precision highp sampler2DArray;
+					uniform float uRayOriginBias;
 					vec4 envMapTexelToLinear( vec4 a ) { return a; }
 					${THREE_COMMON_SHIM}
 
@@ -480,8 +540,8 @@ export function composeNeeResolveGlsl(
 ): string {
   assertExactlyOneMaterialTier(features);
   const source = /* glsl */ `
-					#define RAY_OFFSET 1e-4
-					#define INFINITY 1e20
+					#define RAY_OFFSET max( uRayOriginBias, 1.175494351e-38 )
+					#define INFINITY 3.402823466e38
 					#ifndef NEE_CANDIDATE_PASS
 					#define NEE_CANDIDATE_PASS 0
 					#endif
@@ -489,6 +549,7 @@ export function composeNeeResolveGlsl(
 					precision highp isampler2D;
 					precision highp usampler2D;
 					precision highp sampler2DArray;
+					uniform float uRayOriginBias;
 					vec4 envMapTexelToLinear( vec4 a ) { return a; }
 					${THREE_COMMON_SHIM}
 

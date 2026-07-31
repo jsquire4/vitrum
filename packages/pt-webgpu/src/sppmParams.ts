@@ -8,6 +8,7 @@
  * Provenance: Hachisuka & Jensen 2009 "Stochastic Progressive Photon Mapping"
  * (ACM SIGGRAPH Asia 2009).
  */
+import { resolvePtWebgpuSceneRadius } from './scene/sceneScalePolicy.js';
 
 /** Number of spatial-hash cells.  Power-of-2 avoids the modulo's division for
  *  non-power-of-2 table sizes, but an odd prime-ish size gives better hash
@@ -53,10 +54,10 @@ export const SPPM_STATS_FIELDS = [
 
 /**
  * Bytes per pixel for two independent SPPM statistics records:
- *   surface: tau.rgb + radius2 + N + pad = 32 bytes
- *   volume:  tau.rgb + radius2 + N + pad = 32 bytes
+ *   surface: tau.rgb + linear radius + N + pad = 32 bytes
+ *   volume:  tau.rgb + linear radius + N + pad = 32 bytes
  *
- * A4-progressive: each pixel accumulates τ, R², and N across frames so the
+ * A4-progressive: each pixel accumulates τ, linear R, and N across frames so the
  * Hachisuka progressive update rule can run without re-visiting previous frames.
  * The buffer is sized W×H×64 bytes and reset whenever the PT accumulator resets
  * (camera move, setScene, reset()) — the same static-eye-point assumption that
@@ -81,7 +82,7 @@ export const SPPM_ALPHA = 2.0 / 3.0; // Hachisuka & Jensen 2009 α
 /**
  * Compute the scale-aware initial radius `r₀` from the scene AABB diagonal.
  *
- * r₀ = max(diagonal / 100, 1e-3)
+ * r₀ = diagonal / 100 for every non-degenerate scene.
  *
  * The divisor 100 ensures that even on a 1 m Cornell box (diagonal ~1.7 m)
  * the initial radius is ~0.017 m (17 mm) — a reasonable first-frame footprint
@@ -94,8 +95,13 @@ export function sppmInitialRadius(
   const dx = sceneMax[0] - sceneMin[0];
   const dy = sceneMax[1] - sceneMin[1];
   const dz = sceneMax[2] - sceneMin[2];
-  const diagonal = Math.sqrt(dx * dx + dy * dy + dz * dz);
-  return Math.max(diagonal / 100, 1e-3);
+  const diagonal = Math.hypot(dx, dy, dz);
+  const center: readonly [number, number, number] = [
+    (sceneMin[0] + sceneMax[0]) * 0.5,
+    (sceneMin[1] + sceneMax[1]) * 0.5,
+    (sceneMin[2] + sceneMax[2]) * 0.5,
+  ];
+  return resolvePtWebgpuSceneRadius(center, diagonal * 0.5) * 0.02;
 }
 export interface SppmSceneBounds {
   readonly initialRadius: number;
@@ -124,9 +130,9 @@ export function sppmSceneBoundsFromCenterRadius(
   ) {
     return null;
   }
-  const extent = Math.max(sceneRadius, 1e-3);
+  const extent = resolvePtWebgpuSceneRadius(sceneCenter, sceneRadius);
   return {
-    initialRadius: Math.max((sceneRadius * 2) / 100, 1e-3),
+    initialRadius: extent * 0.02,
     extent,
     center: [sceneCenter[0], sceneCenter[1], sceneCenter[2]],
   };
@@ -149,15 +155,11 @@ export function sppmSceneBoundsFromPackedPositions(
   if (!Number.isFinite(minX)) return null;
   const min = [minX, minY, minZ] as const;
   const max = [maxX, maxY, maxZ] as const;
-  const initialRadius = sppmInitialRadius(min, max);
-  const dx = maxX - minX, dy = maxY - minY, dz = maxZ - minZ;
-  return {
-    initialRadius,
-    extent: Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz) * 0.5, initialRadius),
-    center: [
-      (minX + maxX) * 0.5,
-      (minY + maxY) * 0.5,
-      (minZ + maxZ) * 0.5,
-    ],
-  };
+  const center = [
+    (minX + maxX) * 0.5,
+    (minY + maxY) * 0.5,
+    (minZ + maxZ) * 0.5,
+  ] as const;
+  const extent = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) * 0.5;
+  return sppmSceneBoundsFromCenterRadius(center, extent);
 }

@@ -117,8 +117,17 @@ describe('createCommonFrameResources Welford allocation policy', () => {
 
     expect(textureSize(resources.varianceBuffer)).toEqual([64, 32]);
     expect(textureSize(resources.varianceBufferAux)).toEqual([64, 32]);
+    expect(textureFormat(resources.varianceBuffer)).toBe('rg32float');
+    expect(textureFormat(resources.varianceBufferAux)).toBe('rg32float');
     expect(textureSize(resources.atrousVarianceEstimateTexture)).toEqual([64, 32]);
     expect(textureFormat(resources.atrousVarianceEstimateTexture)).toBe('r32float');
+  });
+
+  it('reuses non-overlapping HDR lifetimes instead of allocating duplicate targets', () => {
+    const resources = createCommonFrameResources(makeFakeDevice(), 64, 32);
+    expect(resources.resolvedTexture).toBe(resources.combinedDenoisedTexture);
+    expect(resources.indirectDenoisedPingTexture).toBe(resources.denoisedPongTexture);
+    expect(resources.indirectDenoisedPongTexture).toBe(resources.hdrIndirectTexture);
   });
 
   it('collapses unused Welford aux resources to 1x1 when ping-pong is disabled', () => {

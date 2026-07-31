@@ -131,6 +131,15 @@ describe('COMPOSITE_FRAG_WGSL — shader source guards', () => {
     expect(COMPOSITE_FRAG_WGSL).toMatch(/vt_linearToSrgb/);
   });
 
+  it('clamps only at the format-specialized final attachment boundary', () => {
+    expect(COMPOSITE_FRAG_WGSL).toContain('override VT_TARGET_MAX_R: f32');
+    expect(COMPOSITE_FRAG_WGSL).toContain('override VT_TARGET_MAX_G: f32');
+    expect(COMPOSITE_FRAG_WGSL).toContain('override VT_TARGET_MAX_B: f32');
+    expect(COMPOSITE_FRAG_WGSL).toContain(
+      'clamp(presented, vec3f(0.0), targetMaximum)',
+    );
+  });
+
   it('does NOT contain the old hardcoded acesFilm function (replaced by vitrumTonemap)', () => {
     // The old shader had a private `fn acesFilm(rgb: vec3f)` — replaced by
     // vitrumTonemap from shared-samplers. The internal `vt_aces` helper is fine.

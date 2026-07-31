@@ -28,6 +28,11 @@ import {
   writeAtrousUbo,
 } from '../bindGroupBuilders.js';
 import { runAtrousChain } from '../passes/dispatchHelpers.js';
+import type { PreparedSceneMutation } from '../../SceneMutationTransaction.js';
+import {
+  commitPreparedDenoiserResize,
+  noOpDenoiserResizeMutation,
+} from './resizeTransaction.js';
 import { cachedBindGroup } from '../PipelineResourceCache.js';
 import type { PassLabel } from '../timestampQueries.js';
 import {
@@ -117,9 +122,14 @@ export class AtrousDenoiser implements Denoiser {
     });
   }
 
-  resize(_w: number, _h: number): void {
+  prepareResize(_w: number, _h: number): PreparedSceneMutation {
     // No persistent GPU resources to reallocate; the per-iter ping-pong
     // textures are owned by FrameResources and resized by the pipeline.
+    return noOpDenoiserResizeMutation();
+  }
+
+  resize(w: number, h: number): void {
+    commitPreparedDenoiserResize(this.prepareResize(w, h));
   }
 
   dispose(): void {

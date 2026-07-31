@@ -4,6 +4,44 @@ const WALKAROUND_WEBGPU_TEXTURE_SOURCE_BRAND = Symbol(
 
 let nextWalkaroundWebGpuTextureSourceId = 1;
 
+function createTextureSourceSessionSalt(): readonly [number, number] {
+  const words = new Uint32Array(2);
+  try {
+    globalThis.crypto?.getRandomValues(words);
+  } catch {
+    // A session-only compatibility salt is not a security primitive. The
+    // fallback merely has to differ across ordinary process/page lifetimes.
+  }
+  if (words[0] === 0 && words[1] === 0) {
+    const now = Date.now();
+    words[0] = (now ^ Math.floor(Math.random() * 0x1_0000_0000)) >>> 0;
+    words[1] = (
+      Math.floor(now / 0x1_0000_0000) ^
+      Math.floor(Math.random() * 0x1_0000_0000) ^
+      0x9e3779b9
+    ) >>> 0;
+  }
+  return [words[0]!, words[1]!];
+}
+
+const WALKAROUND_TEXTURE_SOURCE_SESSION_SALT =
+  createTextureSourceSessionSalt();
+
+function hashTextureContentRevision(value: string): readonly [number, number] {
+  // Two independently seeded FNV-1a lanes over UTF-16 code units. This is a
+  // compatibility fingerprint, not a security boundary.
+  let lo = 0x811c9dc5;
+  let hi = 0x9e3779b9;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    lo = Math.imul(lo ^ (code & 0xff), 0x01000193) >>> 0;
+    lo = Math.imul(lo ^ (code >>> 8), 0x01000193) >>> 0;
+    hi = Math.imul(hi ^ code, 0x85ebca6b) >>> 0;
+    hi = (hi ^ (hi >>> 13)) >>> 0;
+  }
+  return [lo, hi];
+}
+
 export const WALKAROUND_WEBGPU_TEXTURE_SOURCE_KIND =
   'vitrum.walkaround.webgpu-texture-source' as const;
 
@@ -15,6 +53,29 @@ export type WalkaroundTextureCpuMirrorDataType =
   | 'float16'
   | 'half-float'
   | 'float32';
+
+/** Logical sampled channel count of a supported WebGPU material-map format. */
+export function walkaroundTextureFormatChannelCount(
+  format: GPUTextureFormat,
+): 1 | 2 | 3 | 4 {
+  switch (format) {
+    case 'r8unorm':
+    case 'r8snorm':
+    case 'r16float':
+    case 'r32float':
+      return 1;
+    case 'rg8unorm':
+    case 'rg8snorm':
+    case 'rg16float':
+    case 'rg32float':
+      return 2;
+    case 'rg11b10ufloat':
+    case 'rgb9e5ufloat':
+      return 3;
+    default:
+      return 4;
+  }
+}
 
 /** Maximum immutable CPU-mirror snapshot retained by one wrapped GPU source. */
 export const WALKAROUND_CPU_MIRROR_SNAPSHOT_BUDGET_BYTES = 256 * 1024 * 1024;
@@ -49,13 +110,20 @@ export interface WalkaroundTextureCpuMirrorInput {
  * ownership or performs a CPU readback.
  *
  * Recreate the descriptor after mutating the selected source subresource. A
- * new descriptor receives a new `sourceId`, which invalidates GI material
- * snapshots even when its dimensions and material metadata are unchanged.
+ * new descriptor receives a new session identity, which invalidates GI
+ * material snapshots even when dimensions and metadata are unchanged. To make
+ * snapshots portable across page/process lifetimes, supply a stable
+ * `contentRevision` that changes whenever the selected texels change.
  */
 export interface WalkaroundWebGpuTextureSource {
   readonly kind: typeof WALKAROUND_WEBGPU_TEXTURE_SOURCE_KIND;
   readonly [WALKAROUND_WEBGPU_TEXTURE_SOURCE_BRAND]: true;
   readonly sourceId: number;
+  /** Low/high words used by GI-state compatibility fingerprints. */
+  readonly compatibilityKeyLo: number;
+  readonly compatibilityKeyHi: number;
+  /** Host-authored persistent content/revision identity, when supplied. */
+  readonly contentRevision?: string;
   readonly device: GPUDevice;
   readonly texture: GPUTexture;
   readonly format: GPUTextureFormat;
@@ -83,6 +151,15 @@ export interface WalkaroundWebGpuTextureSourceOptions {
   readonly baseMipLevel?: number;
   /** Source 2D-array layer copied into the atlas. Defaults to zero. */
   readonly arrayLayer?: number;
+  /**
+   * Stable identity for the selected texel content. The same value may be
+   * reused across sessions only when the selected mip/layer bytes and their
+   * interpretation are identical; change it on every content mutation.
+   *
+   * When omitted, GI compatibility is deliberately session-scoped so a saved
+   * state cannot be accepted after a reload merely because sourceId restarted.
+   */
+  readonly contentRevision?: string;
   /**
    * Exact CPU-readable snapshot of the selected mip/layer. The factory copies
    * and freezes it; later host mutations cannot desynchronise GPU shading from
@@ -254,6 +331,18 @@ export function createWalkaroundWebGpuTextureSource(
       `received ${String(options.colorSpace)}.`,
     );
   }
+  if (
+    options.contentRevision != null &&
+    (
+      typeof options.contentRevision !== 'string' ||
+      options.contentRevision.length === 0 ||
+      options.contentRevision.length > 4096
+    )
+  ) {
+    throw new RangeError(
+      'createWalkaroundWebGpuTextureSource: contentRevision must be a non-empty string of at most 4096 code units.',
+    );
+  }
   if (options.format.endsWith('-srgb') && options.colorSpace !== 'srgb') {
     throw new RangeError(
       `createWalkaroundWebGpuTextureSource: native-sRGB format ${options.format} ` +
@@ -316,6 +405,18 @@ export function createWalkaroundWebGpuTextureSource(
 
   const width = Math.max(1, Math.floor(texture.width / (2 ** baseMipLevel)));
   const height = Math.max(1, Math.floor(texture.height / (2 ** baseMipLevel)));
+  const expectedMirrorChannels =
+    walkaroundTextureFormatChannelCount(options.format);
+  if (
+    options.cpuMirror != null &&
+    options.cpuMirror.channels !== expectedMirrorChannels
+  ) {
+    throw new RangeError(
+      'createWalkaroundWebGpuTextureSource: cpuMirror.channels must match the ' +
+      `selected GPU format ${options.format} (${expectedMirrorChannels}); received ` +
+      `${String(options.cpuMirror.channels)}.`,
+    );
+  }
   const cpuMirror = options.cpuMirror == null
     ? undefined
     : createCpuMirrorSnapshot(options.cpuMirror, width, height, options.colorSpace);
@@ -326,11 +427,28 @@ export function createWalkaroundWebGpuTextureSource(
   }
   const sourceId = nextWalkaroundWebGpuTextureSourceId;
   nextWalkaroundWebGpuTextureSourceId += 1;
+  const compatibilityKey = options.contentRevision == null
+    ? [
+        (
+          WALKAROUND_TEXTURE_SOURCE_SESSION_SALT[0] ^
+          (sourceId >>> 0)
+        ) >>> 0,
+        (
+          WALKAROUND_TEXTURE_SOURCE_SESSION_SALT[1] ^
+          (Math.floor(sourceId / 0x1_0000_0000) >>> 0) ^
+          Math.imul(sourceId >>> 0, 0x85ebca6b)
+        ) >>> 0,
+      ] as const
+    : hashTextureContentRevision(
+        `vitrum.walkaround.texture-content.v1:${options.contentRevision}`,
+      );
 
   return Object.freeze({
     kind: WALKAROUND_WEBGPU_TEXTURE_SOURCE_KIND,
     [WALKAROUND_WEBGPU_TEXTURE_SOURCE_BRAND]: true as const,
     sourceId,
+    compatibilityKeyLo: compatibilityKey[0],
+    compatibilityKeyHi: compatibilityKey[1],
     device,
     texture,
     format: options.format,
@@ -341,6 +459,9 @@ export function createWalkaroundWebGpuTextureSource(
     arrayLayer,
     width,
     height,
+    ...(options.contentRevision != null
+      ? { contentRevision: options.contentRevision }
+      : {}),
     ...(cpuMirror ? { cpuMirror } : {}),
   });
 }

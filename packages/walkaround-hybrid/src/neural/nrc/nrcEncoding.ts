@@ -268,11 +268,15 @@ export function oneBlobEncodeScalar(u: number, cfg: OneBlobConfig): Float32Array
  */
 export function octEncodeDir(d: readonly [number, number, number]): [number, number] {
   const ax = Math.abs(d[0]), ay = Math.abs(d[1]), az = Math.abs(d[2]);
-  const s = ax + ay + az;
-  const inv = s > 1e-20 ? 1 / s : 0;
-  let px = d[0] * inv;
-  let py = d[1] * inv;
-  if (d[2] < 0) {
+  const scale = Math.max(ax, ay, az);
+  if (!(scale > 0) || !Number.isFinite(scale)) return [0.5, 0.5];
+  const sx = d[0] / scale;
+  const sy = d[1] / scale;
+  const sz = d[2] / scale;
+  const inv = 1 / (Math.abs(sx) + Math.abs(sy) + Math.abs(sz));
+  let px = sx * inv;
+  let py = sy * inv;
+  if (sz < 0) {
     const ox = (1 - Math.abs(py)) * (px >= 0 ? 1 : -1);
     const oy = (1 - Math.abs(px)) * (py >= 0 ? 1 : -1);
     px = ox; py = oy;

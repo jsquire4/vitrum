@@ -104,7 +104,7 @@ describe('HybridEngine incremental validation scope', () => {
     try {
       expect(() => engine.updatePrimitive('triangle', {
         material: { roughness: 0.25 },
-      } as never)).toThrow('targeted-validation-complete');
+      })).toThrow('targeted-validation-complete');
       expect(geometryReads).toBe(0);
     } finally {
       engine.dispose();

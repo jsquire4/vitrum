@@ -79,8 +79,8 @@ describe('environmentTexture — B3 directional IBL host', () => {
     expect(uploaded.rotationY).toBeCloseTo(0.5);
     expect(uploaded.intensity).toBeCloseTo(2.0);
     expect(uploaded.hasDirectionalEnvironment).toBe(true);
-    // map + marginal + conditional → 3 writeTexture calls.
-    expect(writeTextureCalls.length).toBe(3);
+    // radiance + pdf + marginal + conditional → 4 writeTexture calls.
+    expect(writeTextureCalls.length).toBe(4);
   });
 
   it('clear resets to hasEnv=0', () => {
@@ -97,14 +97,15 @@ describe('environmentTexture — B3 directional IBL host', () => {
     expect(cleared.hasDirectionalEnvironment).toBe(false);
   });
 
-  it('env_map is created as rgba16float; CDF textures as r32float', () => {
+  it('radiance is rgba32float and pdf/CDF textures are r32float', () => {
     const { device } = mockDevice();
     let env = createPlaceholderEnvironment(device);
     const data = buildDirectionalEnv({
       width: 2, height: 1, stride: 3, data: new Float32Array([1, 1, 1, 2, 2, 2]),
     })!;
     env = uploadEnvironment(device, env, data, 0, 1);
-    expect((env.map as unknown as { format: string }).format).toBe('rgba16float');
+    expect((env.map as unknown as { format: string }).format).toBe('rgba32float');
+    expect((env.pdf as unknown as { format: string }).format).toBe('r32float');
     expect((env.marginal as unknown as { format: string }).format).toBe('r32float');
     expect((env.conditional as unknown as { format: string }).format).toBe('r32float');
   });
@@ -121,6 +122,7 @@ describe('environmentTexture — B3 directional IBL host', () => {
       data: new Float32Array(4 * 2 * 3).fill(0.5),
     })!;
     const mapBefore = env.map;
+    const pdfBefore = env.pdf;
     const marginalBefore = env.marginal;
     const conditionalBefore = env.conditional;
 
@@ -129,9 +131,11 @@ describe('environmentTexture — B3 directional IBL host', () => {
     // Even same-sized updates stage a complete replacement so a later failed
     // write cannot partially mutate the live environment.
     expect(env.map).not.toBe(mapBefore);
+    expect(env.pdf).not.toBe(pdfBefore);
     expect(env.marginal).not.toBe(marginalBefore);
     expect(env.conditional).not.toBe(conditionalBefore);
     expect((mapBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalledOnce();
+    expect((pdfBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalledOnce();
     expect((marginalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalledOnce();
     expect((conditionalBefore as unknown as { destroy: ReturnType<typeof vi.fn> }).destroy).toHaveBeenCalledOnce();
   });
@@ -174,7 +178,7 @@ describe('environmentTexture — B3 directional IBL host', () => {
   it('preserves the live environment and destroys candidates when an upload fails', () => {
     const { device } = mockDevice();
     const env = createPlaceholderEnvironment(device);
-    const oldTextures = [env.map, env.marginal, env.conditional] as unknown as MockTexture[];
+    const oldTextures = [env.map, env.pdf, env.marginal, env.conditional] as unknown as MockTexture[];
     const data = buildDirectionalEnv({
       width: 4, height: 2, stride: 3,
       data: new Float32Array(4 * 2 * 3).fill(0.5),
@@ -189,7 +193,7 @@ describe('environmentTexture — B3 directional IBL host', () => {
 
     for (const texture of oldTextures) expect(texture.destroy).not.toHaveBeenCalled();
     const createTexture = device.createTexture as unknown as AnyMockFn;
-    const candidates = createTexture.mock.results.slice(-3)
+    const candidates = createTexture.mock.results.slice(-4)
       .map((result) => result.value as MockTexture);
     for (const texture of candidates) expect(texture.destroy).toHaveBeenCalledOnce();
   });
@@ -204,5 +208,33 @@ describe('environmentTexture — B3 directional IBL host', () => {
     ]);
     expect(bits[7]! & 0x7c00).toBe(0x7c00);
     expect(bits[7]! & 0x03ff).not.toBe(0);
+  });
+
+  it('uploads HDR radiance and sharp PDFs as full-range Float32 payloads', () => {
+    const { device, writeTextureCalls } = mockDevice();
+    const env = createPlaceholderEnvironment(device);
+    const data = buildDirectionalEnv({
+      width: 2,
+      height: 1,
+      stride: 3,
+      data: new Float32Array([1_000_000, 2, 3, 1, 1, 1]),
+    })!;
+    data.pdf[0] = 1_000_000;
+    uploadEnvironment(device, env, data, 0, 1);
+    const mapWrite = writeTextureCalls[0] as [
+      { texture: MockTexture },
+      ArrayBuffer,
+      { bytesPerRow: number },
+    ];
+    const pdfWrite = writeTextureCalls[1] as [
+      { texture: MockTexture },
+      ArrayBuffer,
+      { bytesPerRow: number },
+    ];
+    expect(mapWrite[0].texture.format).toBe('rgba32float');
+    expect(mapWrite[2].bytesPerRow).toBe(2 * 4 * 4);
+    expect(new Float32Array(mapWrite[1])[0]).toBe(1_000_000);
+    expect(pdfWrite[0].texture.format).toBe('r32float');
+    expect(new Float32Array(pdfWrite[1])[0]).toBe(1_000_000);
   });
 });

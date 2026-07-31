@@ -42,7 +42,7 @@ function tlasSceneHitTraversalWithInstanceIndex(wgsl: string): string {
 
   const withAssignment = withInit.replace(
     TLAS_SCENE_HIT_ASSIGNMENT_ANCHOR,
-    `      (*hit).triIndex = localHit.triIndex;\n      (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);\n      let orientationPreserving = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz) >= 0.0;\n      (*hit).frontFace = select(!localHit.frontFace, localHit.frontFace, orientationPreserving);\n      (*hit).instanceIndex = instIdx;\n      // Barycentric weights are space-invariant`,
+    `      (*hit).triIndex = localHit.triIndex;\n      (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);\n      let orientationPreserving = transformLinearOrientationSign(l2w0, l2w1, l2w2) > 0.0;\n      (*hit).frontFace = select(!localHit.frontFace, localHit.frontFace, orientationPreserving);\n      (*hit).instanceIndex = instIdx;\n      // Barycentric weights are space-invariant`,
   );
   if (withAssignment === withInit) {
     throw new Error('TLAS SceneHit assignment anchor changed; update pt-webgpu instance-index augmentation.');
@@ -126,22 +126,31 @@ fn traceAnalyticShapes(
     var localRay: Ray;
     localRay.origin = transformPointCols(w2l0, w2l1, w2l2, w2l3, ray.origin);
     localRay.direction = transformDirectionCols(w2l0, w2l1, w2l2, ray.direction);
+    let localDirectionScale = max(
+      abs(localRay.direction.x),
+      max(abs(localRay.direction.y), abs(localRay.direction.z)),
+    );
+    if (!(localDirectionScale > 0.0) || localDirectionScale > 3.402823e38) {
+      continue;
+    }
     var localN = vec3f(0.0, 1.0, 0.0);
     var localT = INFINITY;
     let p0 = select(vec4f(0.0), analyticParams[paramOffset], paramOffset < arrayLength(&analyticParams));
     let p1 = select(vec4f(0.0), analyticParams[paramOffset + 1u], paramOffset + 1u < arrayLength(&analyticParams));
     if (shapeId == SHAPE_SPHERE) {
-      localT = intersectSphereLocal(localRay, p0.xyz, max(p0.w, 1e-4), &localN);
-    } else if (shapeId == SHAPE_BOX) {
-      localT = intersectAabbDetailed(localRay, p0.xyz - p1.xyz, p0.xyz + p1.xyz, 1e-4, INFINITY, &localN);
+      localT = intersectSphereLocal(localRay, p0.xyz, p0.w, &localN);
+    } else if (shapeId == SHAPE_BOX && all(p1.xyz > vec3f(0.0))) {
+      localT = intersectAabbDetailed(
+        localRay, p0.xyz - p1.xyz, p0.xyz + p1.xyz, 0.0, INFINITY, &localN,
+      );
     } else if (shapeId == SHAPE_CAPSULE) {
-      localT = intersectCapsuleLocal(localRay, p0.xyz, p1.xyz, max(p1.w, 1e-4), &localN);
+      localT = intersectCapsuleLocal(localRay, p0.xyz, p1.xyz, p1.w, &localN);
     } else if (shapeId == SHAPE_CYLINDER) {
-      localT = intersectCylinderLocal(localRay, p0.xyz, max(p0.w, 1e-4), max(p1.x, 1e-4), &localN);
+      localT = intersectCylinderLocal(localRay, p0.xyz, p0.w, p1.x, &localN);
     } else if (shapeId == SHAPE_H_CHANNEL_CAME) {
       localT = intersectHChannelLocal(localRay, p0.x, p0.y, p0.z, p0.w, &localN);
     }
-    if (localT <= tMin || localT >= INFINITY) {
+    if (!(localT > 0.0) || localT >= INFINITY) {
       continue;
     }
     let localHitPos = localRay.origin + localRay.direction * localT;
@@ -174,7 +183,10 @@ fn traceClosestRaw(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
 }
 
 fn nextSidedTraversalCursor(cursor: f32, hitDist: f32) -> f32 {
-  let step = max(max(params.triIntersectEpsilon, 1e-5), abs(hitDist) * 1e-6);
+  let step = max(
+    max(params.triIntersectEpsilon, 1.175494351e-38),
+    abs(hitDist) * (4.0 * 1.192092896e-7),
+  );
   let fromHit = hitDist + step;
   return select(fromHit, cursor + step, !(fromHit > cursor));
 }
@@ -350,7 +362,6 @@ fn traceMeshCwbvhClosest(
   cRay.direction = ray.direction;
   let cHit = cwbvhIntersectFirstHitRangeFromRoot(
     cRay,
-    params.triIntersectEpsilon,
     tMin,
     tMaxBound,
     nodeCount,
@@ -367,15 +378,13 @@ fn traceMeshCwbvhClosest(
     return traceMeshBvh(ray, tMin, tMaxBound, true, hit, binaryRootNode, captureShadingDetails);
   }
 
-  var shadeNormal = cHit.normal;
+  // CWBVH stores its geometric normal oriented against the incident ray;
+  // SceneHit keeps the authored-winding normal and records side separately.
+  var shadeNormal = cHit.normal * cHit.side;
   var shadeBaryVW = vec2f(cHit.barycoord.y, cHit.barycoord.z);
   if (captureShadingDetails) {
     let tri = indices[cHit.triIndex];
     if (tri.x < arrayLength(&positions) && tri.y < arrayLength(&positions) && tri.z < arrayLength(&positions)) {
-      let a = positions[tri.x].xyz;
-      let b = positions[tri.y].xyz;
-      let c = positions[tri.z].xyz;
-      shadeNormal = safe_normalize(cross(b - a, c - a));
       if (tri.x < arrayLength(&normals) && tri.y < arrayLength(&normals) && tri.z < arrayLength(&normals)) {
         let na = normals[tri.x].xyz;
         let nb = normals[tri.y].xyz;
@@ -488,7 +497,8 @@ fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, Scen
           (*hit).dist = worldDist;
           (*hit).triIndex = localHit.triIndex;
           (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
-          let orientationPreserving = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz) >= 0.0;
+          let orientationPreserving =
+            transformLinearOrientationSign(l2w0, l2w1, l2w2) > 0.0;
           (*hit).frontFace = select(!localHit.frontFace, localHit.frontFace, orientationPreserving);
           (*hit).instanceIndex = instIdx;
           (*hit).baryVW = localHit.baryVW;

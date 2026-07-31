@@ -20,6 +20,7 @@ import type {
   TextureWrapMode,
   Vec3,
 } from '@vitrum/core';
+import { packRadianceRgbScaleF32 } from '@vitrum/shared-bvh';
 import {
   rgbToSpectralCoefficients,
   dispersionStrengthFromAbbe,
@@ -39,6 +40,8 @@ import {
   textureColorSpaceForMapKey,
   textureStorageClassForMapKey,
 } from './texturesArray.js';
+import { requireNonNegativeFloat32 } from './float32Policy.js';
+import { materialEmissionExcludedFromMeshNee } from './meshEmitterPolicy.js';
 
 import {
   MATERIAL_MAP_FIELD_ORDER,
@@ -86,8 +89,12 @@ type PackedMaterialSpec = MaterialSpec & {
 const TRANSLUCENT_BIT = 1 << 4;
 /** UNLIT_BIT — flag (s14.a) bit set for terminal base-color unlit shading. */
 const UNLIT_BIT = 1 << 5;
+/** DOUBLE_SIDED_BIT — authored surface emission is visible from both orientations. */
+const DOUBLE_SIDED_BIT = 1 << 1;
 /** MESH_EMITTER_CAST_SHADOW_DISABLED_BIT — folded mesh-area emitter skips forward BSDF emission. */
 const MESH_EMITTER_CAST_SHADOW_DISABLED_BIT = 1 << 6;
+/** MESH_EMITTER_NEE_DISABLED_BIT — surface emission has no mesh-light NEE competitor. */
+const MESH_EMITTER_NEE_DISABLED_BIT = 1 << 7;
 
 // Uniform-grid spectral attenuation μ(λ): 32 samples, 380→780 nm inclusive.
 const SPECTRAL_GRID_SAMPLE_COUNT = 32;
@@ -457,6 +464,7 @@ function packScalarSlots(
   index: number,
   m: PackedMaterialSpec,
   ids: LayerIds,
+  materialIndex: number,
 ): number {
   // ── Scalar field resolution (core → fork semantics) ──────────────────────
   const color = m.baseColor;
@@ -467,8 +475,13 @@ function packScalarSlots(
   // Contract default: pt-webgpu (materialTextures.ts) and walkaround-hybrid both
   // default emissiveIntensity to 1.0 when the field is absent; 0.0 would silently
   // black-out any emissive material whose host did not explicitly set the field.
-  const emissiveIntensity = resolveEmissiveIntensity(m.emissiveIntensity);
-  const emissive: Vec3 = m.emissive ?? [0.0, 0.0, 0.0];
+  const packedEmission = packRadianceRgbScaleF32(
+    m.emissive ?? [0.0, 0.0, 0.0],
+    resolveEmissiveIntensity(m.emissiveIntensity),
+    `pt-webgl2 material ${materialIndex} emissive`,
+  );
+  const emissiveIntensity = packedEmission.scale;
+  const emissive: Vec3 = packedEmission.value;
   const normalScale = m.normalScale ?? 1.0; // core carries a scalar; fork stores (x,y)
   const clearcoat = m.clearcoat ?? 0.0;
   const clearcoatRoughness = m.clearcoatRoughness ?? 0.0;
@@ -594,9 +607,11 @@ function packScalarSlots(
     (sssMedium.active && transmission > 0 ? 4 : 0);
   {
     let flags = Number(transparent);
+    if (m.doubleSided === true) flags |= DOUBLE_SIDED_BIT;
     if (sssMedium.active) flags |= TRANSLUCENT_BIT;
     if (m.shadingModel === 'unlit') flags |= UNLIT_BIT;
     if (m.meshEmitterCastShadowDisabled === true) flags |= MESH_EMITTER_CAST_SHADOW_DISABLED_BIT;
+    if (materialEmissionExcludedFromMeshNee(m)) flags |= MESH_EMITTER_NEE_DISABLED_BIT;
     data[index++] = flags;
   }
 
@@ -718,6 +733,8 @@ function packTextureTransforms(
   data: Float32Array,
   base: number,
   m: MaterialSpec,
+  envMapIntensity: number,
+  lightMapIntensity: number,
   ids: LayerIds,
   options: PackMaterialsTextureOptions,
   layerOf: TextureLayerLookup | undefined,
@@ -761,9 +778,9 @@ function packTextureTransforms(
   data[d3++] = ids.ao;
   data[d3++] = ids.lightMap;
   data[d3++] = ids.bump;
-  data[d3++] = m.envMapIntensity ?? 1.0;
+  data[d3++] = envMapIntensity;
   data[d3++] = m.aoMapIntensity ?? 1.0;
-  data[d3++] = m.lightMapIntensity ?? 1.0;
+  data[d3++] = lightMapIntensity;
   data[d3++] = m.bumpScale ?? 1.0;
   data[d3++] = 0.0;
   // D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
@@ -855,7 +872,17 @@ export function packMaterialsTexture(
   options: PackMaterialsTextureOptions = {},
 ): MaterialsTextureData {
   const materialCount = materials.length;
+  const envMapIntensities = new Float32Array(materialCount);
+  const lightMapIntensities = new Float32Array(materialCount);
   for (let materialIndex = 0; materialIndex < materialCount; materialIndex += 1) {
+    envMapIntensities[materialIndex] = requireNonNegativeFloat32(
+      materials[materialIndex]!.envMapIntensity ?? 1,
+      `pt-webgl2 material ${materialIndex}.envMapIntensity`,
+    );
+    lightMapIntensities[materialIndex] = requireNonNegativeFloat32(
+      materials[materialIndex]!.lightMapIntensity ?? 1,
+      `pt-webgl2 material ${materialIndex}.lightMapIntensity`,
+    );
     assertThinFilmLayerLimit(materials[materialIndex]!, `material ${materialIndex}`);
   }
   const pixelCount = materialCount * MATERIAL_PIXELS;
@@ -873,13 +900,22 @@ export function packMaterialsTexture(
     const ids = packLayerIds(m, layerOf);
 
     // samples 0..19: scalar fields, layer ids, SSS, thin-film metadata
-    index = packScalarSlots(data, index, m, ids);
+    index = packScalarSlots(data, index, m, ids, i);
     // samples 20..27: spectral attenuation grid
     index = packSpectralGrid(data, index, m);
     // samples 28..54: thin-film layer payload
     index = packThinFilm(data, index, m);
     // samples 55..92: texture-transform mat3s + D3 ao/light/bump auxiliary block
-    packTextureTransforms(data, base, m, ids, options, layerOf);
+    packTextureTransforms(
+      data,
+      base,
+      m,
+      envMapIntensities[i]!,
+      lightMapIntensities[i]!,
+      ids,
+      options,
+      layerOf,
+    );
     // sample 111: per-material Jakob-Hanika spectral reflectance coefficients.
     packSpectralReflectance(data, base, m);
 

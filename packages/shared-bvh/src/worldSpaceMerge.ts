@@ -236,6 +236,15 @@ export interface WorldSpaceMergeOptions {
   readonly splitMaterialsByCastShadow?: boolean;
 
   /**
+   * Optional caller-owned material-deduplication namespace. The returned key is
+   * appended to the structural material signature, allowing a backend to keep
+   * ownership-sensitive slots distinct without cloning or mutating the core
+   * material. Equal keys still deduplicate; an empty key groups ordinary
+   * primitives together.
+   */
+  readonly materialDedupKey?: (primitive: ScenePrimitive) => string;
+
+  /**
    * Fold a primitive-wide constant vertex RGB multiplier into its material
    * `baseColor` while preserving arbitrary/non-uniform vertex colors in the
    * merged color stream. Compatibility-tier renderers can use this to render
@@ -347,7 +356,7 @@ export function mergeWorldSpaceFromCore(
   }
   const optionKeys = new Set([
     'positionStride', 'filter', 'splitMaterialsByCastShadow',
-    'bakeConstantVertexColorIntoMaterial', 'onWarning',
+    'materialDedupKey', 'bakeConstantVertexColorIntoMaterial', 'onWarning',
   ]);
   for (const key of Reflect.ownKeys(opts)) {
     if (typeof key !== 'string' || !optionKeys.has(key)) {
@@ -362,6 +371,9 @@ export function mergeWorldSpaceFromCore(
   }
   if (opts.filter !== undefined && typeof opts.filter !== 'function') {
     throw new TypeError('[@vitrum/shared-bvh/mergeWorldSpaceFromCore] filter must be a function.');
+  }
+  if (opts.materialDedupKey !== undefined && typeof opts.materialDedupKey !== 'function') {
+    throw new TypeError('[@vitrum/shared-bvh/mergeWorldSpaceFromCore] materialDedupKey must be a function.');
   }
   if (opts.onWarning !== undefined && typeof opts.onWarning !== 'function') {
     throw new TypeError('[@vitrum/shared-bvh/mergeWorldSpaceFromCore] onWarning must be a function.');
@@ -402,9 +414,18 @@ export function mergeWorldSpaceFromCore(
       ? bakeConstantVertexColorIntoMaterial(primitive.material, primitive)
       : primitive.material;
     const castShadow = primitive.castShadow ?? true;
-    const sig = opts.splitMaterialsByCastShadow
+    const structuralSig = opts.splitMaterialsByCastShadow
       ? `${materialSig(mat)}|castShadow=${castShadow ? 1 : 0}`
       : materialSig(mat);
+    const callerKey = opts.materialDedupKey?.(primitive);
+    if (callerKey !== undefined && typeof callerKey !== 'string') {
+      throw new TypeError(
+        '[@vitrum/shared-bvh/mergeWorldSpaceFromCore] materialDedupKey must return a string.',
+      );
+    }
+    const sig = callerKey === undefined
+      ? structuralSig
+      : `${structuralSig}|callerKey=${callerKey.length}:${callerKey}`;
     const existing = sigToSlot.get(sig);
     if (existing !== undefined) return existing;
     const slot = materials.length;

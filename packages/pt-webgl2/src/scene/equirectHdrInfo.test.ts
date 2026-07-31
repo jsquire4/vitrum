@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { HdriEnvironment, NoneEnvironment, ProceduralSkyEnvironment } from '@vitrum/core';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
+import * as SamplingEquirect from '../glsl/shader/sampling/equirect_sampling_functions.glsl.js';
+
+const equirectFunctions = (SamplingEquirect as unknown as Record<string, string>)
+  .equirect_functions;
 
 const luminance = (r: number, g: number, b: number) => 0.2126 * r + 0.7152 * g + 0.0722 * b;
-const rowSolidAngleWeight = (y: number, height: number) => Math.sin(((y + 0.5) / height) * Math.PI);
+const texelSolidAngle = (y: number, width: number, height: number) =>
+  ((2 * Math.PI) / width) *
+  (Math.cos((y / height) * Math.PI) - Math.cos(((y + 1) / height) * Math.PI));
 
 // A tiny 4×2 synthetic equirect HDRI. Row 0 is dim, row 1 has a bright hot spot
 // in the second column. Row-major RGB float pixels (3 floats/pixel), the shape
@@ -49,16 +55,18 @@ describe('buildEquirectInfo', () => {
   });
 
   it('rejects a short DataTexture-shaped HDRI payload', () => {
-    expect(() => buildEquirectInfo({
-      kind: 'hdri',
-      hdri: {
-        image: {
-          width: 2,
-          height: 1,
-          data: new Float32Array([1]),
+    expect(() =>
+      buildEquirectInfo({
+        kind: 'hdri',
+        hdri: {
+          image: {
+            width: 2,
+            height: 1,
+            data: new Float32Array([1]),
+          },
         },
-      },
-    })).toThrow(/data length 1 must exactly equal 6 \(RGB\) or 8 \(RGBA\)/);
+      }),
+    ).toThrow(/data length 1 must exactly equal 6 \(RGB\) or 8 \(RGBA\)/);
   });
 
   it.each([
@@ -92,24 +100,28 @@ describe('buildEquirectInfo', () => {
   });
 
   it('rejects incompatible dataType backing and non-RGB channel hints', () => {
-    expect(() => buildEquirectInfo({
-      kind: 'hdri',
-      hdri: {
-        width: 1,
-        height: 1,
-        data: new Uint16Array([1, 1, 1]),
-        __vitrum_hint__: { channels: 3, dataType: 'uint8' },
-      },
-    })).toThrow(/dataType "uint8" requires Uint8Array or Uint8ClampedArray/);
-    expect(() => buildEquirectInfo({
-      kind: 'hdri',
-      hdri: {
-        width: 1,
-        height: 1,
-        data: new Float32Array([1, 1]),
-        __vitrum_hint__: { channels: 2, dataType: 'float32' },
-      },
-    })).toThrow(/channels must be 3 \(RGB\) or 4 \(RGBA\)/);
+    expect(() =>
+      buildEquirectInfo({
+        kind: 'hdri',
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Uint16Array([1, 1, 1]),
+          __vitrum_hint__: { channels: 3, dataType: 'uint8' },
+        },
+      }),
+    ).toThrow(/dataType "uint8" requires Uint8Array or Uint8ClampedArray/);
+    expect(() =>
+      buildEquirectInfo({
+        kind: 'hdri',
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([1, 1]),
+          __vitrum_hint__: { channels: 2, dataType: 'float32' },
+        },
+      }),
+    ).toThrow(/channels must be 3 \(RGB\) or 4 \(RGBA\)/);
   });
 
   it('accepts DataTexture-shaped HDRI handles with explicit channel hints', () => {
@@ -119,10 +131,7 @@ describe('buildEquirectInfo', () => {
         image: {
           width: 2,
           height: 1,
-          data: new Float32Array([
-            1, 0, 0, 1,
-            0, 1, 0, 1,
-          ]),
+          data: new Float32Array([1, 0, 0, 1, 0, 1, 0, 1]),
         },
         __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' },
       },
@@ -155,6 +164,65 @@ describe('buildEquirectInfo', () => {
     expect(out.totalSum).toBeGreaterThan(0);
   });
 
+  it('rejects HDRI intensity that cannot cross the WebGL float32 boundary', () => {
+    expect(() =>
+      buildEquirectInfo({
+        kind: 'hdri',
+        intensity: 1e300,
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([1, 1, 1]),
+        },
+      }),
+    ).toThrow(/HDRI environment intensity overflows WebGL float32 storage/);
+  });
+
+  it('rejects a finite HDRI texel and intensity whose realized radiance overflows', () => {
+    expect(() =>
+      buildEquirectInfo({
+        kind: 'hdri',
+        intensity: 100,
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([1e37, 0, 0]),
+        },
+      }),
+    ).toThrow(
+      /realized radiance pixel 0 color\[0\] \* intensity overflows shader float32 multiplication/,
+    );
+  });
+
+  it('rejects a positive HDRI texel and intensity whose realized support underflows', () => {
+    expect(() =>
+      buildEquirectInfo({
+        kind: 'hdri',
+        intensity: 0.01,
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([1e-44, 0, 0]),
+        },
+      }),
+    ).toThrow(
+      /realized radiance pixel 0 color\[0\] \* intensity underflows shader float32 multiplication/,
+    );
+  });
+
+  it('rejects an environment importance mass that cannot cross a float uniform boundary', () => {
+    expect(() =>
+      buildEquirectInfo({
+        kind: 'hdri',
+        hdri: {
+          width: 1,
+          height: 1,
+          data: new Float32Array([3e38, 3e38, 3e38]),
+        },
+      }),
+    ).toThrow(/environment importance mass overflows WebGL float32 storage/);
+  });
+
   const env = tinyHdri();
   const out = buildEquirectInfo(env);
 
@@ -170,6 +238,17 @@ describe('buildEquirectInfo', () => {
     expect(out.conditional!.height).toBe(2);
   });
 
+  it('packs the marginal inverse CDF into the conditional texture green lane', () => {
+    const marginal = out.marginal!.data;
+    const distribution = out.conditional!;
+    for (let y = 0; y < distribution.height; y += 1) {
+      for (let x = 0; x < distribution.width; x += 1) {
+        const green = distribution.data[(y * distribution.width + x) * 4 + 1]!;
+        expect(green).toBe(marginal[y * 4]!);
+      }
+    }
+  });
+
   it('totalSum equals the solid-angle-weighted luminance integral', () => {
     let expected = 0;
     const { width, height, data } = env.hdri as {
@@ -179,41 +258,37 @@ describe('buildEquirectInfo', () => {
     };
     for (let i = 0; i < width * height; i += 1) {
       const y = Math.floor(i / width);
-      expected += luminance(data[i * 3]!, data[i * 3 + 1]!, data[i * 3 + 2]!) * rowSolidAngleWeight(y, height);
+      expected +=
+        luminance(data[i * 3]!, data[i * 3 + 1]!, data[i * 3 + 2]!) *
+        texelSolidAngle(y, width, height);
     }
     expect(out.totalSum).toBeCloseTo(expected, 5);
   });
 
-  it('the marginal inverse-CDF table is monotonic non-decreasing', () => {
-    // marginalData is RGBA32F; the sampled row-centre v lives in channel .r.
+  it('the marginal forward-CDF table is monotonic and ends exactly at one', () => {
     const m = out.marginal!.data;
     const n = out.marginal!.width; // = height
-    let prev = -Infinity;
+    let prev = 0;
     for (let i = 0; i < n; i += 1) {
       const v = m[i * 4 + 0]!;
       expect(v).toBeGreaterThanOrEqual(prev);
-      // each entry is a centred row coordinate in (0, 1)
       expect(v).toBeGreaterThan(0);
-      expect(v).toBeLessThan(1);
+      expect(v).toBeLessThanOrEqual(1);
       prev = v;
     }
+    expect(prev).toBe(1);
   });
 
   it('the brighter row dominates the marginal distribution', () => {
-    // With a hot pixel in row 1, most of the marginal mass should map to row 1
-    // (v ≈ (1 + 0.5)/2 = 0.75). Both sampled entries should land on row 1.
     const m = out.marginal!.data;
-    const row1Centre = (1 + 0.5) / 2;
-    expect(m[0]!).toBeCloseTo(row1Centre, 6);
-    expect(m[4]!).toBeCloseTo(row1Centre, 6);
+    const row0Pmf = m[0]!;
+    const row1Pmf = m[4]! - m[0]!;
+    expect(row0Pmf).toBeLessThan(0.1);
+    expect(row1Pmf).toBeGreaterThan(0.9);
   });
 
   it('weights uniform equirect rows by solid angle so equator rows dominate poles', () => {
-    const data = new Float32Array([
-      1, 1, 1, 1,
-      1, 1, 1, 1,
-      1, 1, 1, 1,
-    ]);
+    const data = new Float32Array([1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
     const uniform = buildEquirectInfo({
       kind: 'hdri',
       hdri: {
@@ -224,13 +299,53 @@ describe('buildEquirectInfo', () => {
       },
     });
 
-    expect(uniform.totalSum).toBeCloseTo(2, 6);
+    expect(uniform.totalSum).toBeCloseTo(4 * Math.PI, 6);
     const m = uniform.marginal!.data;
-    const equatorCentre = (1 + 0.5) / 3;
-    const northPoleCentre = (2 + 0.5) / 3;
-    expect(m[0]!).toBeCloseTo(equatorCentre, 6);
-    expect(m[4]!).toBeCloseTo(equatorCentre, 6);
-    expect(m[8]!).toBeCloseTo(northPoleCentre, 6);
+    expect(m[0]!).toBeCloseTo(0.25, 6);
+    expect(m[4]!).toBeCloseTo(0.75, 6);
+    expect(m[8]!).toBe(1);
+  });
+
+  it('packs a normalized realized solid-angle PDF into map alpha', () => {
+    const map = out.map!;
+    let integrated = 0;
+    for (let y = 0; y < map.height; y += 1) {
+      const theta0 = (y / map.height) * Math.PI;
+      const theta1 = ((y + 1) / map.height) * Math.PI;
+      const cellSolidAngle = ((2 * Math.PI) / map.width) * (Math.cos(theta0) - Math.cos(theta1));
+      for (let x = 0; x < map.width; x += 1) {
+        integrated += map.data[(y * map.width + x) * 4 + 3]! * cellSolidAngle;
+      }
+    }
+    expect(integrated).toBeCloseTo(1, 6);
+  });
+
+  it('does not lose a representable source bin to an inverse-table quantizer', () => {
+    const candidate = buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        width: 4,
+        height: 1,
+        data: new Float32Array([0.1, 0.1, 0.1, 0.9, 0.9, 0.9, 0, 0, 0, 0, 0, 0]),
+      },
+    });
+    expect(candidate.conditional!.data[0]).toBeCloseTo(0.1, 6);
+    expect(candidate.map!.data[3]).toBeGreaterThan(0);
+    expect(candidate.map!.data[7]).toBeGreaterThan(0);
+  });
+
+  it('reports zero density for a bin flattened by the uploaded Float32 CDF', () => {
+    const candidate = buildEquirectInfo({
+      kind: 'hdri',
+      hdri: {
+        width: 2,
+        height: 1,
+        data: new Float32Array([1, 1, 1, 1e-8, 1e-8, 1e-8]),
+      },
+    });
+    expect(candidate.conditional!.data[0]).toBe(1);
+    expect(candidate.conditional!.data[4]).toBe(1);
+    expect(candidate.map!.data[7]).toBe(0);
   });
 
   it('bakes procedural-sky environments into the equirect HDRI path', () => {
@@ -298,10 +413,84 @@ describe('buildEquirectInfo', () => {
     const pyMax = (maxIdx / map.width) | 0;
     const pxMax = maxIdx % map.width;
     const thetaMax = ((pyMax + 0.5) / map.height) * Math.PI;
-    const phiMax = ((pxMax + 0.5) / map.width) * (2 * Math.PI);
+    const phiMax = ((pxMax + 0.5) / map.width - 0.5) * (2 * Math.PI);
 
     expect(thetaMax).toBeGreaterThan(Math.PI / 2 - 0.3);
     expect(thetaMax).toBeLessThan(Math.PI / 2 + 0.3);
-    expect(Math.min(phiMax, 2 * Math.PI - phiMax)).toBeLessThan(0.3);
+    expect(Math.abs(phiMax)).toBeLessThan(0.3);
+  });
+
+  it.each([
+    [
+      [0, 1, 0],
+      [0, -1, 0],
+    ],
+    [
+      [0.3, 0.8, 0.4],
+      [-0.3, -0.8, -0.4],
+    ],
+  ] as const)(
+    'keeps canonical row-zero-north lookup aligned with procedural sun %j',
+    (sun, opposite) => {
+      const length = Math.hypot(...sun);
+      const normalizedSun: [number, number, number] = [
+        sun[0] / length,
+        sun[1] / length,
+        sun[2] / length,
+      ];
+      const candidate = buildEquirectInfo({
+        kind: 'procedural-sky',
+        sunDirection: normalizedSun,
+        turbidity: 2,
+        rayleigh: 1,
+        mieCoefficient: 0.005,
+        mieDirectionalG: 0.8,
+        intensity: 1,
+      });
+      const map = candidate.map!;
+      const lookup = (direction: readonly [number, number, number]): number => {
+        const directionLength = Math.hypot(...direction);
+        const phi = Math.atan2(direction[2] / directionLength, direction[0] / directionLength);
+        const theta = Math.acos(direction[1] / directionLength);
+        const u = (((phi / (2 * Math.PI) + 0.5) % 1) + 1) % 1;
+        const v = Math.min(theta / Math.PI, 0.99999994);
+        const x = Math.min(Math.floor(u * map.width), map.width - 1);
+        const y = Math.min(Math.floor(v * map.height), map.height - 1);
+        const offset = (y * map.width + x) * 4;
+        return luminance(map.data[offset]!, map.data[offset + 1]!, map.data[offset + 2]!);
+      };
+
+      expect(lookup(normalizedSun)).toBeGreaterThan(lookup(opposite) * 2);
+    },
+  );
+
+  it('uses forward-CDF residuals for continuous solid-angle GLSL sampling', () => {
+    expect(equirectFunctions).toContain(
+      'float rowResidual = clamp( ( rowXi - rowPrior ) / rowWidth',
+    );
+    expect(equirectFunctions).toContain('float columnResidual = clamp(');
+    expect(equirectFunctions).toContain(
+      'float cosTheta = mix( cos( theta0 ), cos( theta1 ), rowResidual );',
+    );
+    expect(equirectFunctions).toContain(
+      'bool equirectScaleIsRepresentable( vec3 value, float scale )',
+    );
+    expect(equirectFunctions).toContain(
+      'vec3 scaled = value * scale;',
+    );
+    expect(equirectFunctions).toContain(
+      '! any( isnan( scaled ) ) && ! any( isinf( scaled ) )',
+    );
+    expect(equirectFunctions).toContain(
+      'finiteEquirectScaledColor( color, environmentIntensity )',
+    );
+    expect(
+      equirectFunctions?.match(/finiteEquirectEnvironmentColor\( packed\.rgb \)/g) ?? [],
+    ).toHaveLength(2);
+    expect(
+      equirectFunctions?.match(/return finiteEquirectPdf\( packed\.a \);/g) ?? [],
+    ).toHaveLength(2);
+    expect(equirectFunctions).not.toContain('color = packed.rgb;');
+    expect(equirectFunctions).not.toContain('equirectDirectionToUv( direction )');
   });
 });

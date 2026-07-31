@@ -95,6 +95,7 @@ export function buildPerFrameBindGroups(
     scene.envMapTextureView,         // 15 — B3, recreated by updateEnvironment
     scene.envMarginalTextureView,    // 16
     scene.envConditionalTextureView, // 17
+    scene.envPdfTextureView,         // 18
     scene.envParamsBuffer,           // 19
     scene.materialTextureAtlasView,  // 20 — Phase-3D baseColorMap atlas
     scene.baseColorMapMetaTextureView, // 21

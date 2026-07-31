@@ -8,14 +8,17 @@
 
 import type { RestirGIFrameResources } from '../resourceManager.js';
 import { RESERVOIR_GI_STRIDE_BYTES } from '../../gi/giLayout.js';
+import { assertFrameResourceReservoirScale } from '../frameResourcePlan.js';
 
 export function createRestirGIFrameResources(
   device: GPUDevice,
   width: number,
   height: number,
+  reservoirScale = 1,
 ): RestirGIFrameResources {
-  const halfW = Math.max(1, Math.floor(width / 2));
-  const halfH = Math.max(1, Math.floor(height / 2));
+  assertFrameResourceReservoirScale(reservoirScale);
+  const halfW = Math.max(1, Math.floor(width / (2 * reservoirScale)));
+  const halfH = Math.max(1, Math.floor(height / (2 * reservoirScale)));
   const reservoirGiSize = halfW * halfH * RESERVOIR_GI_STRIDE_BYTES;
   const size = Math.max(256, reservoirGiSize);
   const usage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC | GPUBufferUsage.COPY_DST;

@@ -26,7 +26,7 @@ export interface PreethamSkyBake {
   readonly sunDirection: readonly [number, number, number];
   /**
    * Solid-angle-weighted luminance integral of the baked RGB map:
-   * `Σ luminance(texel) · sin(theta) · Δtheta · Δphi`.
+   * `Σ luminance(texel) · Δomega(texel)`.
    *
    * Computed from the same Float32 radiance and weights used to build `cdf`,
    * so downstream power estimators do not need to rescan or approximate the
@@ -148,29 +148,47 @@ function normalizeSunDirection(
  * Daylight", SIGGRAPH 1999 (doi:10.1145/311535.311545).
  */
 export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): PreethamSkyBake {
-  const width = requireInteger(opts.width ?? DEFAULT_SKY_WIDTH, 'bakePreethamSkyEquirect.width', 1, 32768);
-  const height = requireInteger(opts.height ?? DEFAULT_SKY_HEIGHT, 'bakePreethamSkyEquirect.height', 1, 32768);
+  const width = requireInteger(
+    opts.width ?? DEFAULT_SKY_WIDTH,
+    'bakePreethamSkyEquirect.width',
+    1,
+    32768,
+  );
+  const height = requireInteger(
+    opts.height ?? DEFAULT_SKY_HEIGHT,
+    'bakePreethamSkyEquirect.height',
+    1,
+    32768,
+  );
   const pixelCount = width * height;
   const sunDir = normalizeSunDirection(opts.sunDirection);
   if (!Number.isSafeInteger(pixelCount) || pixelCount * 4 > 0x7fffffff) {
     throw new RangeError('bakePreethamSkyEquirect dimensions exceed the typed-array capacity');
   }
-  const turbidity = Math.max(1.5, Math.min(30, requireFinite(opts.turbidity ?? 2, 'bakePreethamSkyEquirect.turbidity')));
-  const rayleigh = Math.max(0, requireFinite(opts.rayleigh ?? 1, 'bakePreethamSkyEquirect.rayleigh'));
-  const mieCoefficient = Math.max(0,
-    requireFinite(opts.mieCoefficient ?? 0.005, 'bakePreethamSkyEquirect.mieCoefficient'));
+  const turbidity = Math.max(
+    1.5,
+    Math.min(30, requireFinite(opts.turbidity ?? 2, 'bakePreethamSkyEquirect.turbidity')),
+  );
+  const rayleigh = Math.max(
+    0,
+    requireFinite(opts.rayleigh ?? 1, 'bakePreethamSkyEquirect.rayleigh'),
+  );
+  const mieCoefficient = Math.max(
+    0,
+    requireFinite(opts.mieCoefficient ?? 0.005, 'bakePreethamSkyEquirect.mieCoefficient'),
+  );
   const mieScale = requireFinite(mieCoefficient * 200, 'bakePreethamSkyEquirect.mieScale');
   const mieG = Math.max(
     -HG_G_STABILITY_LIMIT,
     Math.min(
       HG_G_STABILITY_LIMIT,
-      requireFinite(
-        opts.mieDirectionalG ?? 0.8,
-        'bakePreethamSkyEquirect.mieDirectionalG',
-      ),
+      requireFinite(opts.mieDirectionalG ?? 0.8, 'bakePreethamSkyEquirect.mieDirectionalG'),
     ),
   );
-  const intensity = Math.max(0, requireFinite(opts.intensity ?? 1, 'bakePreethamSkyEquirect.intensity'));
+  const intensity = Math.max(
+    0,
+    requireFinite(opts.intensity ?? 1, 'bakePreethamSkyEquirect.intensity'),
+  );
 
   const thetaSun = Math.acos(Math.max(-1, Math.min(1, sunDir[1])));
   const [AY, BY, CY, DY, EY] = perezCoeffsY(turbidity);
@@ -178,7 +196,9 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   const [Ay, By, Cy, Dy, Ey] = perezCoeffsYChroma(turbidity);
   const yzRaw = zenithLuminance(turbidity, thetaSun);
   const zenithY = requireFinite(
-    Math.max(1e-5, yzRaw) * rayleigh * intensity, 'bakePreethamSkyEquirect.zenithY');
+    Math.max(1e-5, yzRaw) * rayleigh * intensity,
+    'bakePreethamSkyEquirect.zenithY',
+  );
   const { xz, yz } = zenithChromaticity(turbidity, thetaSun);
   const normY = perez(1, thetaSun, AY, BY, CY, DY, EY);
   const normX = perez(1, thetaSun, Ax, Bx, Cx, Dx, Ex);
@@ -186,16 +206,25 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   const solarCoverage = solarDiscTexelCoverage(width, height, sunDir);
   const texels = new Float32Array(pixelCount * 4);
   const cumulativeWeights = new Float64Array(pixelCount + 1);
+  const deltaPhi = (2 * Math.PI) / width;
   let totalWeight = 0;
 
   for (let py = 0; py < height; py += 1) {
     const theta = ((py + 0.5) / height) * Math.PI;
     const cosTheta = Math.cos(theta);
     const sinTheta = Math.sin(theta);
-    const sinThetaSafe = Math.max(sinTheta, 1e-6);
+    const theta0 = (py / height) * Math.PI;
+    const theta1 = ((py + 1) / height) * Math.PI;
+    const texelSolidAngle = requireFinite(
+      deltaPhi * (Math.cos(theta0) - Math.cos(theta1)),
+      'bakePreethamSkyEquirect.texelSolidAngle',
+    );
 
     for (let px = 0; px < width; px += 1) {
-      const phi = ((px + 0.5) / width) * (2 * Math.PI);
+      // Canonical equirect convention shared by every renderer:
+      // u = phi / (2π) + 0.5, so the first column is centred near -π
+      // and +X (phi=0) lies at the horizontal midpoint.
+      const phi = ((px + 0.5) / width - 0.5) * (2 * Math.PI);
       const dx = sinTheta * Math.cos(phi);
       const dy = cosTheta;
       const dz = sinTheta * Math.sin(phi);
@@ -232,7 +261,7 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
       texels[i * 4 + 1] = green;
       texels[i * 4 + 2] = blue;
       const weight = requireFinite(
-        Math.max(0, luminance(red, green, blue) * sinThetaSafe),
+        Math.max(0, luminance(red, green, blue) * texelSolidAngle),
         'bakePreethamSkyEquirect.CDF weight',
       );
       totalWeight += weight;
@@ -242,11 +271,18 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   }
 
   const cdf = new Float32Array(pixelCount + 1);
-  const dOmegaBase = ((2 * Math.PI) / width) * (Math.PI / height);
-  const luminanceIntegral = requireFinite(
-    totalWeight * dOmegaBase,
-    'bakePreethamSkyEquirect.luminanceIntegral',
-  );
+  const luminanceIntegral = requireFinite(totalWeight, 'bakePreethamSkyEquirect.luminanceIntegral');
+  // A positive Preetham amplitude (positive Rayleigh scale and intensity)
+  // mathematically contains sky/sun energy. If every RGB channel rounded to
+  // zero above, publishing the bake would silently turn that authored light
+  // into a black map with an unusable all-zero CDF. Deliberate black remains
+  // valid through either intensity=0 or rayleigh=0.
+  if (intensity > 0 && rayleigh > 0 && totalWeight === 0) {
+    throw new RangeError(
+      'bakePreethamSkyEquirect positive procedural-sky radiance underflows ' +
+        'entirely to zero in Float32.',
+    );
+  }
   // Any positive Float32 radiance defines a valid normalized distribution.
   // An epsilon gate would leave a dim-but-nonblack baked sky with an all-zero
   // CDF even though its RGB texels and luminance integral remain positive.
@@ -254,20 +290,20 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
     for (let i = 0; i < pixelCount; i += 1) {
       const cdfValue = (cumulativeWeights[i + 1] ?? 0) / totalWeight;
       cdf[i + 1] = requireF32(cdfValue, 'bakePreethamSkyEquirect.cdf');
-      const py = (i / width) | 0;
-      const theta = ((py + 0.5) / height) * Math.PI;
-      const sinTheta = Math.max(Math.sin(theta), 1e-5);
-      const pmf = Math.max(
-        ((cumulativeWeights[i + 1] ?? 0) - (cumulativeWeights[i] ?? 0)) / totalWeight,
-        0,
-      );
-      texels[i * 4 + 3] = requireF32(
-        pmf / (dOmegaBase * sinTheta),
-        'bakePreethamSkyEquirect.pdf',
-      );
     }
     cdf[0] = 0;
     cdf[pixelCount] = 1;
+    for (let i = 0; i < pixelCount; i += 1) {
+      const py = (i / width) | 0;
+      const theta0 = (py / height) * Math.PI;
+      const theta1 = ((py + 1) / height) * Math.PI;
+      const texelSolidAngle = deltaPhi * (Math.cos(theta0) - Math.cos(theta1));
+      // Importance sampling consumes the uploaded Float32 CDF.  Derive the
+      // stored density from its adjacent values so bins flattened by Float32
+      // quantization correctly report zero probability to every MIS consumer.
+      const pmf = cdf[i + 1]! - cdf[i]!;
+      texels[i * 4 + 3] = requireF32(pmf / texelSolidAngle, 'bakePreethamSkyEquirect.pdf');
+    }
   }
 
   return {

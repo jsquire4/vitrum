@@ -61,4 +61,17 @@ describe('BMFR overlap and signed-depth semantics', () => {
     );
     expect(BMFR_WGSL).toContain('if (position.w <= 0.0)');
   });
+
+  it('preserves every validated positive world-position scale without an absolute floor', () => {
+    expect(BMFR_WGSL.match(/1\.0 \/ bmfr_ubo\.positionScale/g)).toHaveLength(2);
+    expect(BMFR_WGSL).not.toContain(
+      'max(bmfr_ubo.positionScale, 1e-4)',
+    );
+  });
+
+  it('bounds every rgba16float resolve write to a finite half domain', () => {
+    expect(BMFR_WGSL).toContain('fn finiteHalfChannel(value: f32)');
+    expect(BMFR_WGSL).toContain('return clamp(value, -65504.0, 65504.0)');
+    expect(BMFR_WGSL.match(/vec4f\(finiteHalfRgb\(/g)).toHaveLength(2);
+  });
 });

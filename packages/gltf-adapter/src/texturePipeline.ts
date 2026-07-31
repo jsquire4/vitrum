@@ -620,12 +620,27 @@ export async function decodeSceneTexturesWithContext(
     }
   };
 
-  const primitives = await Promise.all(scene.primitives.map(async (primitive, primitiveIndex) => {
+  const jobs: Array<{
+    readonly primitiveIndex: number;
+    readonly field: GltfMaterialTextureField;
+    readonly ref: TextureRef;
+  }> = [];
+  for (const [primitiveIndex, primitive] of scene.primitives.entries()) {
     const material = materialForPrimitive(primitive);
-    let nextMaterial: MaterialSpec | null = null;
     for (const field of MATERIAL_TEXTURE_FIELDS) {
       const ref = material[field];
-      if (!ref) continue;
+      if (ref) jobs.push({ primitiveIndex, field, ref });
+    }
+  }
+
+  // Decoder calls remain concurrent, but every allocation and aggregate-ledger
+  // decision commits in stable scene/field order. A tight aggregate pixel
+  // budget therefore accepts the same texture set regardless of decoder
+  // completion timing.
+  const budgetTurns = deterministicBudgetTurns(jobs.length);
+  const decodedJobs = await Promise.all(jobs.map(async (job, jobIndex) => {
+    const primitive = scene.primitives[job.primitiveIndex]!;
+    const { field, ref, primitiveIndex } = job;
       const scenePath = `scene.primitives[${primitiveIndex}].material.${field}`;
       const source = gltfTextureRefSource(ref);
       const path = source?.path ?? scenePath;
@@ -637,15 +652,39 @@ export async function decodeSceneTexturesWithContext(
         primitiveIndex,
         options,
         decodeContext,
+        budgetTurn: budgetTurns[jobIndex]!,
         diagnostic,
       });
-      if (nextRef === ref) {
+      return { ...job, nextRef };
+  }));
+  const decodedByPrimitive = new Map<
+    number,
+    Map<GltfMaterialTextureField, { readonly previous: TextureRef; readonly next: TextureRef }>
+  >();
+  for (const { primitiveIndex, field, ref, nextRef } of decodedJobs) {
+    let fields = decodedByPrimitive.get(primitiveIndex);
+    if (fields === undefined) {
+      fields = new Map();
+      decodedByPrimitive.set(primitiveIndex, fields);
+    }
+    fields.set(field, { previous: ref, next: nextRef });
+  }
+
+  const primitives: ScenePrimitive[] = [];
+  for (const [primitiveIndex, primitive] of scene.primitives.entries()) {
+    const material = materialForPrimitive(primitive);
+    let nextMaterial: MaterialSpec | null = null;
+    const decodedFields = decodedByPrimitive.get(primitiveIndex);
+    for (const field of MATERIAL_TEXTURE_FIELDS) {
+      const decoded = decodedFields?.get(field);
+      if (decoded === undefined) continue;
+      if (decoded.next === decoded.previous) {
         unchangedCount += 1;
         continue;
       }
       decodedCount += 1;
       if (nextMaterial == null) nextMaterial = { ...material };
-      (nextMaterial as unknown as Record<string, unknown>)[field] = nextRef;
+      (nextMaterial as unknown as Record<string, unknown>)[field] = decoded.next;
     }
     const baked = maybeBakeSpecGlossRoughnessMap(nextMaterial ?? material, {
       primitiveId: String(primitive.id),
@@ -659,8 +698,8 @@ export async function decodeSceneTexturesWithContext(
       (nextMaterial as unknown as Record<string, unknown>).roughnessMap = baked;
       decodedCount += 1;
     }
-    return nextMaterial == null ? primitive : { ...primitive, material: nextMaterial };
-  }));
+    primitives.push(nextMaterial == null ? primitive : { ...primitive, material: nextMaterial });
+  }
 
   const nextScene = { ...scene, primitives } as Scene;
   return {
@@ -736,7 +775,42 @@ interface TextureRefDecodeContext {
   readonly primitiveIndex: number;
   readonly options: DecodeSceneTexturesOptions;
   readonly decodeContext: DecodeSceneTexturesContext;
+  readonly budgetTurn: DeterministicBudgetTurn;
   readonly diagnostic: (diagnostic: DecodeSceneTextureDiagnostic) => void;
+}
+
+interface DeterministicBudgetTurn {
+  /** Decoder work may run ahead, but adapter-owned allocations wait here. */
+  readonly ready: Promise<void>;
+  /** Release the next scene-order allocation turn. Idempotent. */
+  complete(): void;
+}
+
+const COMPLETED_BUDGET_TURN: DeterministicBudgetTurn = {
+  ready: Promise.resolve(),
+  complete: () => {},
+};
+
+function deterministicBudgetTurns(count: number): DeterministicBudgetTurn[] {
+  const turns: DeterministicBudgetTurn[] = [];
+  let previous = Promise.resolve();
+  for (let index = 0; index < count; index += 1) {
+    let release!: () => void;
+    const next = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let completed = false;
+    turns.push({
+      ready: previous,
+      complete: () => {
+        if (completed) return;
+        completed = true;
+        release();
+      },
+    });
+    previous = next;
+  }
+  return turns;
 }
 
 interface ValidatedDecodedTexturePixels extends GltfDecodedTexturePixels {
@@ -767,9 +841,10 @@ async function decodeTextureRef(
   const outputColorSpace: GltfTextureColorSpace =
     context.options.target === 'webgpu' ? colorSpace : 'linear';
 
-  let operation: (() => Promise<DecodedTextureCacheOutcome>) | undefined;
-  if (handleKind === 'pixel-data' || handleKind === 'data-texture') {
-    operation = () => Promise.resolve().then(() => {
+  try {
+    let operation: (() => Promise<DecodedTextureCacheOutcome>) | undefined;
+    if (handleKind === 'pixel-data' || handleKind === 'data-texture') {
+      operation = async () => {
       let pixels: GltfDecodedTexturePixels | null;
       try {
         pixels = decodedPixelsFromCpuReadableHandle(ref.handle);
@@ -785,26 +860,28 @@ async function decodeTextureRef(
           reason: 'CPU-readable texture handle did not expose stable width, height, and data properties',
         };
       }
+      await context.budgetTurn.ready;
       return outcomeFromDecodedPixels(
         pixels,
         colorSpace,
         outputColorSpace,
         context,
       );
-    });
-  } else if (handleKind === 'raw-image') {
-    operation = () => decodeRawTextureOutcome(
-      ref.handle as RawImageHandle,
-      context.options.decodePixels,
-      colorSpace,
-      outputColorSpace,
-      context,
-    );
-  } else if (handleKind === 'image-bitmap') {
-    operation = () => context.decodeContext.imageDecodeLimiter.run(() => {
+      };
+    } else if (handleKind === 'raw-image') {
+      operation = () => decodeRawTextureOutcome(
+        ref.handle as RawImageHandle,
+        context.options.decodePixels,
+        colorSpace,
+        outputColorSpace,
+        context,
+      );
+    } else if (handleKind === 'image-bitmap') {
+      operation = async () => {
+        let pixels: GltfDecodedTexturePixels;
       try {
-        return outcomeFromDecodedPixels(
-          readImageBitmapPixelsWithPlatform(ref.handle, {
+          pixels = await context.decodeContext.imageDecodeLimiter.run(() =>
+            readImageBitmapPixelsWithPlatform(ref.handle, {
             materialField: context.field,
             path: context.path,
             colorSpace,
@@ -813,11 +890,8 @@ async function decodeTextureRef(
             ...textureSourceDiagnosticFields(context.source),
             maxDecodedTexturePixels:
               context.decodeContext.limits.maxDecodedTexturePixels,
-          }),
-          colorSpace,
-          outputColorSpace,
-          context,
-        );
+            })
+          );
       } catch (err) {
         if (err instanceof PlatformTextureDecodeError) {
           return { kind: 'platform-error', error: err };
@@ -827,68 +901,81 @@ async function decodeTextureRef(
           causeMessage: safeErrorMessage(err),
         };
       }
-    });
-  } else {
-    context.diagnostic({
-      severity: 'warning',
-      code: 'unsupported-handle-kind',
-      path: context.path,
-      materialField: context.field,
-      primitiveId: context.primitiveId,
-      primitiveIndex: context.primitiveIndex,
-      handleKind,
-      ...textureSourceDiagnosticFields(context.source),
-      message: `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
-        `decodeSceneTextures(target:"${context.options.target}") can normalize raw-image, ImageBitmap, ` +
-        'and CPU-readable pixel handles. ' +
-        'Texture left unchanged.',
-    });
-    return ref;
-  }
+        await context.budgetTurn.ready;
+        return outcomeFromDecodedPixels(
+          pixels,
+          colorSpace,
+          outputColorSpace,
+          context,
+        );
+      };
+    } else {
+      await context.budgetTurn.ready;
+      context.diagnostic({
+        severity: 'warning',
+        code: 'unsupported-handle-kind',
+        path: context.path,
+        materialField: context.field,
+        primitiveId: context.primitiveId,
+        primitiveIndex: context.primitiveIndex,
+        handleKind,
+        ...textureSourceDiagnosticFields(context.source),
+        message: `[vitrum/gltf-adapter] ${context.path} has ${handleKind} texture handle; ` +
+          `decodeSceneTextures(target:"${context.options.target}") can normalize raw-image, ImageBitmap, ` +
+          'and CPU-readable pixel handles. ' +
+          'Texture left unchanged.',
+      });
+      return ref;
+    }
 
-  let perSpace = context.decodeContext.decoded.get(ref.handle);
-  if (perSpace === undefined) {
-    perSpace = new Map();
-    context.decodeContext.decoded.set(ref.handle, perSpace);
-  }
-  const cacheKey = decodedTextureCacheKey(colorSpace, context.field);
-  let pending = perSpace.get(cacheKey);
-  if (pending === undefined) {
-    // Install the promise before awaiting it. Both raw and CPU-readable handles
-    // therefore deduplicate concurrent references, including failures.
-    const created = operation().catch((err): DecodedTextureCacheOutcome => ({
-      kind: 'normalization-error',
-      causeMessage: safeErrorMessage(err),
-    }));
-    pending = created;
-    perSpace.set(cacheKey, created);
-    void created.then((settled) => {
-      if (
-        settled.kind !== 'decoded' &&
-        perSpace?.get(cacheKey) === created
-      ) {
-        perSpace.delete(cacheKey);
-        if (perSpace.size === 0) {
-          context.decodeContext.decoded.delete(ref.handle);
+    let perSpace = context.decodeContext.decoded.get(ref.handle);
+    if (perSpace === undefined) {
+      perSpace = new Map();
+      context.decodeContext.decoded.set(ref.handle, perSpace);
+    }
+    const cacheKey = decodedTextureCacheKey(colorSpace, context.field);
+    let pending = perSpace.get(cacheKey);
+    if (pending === undefined) {
+      // Install the promise before awaiting it. Both raw and CPU-readable handles
+      // therefore deduplicate concurrent references, including failures.
+      const created = operation().catch((err): DecodedTextureCacheOutcome => ({
+        kind: 'normalization-error',
+        causeMessage: safeErrorMessage(err),
+      }));
+      pending = created;
+      perSpace.set(cacheKey, created);
+      void created.then((settled) => {
+        if (
+          settled.kind !== 'decoded' &&
+          perSpace?.get(cacheKey) === created
+        ) {
+          perSpace.delete(cacheKey);
+          if (perSpace.size === 0) {
+            context.decodeContext.decoded.delete(ref.handle);
+          }
         }
-      }
-    });
-  }
-  const outcome = await pending;
-  if (outcome.kind !== 'decoded') {
-    emitTextureDecodeFailure(outcome, handleKind, context);
-    return ref;
-  }
+      });
+    }
+    const outcome = await pending;
+    await context.budgetTurn.ready;
+    if (outcome.kind !== 'decoded') {
+      emitTextureDecodeFailure(outcome, handleKind, context);
+      return ref;
+    }
 
-  emitDecodedTextureDiagnostics(outcome.entry, ref, context);
-  try {
-    return await applyNpotRepeatWrapPolicy(ref, outcome.entry, context);
-  } catch (err) {
-    emitDerivedTextureFailure(err, context);
-    return attachGltfTextureRefSource(
-      { ...ref, handle: outcome.entry.handle },
-      context.source,
-    );
+    emitDecodedTextureDiagnostics(outcome.entry, ref, context);
+    try {
+      return await applyNpotRepeatWrapPolicy(ref, outcome.entry, context);
+    } catch (err) {
+      emitDerivedTextureFailure(err, context);
+      return attachGltfTextureRefSource(
+        { ...ref, handle: outcome.entry.handle },
+        context.source,
+      );
+    }
+  } finally {
+    await context.budgetTurn.ready;
+    context.budgetTurn.complete();
   }
 }
 
@@ -961,6 +1048,7 @@ async function decodeRawTextureOutcome(
     }
     return { kind: 'decode-error', causeMessage: safeErrorMessage(err) };
   }
+  await context.budgetTurn.ready;
   return outcomeFromDecodedPixels(
     pixels,
     colorSpace,
@@ -1087,6 +1175,15 @@ function outcomeFromDecodedPixels(
     };
   }
   try {
+    const invalidComponentReason = validateDecodedPixelComponents(pixels);
+    if (invalidComponentReason !== null) {
+      return {
+        kind: 'invalid',
+        reason: invalidComponentReason,
+        width: pixels.width,
+        height: pixels.height,
+      };
+    }
     return {
       kind: 'decoded',
       entry: cacheEntryFromDecodedPixels(
@@ -1402,6 +1499,19 @@ function validateDecodedTexturePixels(value: unknown): DecodedPixelsValidation {
   };
 }
 
+function validateDecodedPixelComponents(
+  pixels: ValidatedDecodedTexturePixels,
+): string | null {
+  const requiredLength = pixels.pixelCount * pixels.channels;
+  for (let index = 0; index < requiredLength; index += 1) {
+    const value = pixels.data[index];
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return `data contains a non-finite component at index ${index}: ${safeString(value)}`;
+    }
+  }
+  return null;
+}
+
 function cacheEntryFromDecodedPixels(
   pixels: ValidatedDecodedTexturePixels,
   colorSpace: GltfTextureColorSpace,
@@ -1467,6 +1577,7 @@ function maybeBakeSpecGlossRoughnessMap(
     primitiveIndex: context.primitiveIndex,
     options: context.options,
     decodeContext: context.decodeContext,
+    budgetTurn: COMPLETED_BUDGET_TURN,
     diagnostic: context.diagnostic,
   };
   try {
@@ -1604,6 +1715,7 @@ function cpuLinearTextureHandleForSpecGlossBake(
       path,
     });
   }
+  if (validateDecodedPixelComponents(validation.pixels) !== null) return null;
   if (alreadyLinear) return handle;
   return normalizeDecodedPixels(
     validation.pixels,
@@ -1628,7 +1740,10 @@ export function decodedPixelsFromCpuReadableHandle(handle: unknown): GltfDecoded
 export function isCpuReadableTexturePayloadValid(handle: unknown): boolean {
   try {
     const pixels = decodedPixelsFromCpuReadableHandle(handle);
-    return pixels !== null && validateDecodedTexturePixels(pixels).valid;
+    if (pixels === null) return false;
+    const validation = validateDecodedTexturePixels(pixels);
+    return validation.valid &&
+      validateDecodedPixelComponents(validation.pixels) === null;
   } catch {
     return false;
   }

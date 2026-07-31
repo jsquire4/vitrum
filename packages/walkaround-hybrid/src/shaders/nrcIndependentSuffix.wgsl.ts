@@ -121,7 +121,7 @@ fn nrcTeacherShadowTint(
   return traceSceneAlphaTintTransmittanceTextured(
     ubo.bvhMode, ubo.tlasNodeCount,
 
-    pos + offsetNormal * NORMAL_BIAS_GI, wi, tMax, ubo.triIntersectEpsilon,
+    pos + offsetNormal * walkaroundRayOriginBias(), wi, tMax, ubo.triIntersectEpsilon,
     bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
   );
 }
@@ -146,18 +146,20 @@ fn nrcTeacherAreaNee(
   let emitter = sceneLoadEmitter(lid);
   let ls = sampleEmitterPoint(emitter, xi);
   let toLight = ls.pos - pos;
-  let dist2 = dot(toLight, toLight);
-  if (dist2 <= 1e-8) { return vec3f(0.0); }
-  let dist = sqrt(dist2);
-  let wi = toLight / dist;
-  let cosLight = max(0.0, dot(-ls.normal, wi));
+  let dist = safe_length(toLight);
+  if (!(dist > 0.0)) { return vec3f(0.0); }
+  let dist2 = dist * dist;
+  let wi = safe_normalize(toLight);
+  let cosLight = emitterTriCosineTowardReceiver(emitter, -wi);
   if (cosLight <= 0.0 || dot(normal, wi) <= 0.0) {
     return vec3f(0.0);
   }
 
   var visibility = vec3f(1.0);
-  if (emitter.castShadowDisabled < 0.5) {
-    visibility = nrcTeacherShadowTint(pos, geoNormal, wi, max(0.0, dist - 2e-3));
+  if (!emitterTriCastShadowDisabled(emitter)) {
+    visibility = nrcTeacherShadowTint(
+      pos, geoNormal, wi, max(0.0, dist - walkaroundRayEndMargin()),
+    );
     if (nrcTeacherMax3(visibility) <= 0.0) { return vec3f(0.0); }
   }
 
@@ -206,16 +208,17 @@ fn nrcTeacherAnalyticNee(
     let l2 = textureLoad(analytic_lights, vec2i(i32((base + 2u) % dims.x), i32((base + 2u) / dims.x)), 0);
     let l3 = textureLoad(analytic_lights, vec2i(i32((base + 3u) % dims.x), i32((base + 3u) / dims.x)), 0);
     let toLight = l0.xyz - pos;
-    let dist2 = dot(toLight, toLight);
-    if (dist2 <= 1e-8) { continue; }
-    let dist = sqrt(dist2);
-    let wi = toLight / dist;
+    let dist = safe_length(toLight);
+    if (!(dist > 0.0)) { continue; }
+    let wi = safe_normalize(toLight);
     if (dot(normal, wi) <= 0.0) { continue; }
     let cone = nrc_teacherSpotConeFalloff(l2.xyz, wi, l2.w, l3.x);
     if (cone <= 0.0) { continue; }
     var visibility = vec3f(1.0);
     if (l3.y <= 0.5) {
-      visibility = nrcTeacherShadowTint(pos, geoNormal, wi, max(0.0, dist - 2e-3));
+      visibility = nrcTeacherShadowTint(
+        pos, geoNormal, wi, max(0.0, dist - walkaroundRayEndMargin()),
+      );
       if (nrcTeacherMax3(visibility) <= 0.0) { continue; }
     }
     let attenuation = nrc_teacherPointSpotAttenuation(
@@ -250,14 +253,14 @@ fn nrcTeacherSunNee(
   if (dot(normal, wi) <= 0.0) { return vec3f(0.0); }
   var visibility = vec3f(1.0);
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    visibility = nrcTeacherShadowTint(pos, geoNormal, wi, 1e6);
+    visibility = nrcTeacherShadowTint(pos, geoNormal, wi, INFINITY);
     if (nrcTeacherMax3(visibility) <= 0.0) { return vec3f(0.0); }
   }
   return vec3f(ubo.sunIntensity) * visibility *
     nrcTeacherMaterialResponse(payload, normal, wo, wi);
 }
 
-fn nrcTeacherBeerTint(hit: IntersectionResult) -> vec3f {
+fn nrcTeacherAuthoredBeerTint(hit: IntersectionResult) -> vec3f {
   let coord = vec2u(
     hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
     hit.indices.w / BVH_MATERIAL_TEX_WIDTH,
@@ -276,6 +279,21 @@ fn nrcTeacherBeerTint(hit: IntersectionResult) -> vec3f {
   );
 }
 
+fn nrcTeacherBeerForSegment(
+  triIndex: u32,
+  authoredTint: vec3f,
+  authoredThickness: f32,
+  segmentLength: f32,
+) -> vec3f {
+  if (segmentLength <= 0.0) { return vec3f(1.0); }
+  if (!(authoredThickness > 0.0)) { return vec3f(0.0); }
+  let rgbBeer = pow(
+    clamp(authoredTint, vec3f(0.0), vec3f(1.0)),
+    vec3f(segmentLength / authoredThickness),
+  );
+  return materialSpectralAttenuation(triIndex, segmentLength, rgbBeer);
+}
+
 // Independent online teacher.  It intentionally has no DDGI/cache arguments
 // and never calls sampleDDGIAtPoint or nrcQueryRadiance.
 fn nrcTraceIndependentSuffix(
@@ -290,8 +308,32 @@ fn nrcTraceIndependentSuffix(
   var throughput = vec3f(1.0);
   var radiance = vec3f(0.0);
   var arrivedThroughDelta = true;
+  var segmentLength = 0.0;
+  var mediumDepth = 0u;
+  var mediumMaterialWord: array<u32, 4>;
+  var mediumTri: array<u32, 4>;
+  var mediumInstance: array<u32, 4>;
+  var mediumIor: array<f32, 4>;
+  var mediumAuthoredTint: array<vec3f, 4>;
+  var mediumAuthoredThickness: array<f32, 4>;
 
   for (var depth = 0u; depth < NRC_TEACHER_MAX_VERTICES; depth = depth + 1u) {
+    if (mediumDepth > 0u && segmentLength > 0.0) {
+      let top = mediumDepth - 1u;
+      throughput = throughput * nrcTeacherBeerForSegment(
+        mediumTri[top],
+        mediumAuthoredTint[top],
+        mediumAuthoredThickness[top],
+        segmentLength,
+      );
+      if (
+        !nrcTeacherFinite3(throughput) ||
+        nrcTeacherMax3(throughput) <= 0.0
+      ) {
+        break;
+      }
+    }
+
     let geoNormal = currentHit.normal;
     let smoothNormal = restir_gi_smooth_normal_for_hit(currentHit, geoNormal);
     let normal = applyBumpMapForHit(
@@ -326,28 +368,97 @@ fn nrcTraceIndependentSuffix(
 
     if (materialHasTransmission(transmission)) {
       if (depth + 1u >= NRC_TEACHER_MAX_VERTICES) { break; }
-      // Bounded dielectric interface walk.  Fresnel branch probabilities cancel
-      // their delta-BSDF weights; eta^2 is the radiance-transport Jacobian.
+      // Bounded dielectric interface walk. IntersectionResult.normal is
+      // face-forward, so authored side — not dot(ray, normal) — owns medium
+      // entry/exit. Fresnel branch probabilities cancel their delta weights.
       let incident = -wo;
-      let cosI = -dot(incident, normal);
-      let eta = materialDispersionIorRgb(
+      let entering = currentHit.side >= 0.0;
+      let materialIor = materialDispersionIorRgb(
         currentHit.indices.w, decodeIor(materialWord),
       ).g;
-      let etaRatio = select(eta, 1.0 / eta, cosI > 0.0);
-      let orientedNormal = select(-normal, normal, cosI > 0.0);
-      let cosIAbs = abs(cosI);
+      let thinSheet = payload.bulkThickness <= 0.0;
+      if (!thinSheet && !entering && mediumDepth == 0u) { break; }
+
+      var etaIncident = 1.0;
+      if (mediumDepth > 0u) {
+        etaIncident = mediumIor[mediumDepth - 1u];
+      }
+      var etaTarget = materialIor;
+      if (!thinSheet && !entering) {
+        let top = mediumDepth - 1u;
+        if (
+          mediumMaterialWord[top] != materialWord ||
+          mediumInstance[top] != currentHit.instanceIndex
+        ) {
+          break;
+        }
+        etaTarget = 1.0;
+        if (mediumDepth > 1u) {
+          etaTarget = mediumIor[mediumDepth - 2u];
+        }
+      }
+
+      let etaRatio = etaIncident / max(etaTarget, 1e-6);
+      let orientedNormal = select(
+        -normal,
+        normal,
+        dot(incident, normal) < 0.0,
+      );
+      let cosIAbs = clamp(-dot(incident, orientedNormal), 0.0, 1.0);
       let sin2T = etaRatio * etaRatio * max(0.0, 1.0 - cosIAbs * cosIAbs);
-      let r0 = ((eta - 1.0) / max(eta + 1.0, 1e-6));
-      let fresnel = clamp(r0 * r0 + (1.0 - r0 * r0) * pow(1.0 - cosIAbs, 5.0), 0.0, 1.0);
-      if (sin2T >= 1.0 || rand_f32(rng) < fresnel) {
+      let r0 = (etaTarget - etaIncident) /
+        max(etaTarget + etaIncident, 1e-6);
+      let interfaceFresnel = clamp(
+        r0 * r0 + (1.0 - r0 * r0) * pow(1.0 - cosIAbs, 5.0),
+        0.0,
+        1.0,
+      );
+      let thinTransmission = (1.0 - interfaceFresnel) *
+        (1.0 - interfaceFresnel);
+      let branchFresnel = select(
+        interfaceFresnel,
+        1.0 - thinTransmission,
+        thinSheet,
+      );
+      if (sin2T >= 1.0 || rand_f32(rng) < branchFresnel) {
         nextDir = safe_normalize(reflect(incident, orientedNormal));
       } else {
-        let cosT = sqrt(max(0.0, 1.0 - sin2T));
-        nextDir = safe_normalize(
-          etaRatio * incident + (etaRatio * cosIAbs - cosT) * orientedNormal,
-        );
-        nextThroughput = nextThroughput * nrcTeacherBeerTint(currentHit) *
-          transmission * (etaRatio * etaRatio);
+        if (thinSheet) {
+          // A geometric sheet represents reciprocal entry+exit boundaries and
+          // has no interior Beer segment.
+          nextDir = incident;
+          let reverseLayer = sampleFaceLayerControls(
+            currentHit.indices.w,
+            currentHit.side < 0.0,
+          );
+          nextThroughput = nextThroughput *
+            transmission *
+            payload.layerTransmission *
+            clamp(reverseLayer.rgb, vec3f(0.0), vec3f(1.0));
+        } else {
+          let cosT = sqrt(max(0.0, 1.0 - sin2T));
+          nextDir = safe_normalize(
+            etaRatio * incident +
+            (etaRatio * cosIAbs - cosT) * orientedNormal,
+          );
+          nextThroughput = nextThroughput *
+            payload.layerTransmission *
+            (etaRatio * etaRatio);
+          if (entering) {
+            nextThroughput = nextThroughput * transmission;
+            if (mediumDepth >= NRC_TEACHER_MAX_VERTICES) { break; }
+            mediumMaterialWord[mediumDepth] = materialWord;
+            mediumTri[mediumDepth] = currentHit.indices.w;
+            mediumInstance[mediumDepth] = currentHit.instanceIndex;
+            mediumIor[mediumDepth] = materialIor;
+            mediumAuthoredTint[mediumDepth] =
+              nrcTeacherAuthoredBeerTint(currentHit);
+            mediumAuthoredThickness[mediumDepth] = payload.bulkThickness;
+            mediumDepth = mediumDepth + 1u;
+          } else {
+            mediumDepth = mediumDepth - 1u;
+          }
+        }
       }
       nextIsDelta = true;
     } else {
@@ -386,7 +497,10 @@ fn nrcTraceIndependentSuffix(
     }
 
     let offsetNormal = select(-geoNormal, geoNormal, dot(geoNormal, nextDir) >= 0.0);
-    let nextRay = Ray(currentPos + offsetNormal * NORMAL_BIAS_GI, nextDir);
+    let nextRay = Ray(
+      currentPos + offsetNormal * walkaroundRayOriginBias(),
+      nextDir,
+    );
     let nextHit = traceSceneFirstHitAlphaMaskTextured(
       ubo.bvhMode, ubo.tlasNodeCount,
 
@@ -395,12 +509,20 @@ fn nrcTraceIndependentSuffix(
       pcgNext(rng),
     );
     if (!nextHit.didHit) {
-      radiance = radiance + nextThroughput * envRadiance(nextDir) *
-        max(payload.envMapIntensity, 0.0);
+      // An escaped ray with an unpaired bulk entry would otherwise omit an
+      // unbounded in-medium segment. Open/malformed volumes fail closed.
+      if (mediumDepth != 0u) { break; }
+      let receiverEnvironment = walkaroundScaleEnvironmentRadiance(
+        envRadiance(nextDir),
+        payload.envMapIntensity,
+      );
+      radiance = radiance + nextThroughput * receiverEnvironment;
       break;
     }
 
-    currentPos = nextRay.origin + nextDir * nextHit.dist;
+    let nextPos = nextRay.origin + nextDir * nextHit.dist;
+    segmentLength = length(nextPos - currentPos);
+    currentPos = nextPos;
     currentHit = nextHit;
     wo = -nextDir;
     throughput = nextThroughput;

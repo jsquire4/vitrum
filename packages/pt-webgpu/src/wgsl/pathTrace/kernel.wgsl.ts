@@ -1,6 +1,6 @@
 import { PT_WEBGPU_PATH_TRACE_HG_PHASE_WGSL } from './bsdf.wgsl.js';
 import {
-  composeShadePrologueWgsl,
+  composeShadeProloguePartsWgsl,
   SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL,
   SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL,
   SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL,
@@ -79,7 +79,8 @@ export function composePathTraceKernelWgsl(opts: {
     let surfaceMediumBoundary = mediumBoundaryIdentity(
       hit.triIndex, hit.instanceIndex,
     );
-    let surfaceCrossesMedium = mat.isTranslucent && transmission > 0.0;
+    let surfaceCrossesMedium =
+      !mat.isUnlit && mat.isTranslucent && transmission > 0.0;
     if (surfaceCrossesMedium && !mediumBoundaryIsValid(surfaceMediumBoundary)) {
       break;
     }
@@ -360,7 +361,8 @@ export function composePathTraceKernelWgsl(opts: {
     let surfaceMediumBoundary = mediumBoundaryIdentity(
       hit.triIndex, hit.instanceIndex,
     );
-    let surfaceCrossesMedium = mat.isTranslucent && transmission > 0.0;
+    let surfaceCrossesMedium =
+      !mat.isUnlit && mat.isTranslucent && transmission > 0.0;
     if (surfaceCrossesMedium && !mediumBoundaryIsValid(surfaceMediumBoundary)) {
       break;
     }
@@ -480,6 +482,22 @@ export function composePathTraceKernelWgsl(opts: {
         );
       }
     }`;
+
+  const shadePrologue = composeShadeProloguePartsWgsl(
+    SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL,
+    SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL,
+    SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL,
+    SHADE_PROLOGUE_ORM_TEX_APPLY_FULL,
+    SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL,
+    SHADE_PROLOGUE_AO_APPLY_FULL,
+    SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL,
+    SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL,
+    SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL,
+    SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL,
+    SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL,
+    SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL,
+    ' && !mneeOwnsCurrentEmission',
+  );
 
   // A1 — composite mode module-scope binding: the ReSTIR-PT resolve output
   // (one vec4f / px; .rgb = reconnection indirect, .a = contributing flag). The
@@ -829,12 +847,12 @@ ${PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL}
 
 fn sampleDirectionalCone(rng: ptr<function, PtRngState>, axisIn: vec3f, angularDiameter: f32) -> vec3f {
   var sampleDir = safe_normalize(axisIn);
-  if (angularDiameter > 0.0) {
-    let cosHalfAngle = cos(angularDiameter * 0.5);
+  if (!ptDirectionalConeIsDelta(angularDiameter)) {
     let xi1 = rand_f32(rng);
     let xi2 = rand_f32(rng);
-    let cosTheta = mix(cosHalfAngle, 1.0, xi1);
-    let sinTheta = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
+    let sinCosTheta = ptDirectionalConeSinCos(angularDiameter, xi1);
+    let sinTheta = sinCosTheta.x;
+    let cosTheta = sinCosTheta.y;
     let phi = 6.28318530718 * xi2;
     let tangentX = select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 1.0, 0.0), abs(sampleDir.x) > 0.9);
     let basisY = normalize(cross(sampleDir, tangentX));
@@ -979,7 +997,7 @@ ${mediumStateDecls}
     let sppmOwnsCurrentEmission = sppmActive && sppmReceiverPrefixActive && sppmOwnedDeltaDepth > 0u;
     let alphaTraceOrigin = ray.origin;
     var alphaAdvance = 0.0;
-    var hit = traceClosest(ray, 1e-4, INFINITY);
+    var hit = traceClosest(ray, ptRayTMin(), INFINITY);
     // P2 alpha-test pass-through: a baseColor-texture alpha mask/blend hit is
     // "not there" — advance the ray past it and re-trace, WITHOUT consuming a
     // scatter bounce. Opaque materials return false on the first test. The
@@ -1000,10 +1018,10 @@ ${mediumStateDecls}
       if (!alphaTestPassThrough(
         hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
       )) { break; }
-      let alphaStep = hit.dist + 1e-4;
+      let alphaStep = hit.dist + ptRayTMin();
       alphaAdvance = alphaAdvance + alphaStep;
       ray.origin = ray.origin + ray.direction * alphaStep;
-      hit = traceClosest(ray, 1e-4, INFINITY);
+      hit = traceClosest(ray, ptRayTMin(), INFINITY);
     }
     ray.origin = alphaTraceOrigin;
     if (!alphaTraversalValid) { break; }
@@ -1028,13 +1046,19 @@ ${mediumStateDecls}
         // Item 8 — apply the last shaded surface's envMapIntensity to this BSDF-escape
         // env pickup, matching the scale already applied in the NEE half (~line 755).
         // lastEnvMapIntensity is 1.0 for camera-visible env (bounce=0, no prior hit).
-        radiance = radiance + throughput * envContribution * lastEnvMapIntensity;
+        let receiverEnvironment = ptScaleEnvironmentRadiance(
+          envContribution,
+          lastEnvMapIntensity,
+        );
+        radiance = radiance + throughput * receiverEnvironment;
       }
       break;
     }
 
 ${preShadeMediumAttenuation}
-${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL, SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL, SHADE_PROLOGUE_ORM_TEX_APPLY_FULL, SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL, SHADE_PROLOGUE_AO_APPLY_FULL, SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL, SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL, SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL, SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL, SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL, SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL, ' && !mneeOwnsCurrentEmission')}
+${shadePrologue.material}
+${transmissiveBlock}
+${shadePrologue.surface}
     // Item 8 — record this surface's envMapIntensity for the forward env escape
     // pickup on the NEXT iteration (mirrors pt-webgl2 state.envMapIntensity update).
     lastEnvMapIntensity = materialEnvMapIntensity(matId);
@@ -1042,7 +1066,6 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_FULL, SHADE_PROLOGUE_
     let anisoStrength = materialAnisotropy(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);
     let anisoRotation = materialAnisotropyRotation(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);
     let throughputAtVertex = throughput;
-${transmissiveBlock}
     let cosThetaO = max(0.0, dot(normal, wo));
     let f0Base = materialSpecularF0(
       baseColor, metallic, surfaceEtaTOverI,
@@ -1138,8 +1161,14 @@ ${transmissiveBlock}
           let angDiam = select(angDiamRaw, -1.0 - angDiamRaw, dirShadowDisabled);
           sampleDir = sampleDirectionalCone(&rng, sampleDir, angDiam);
           let directOffsetNormal = select(-normal, normal, dot(normal, sampleDir) > 0.0);
-          let shadowRay = Ray(hitPos + directOffsetNormal * 1e-3, sampleDir);
-          if (dirShadowDisabled || !traceAny(shadowRay, 1e-4, INFINITY, &rng)) {
+          let shadowRay = Ray(
+            hitPos + directOffsetNormal * ptRayOriginBias(),
+            sampleDir,
+          );
+          if (
+            dirShadowDisabled ||
+            !traceAny(shadowRay, ptRayTMin(), INFINITY, &rng)
+          ) {
             let nDotL = abs(dot(normal, sampleDir));
             // H52: evaluateBrdfFull adds clearcoat/sheen/iridescence lobes;
             // zero-default → identical to evaluateBrdf when all scalars are 0.
@@ -1152,13 +1181,8 @@ ${transmissiveBlock}
             let dIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
             var distantMisWeight = 1.0;
             if (bdptOwnsFiniteLightFamily) {
-              let directionIsDelta = angDiam <= 0.0;
-              var directionPdf = 1.0;
-              if (!directionIsDelta) {
-                let coneQuarterSin = sin(angDiam * 0.25);
-                directionPdf =
-                  1.0 / (4.0 * PI * coneQuarterSin * coneQuarterSin);
-              }
+              let directionIsDelta = ptDirectionalConeIsDelta(angDiam);
+              let directionPdf = ptDirectionalConePdf(angDiam);
               let selectionPdf = select(
                 1.0 / max(lightSelectInvPdf, 1e-20),
                 1.0,
@@ -1208,18 +1232,28 @@ ${transmissiveBlock}
           let ptMaxDist = ptExtra.x;  // 0 = no cutoff
           let ptDecay   = ptExtra.y;  // 0 = no falloff, 2 = physical inverse-square
           let toPoint = lp - hitPos;
-          let dist2 = max(dot(toPoint, toPoint), 1e-5);
-          let dist = sqrt(dist2);
+          let dist = safe_length(toPoint);
           // Distance cutoff: skip if ptMaxDist > 0 and hit is beyond it.
-          if (ptMaxDist > 0.0 && dist > ptMaxDist) {
+          if (!(dist > 0.0) || (ptMaxDist > 0.0 && dist > ptMaxDist)) {
             current = current + 1u;
             continue;
           }
           let wi = toPoint / dist;
           let pointOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-          let pointShadowRay = Ray(hitPos + pointOffsetNormal * 1e-3, wi);
+          let pointShadowRay = Ray(
+            hitPos + pointOffsetNormal * ptRayOriginBias(),
+            wi,
+          );
           // SHADOW-01 — ptExtra.z carries the emitter castShadowDisabled flag.
-          if (ptExtra.z > 0.5 || !traceAny(pointShadowRay, 1e-4, max(dist - 2e-3, 1e-3), &rng)) {
+          if (
+            ptExtra.z > 0.5 ||
+            !traceAny(
+              pointShadowRay,
+              ptRayTMin(),
+              ptFiniteSegmentTMax(dist),
+              &rng,
+            )
+          ) {
             let nDotL = abs(dot(normal, wi));
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
@@ -1252,10 +1286,9 @@ ${transmissiveBlock}
           let spMaxDist = spExtra.x;  // 0 = no cutoff
           let spDecay   = spExtra.y;  // 0 = no falloff, 2 = physical inverse-square
           let toSpot = spos - hitPos;
-          let dist2 = max(dot(toSpot, toSpot), 1e-5);
-          let dist = sqrt(dist2);
+          let dist = safe_length(toSpot);
           // Distance cutoff: skip if spMaxDist > 0 and hit is beyond it.
-          if (spMaxDist > 0.0 && dist > spMaxDist) {
+          if (!(dist > 0.0) || (spMaxDist > 0.0 && dist > spMaxDist)) {
             current = current + 1u;
             continue;
           }
@@ -1263,9 +1296,20 @@ ${transmissiveBlock}
           let coneCos = dot(-wi, spotDir);
           if (coneCos >= cosOuter) {
             let spotOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-            let spotShadowRay = Ray(hitPos + spotOffsetNormal * 1e-3, wi);
+            let spotShadowRay = Ray(
+              hitPos + spotOffsetNormal * ptRayOriginBias(),
+              wi,
+            );
             // SHADOW-01 — spExtra.z carries the emitter castShadowDisabled flag.
-            if (spExtra.z > 0.5 || !traceAny(spotShadowRay, 1e-4, max(dist - 2e-3, 1e-3), &rng)) {
+            if (
+              spExtra.z > 0.5 ||
+              !traceAny(
+                spotShadowRay,
+                ptRayTMin(),
+                ptFiniteSegmentTMax(dist),
+                &rng,
+              )
+            ) {
               let nDotL = abs(dot(normal, wi));
               // Smooth penumbra: smoothstep from cosOuter to cosInner (hard edge when equal).
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
@@ -1299,38 +1343,45 @@ ${transmissiveBlock}
           let rshape = rectAreaLights[rb + 3u];
           let rr = rshape.rgb;
           let isDisc = abs(rshape.w - 1.0) < 0.5;
+          let areaMeasure = measureAreaVector(
+            ru, rv, select(4.0, PI, isDisc),
+          );
           // Sample a point on the emitter surface.
           let xi1 = rand_f32(&rng);
           let xi2 = rand_f32(&rng);
           var lpos: vec3f;
-          var area: f32;
           if (isDisc) {
             // D9.11 — Shirley & Chiu 1997 concentric-disc map via shared kernelCore helper.
             // The affine unit-disc map has area Jacobian |ru×rv|.
             let disc = concentricDiscSample(vec2f(xi1 * 2.0 - 1.0, xi2 * 2.0 - 1.0));
             lpos = rpos + ru * disc.x + rv * disc.y;
-            area = PI * length(cross(ru, rv));
           } else {
             let u = xi1 * 2.0 - 1.0;
             let v = xi2 * 2.0 - 1.0;
             lpos = rpos + ru * u + rv * v;
-            area = 4.0 * length(cross(ru, rv));
           }
           let toLight = lpos - hitPos;
-          let dist2 = max(dot(toLight, toLight), 1e-6);
-          let dist = sqrt(dist2);
-          let wi = toLight / dist;
+          let dist = safe_length(toLight);
+          let wi = safe_normalize(toLight);
           let nDotL = abs(dot(normal, wi));
-          if (nDotL > 0.0 && area > 0.0) {
+          if (
+            dist > 0.0 && nDotL > 0.0 &&
+            areaMeasure.valid != 0u
+          ) {
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation, thinFilm, false);
-            let lightNormal = safe_normalize(cross(ru, rv));
+            let lightNormal = areaMeasure.normal;
             let cosLight = max(dot(lightNormal, -wi), 0.0);
             if (cosLight > 0.0) {
-              let lightPdf = dist2 / (cosLight * area);
+              let lightPdf =
+                ptAreaToSolidAnglePdf(dist, cosLight, areaMeasure);
+              if (!(lightPdf > 0.0)) {
+                current = current + 1u;
+                continue;
+              }
               let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
@@ -1347,9 +1398,20 @@ ${transmissiveBlock}
               // BRDF side is unweighted — that would bias tree-vs-uniform.)
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let rectOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-              let shadowRay = Ray(hitPos + rectOffsetNormal * 1e-3, wi);
+              let shadowRay = Ray(
+                hitPos + rectOffsetNormal * ptRayOriginBias(),
+                wi,
+              );
               // SHADOW-01 — rectAreaLights[rb].w carries castShadowDisabled.
-              if (rectAreaLights[rb].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), &rng)) {
+              if (
+                rectAreaLights[rb].w > 0.5 ||
+                !traceAny(
+                  shadowRay,
+                  ptRayTMin(),
+                  ptFiniteSegmentTMax(dist),
+                  &rng,
+                )
+              ) {
                 // A3 — spectralise the rect/disc-area radiance at the hero λ.
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
                 directLi = directLi + throughput * brdf * nDotL * rrOut * misWeight / lightPdf * directLightingScale;
@@ -1376,21 +1438,30 @@ ${transmissiveBlock}
             mi, vec3f(uu, vv, ww), lpos,
           );
           let toLight = lpos - hitPos;
-          let dist2 = max(dot(toLight, toLight), 1e-6);
-          let dist = sqrt(dist2);
-          let wi = toLight / dist;
+          let dist = safe_length(toLight);
+          let areaMeasure = measureAreaVector(b - a, c - a, 0.5);
+          let wi = safe_normalize(toLight);
           let nDotL = abs(dot(normal, wi));
-          let area = 0.5 * length(cross(b - a, c - a));
-          if (nDotL > 0.0 && area > 0.0) {
+          if (
+            dist > 0.0 && nDotL > 0.0 &&
+            areaMeasure.valid != 0u
+          ) {
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
               mat.specularColor, mat.specularIntensity,
               anisoStrength, anisoRotation, thinFilm, false);
-            let lightNormal = safe_normalize(cross(b - a, c - a));
-            let cosLight = max(dot(lightNormal, -wi), 0.0);
+            let lightNormal = areaMeasure.normal;
+            let cosLight = meshAreaLightCosineTowardReceiver(
+              mi, lightNormal, -wi,
+            );
             if (cosLight > 0.0) {
-              let lightPdf = dist2 / (cosLight * area);
+              let lightPdf =
+                ptAreaToSolidAnglePdf(dist, cosLight, areaMeasure);
+              if (!(lightPdf > 0.0)) {
+                current = current + 1u;
+                continue;
+              }
               let brdfPdf = brdfDirectionalPdfFullSampledWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
                 mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
@@ -1401,9 +1472,20 @@ ${transmissiveBlock}
               // selection pdf (tree-vs-uniform means match), variance differs.
               let misWeight = powerHeuristic(lightPdf, brdfPdf);
               let meshOffsetNormal = select(-normal, normal, dot(normal, wi) > 0.0);
-              let shadowRay = Ray(hitPos + meshOffsetNormal * 1e-3, wi);
+              let shadowRay = Ray(
+                hitPos + meshOffsetNormal * ptRayOriginBias(),
+                wi,
+              );
               // SHADOW-01 — row 3.w carries castShadowDisabled.
-              if (meshAreaLights[mb + 3u].w > 0.5 || !traceAny(shadowRay, 1e-4, max(dist - 2e-3, 1e-3), &rng)) {
+              if (
+                meshAreaLights[mb + 3u].w > 0.5 ||
+                !traceAny(
+                  shadowRay,
+                  ptRayTMin(),
+                  ptFiniteSegmentTMax(dist),
+                  &rng,
+                )
+              ) {
                 // A3 — spectralise the mesh-area radiance at the hero λ.
                 let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);
                 directLi = directLi + throughput * brdf * nDotL * mrOut * misWeight / lightPdf * directLightingScale;
@@ -1432,8 +1514,11 @@ ${transmissiveBlock}
         let nDotL = abs(dot(normal, envDir));
         if (nDotL > 0.0) {
           let envOffsetNormal = select(-normal, normal, dot(normal, envDir) > 0.0);
-          let shadowRay = Ray(hitPos + envOffsetNormal * 1e-3, envDir);
-          if (!traceAny(shadowRay, 1e-4, INFINITY, &rng)) {
+          let shadowRay = Ray(
+            hitPos + envOffsetNormal * ptRayOriginBias(),
+            envDir,
+          );
+          if (!traceAny(shadowRay, ptRayTMin(), INFINITY, &rng)) {
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
@@ -1455,7 +1540,14 @@ ${transmissiveBlock}
             // envMapIntensity == 1 (default) ⇒ scale == 1 ⇒ byte-identical.
             // Ref: THREE.envMapIntensity; pt-webgl2 state.envMapIntensity pattern.
             let envScale = materialEnvMapIntensity(matId);
-            let envColorOut = select(envColor, spectralEmissionAtHero(envColor, heroLambda), params.spectralEnabled != 0u) * envScale;
+            let envColorOut = ptScaleEnvironmentRadiance(
+              select(
+                envColor,
+                spectralEmissionAtHero(envColor, heroLambda),
+                params.spectralEnabled != 0u,
+              ),
+              envScale,
+            );
             var misWeight = powerHeuristic(envPdf, brdfPdf);
             if (bdptOwnsFiniteLightFamily) {
               let selectionPdf = select(
@@ -1601,7 +1693,7 @@ ${bdptEyeStackPrimaryPdfComment}
       mneeSampledThisVertex = true;
     } else if (sppmActive) {
       // A4-progressive: pass pixelIndex so photonMapUpdateProgressive can write
-      // the per-pixel (τ, R², N) stats buffer for the Hachisuka update rule.
+      // the per-pixel (τ, linear R, N) stats buffer for the Hachisuka update rule.
       // Item 21: heroLambda lets the gather spectralise each photon's RGB flux.
       // Non-spectral path (spectralEnabled=0): heroLambda is unused → byte-identical.
       let sppmReceiverEligible =

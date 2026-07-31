@@ -47,6 +47,10 @@ const NO_HOST_OVERRIDES: ScaleAwareHostExplicit = {
   restirGiIrrClamp: false,
   directFireflyClamp: false,
   emitterDist2Floor: false,
+  spatialDepthTolFloor: false,
+  gtaoDepthThreshold: false,
+  gtaoBilateralDepthSigma: false,
+  restirGiSpatialCoplanarTol: false,
   indirectFireflyClamp: false,
 };
 
@@ -92,6 +96,13 @@ describe('B15 sceneWorldDiagonal', () => {
     expect(sceneWorldDiagonal(boxScene(200))).toBeCloseTo(CORNELL_DIAGONAL * 100, 4);
   });
 
+  it('retains every finite positive extent below the former 1e-6 floor', () => {
+    const diagonal = sceneWorldDiagonal(boxScene(1e-9));
+    expect(diagonal).toBeGreaterThan(0);
+    expect(diagonal).toBeLessThan(1e-8);
+    expect(diagonal).not.toBe(CORNELL_DIAGONAL);
+  });
+
   it('is transform-aware (translation does not change extent; scale does)', () => {
     // Column-major translate by (1000,0,0): extent unchanged ⇒ same diagonal.
     const translate = new Float32Array([
@@ -115,6 +126,7 @@ describe('B15 deriveScaleAwareClamps — Cornell byte-identity', () => {
     expect(r.tunables.emitterDist2Floor).toBe(0.01);
     expect(r.tunables.restirGiWCap).toBe(16.0);
     expect(r.indirectFireflyClamp).toEqual([1, 1, 1]);
+    expect(r.rayOriginBias).toBeCloseTo(1e-3, 12);
   });
 
   it('empty scene ⇒ Cornell defaults (no scene yet)', () => {
@@ -135,6 +147,12 @@ describe('B15 deriveScaleAwareClamps — the dimensional law', () => {
     expect(r.indirectFireflyClamp[0]).toBeCloseTo(1.0 / (s * s), 6);
     // ×s²
     expect(r.tunables.emitterDist2Floor).toBeCloseTo(0.01 * s * s, 4);
+    // world-length tolerances ×s
+    expect(r.tunables.spatialDepthTolFloor).toBeCloseTo(0.05 * s, 6);
+    expect(r.tunables.gtaoDepthThreshold).toBeCloseTo(2.0 * s, 6);
+    expect(r.tunables.gtaoBilateralDepthSigma).toBeCloseTo(0.25 * s, 6);
+    expect(r.tunables.restirGiSpatialCoplanarTol).toBeCloseTo(0.05 * s, 6);
+    expect(r.rayOriginBias).toBeCloseTo(1e-3 * s, 9);
     // unitless variance cap — unchanged
     expect(r.tunables.restirGiWCap).toBe(16.0);
     // unrelated knobs unchanged
@@ -147,6 +165,14 @@ describe('B15 deriveScaleAwareClamps — the dimensional law', () => {
     expect(r.scaleRatio).toBeCloseTo(0.5, 6);
     expect(r.tunables.restirGiIrrClamp).toBeCloseTo(5.0 / 0.25, 6);
     expect(r.tunables.emitterDist2Floor).toBeCloseTo(0.01 * 0.25, 6);
+    expect(r.rayOriginBias).toBeCloseTo(5e-4, 12);
+  });
+
+  it('keeps the secondary-ray offset proportional below the former absolute floor', () => {
+    const r = deriveScaleAwareClamps(boxScene(1e-9), inputs());
+    expect(r.rayOriginBias).toBeGreaterThan(0);
+    expect(r.rayOriginBias).toBeLessThan(1e-9);
+    expect(r.rayOriginBias).toBeCloseTo(5e-13, 18);
   });
 });
 
@@ -156,12 +182,20 @@ describe('B15 deriveScaleAwareClamps — host overrides are absolute', () => {
       restirGiIrrClamp: true,         // host set this one
       directFireflyClamp: false,
       emitterDist2Floor: false,
+      spatialDepthTolFloor: true,
+      gtaoDepthThreshold: true,
+      gtaoBilateralDepthSigma: true,
+      restirGiSpatialCoplanarTol: true,
       indirectFireflyClamp: true,      // host set this one too
     };
     const r = deriveScaleAwareClamps(boxScene(200), inputs(hostExplicit));
     const s = r.scaleRatio;
     // host-explicit ⇒ verbatim baseline
     expect(r.tunables.restirGiIrrClamp).toBe(5.0);
+    expect(r.tunables.spatialDepthTolFloor).toBe(0.05);
+    expect(r.tunables.gtaoDepthThreshold).toBe(2.0);
+    expect(r.tunables.gtaoBilateralDepthSigma).toBe(0.25);
+    expect(r.tunables.restirGiSpatialCoplanarTol).toBe(0.05);
     expect(r.indirectFireflyClamp).toEqual([1, 1, 1]);
     // non-explicit ⇒ scaled
     expect(r.tunables.directFireflyClamp).toBeCloseTo(4.0 / (s * s), 6);

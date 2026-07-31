@@ -1575,7 +1575,7 @@ function decodeDataUri(
       bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
     } else {
-      bytes = new TextEncoder().encode(decodeURIComponent(payload));
+      bytes = decodePercentEncodedDataUriPayload(payload);
     }
   } catch (cause) {
     if (cause instanceof GltfResourceDecodeFailed) throw cause;
@@ -1596,6 +1596,59 @@ function decodeDataUri(
     path,
   );
   return bytes;
+}
+
+function decodePercentEncodedDataUriPayload(payload: string): Uint8Array {
+  const bytes = new Uint8Array(percentDecodedByteUpperBound(payload));
+  let offset = 0;
+  for (let index = 0; index < payload.length; index += 1) {
+    const code = payload.charCodeAt(index);
+    if (code === 0x25) {
+      if (
+        index + 2 >= payload.length ||
+        !isHexCodeUnit(payload.charCodeAt(index + 1)) ||
+        !isHexCodeUnit(payload.charCodeAt(index + 2))
+      ) {
+        throw new URIError(`URI malformed at payload code-unit ${index}`);
+      }
+      bytes[offset] =
+        (hexCodeUnitValue(payload.charCodeAt(index + 1)) << 4) |
+        hexCodeUnitValue(payload.charCodeAt(index + 2));
+      offset += 1;
+      index += 2;
+      continue;
+    }
+
+    let codePoint = payload.codePointAt(index)!;
+    if (codePoint > 0xffff) {
+      index += 1;
+    } else if (codePoint >= 0xd800 && codePoint <= 0xdfff) {
+      // Match TextEncoder's handling of an unpaired UTF-16 surrogate.
+      codePoint = 0xfffd;
+    }
+    if (codePoint <= 0x7f) {
+      bytes[offset++] = codePoint;
+    } else if (codePoint <= 0x7ff) {
+      bytes[offset++] = 0xc0 | (codePoint >>> 6);
+      bytes[offset++] = 0x80 | (codePoint & 0x3f);
+    } else if (codePoint <= 0xffff) {
+      bytes[offset++] = 0xe0 | (codePoint >>> 12);
+      bytes[offset++] = 0x80 | ((codePoint >>> 6) & 0x3f);
+      bytes[offset++] = 0x80 | (codePoint & 0x3f);
+    } else {
+      bytes[offset++] = 0xf0 | (codePoint >>> 18);
+      bytes[offset++] = 0x80 | ((codePoint >>> 12) & 0x3f);
+      bytes[offset++] = 0x80 | ((codePoint >>> 6) & 0x3f);
+      bytes[offset++] = 0x80 | (codePoint & 0x3f);
+    }
+  }
+  return bytes;
+}
+
+function hexCodeUnitValue(code: number): number {
+  if (code >= 0x30 && code <= 0x39) return code - 0x30;
+  if (code >= 0x41 && code <= 0x46) return code - 0x41 + 10;
+  return code - 0x61 + 10;
 }
 
 function dataUriDecodedByteUpperBound(

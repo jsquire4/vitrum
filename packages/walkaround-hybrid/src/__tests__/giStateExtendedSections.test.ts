@@ -34,6 +34,7 @@ function compatibility(): Uint32Array {
     lightTreeNodeCount: 0,
     lightTreeEnabled: false,
     materialTextureAtlas: {
+      atlasLayers: [],
       atlasData: new Float32Array(4),
       atlasDim: 1,
       atlasLayerCount: 1,

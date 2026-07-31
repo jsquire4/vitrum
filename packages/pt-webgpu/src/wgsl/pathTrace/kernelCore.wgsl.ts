@@ -22,20 +22,23 @@
 export const PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL = /* wgsl */ `fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
   let uv = (vec2f(f32(px), f32(py)) + jitter) / vec2f(f32(params.width), f32(params.height));
   let ndc = vec2f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-  let far4 = params.invViewProj * vec4f(ndc, 1.0, 1.0);
-  let near4 = params.invViewProj * vec4f(ndc, -1.0, 1.0);
-  let farW = far4.xyz / far4.w;
-  let nearW = near4.xyz / near4.w;
-  var ray: Ray;
-  ray.origin = params.cameraPos.xyz;
-  ray.direction = safe_normalize(farW - nearW);
-  return ray;
+  return unproject_ray_common(params.invViewProj, ndc);
 }
 
 fn projectToNdc(pos: vec3f, vp: mat4x4f) -> vec2f {
-  let clip = vp * vec4f(pos, 1.0);
-  let invW = 1.0 / max(abs(clip.w), 1e-8);
-  return clip.xy * invW;
+  let rawClip = vp * vec4f(pos, 1.0);
+  let scale = max(
+    max(abs(rawClip.x), abs(rawClip.y)),
+    max(abs(rawClip.z), abs(rawClip.w)),
+  );
+  if (!(scale > 0.0) || scale > 3.402823e38) {
+    return vec2f(2.0);
+  }
+  let clip = rawClip / scale;
+  if (!(clip.w > 0.0)) {
+    return vec2f(2.0);
+  }
+  return clip.xy / clip.w;
 }
 
 

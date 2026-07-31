@@ -34,66 +34,17 @@
  * WGSL module-scope functions are order-independent.
  */
 export const RC_SUN_VISIBILITY_WGSL = /* wgsl */`// ─── Sun visibility helper ────────────────────────────────────────────────────
-// Alpha + glass-aware sun shadow test. Alpha coverage mirrors the DDGI/shade
-// material-atlas transmittance model; transmissive slabs keep the existing
-// Beer-Lambert continuation path.
-
-// M14 audit remediation: slabStepSize replaces the Cornell-specific 0.5-unit
-// glass-slab step. Callers compute it from the scene extent
-// (min(roomSize) * 0.001) so the step is proportional to the actual scene.
+// Directional and finite lights share rcTraceShadowTransmittance's
+// interface-owned medium walk. slabStepSize remains in the ABI because the
+// same scale-derived value is used by transmitted probe continuation.
 fn traceSunVisibility(
   origin:        vec3f,
   sunDir:        vec3f,
   slabStepSize:  f32,
   triEps:        f32,
 ) -> vec3f {
-  var visibility = vec3f(1.0);
-  var rayOrigin  = origin;
-  // A straight visibility ray cannot encounter more distinct surfaces than
-  // the scene contains triangles. Use that geometry-derived bound rather than
-  // truncating valid layered/alpha/glass paths after three interfaces.
-  let surfaceBudget = arrayLength(&rc_geom_index) + 1u;
-  for (var iter: u32 = 0u; iter < surfaceBudget; iter = iter + 1u) {
-    var sRay = Ray();
-    sRay.origin    = rayOrigin;
-    sRay.direction = sunDir;
-    let sHit = rcTraceFirstHit(sRay, triEps);
-    if (!sHit.didHit) {
-      return visibility;
-    }
-    let hitPos = rayOrigin + sunDir * sHit.dist;
-    let sMatId = rcLoadTriMaterialId(sHit.indices.w);
-    let sMat   = rcLoadMaterial(sMatId);
-    if ((sMat.flags & MATERIAL_FLAG_CAST_SHADOW_DISABLED) != 0u) {
-      rayOrigin = hitPos + sunDir * slabStepSize;
-      continue;
-    }
-    let alphaT = rcAlphaShadowTransmittanceForHit(sHit);
-    if (alphaT >= 1.0) {
-      rayOrigin = hitPos + sunDir * slabStepSize;
-      continue;
-    }
-    if (alphaT > 0.0) {
-      visibility = visibility * alphaT;
-      if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
-        rayOrigin = hitPos + sunDir * slabStepSize;
-        continue;
-      }
-    } else if ((sMat.flags & MATERIAL_FLAG_IS_GLASS) == 0u) {
-      return vec3f(0.0);
-    }
-    let gThick    = max(0.0, sMat.thickness);
-    let gAttenCol = sMat.attenuationColor;
-    let gColor    = sMat.baseColor;
-    var beerAtten = vec3f(1.0);
-    if (gThick > 0.0 && sMat.attenuationDistance > 0.0) {
-      beerAtten = exp(-max(gAttenCol, vec3f(0.0)) *
-        (gThick / sMat.attenuationDistance));
-    }
-    visibility = visibility * gColor * beerAtten;
-    rayOrigin  = hitPos + sunDir * slabStepSize;
-  }
-  return visibility;
+  _ = slabStepSize;
+  return rcTraceShadowTransmittance(origin, sunDir, 1e15, triEps);
 }`;
 
 /**
@@ -119,9 +70,8 @@ export const RC_NEE_POINTSPOT_WGSL = /* wgsl */`// ─── Rect-area emitter N
 //   Lo += f_r(albedo, rough, metal, specular) · cosSurf · Le
 //         · (cosLight / dist²) · area · vis / p(emitter)
 // cosLight uses the emitter's front face only (one-sided), matching the
-// shade/ReSTIR-DI convention. The shadow ray uses RC's alpha transmittance walk:
-// alpha-mask/blend surfaces attenuate through the material atlas while scalar
-// transmissive glass preserves the coarse RC "skip glass" policy.
+// shade/ReSTIR-DI convention. The shadow ray uses RC's RGB alpha + paired-
+// medium transmittance walk.
 // A7 (2026-06-10): scene-scale-proportional normal bias for shadow rays.
 // Uses the smallest room-size axis * 0.001 (mirroring DDGI's gridParams.spacing
 // * 0.001 — M13 precedent); replaces the hardcoded world-unit values 0.01/0.02
@@ -146,18 +96,22 @@ fn rcEmitterNEE(hitPos: vec3f, n: vec3f, wo: vec3f, material: RCProbeHitMaterial
     let wi     = toL / dist;
     let response = rcEvaluateProbeDirectResponse(material, n, wo, wi);
     let responsePower = max(response.r, max(response.g, response.b));
-    let cosLight = dot(e.normal, -wi);   // emitter front face only
+    let cosLight = rcEmitterCosineTowardReceiver(e, -wi);
     if (responsePower <= 0.0 || cosLight <= 0.0) { return vec3f(0.0); }
 
-    // Alpha-aware shadow transmittance toward the light sample (stop just short
-    // of it). H37's scalar-glass skip is preserved inside the helper so emitters
-    // behind stained glass still contribute to the coarse RC cache.
+    // RGB alpha/glass transmittance toward the light sample (stop just short
+    // of it). Scalar transmission is paid once at entry and Beer uses the
+    // actual segment between paired material/instance boundaries.
     // Emitter castShadow:false rides the shared EmitterTri fifth-vec4 .w lane.
     let shadowTMax = max(0.0, dist - normalBias);
-    var shadowT = 1.0;
-    if (e.castShadowDisabled < 0.5 && shadowTMax > 0.0) {
-      shadowT = rcTraceShadowTransmittance(hitPos + n * normalBias, wi, shadowTMax, triEps, true);
-      if (shadowT <= 0.0) { return vec3f(0.0); }
+    var shadowT = vec3f(1.0);
+    if (!rcEmitterCastShadowDisabled(e) && shadowTMax > 0.0) {
+      shadowT = rcTraceShadowTransmittance(
+        hitPos + n * normalBias, wi, shadowTMax, triEps,
+      );
+      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) {
+        return vec3f(0.0);
+      }
     }
 
     let G = cosLight / dist2;
@@ -242,14 +196,16 @@ fn evalRCPointSpotLights(hitPos: vec3f, n: vec3f, wo: vec3f, material: RCProbeHi
       if (coneFalloff <= 0.0) { return vec3f(0.0); }
     }
 
-    // Shadow transmittance — stop just short of the light position. H37 mirrors
-    // emitter NEE: scalar transmissive glass does not fully occlude coarse RC
-    // direct light, while alpha-map/blend surfaces attenuate.
+    // RGB shadow transmittance — stop just short of the light position.
     let shadowTMax = max(0.0, dist - normalBias);
-    var shadowT = 1.0;
+    var shadowT = vec3f(1.0);
     if (!castShadowDisabled && shadowTMax > 0.0) {
-      shadowT = rcTraceShadowTransmittance(hitPos + n * normalBias, lightDir, shadowTMax, triEps, true);
-      if (shadowT <= 0.0) { return vec3f(0.0); }
+      shadowT = rcTraceShadowTransmittance(
+        hitPos + n * normalBias, lightDir, shadowTMax, triEps,
+      );
+      if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) {
+        return vec3f(0.0);
+      }
     }
 
     let dist2Floor = max(normalBias * normalBias, triEps * triEps);

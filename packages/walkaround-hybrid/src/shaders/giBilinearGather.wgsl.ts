@@ -26,8 +26,13 @@
  * (the caller supplies `gid`/`dims` in scope and declares its own accumulators).
  */
 export function giBilinearWeightsWgsl(): string {
-  return /* wgsl */ `  let halfDims = dims / 2u;
-  let halfPxF = vec2f(gid) * 0.5;
+  return /* wgsl */ `  let halfDims = restirGiDimensions();
+  let giStride = restirGiPixelStride();
+  let giSampleCenter = f32(giStride / 2u);
+  let halfPxF = max(
+    vec2f(0.0),
+    (vec2f(gid) - vec2f(giSampleCenter)) / f32(giStride),
+  );
   let hx0 = u32(floor(halfPxF.x));
   let hy0 = u32(floor(halfPxF.y));
   let fx = halfPxF.x - f32(hx0);

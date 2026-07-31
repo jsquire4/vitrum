@@ -84,11 +84,16 @@ fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
         clamp(dot(centerNormal, sampleNormal), 0.0, 1.0),
         SVGF_FALLBACK_NORMAL_EXPONENT,
       );
-      let depthScale = max(1e-3, max(abs(centerDepth), abs(sampleDepth)));
-      let depthWeight = exp(
-        -abs(sampleDepth - centerDepth)
-        / (SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA * depthScale + 1e-4),
-      );
+      let depthScale = max(abs(centerDepth), abs(sampleDepth));
+      let depthDelta = abs(sampleDepth - centerDepth);
+      var depthWeight = 1.0;
+      if (depthDelta > 0.0) {
+        let depthDenominator = SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA * depthScale;
+        depthWeight = 0.0;
+        if (depthDenominator > 0.0) {
+          depthWeight = exp(-depthDelta / depthDenominator);
+        }
+      }
       let weight = normalWeight * depthWeight;
       let sampleLuminance = luminance(textureLoad(sfb_currColor, pu, 0).rgb);
       weightedLuminance += weight * sampleLuminance;
