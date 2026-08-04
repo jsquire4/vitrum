@@ -23,6 +23,34 @@ export interface SceneAabb {
   max: [number, number, number];
 }
 
+/** Stride of one TLAS node in f32 words (8 x 32-bit: bounds + 2 payload words). */
+const TLAS_NODE_F32_STRIDE = 8;
+
+/**
+ * Optional TLAS-aware shape. When the walkaround BVH is in `tlas` mode the
+ * position buffer holds per-BLAS LOCAL-space vertices (traversal transforms the
+ * ray into instance space), so scanning it yields bounds in the wrong coordinate
+ * space. TLAS node 0 already stores the world-space AABB of the whole scene.
+ */
+interface TlasAwareBvhLike {
+  readonly bvhMode?: 'merged' | 'tlas';
+  readonly bvhPositions: { cpuData: ArrayBuffer };
+  readonly tlas?: { readonly nodes: { cpuData: ArrayBuffer }; readonly nodeCount: number } | undefined;
+}
+
+function padded(
+  minX: number, minY: number, minZ: number,
+  maxX: number, maxY: number, maxZ: number,
+): SceneAabb {
+  const padX = (maxX - minX) * 0.01 + 1e-3;
+  const padY = (maxY - minY) * 0.01 + 1e-3;
+  const padZ = (maxZ - minZ) * 0.01 + 1e-3;
+  return {
+    min: [minX - padX, minY - padY, minZ - padZ],
+    max: [maxX + padX, maxY + padY, maxZ + padZ],
+  };
+}
+
 /**
  * Scan a stride-4 (vec4f) BVH position buffer into a padded {@link SceneAabb}.
  *
@@ -30,10 +58,44 @@ export interface SceneAabb {
  * the shared package's API is backend-neutral. The legacy
  * `{ bvhPositions: { cpuData } }` shape (walkaround-hybrid's GPU-resource
  * object) is still accepted for the existing call sites.
+ *
+ * When the caller passes the full walkaround BVH object AND it is in `tlas`
+ * mode, the world-space bounds are taken from TLAS node 0 instead of the
+ * position scan. `resolveReSTIRBvhMode` selects `tlas` for any scene with more
+ * than one mesh-like primitive (or any instanced-mesh), so the position scan
+ * alone reported LOCAL-space bounds for essentially every multi-mesh scene —
+ * which the NRC hash grid, the PPG sTree, and the ReGIR grid then used as their
+ * world-space spatial subdivision.
  */
 export function deriveSceneAABBFromBvhPositions(
-  bvh: ArrayBuffer | Float32Array | { bvhPositions: { cpuData: ArrayBuffer } },
+  bvh:
+    | ArrayBuffer
+    | Float32Array
+    | { bvhPositions: { cpuData: ArrayBuffer } }
+    | TlasAwareBvhLike,
 ): SceneAabb {
+  if (
+    !(bvh instanceof Float32Array) &&
+    !(bvh instanceof ArrayBuffer) &&
+    (bvh as TlasAwareBvhLike).bvhMode === 'tlas'
+  ) {
+    const tlas = (bvh as TlasAwareBvhLike).tlas;
+    if (tlas != null && tlas.nodeCount > 0) {
+      const nodes = new Float32Array(tlas.nodes.cpuData);
+      if (nodes.length >= TLAS_NODE_F32_STRIDE) {
+        const rootMinX = nodes[0]!, rootMinY = nodes[1]!, rootMinZ = nodes[2]!;
+        const rootMaxX = nodes[3]!, rootMaxY = nodes[4]!, rootMaxZ = nodes[5]!;
+        if (
+          Number.isFinite(rootMinX) && Number.isFinite(rootMaxX) &&
+          Number.isFinite(rootMinY) && Number.isFinite(rootMaxY) &&
+          Number.isFinite(rootMinZ) && Number.isFinite(rootMaxZ) &&
+          rootMaxX >= rootMinX && rootMaxY >= rootMinY && rootMaxZ >= rootMinZ
+        ) {
+          return padded(rootMinX, rootMinY, rootMinZ, rootMaxX, rootMaxY, rootMaxZ);
+        }
+      }
+    }
+  }
   const view =
     bvh instanceof Float32Array
       ? bvh
@@ -56,11 +118,5 @@ export function deriveSceneAABBFromBvhPositions(
   if (!Number.isFinite(minX) || !Number.isFinite(maxX)) {
     return { min: [-10, -10, -10], max: [10, 10, 10] };
   }
-  const padX = (maxX - minX) * 0.01 + 1e-3;
-  const padY = (maxY - minY) * 0.01 + 1e-3;
-  const padZ = (maxZ - minZ) * 0.01 + 1e-3;
-  return {
-    min: [minX - padX, minY - padY, minZ - padZ],
-    max: [maxX + padX, maxY + padY, maxZ + padZ],
-  };
+  return padded(minX, minY, minZ, maxX, maxY, maxZ);
 }

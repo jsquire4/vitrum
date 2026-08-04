@@ -712,7 +712,14 @@ function collectTlasInstancesFromBindings(
  *   bvhNodes — 8 words/node at blasRoot*8. Leaf word[6] = GLOBAL tri offset
  *     (local + triStart); interior word[6] = RELATIVE child offset (unchanged).
  */
-/** The mutated buffer set + counts shared by both splice paths' return value. */
+/**
+ * The mutated buffer set + counts shared by both splice paths' return value.
+ *
+ * There is deliberately no `trianglePrimitiveIndices` here: that array is not a
+ * spliced buffer. It maps triangles to CURRENT `scene.primitives` ordinals, so
+ * it is derived in {@link finalizeSplicedPack} from the rebased bindings plus
+ * the live scene rather than carried forward from `prev` — see the note there.
+ */
 interface SplicedPackBuffers {
   readonly positions: Float32Array;
   readonly normals: Float32Array;
@@ -722,7 +729,6 @@ interface SplicedPackBuffers {
   readonly indices: Uint32Array;
   readonly triMaterialIds: Uint32Array;
   readonly triangleSourceIndices: Uint32Array;
-  readonly trianglePrimitiveIndices: Uint32Array;
   readonly bvhNodes: Float32Array;
   readonly triangleCount: number;
 }
@@ -784,6 +790,12 @@ function finalizeSplicedPack(
   const primitiveIndexById = new Map(
     scene.primitives.map((primitive, index) => [primitive.id, index] as const),
   );
+  // Invariant: `trianglePrimitiveIndices` names ordinals in the CURRENT scene,
+  // so it is derived here from the rebased bindings and the live primitive list
+  // — never carried forward from `prev`. The bindings tile [0, triangleCount)
+  // exactly (each contributes one contiguous triStart/triCount run), so every
+  // triangle is assigned, and a primitive that moved within `scene.primitives`
+  // gets its new ordinal instead of a stale one.
   const trianglePrimitiveIndices = new Uint32Array(buffers.triangleCount);
   const instancePrimitiveIndices: number[] = [];
   const instanceSourceIndices: number[] = [];
@@ -885,7 +897,6 @@ function spliceResizedPrimitiveBlasIntoPack(
   const indices = new Uint32Array(newTotalTris * 4);
   const triMaterialIds = new Uint32Array(newTotalTris);
   const triangleSourceIndices = new Uint32Array(newTotalTris);
-  const trianglePrimitiveIndices = new Uint32Array(newTotalTris);
   const newNodeView = new Uint32Array(newTotalNodes * BVH_NODE_FLOATS);
   const prevNodeView = new Uint32Array(
     prev.bvhNodes.buffer,
@@ -922,21 +933,17 @@ function spliceResizedPrimitiveBlasIntoPack(
   indices.set(prevIndices.subarray(0, oldTriStart * 4), 0);
   triMaterialIds.set(prev.triMaterialIds.subarray(0, oldTriStart), 0);
   triangleSourceIndices.set(prev.triangleSourceIndices.subarray(0, oldTriStart), 0);
-  trianglePrimitiveIndices.set(prev.trianglePrimitiveIndices.subarray(0, oldTriStart), 0);
   // Changed primitive's new index words rebased to its (unchanged) vertexStart.
   const newTriStart = oldTriStart; // unchanged for the spliced primitive
   _rebaseIndexWords(indices, newTriStart * 4, slice.indexWords, binding.vertexStart);
   for (let t = 0; t < slice.triMaterialIds.length; t += 1) {
     triMaterialIds[newTriStart + t] = slice.triMaterialIds[t] ?? 0;
     triangleSourceIndices[newTriStart + t] = slice.reorderedToSourceTriangle[t] ?? t;
-    trianglePrimitiveIndices[newTriStart + t] =
-      prev.trianglePrimitiveIndices[oldTriStart] ?? 0;
   }
   // Downstream triangles: copy with vertex refs shifted by deltaVert.
   for (let t = oldTriEnd; t < prevTotalTris; t += 1) {
     _copyVec4Strided(indices, triMaterialIds, prevIndices, prev.triMaterialIds, t, t + deltaTri, deltaVert);
     triangleSourceIndices[t + deltaTri] = prev.triangleSourceIndices[t] ?? 0;
-    trianglePrimitiveIndices[t + deltaTri] = prev.trianglePrimitiveIndices[t] ?? 0;
   }
 
   // ── BVH nodes (BVH_NODE_FLOATS words/node) ───────────────────────────────
@@ -988,7 +995,7 @@ function spliceResizedPrimitiveBlasIntoPack(
     opts,
     {
       positions, normals, uvs, tangents, colors, indices, triMaterialIds,
-      triangleSourceIndices, trianglePrimitiveIndices, bvhNodes,
+      triangleSourceIndices, bvhNodes,
       triangleCount: newTotalTris,
     },
     primitiveTlasBindings,
@@ -1035,7 +1042,6 @@ function splicePrimitiveBlasIntoPack(
   const indices = new Uint32Array(prev.indices);
   const triMaterialIds = new Uint32Array(prev.triMaterialIds);
   const triangleSourceIndices = new Uint32Array(prev.triangleSourceIndices);
-  const trianglePrimitiveIndices = new Uint32Array(prev.trianglePrimitiveIndices);
   const bvhNodes = new Float32Array(prev.bvhNodes);
 
   const vertOff = binding.vertexStart * VERTEX_STRIDE_F32;
@@ -1075,7 +1081,7 @@ function splicePrimitiveBlasIntoPack(
     opts,
     {
       positions, normals, uvs, tangents, colors, indices, triMaterialIds,
-      triangleSourceIndices, trianglePrimitiveIndices, bvhNodes,
+      triangleSourceIndices, bvhNodes,
       triangleCount: prev.triangleCount,
     },
     primitiveTlasBindings,

@@ -49,6 +49,12 @@ export interface SceneBvhOptions {
   /**
    * Invoked when a BVH rebuild takes longer than 50 ms. When omitted, a
    * console.warn is emitted.
+   *
+   * "Rebuild" means any `updateFromCore` call that actually ran the merge —
+   * including the ones that end in an empty scene or a fingerprint match and
+   * therefore publish no new buffers. Those paths cost the same merge as a
+   * published rebuild, so they are reported identically. Only the pre-merge
+   * `sceneVersionTag` fast path, which does no work at all, stays silent.
    */
   readonly onSlowRebuild?: (elapsedMs: number) => void;
   /**
@@ -95,6 +101,24 @@ export class SceneBvh {
   }
 
   /**
+   * Invariant: every `updateFromCore` return path that already paid for the
+   * merge reports its elapsed time here. The cost of a rebuild is decided by
+   * the merge, not by whether new buffers were published, so the empty-scene
+   * and fingerprint-match early returns are exactly as slow as the publishing
+   * path and must notify from the same budget. The only exempt return is the
+   * pre-merge `sceneVersionTag` fast path, which does no work.
+   */
+  private notifyIfSlowRebuild(startedAtMs: number): void {
+    const elapsed = performance.now() - startedAtMs;
+    if (elapsed <= 50) return;
+    if (this.opts.onSlowRebuild) {
+      this.opts.onSlowRebuild(elapsed);
+    } else {
+      console.warn(`[DDGI SceneBvh] core BVH rebuild took ${elapsed.toFixed(0)}ms (>50ms threshold)`);
+    }
+  }
+
+  /**
    * Rebuild the DDGI merged BVH from a `@vitrum/core` Scene directly.
    * Geometry comes from `mergeWorldSpaceFromCore` at the same stride-4 layout
    * the DDGI WGSL probe pass reads (`array<vec3f>` = 16-byte stride).
@@ -102,6 +126,8 @@ export class SceneBvh {
    * The slow-rebuild timer covers the entire scope of real work (merge + BVH
    * build + fingerprint) so that `onSlowRebuild` can actually fire. (Previously
    * the timer only measured an object-literal assignment — an ~0 µs no-op.)
+   * It is reported from every return that ran the merge, not only the one that
+   * publishes buffers; see {@link SceneBvh.notifyIfSlowRebuild}.
    *
    * @param opts.sceneVersionTag — H34-h (D12): optional monotonic scene-mutation
    *   tag. When provided and UNCHANGED since the last call, the expensive merge
@@ -157,6 +183,7 @@ export class SceneBvh {
       // Record the tag for an empty scene too — next call with the same tag
       // still correctly returns null buffers via the fast path above.
       this._lastSceneVersionTag = sceneVersionTag;
+      this.notifyIfSlowRebuild(t0);
       return;
     }
 
@@ -221,6 +248,7 @@ export class SceneBvh {
       // Content fingerprint matched — update tag so the fast path fires on the
       // next call even when the caller switches from no-tag to tag mode.
       this._lastSceneVersionTag = sceneVersionTag;
+      this.notifyIfSlowRebuild(t0);
       return;
     }
     this._lastCoreFingerprint = fingerprint;
@@ -242,14 +270,7 @@ export class SceneBvh {
       boundingBox: clonePlainAabb(merged.boundingBox),
     };
 
-    const elapsed = performance.now() - t0;
-    if (elapsed > 50) {
-      if (this.opts.onSlowRebuild) {
-        this.opts.onSlowRebuild(elapsed);
-      } else {
-        console.warn(`[DDGI SceneBvh] core BVH rebuild took ${elapsed.toFixed(0)}ms (>50ms threshold)`);
-      }
-    }
+    this.notifyIfSlowRebuild(t0);
   }
 
   dispose(): void {

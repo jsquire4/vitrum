@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { Mat4, Scene, Vec3 } from '@vitrum/core';
 import { asMat4 } from '@vitrum/core';
@@ -1276,6 +1278,77 @@ describe('packSceneFromCore (SP-*)', () => {
     }
     expect(packed.triangleCount).toBe(triCount);
     expect(ms).toBeLessThan(2000);
+  });
+
+  it('recomputes triangle-primitive identity when scene order changes during a BLAS splice', () => {
+    const original: Scene = {
+      primitives: [
+        boxMesh('a', [0, 0, 0], [1, 1, 1]),
+        boxMesh('b', [5, 0, 0], [6, 1, 1]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const opts = { tlas: true, resolveMaterialId: () => 0 };
+    const packed = packSceneFromCore(original, opts);
+
+    // "a" is edited AND demoted to ordinal 1 in the same update; "b" is
+    // promoted to ordinal 0. The BLAS buffer layout is untouched by the
+    // reorder (the splice keeps "a" first), so the identity array is the only
+    // thing that has to move — and it must name the CURRENT ordinals, not the
+    // ones baked into the previous pack.
+    const reordered: Scene = {
+      primitives: [
+        original.primitives[1]!,
+        boxMesh('a', [0.1, 0.1, 0.1], [1.1, 1.1, 1.1]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rebuilt = rebuildPrimitiveBlas(reordered, 'a', packed, opts);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+    expect(rebuilt.strategy).toBe('splice');
+
+    const bindingA = rebuilt.pack.primitiveTlasBindings.find((b) => b.primitiveId === 'a')!;
+    const bindingB = rebuilt.pack.primitiveTlasBindings.find((b) => b.primitiveId === 'b')!;
+    expect(rebuilt.pack.trianglePrimitiveIndices).toHaveLength(rebuilt.pack.triangleCount);
+    expect(new Set(rebuilt.pack.trianglePrimitiveIndices.slice(
+      bindingA.triStart,
+      bindingA.triStart + bindingA.triCount,
+    ))).toEqual(new Set([1]));
+    expect(new Set(rebuilt.pack.trianglePrimitiveIndices.slice(
+      bindingB.triStart,
+      bindingB.triStart + bindingB.triCount,
+    ))).toEqual(new Set([0]));
+
+    // Every triangle is covered by exactly one binding, so no slot is left at
+    // the zero-fill default by accident.
+    const covered = new Uint8Array(rebuilt.pack.triangleCount);
+    for (const binding of rebuilt.pack.primitiveTlasBindings) {
+      covered.fill(1, binding.triStart, binding.triStart + binding.triCount);
+    }
+    expect(Array.from(covered).every((c) => c === 1)).toBe(true);
+  });
+});
+
+describe('splice pack buffers carry no stale primitive identity', () => {
+  const scenePackSource = readFileSync(
+    fileURLToPath(new URL('../scenePack.ts', import.meta.url)),
+    'utf8',
+  );
+
+  it('SplicedPackBuffers does not declare trianglePrimitiveIndices', () => {
+    const block = /interface SplicedPackBuffers \{([\s\S]*?)\n\}/.exec(scenePackSource);
+    expect(block, 'SplicedPackBuffers interface must exist').not.toBeNull();
+    // trianglePrimitiveIndices is derived in finalizeSplicedPack from the
+    // rebased bindings + the live scene. Declaring it on the spliced buffer set
+    // invites a second, prev-derived copy that is silently thrown away.
+    expect(block![1]).not.toContain('trianglePrimitiveIndices');
+  });
+
+  it('no splice path carries prev.trianglePrimitiveIndices forward', () => {
+    expect(scenePackSource).not.toMatch(/prev\.trianglePrimitiveIndices/);
   });
 });
 

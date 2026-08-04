@@ -48,6 +48,78 @@ describe('deriveSceneAABBFromBvhPositions', () => {
       max: [10, 10, 10],
     });
   });
+
+  // REGRESSION: in `tlas` mode the position buffer holds per-BLAS LOCAL-space
+  // vertices (traversal transforms the ray into instance space), so scanning it
+  // yields bounds in the wrong coordinate space. `resolveReSTIRBvhMode` selects
+  // tlas for ANY scene with >1 mesh-like primitive, so NRC / PPG / ReGIR were
+  // handed a local-space AABB for essentially every multi-mesh scene. TLAS node
+  // 0 stores the world-space AABB of the whole scene by construction.
+  describe('tlas mode uses world-space TLAS root bounds, not local BLAS positions', () => {
+    /** One TLAS node: f32[0..2]=boundsMin, f32[3..5]=boundsMax, u32[6..7]=payload. */
+    function tlasNodes(
+      min: [number, number, number],
+      max: [number, number, number],
+    ): { cpuData: ArrayBuffer } {
+      const words = new Float32Array(8);
+      words.set(min, 0);
+      words.set(max, 3);
+      return { cpuData: words.buffer };
+    }
+
+    it('prefers TLAS root bounds over the local-space position scan', () => {
+      const aabb = deriveSceneAABBFromBvhPositions({
+        bvhMode: 'tlas',
+        // Local-space BLAS vertices — a unit cube at the origin.
+        bvhPositions: { cpuData: new Float32Array([-1, -1, -1, 0, 1, 1, 1, 0]).buffer },
+        // The instances are actually placed far from the origin in world space.
+        tlas: { nodes: tlasNodes([10, 20, 30], [40, 60, 80]), nodeCount: 1 },
+      });
+      const padX = (40 - 10) * 0.01 + 1e-3;
+      const padY = (60 - 20) * 0.01 + 1e-3;
+      const padZ = (80 - 30) * 0.01 + 1e-3;
+      expect(aabb.min).toEqual([10 - padX, 20 - padY, 30 - padZ]);
+      expect(aabb.max).toEqual([40 + padX, 60 + padY, 80 + padZ]);
+    });
+
+    it('merged mode still scans positions (they are already world-space)', () => {
+      const aabb = deriveSceneAABBFromBvhPositions({
+        bvhMode: 'merged',
+        bvhPositions: { cpuData: new Float32Array([1, 2, 3, 0, 4, 6, 8, 0]).buffer },
+        tlas: { nodes: tlasNodes([10, 20, 30], [40, 60, 80]), nodeCount: 1 },
+      });
+      expect(aabb.min[0]).toBeCloseTo(1 - ((4 - 1) * 0.01 + 1e-3), 9);
+      expect(aabb.max[0]).toBeCloseTo(4 + ((4 - 1) * 0.01 + 1e-3), 9);
+    });
+
+    it('falls back to the position scan when TLAS bounds are absent or degenerate', () => {
+      const noTlas = deriveSceneAABBFromBvhPositions({
+        bvhMode: 'tlas',
+        bvhPositions: { cpuData: new Float32Array([1, 2, 3, 0, 4, 6, 8, 0]).buffer },
+        tlas: undefined,
+      });
+      expect(noTlas.min[0]).toBeCloseTo(1 - ((4 - 1) * 0.01 + 1e-3), 9);
+
+      const nanRoot = deriveSceneAABBFromBvhPositions({
+        bvhMode: 'tlas',
+        bvhPositions: { cpuData: new Float32Array([1, 2, 3, 0, 4, 6, 8, 0]).buffer },
+        tlas: { nodes: tlasNodes([NaN, NaN, NaN], [NaN, NaN, NaN]), nodeCount: 1 },
+      });
+      expect(nanRoot.min[0]).toBeCloseTo(1 - ((4 - 1) * 0.01 + 1e-3), 9);
+
+      const zeroCount = deriveSceneAABBFromBvhPositions({
+        bvhMode: 'tlas',
+        bvhPositions: { cpuData: new Float32Array([1, 2, 3, 0, 4, 6, 8, 0]).buffer },
+        tlas: { nodes: tlasNodes([10, 20, 30], [40, 60, 80]), nodeCount: 0 },
+      });
+      expect(zeroCount.min[0]).toBeCloseTo(1 - ((4 - 1) * 0.01 + 1e-3), 9);
+    });
+
+    it('legacy shapes (raw buffer / positions-only) keep scanning', () => {
+      const raw = deriveSceneAABBFromBvhPositions(new Float32Array([1, 2, 3, 0]));
+      expect(raw.min).toEqual([1 - 1e-3, 2 - 1e-3, 3 - 1e-3]);
+    });
+  });
 });
 
 describe('expandIndicesToStride4', () => {
