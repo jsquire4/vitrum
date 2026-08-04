@@ -324,7 +324,14 @@ const PT_WEBGPU_THICKNESS = evidence(
       path: 'packages/pt-webgpu/src/__tests__/scenePack.materials.test.ts',
       includes: [
         'VOL-THICKNESS KHR_materials_volume scalar packing',
-        'marks presence when only thicknessMap is authored',
+        // glTF KHR_materials_volume defines thickness as
+        // `thicknessFactor * thicknessTexture.g`, and thicknessFactor defaults
+        // to 0 — so a thicknessTexture authored WITHOUT a scalar factor is a
+        // thin-walled material, not a volume boundary. The packer asserts both
+        // the value and the presence flag stay 0 in that case. This needle
+        // previously named an older test that asserted the opposite (presence
+        // set); repointed when the packer was corrected to the spec behaviour.
+        'keeps glTF default thicknessFactor 0 absent when only thicknessMap is authored',
       ],
     },
     {

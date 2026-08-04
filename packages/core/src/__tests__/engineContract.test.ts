@@ -360,6 +360,26 @@ describe('backend promise ledger', () => {
     expect(rec.frameInputPromises.honorsViewportPerFrame).toBe(true);
   });
 
+  it('pins honorsPerFrameBounces: true for every shipping backend, including walkaround', () => {
+    // walkaround-hybrid's bounce surface is a DDGI feedback REGIME, not a path
+    // depth (see supportDetails.bounceSemantics), but it is still consumed from
+    // FrameInput every frame: HybridEngineFrameOrchestrator reads
+    // `input.quality?.bounces` and toggles DDGI indirect feedback from it. A
+    // `false` here would tell hosts the field is ignored, which it is not.
+    for (const [id, rec] of Object.entries(BACKEND_PROMISE_LEDGER)) {
+      expect(rec.frameInputPromises.honorsPerFrameBounces, `${id} honorsPerFrameBounces`).toBe(true);
+    }
+
+    const walkaround = BACKEND_PROMISE_LEDGER['walkaround-hybrid'];
+    expect(walkaround.frameInputPromises).toEqual({
+      honorsViewportPerFrame: true,
+      requiresSwapChainView: true,
+      honorsPerFrameBounces: true,
+    });
+    // The regime the per-frame value selects is the ddgi-feedback one.
+    expect(walkaround.supportDetails.bounceSemantics?.kind).toBe('ddgi-feedback');
+  });
+
   it('pins PT backend resize/lighting method promises truthfully', () => {
     const webgl2 = BACKEND_PROMISE_LEDGER['pt-webgl2'];
     expect(webgl2.presentationMode).toBe('offscreen-texture');

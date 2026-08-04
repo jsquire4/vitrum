@@ -63,7 +63,10 @@ export interface PartitionedScene {
  *    canonical shape tessellator generates the mesh. A warning still documents
  *    the conversion.
  *  - An emitter is kept when its `kind` is in `supportedEmitterKinds` (or the
- *    set is omitted).
+ *    set is omitted) AND, for `mesh-area` emitters, its `meshId` still resolves
+ *    against the supported primitive partition. A `mesh-area` emitter whose
+ *    target primitive was dropped is dropped too, so `supported` never carries
+ *    a dangling `meshId`.
  *  - The environment is always carried through; an unsupported `kind` only
  *    appends a warning (backends fall back, they don't refuse the scene).
  */
@@ -122,10 +125,26 @@ export function partitionSceneBySupport(scene: Scene, caps: SupportSets): Partit
     return [primitive];
   });
 
+  // Referential invariant: the supported partition must itself be a VALID
+  // Scene. A `mesh-area` emitter names a primitive by id, so binning emitters
+  // on `kind` alone can carry an emitter whose `meshId` points at a primitive
+  // the primitive filter just dropped — a dangling reference `validateScene`
+  // rejects. The survivor set is taken from the POST-filter primitive list so
+  // analytic→mesh conversions (which preserve the id) correctly count as
+  // survivors.
+  const survivingPrimitiveIds = new Set(primitives.map((primitive) => primitive.id));
+
   const emitters = scene.emitters.filter((emitter) => {
     if (caps.supportedEmitterKinds != null && !caps.supportedEmitterKinds.has(emitter.kind)) {
       warnings.push(
         `Scene emitter "${emitter.id}" (${emitter.kind}) is not supported by this backend; skipping.`,
+      );
+      return false;
+    }
+    if (emitter.kind === 'mesh-area' && !survivingPrimitiveIds.has(emitter.meshId)) {
+      warnings.push(
+        `Scene emitter "${emitter.id}" (mesh-area) references primitive "${emitter.meshId}", ` +
+        `which is not supported by this backend; skipping.`,
       );
       return false;
     }

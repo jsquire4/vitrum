@@ -87,7 +87,15 @@ export type InverseGradientMethod = 'finite-difference' | 'path-replay';
  * level, not backend-log strings, so hosts can surface predictable UI and
  * compatibility reports for arbitrary assets. Depending on the backend's
  * published inverse failure policy, they may accompany a whole-session
- * fallback or be emitted immediately before session creation throws. */
+ * fallback or be emitted immediately before session creation throws.
+ *
+ * Invariant: every member of `code` MUST have at least one reachable emit site
+ * in a shipping backend. A code hosts can switch on but that no backend can
+ * ever produce is a false promise — it invites dead UI branches and dead
+ * compatibility rows. Narrowing controls (`normalScale`, `bumpScale`,
+ * `clearcoatNormalScale`, `envMapIntensity`, …) are reported through
+ * `'path-replay-unsupported-field'`; add a finer code here only together with
+ * the branch that emits it. */
 export interface InverseSessionDiagnostic {
   readonly severity: 'info' | 'warning';
   readonly code:
@@ -96,14 +104,10 @@ export interface InverseSessionDiagnostic {
     | 'path-replay-unsupported-field'
     | 'path-replay-unsupported-transport'
     | 'path-replay-unsupported-visibility'
-    | 'path-replay-unsupported-normal'
-    | 'path-replay-unsupported-environment'
     | 'path-replay-unsupported-primitive'
     | 'path-replay-unsupported-scene-geometry'
     | 'path-replay-unsupported-geometry'
     | 'path-replay-unsupported-material'
-    | 'path-replay-unsupported-lighting'
-    | 'path-replay-unsupported-light-selection'
     | 'path-replay-unsupported-emitter'
     | 'path-replay-unsupported-receiver'
     | 'path-replay-unsupported-render-regime';

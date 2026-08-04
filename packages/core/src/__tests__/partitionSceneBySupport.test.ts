@@ -4,6 +4,7 @@ import type { AnalyticShape } from '../scene/primitives.js';
 import type { SceneEmitter } from '../scene/emitters.js';
 import type { SceneEnvironment } from '../scene/environment.js';
 import { partitionSceneBySupport, type SupportSets } from '../scene/partitionSceneBySupport.js';
+import { validateScene } from '../scene/validation.js';
 
 function makeScene(): Scene {
   return {
@@ -268,6 +269,88 @@ describe('partitionSceneBySupport', () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toMatch(/capsule-no-fallback/);
     expect(warnings[0]).toMatch(/canonical generated mesh/);
+  });
+
+  it('drops a mesh-area emitter whose target primitive was dropped', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'mesh',
+          id: 'floor',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.8, metallic: 0 },
+        },
+        {
+          kind: 'skinned-mesh',
+          id: 'banner',
+          positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.5, metallic: 0, emissive: [4, 4, 4] },
+          skinIndices: new Uint32Array(12),
+          skinWeights: new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]),
+          bones: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+          boneInverses: new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]),
+        },
+      ],
+      emitters: [
+        { kind: 'directional', id: 'sun', direction: [0, -1, 0], color: [1, 1, 1], intensity: 2 },
+        { kind: 'mesh-area', id: 'banner-light', meshId: 'banner', color: [1, 1, 1], intensity: 3 },
+      ],
+      environment: { kind: 'none' },
+    };
+
+    // Backend accepts mesh-area emitters but NOT skinned-mesh primitives, so the
+    // emitter's target is dropped by the primitive filter above it.
+    const { supported, warnings } = partitionSceneBySupport(scene, {
+      ...ALL_SUPPORTED,
+      supportedPrimitiveKinds: new Set<Scene['primitives'][number]['kind']>(['mesh']),
+    });
+
+    expect(supported.primitives.map((p) => p.id)).toEqual(['floor']);
+    // The dangling mesh-area emitter must NOT survive into the supported scene.
+    expect(supported.emitters.map((e) => e.id)).toEqual(['sun']);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[1]).toMatch(/banner-light/);
+    expect(warnings[1]).toMatch(/mesh-area/);
+    expect(warnings[1]).toMatch(/banner/);
+    expect(warnings[1]).toMatch(/not supported/);
+
+    // The supported partition must itself be an ingestible Scene.
+    expect(() => validateScene(supported)).not.toThrow();
+  });
+
+  it('keeps a mesh-area emitter whose analytic target was converted to a mesh', () => {
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'analytic',
+          id: 'glow-sphere',
+          shape: 'sphere',
+          params: new Float32Array([0, 0, 0, 1]),
+          material: { baseColor: [1, 1, 1], roughness: 0.4, metallic: 0, emissive: [5, 5, 5] },
+        },
+      ],
+      emitters: [
+        { kind: 'mesh-area', id: 'glow', meshId: 'glow-sphere', color: [1, 1, 1], intensity: 2 },
+      ],
+      environment: { kind: 'none' },
+    };
+
+    // 'analytic' is unsupported but 'mesh' is accepted, so the primitive is
+    // converted (id preserved) rather than dropped — the emitter must survive.
+    const { supported, warnings } = partitionSceneBySupport(scene, {
+      ...ALL_SUPPORTED,
+      supportedPrimitiveKinds: new Set<Scene['primitives'][number]['kind']>(['mesh']),
+    });
+
+    expect(supported.primitives.map((p) => p.id)).toEqual(['glow-sphere']);
+    expect(supported.primitives[0]!.kind).toBe('mesh');
+    expect(supported.emitters.map((e) => e.id)).toEqual(['glow']);
+    // Only the analytic→mesh conversion warning; no emitter drop.
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toMatch(/glow-sphere/);
+    expect(() => validateScene(supported)).not.toThrow();
   });
 
   it('does not mutate the input scene (pure helper)', () => {

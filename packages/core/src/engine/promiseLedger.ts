@@ -1199,7 +1199,13 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
     frameInputPromises: {
       honorsViewportPerFrame: true,
       requiresSwapChainView: true,
-      honorsPerFrameBounces: false,
+      // `FrameInput.quality.bounces` IS read every frame: the DDGI update reads
+      // it and selects the direct-only (1) vs multi-bounce-equilibrium (>=2)
+      // feedback regime, clamped by the engine's configured maxBounces. That is
+      // the `bounceSemantics.kind: 'ddgi-feedback'` surface declared above, not
+      // a finite path depth — but it is still honored per frame, so this row
+      // must stay `true` while that read exists.
+      honorsPerFrameBounces: true,
     },
   },
   'pt-webgl2': {
