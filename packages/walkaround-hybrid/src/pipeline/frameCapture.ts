@@ -33,6 +33,12 @@ import {
 
 const CAPTURE_FORMAT: GPUTextureFormat = 'rgba8unorm';
 
+export interface CapturedOutputFrame {
+  readonly width: number;
+  readonly height: number;
+  readonly rgba: Float32Array;
+}
+
 export class FrameCaptureHelper {
   /** Lazily-compiled render pipeline targeting rgba8unorm.  Only allocated when
    *  `captureFrame` is first called AND the swap-chain format is not already
@@ -76,7 +82,7 @@ export class FrameCaptureHelper {
     compositeUbo: GPUBuffer,
     bglCache: BGLCache,
     res: FrameResources,
-  ): Promise<Float32Array | null> {
+  ): Promise<CapturedOutputFrame | null> {
     assertHybridSwapChainFormat(
       swapChainFormat,
       'FrameCaptureHelper.captureFrame.swapChainFormat',
@@ -89,7 +95,9 @@ export class FrameCaptureHelper {
       // Format matches — reuse the existing compiled pipeline.
       capturePipeline = compositePass.pipeline;
     } else {
-      // Compile a capture-format pipeline lazily (once per helper lifetime).
+      // Compile synchronously so command encoding/submission happens in this
+      // JavaScript turn. The async factory previously yielded while holding a
+      // borrowed FrameResources generation that resize/dispose could retire.
       if (this._capturePipeline === null) {
         const compVertSM = device.createShaderModule({
           label: 'comp-vert-capture',
@@ -102,7 +110,7 @@ export class FrameCaptureHelper {
         const captureLayout = device.createPipelineLayout({
           bindGroupLayouts: [getCompositeBindGroupLayout(device, bglCache)],
         });
-        this._capturePipeline = await device.createRenderPipelineAsync({
+        this._capturePipeline = device.createRenderPipeline({
           label: 'composite-capture',
           layout: captureLayout,
           vertex:   { module: compVertSM, entryPoint: 'vertMain' },
@@ -126,17 +134,28 @@ export class FrameCaptureHelper {
       this._offscreenTex.w !== width ||
       this._offscreenTex.h !== height
     ) {
-      this._offscreenTex?.tex.destroy();
+      // Prepare the replacement before retiring the previous generation. If
+      // allocation fails, a later capture at the old dimensions must still be
+      // able to use the last successfully published target instead of a cached
+      // handle that was already destroyed.
+      const previous = this._offscreenTex;
+      const candidate = device.createTexture({
+        label: 'composite-capture-offscreen',
+        size: { width, height },
+        format: CAPTURE_FORMAT,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+      });
       this._offscreenTex = {
-        tex: device.createTexture({
-          label: 'composite-capture-offscreen',
-          size: { width, height },
-          format: CAPTURE_FORMAT,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
-        }),
+        tex: candidate,
         w: width,
         h: height,
       };
+      try {
+        previous?.tex.destroy();
+      } catch {
+        // The candidate is already the coherent live generation. Retirement of
+        // a displaced debug-capture target is best-effort and must not poison it.
+      }
     }
     const offscreenTex = this._offscreenTex.tex;
 
@@ -195,7 +214,7 @@ export class FrameCaptureHelper {
           out[dstOff + 3] = (src[srcOff + 3]! & 0xff) / 255;
         }
       }
-      return out;
+      return { width, height, rgba: out };
     } finally {
       staging.destroy();
     }

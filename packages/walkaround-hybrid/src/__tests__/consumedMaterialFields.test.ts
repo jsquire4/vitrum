@@ -439,6 +439,34 @@ describe('HybridEngine.setScene unconsumed-field warning', () => {
     }
   });
 
+  it('rejects alpha-blend coverage combined with physical transmission', () => {
+    const engine = new HybridEngine(makeOpts());
+    const scene: Scene = {
+      ...consumedOnlyScene(),
+      primitives: [
+        {
+          ...consumedOnlyScene().primitives[0]!,
+          id: 'covered-glass-pane',
+          material: {
+            ...consumedOnlyScene().primitives[0]!.material,
+            alphaMode: 'blend',
+            opacity: 0.5,
+            transmission: 0.75,
+            ior: 1.5,
+          },
+        },
+      ],
+    };
+    try {
+      expect(() => engine.setScene(scene)).toThrow(
+        /combines alphaMode:'blend' coverage with physical transmission/,
+      );
+      expect(engine.getScene()).toBeNull();
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('does not warn for ordered/stochastic alpha blend transport', () => {
     const structured: EngineWarning[] = [];
     const engine = new HybridEngine({

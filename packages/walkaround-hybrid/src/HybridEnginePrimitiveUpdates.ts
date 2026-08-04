@@ -74,6 +74,10 @@ import type { ReSTIRBvhMode, SceneBVHBuffers } from './restir/bvhCore.js';
 import { packMaterialTextureAtlas } from './bvh/materialTextureAtlasPack.js';
 import { needsAuthoredMorphStreamRestore, solvedSkinRenderPatch } from './skin/solvedSkinPatch.js';
 
+function materialDefinesOpticalTransmission(material: MaterialSpec): boolean {
+  return (material.transmission ?? 0) > 0;
+}
+
 /** Union world AABB from merged `bvhPositions` (RC bounds after transform refit). */
 function computeWorldAabbFromBvhPositions(
   bvh: SceneBVHBuffers,
@@ -1020,6 +1024,17 @@ export function skinnedPosePatch(
     ...patch,
     ...renderPatch,
   } as ScenePrimitivePatch;
+  const nextAuthoredPrimitive = applyPrimitivePatchToScene(
+    ctx.lastScene,
+    id,
+    patch,
+  ).primitives.find((primitive) => String(primitive.id) === id);
+  const transmissiveGeometry =
+    materialDefinesOpticalTransmission(current.material) ||
+    (
+      nextAuthoredPrimitive != null &&
+      materialDefinesOpticalTransmission(nextAuthoredPrimitive.material)
+    );
 
   const patchRecord = patch as unknown as Record<string, unknown>;
   const currentRecord = current as unknown as Record<string, unknown>;
@@ -1037,6 +1052,7 @@ export function skinnedPosePatch(
           currentRecord[field] !== undefined)),
   );
   if (
+    transmissiveGeometry ||
     hasOwnPatchField('material') ||
     hasOwnPatchField('transform') ||
     hasStructuralPatch ||
@@ -1911,7 +1927,10 @@ function textureRefPatchChanged(prevValue: unknown, nextValue: unknown): boolean
   if ((a.wrapT ?? 'repeat') !== (b.wrapT ?? 'repeat')) return true;
   if ((a.magFilter ?? 'unspecified') !== (b.magFilter ?? 'unspecified')) return true;
   if ((a.minFilter ?? 'unspecified') !== (b.minFilter ?? 'unspecified')) return true;
-  if ((a.mipFilter ?? 'unspecified') !== (b.mipFilter ?? 'unspecified')) return true;
+  // TextureRef omission is semantically identical to explicit linear mip
+  // filtering. Do not route that spelling-only change through displacement
+  // geometry rebuild.
+  if ((a.mipFilter ?? 'linear') !== (b.mipFilter ?? 'linear')) return true;
   const at = a.transform;
   const bt = b.transform;
   if (uv2Component(at?.offset, 0, 0) !== uv2Component(bt?.offset, 0, 0)) return true;
@@ -1997,6 +2016,15 @@ export function materialPatch(
     );
   }
   const nextMaterial = mergeMaterialPatch(prevMaterial, materialPatchValue);
+  if (
+    materialDefinesOpticalTransmission(prevMaterial) ||
+    materialDefinesOpticalTransmission(nextMaterial)
+  ) {
+    throw new Error(
+      `HybridEngine.updatePrimitive("${id}"): transmissive material edits must ` +
+        'be routed through a topology rebuild so optical boundary and represented-range identity stay atomic.',
+    );
+  }
   const unconsumedMaterialFields = collectUnconsumedMaterialFieldsForMaterial(
     nextMaterial as unknown as Record<string, unknown>,
   );

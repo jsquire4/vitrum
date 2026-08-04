@@ -56,7 +56,7 @@ function stableBoundsIntersection(
 }
 
 function storedRowsValid(rows: readonly Vec4[]): boolean {
-  if (rows.length !== 8 || rows.some((row) => row.some((v) => !Number.isFinite(v)))) {
+  if (rows.length !== 14 || rows.some((row) => row.some((v) => !Number.isFinite(v)))) {
     return false;
   }
   const kind = rows[0]![3];
@@ -64,7 +64,7 @@ function storedRowsValid(rows: readonly Vec4[]): boolean {
   const throughput = rows[2]!;
   const stackCount = rows[5]![0];
   return (
-    (kind === 0 || kind === 1) &&
+    (kind === 0 || kind === 1 || kind === 2) &&
     forwardDensity > 0 &&
     throughput[3] >= 0 &&
     throughput.slice(0, 3).every((value) => value >= 0) &&
@@ -113,13 +113,13 @@ describe('pt-webgl2 BDPT/BVH scale safety', () => {
     );
   });
 
-  it('routes every initial BDPT launch through the translation-safe origin helper', () => {
+  it('uses exact launches only for accepted transmission and containment replay', () => {
     const compact = bdptLightSubpath.replace(/\s+/g, ' ');
     expect(compact).toContain(
-      'vec3 rayOrigin = stepRayOrigin( p0.xyz, vec3( 0.0 ), unitScatterDirection, 0.0 )',
+      'vec3 rayOrigin = exactPreviousTransmission ? p0.xyz : stepRayOrigin( p0.xyz, vec3( 0.0 ), unitScatterDirection, 0.0 )',
     );
     expect(compact).toContain(
-      'vec3 endpointLaunchOrigin = stepRayOrigin( p0.xyz, vec3( 0.0 ), endpointLaunchDirection, 0.0 )',
+      'vec3 endpointLaunchOrigin = p0.xyz;',
     );
     expect(compact).toContain(
       'rayOrigin = stepRayOrigin( p0.xyz, vec3( 0.0 ), offsetSurf.faceNormal * side, 0.0 )',
@@ -174,6 +174,12 @@ describe('pt-webgl2 BDPT/BVH scale safety', () => {
       [0, -1, -1, -1],
       [-1, -1, -1, -1],
       [-1, -1, 0, 0],
+      [-1, -1, -1, -1],
+      [-1, -1, -1, -1],
+      [-1, -1, -1, -1],
+      [-1, -1, -1, -1],
+      [-1, -1, -1, -1],
+      [-1, -1, -1, -1],
     ];
     expect(storedRowsValid(validRows)).toBe(true);
     expect(storedRowsValid(validRows.map((row, index) =>
@@ -191,21 +197,22 @@ describe('pt-webgl2 BDPT/BVH scale safety', () => {
     );
     expect(overflowedThroughput).toBe(Number.POSITIVE_INFINITY);
     expect(bdptLightSubpath).toContain('bool bdptStoredVertexRowsValid(');
-    expect(bdptLightSubpath).toContain(
-      'if ( ! bdptStoredVertexRowsValid( v0, v1, v2, v3, v4, v5, v6, v7 ) )',
+    const compactLightSubpath = bdptLightSubpath.replace(/\s+/g, ' ');
+    expect(compactLightSubpath).toContain(
+      'v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13',
     );
-    expect(bdptLightSubpath).toContain(
-      'if ( ! bdptStoredVertexRowsValid( p0, p1, p2, p3, p4, p5, p6, p7 ) )',
+    expect(compactLightSubpath).toContain(
+      'p0, p1, p2, p3, p4, p5, p6, p7, p8, p9, p10, p11, p12, p13',
     );
     expect(bdptConnection.replace(/\s+/g, ' ')).toContain(
-      'bdptStoredVertexRowsValid( lv0, lv1, lv2, lv3, lv4, lv5, lv6, lv7 )',
+      'bdptStoredVertexRowsValid( lv0, lv1, lv2, lv3, lv4, lv5, lv6, lv7, lv8, lv9, lv10, lv11, lv12, lv13 )',
     );
     expect(bdptLightSubpath).toContain(
       'float predecessorReverseDensity = reverseScatterPdf * p2.w;',
     );
-    expect(bdptLightSubpath.indexOf(
-      'if ( ! bdptStoredVertexRowsValid( v0, v1, v2, v3, v4, v5, v6, v7 ) )',
-    )).toBeLessThan(bdptLightSubpath.lastIndexOf(
+    expect(compactLightSubpath.indexOf(
+      'v0, v1, v2, v3, v4, v5, v6, v7, v8, v9, v10, v11, v12, v13',
+    )).toBeLessThan(compactLightSubpath.lastIndexOf(
       'predecessor2.w = predecessorReverseDensity;',
     ));
   });

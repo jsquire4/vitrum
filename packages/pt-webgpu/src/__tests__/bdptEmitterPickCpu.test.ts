@@ -7,7 +7,7 @@ import {
   bdptEmitterCount,
   distantDirectEmitterCount,
   distantDirectEmitterGlobalIndex,
-  distantDirectEmitterPower,
+  distantDirectEmitterPmf,
   bdptEmitterRejectionThreshold,
   bdptPickEmitterFlat,
   distantDirectSelectionPdf,
@@ -15,6 +15,7 @@ import {
 } from '../bdpt/bdptEmitterPickCpu.js';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from '../wgsl/bdpt/bdptLightSubpath.wgsl.js';
 import { PT_WEBGPU_BDPT_CONNECTION_WGSL } from '../wgsl/bdpt/bdptConnection.wgsl.js';
+import { applyDistantDirectProposalPmf } from '../scene/distantDirectProposal.js';
 
 function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers {
   return {
@@ -33,6 +34,7 @@ function stubScene(partial: Partial<UploadedSceneBuffers>): UploadedSceneBuffers
     environmentTint: [1, 1, 1],
     environmentHdriIntensity: 1,
     environmentLightTreePower: 0,
+    environmentDistantProposalPmf: 0,
     environmentHdriRotationY: 0,
     environmentMapWidth: 0,
     environmentMapHeight: 0,
@@ -52,7 +54,7 @@ function mixedScene(): UploadedSceneBuffers {
   mesh.set([0, 0, 0, 0, 4, 0, 0, 0, 0, 3, 0, 0, 16, 17, 18, 0], 0);
   return stubScene({
     directionalLightCount: 1,
-    directionalLightsData: new Float32Array([0, 1, 0, 0, 0.9, 0.8, 0.7, 0]),
+    directionalLightsData: new Float32Array([0, 1, 0, 0, 0.9, 0.8, 0.7, 0.3]),
     pointLightCount: 1,
     pointLightsData: new Float32Array([1, 2, 3, 0, 4, 5, 6, 0, 0, 0, 0, 0]),
     spotLightCount: 1,
@@ -67,6 +69,7 @@ function mixedScene(): UploadedSceneBuffers {
     environmentMapCdf: new Float32Array([0, 1]),
     environmentMapTexels: new Float32Array([2, 2, 2, 1 / (4 * Math.PI)]),
     environmentLightTreePower: 2,
+    environmentDistantProposalPmf: 0.7,
     sceneRadius: 5,
   });
 }
@@ -76,7 +79,7 @@ describe('invocation-local BDPT source selection', () => {
     const scene = stubScene({ sceneRadius: 2 });
     expect(bdptEmitterCount(scene)).toBe(0);
     expect(distantDirectEmitterCount(scene)).toBe(0);
-    expect(distantDirectEmitterPower(scene, 0)).toBe(0);
+    expect(distantDirectEmitterPmf(scene, 0)).toBe(0);
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).not.toContain('environmentSun.w');
   });
 
@@ -109,7 +112,7 @@ describe('invocation-local BDPT source selection', () => {
   it('launches hard and soft directional roots with exact endpoint measures', () => {
     const makeDirectional = (diameter: number) => stubScene({
       directionalLightCount: 1,
-      directionalLightsData: new Float32Array([0, 1, 0, diameter, 3, 6, 9, 0]),
+      directionalLightsData: new Float32Array([0, 1, 0, diameter, 3, 6, 9, 1]),
       sceneCenter: [2, 3, 4],
       sceneRadius: 5,
     });
@@ -134,7 +137,7 @@ describe('invocation-local BDPT source selection', () => {
   it('accepts representable launch-disk Jacobians and rejects impossible f32 measures', () => {
     const makeDirectional = (sceneRadius: number) => stubScene({
       directionalLightCount: 1,
-      directionalLightsData: new Float32Array([0, 1, 0, 0, 0.1, 0.1, 0.1, 0]),
+      directionalLightsData: new Float32Array([0, 1, 0, 0, 0.1, 0.1, 0.1, 1]),
       sceneRadius,
     });
     for (const radius of [1, 1e19]) {
@@ -142,7 +145,7 @@ describe('invocation-local BDPT source selection', () => {
       const sample = sampleBdptBounce0Cpu(scene, 0, 0.2, 0.7)!;
       expect(sample.positionPdf).toBeGreaterThan(0);
       expect(Number.isFinite(sample.positionPdf)).toBe(true);
-      expect(Number.isFinite(distantDirectEmitterPower(scene, 0))).toBe(true);
+      expect(Number.isFinite(distantDirectEmitterPmf(scene, 0))).toBe(true);
     }
 
     expect(() => sampleBdptBounce0Cpu(makeDirectional(1e-30), 0, 0.2, 0.7))
@@ -161,6 +164,7 @@ describe('invocation-local BDPT source selection', () => {
       environmentMapTexels: new Float32Array([2, 4, 6, 0.125]),
       environmentHdriIntensity: 3,
       environmentLightTreePower: 12,
+      environmentDistantProposalPmf: 1,
     });
     const sample = sampleBdptBounce0Cpu(scene, 0, 0.4, 0.7)!;
     expect(bdptEmitterCount(scene)).toBe(1);
@@ -227,19 +231,27 @@ describe('invocation-local BDPT source selection', () => {
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('return vec3f(0.0);');
   });
 
-  it('normalizes extreme distant powers without overflowing and uses HDRI power, not the CDF tail', () => {
+  it('uses the exact represented distant PMFs published by the host', () => {
+    const directionalLightsData = new Float32Array([
+      0, 1, 0, 0, 3.0e38, 3.0e38, 3.0e38, 0,
+      0, 1, 0, 0, 1.5e38, 1.5e38, 1.5e38, 0,
+    ]);
+    const environmentDistantProposalPmf = applyDistantDirectProposalPmf(
+      directionalLightsData,
+      2,
+      7.5e37,
+      true,
+    );
     const scene = stubScene({
       directionalLightCount: 2,
-      directionalLightsData: new Float32Array([
-        0, 1, 0, 0, 3.0e38, 3.0e38, 3.0e38, 0,
-        0, 1, 0, 0, 1.5e38, 1.5e38, 1.5e38, 0,
-      ]),
+      directionalLightsData,
       hasEnvironmentMap: true,
       environmentMapWidth: 1,
       environmentMapHeight: 1,
       environmentMapCdf: new Float32Array([0, 1]),
       environmentMapTexels: new Float32Array([1, 1, 1, 1]),
       environmentLightTreePower: 7.5e37,
+      environmentDistantProposalPmf,
     });
     const pdfs = [0, 1, 2].map((i) =>
       distantDirectSelectionPdf(

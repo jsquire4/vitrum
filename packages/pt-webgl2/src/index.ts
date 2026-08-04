@@ -31,7 +31,10 @@ import {
   validateSceneEnvironment,
 } from '@vitrum/core';
 import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
-import { pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
+import {
+  pickPrimitiveCpu,
+  type PickCamera,
+} from '@vitrum/shared-bvh';
 import { buildCapabilities } from './capabilities.js';
 import { makeStateSlot, type StateSlot } from './state.js';
 import type { PTEngineWebGL2Options } from './options.js';
@@ -77,6 +80,7 @@ import {
   computeWebgl2TransportBounds,
   type Webgl2TransportBounds,
 } from './scene/sceneScalePolicy.js';
+import { assertWebGl2OpticalMediumTopology } from './scene/opticalMediumPolicy.js';
 
 const DEFAULT_MAX_SPP = 4096;
 const DEFAULT_SPP_TARGET = 16;
@@ -382,6 +386,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     this.#guardLive('setScene');
     validateCoreScene(scene);
     validateWebGl2SceneMaterials(scene, 'setScene');
+    assertWebGl2OpticalMediumTopology(scene, 'setScene');
     this.#replaceScene(scene, 'setScene');
   }
 
@@ -407,6 +412,8 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     // buildSceneTextures now returns `supported`, so the filter runs a single time.
     const built = buildSceneTextures(this.#gl, scene, this.capabilities, {
       bdpt: this.#bdpt,
+      warningPhase: method === 'setScene' ? 'setScene' : 'incremental-mutation',
+      warningMethod: method,
     });
     for (const w of built.warnings) {
       this.#warn({
@@ -512,6 +519,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     };
     validateCoreScene(nextScene);
     validateWebGl2SceneMaterials(nextScene, 'addPrimitive');
+    assertWebGl2OpticalMediumTopology(nextScene, 'addPrimitive');
     const fast = tryFastPathPrimitiveListMutation(
       this.#gl,
       this.#sceneTextures,
@@ -562,6 +570,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       primitives,
     };
     validateCoreScene(nextScene);
+    assertWebGl2OpticalMediumTopology(nextScene, 'removePrimitive');
     const fast = tryFastPathPrimitiveListMutation(
       this.#gl,
       this.#sceneTextures,
@@ -594,6 +603,12 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     if (this.#scene == null) {
       throw new Error('updatePrimitive: call setScene() before updatePrimitive()');
     }
+    const currentPrimitive = this.#scene.primitives.find(
+      (primitive) => String(primitive.id) === id,
+    );
+    if (currentPrimitive == null) {
+      throw new Error(`updatePrimitive: primitive "${id}" not found in current scene`);
+    }
     const nextScene = patchPrimitiveInScene(this.#scene, id, patch);
     const nextPrimitive = nextScene.primitives.find(
       (primitive) => String(primitive.id) === id,
@@ -602,6 +617,25 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       throw new Error(`updatePrimitive: primitive "${id}" not found in patched scene`);
     }
     validateWebGl2PrimitiveMaterial(nextPrimitive, 'updatePrimitive');
+    // Geometry/transforms and 0↔transmission edits can create an equal-t
+    // represented-range contact. Pure nontransmissive material edits retain
+    // the surgical validation contract and need not reread accepted siblings.
+    const currentTransmissive = (currentPrimitive.material.transmission ?? 0) > 0;
+    const nextTransmissive = (nextPrimitive.material.transmission ?? 0) > 0;
+    const touchesPrimitiveRepresentation = Object.keys(patch).some(
+      (field) => field !== 'material',
+    );
+    const representationCanContactTransmissiveRange =
+      touchesPrimitiveRepresentation && nextScene.primitives.some(
+        (primitive) => (primitive.material.transmission ?? 0) > 0,
+      );
+    if (
+      currentTransmissive || nextTransmissive ||
+      representationCanContactTransmissiveRange
+    ) {
+      // This remains before every candidate texture/BVH allocation below.
+      assertWebGl2OpticalMediumTopology(nextScene, 'updatePrimitive');
+    }
     const fast = tryFastPathMaterialMutation(
       this.#gl,
       this.#sceneTextures,

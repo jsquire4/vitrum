@@ -80,11 +80,13 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
       rand_f32(&coarseRng) * 6.28318530718 +
       f32(SPATIAL_ROUND_INDEX) * 2.39996322973;
     var output = emptyReservoirDI();
+    var coarseWrs = representedWrsInit();
     updateReservoirDI(
       &output,
+      &coarseWrs,
       centerReservoir.lightId,
       centerReservoir.xi,
-      max(0.0, centerReservoir.w_sum),
+      reservoirDiCoarseReuseLogWeight(centerReservoir),
       &coarseRng,
     );
     var areaSupport = centerReservoir.areaM;
@@ -114,9 +116,10 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
       scaleReservoirDIToM(&neighbor, targetM);
       updateReservoirDI(
         &output,
+        &coarseWrs,
         neighbor.lightId,
         neighbor.xi,
-        max(0.0, neighbor.w_sum),
+        reservoirDiCoarseReuseLogWeight(neighbor),
         &coarseRng,
       );
       areaSupport = reservoirDiSaturatingAddU32(
@@ -135,16 +138,12 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     output.areaM = areaSupport;
     output.envM = environmentSupport;
     output.M = representedAttempts;
-    if (output.M > 0u && output.w_sum > 0.0) {
+    if (coarseWrs.hasSelection) {
       let pHat = restir_di_coarse_proposal_phat(
         output.lightId,
         output.xi,
       );
-      output.W = select(
-        0.0,
-        output.w_sum / (f32(output.M) * pHat),
-        pHat > 0.0,
-      );
+      finaliseReservoirDIFromNativeWrs(&output, coarseWrs, pHat);
     }
     storeReservoirDI_rw(pixelIndex, output);
     return;
@@ -228,12 +227,10 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   var areaSupport = 0u;
   var environmentSupport = 0u;
   var representedAttempts = 0u;
-  var candidateLogWeights: array<f32, 6>;
-  var maxCandidateLogWeight = RESERVOIR_DI_INVALID_LOG_DENSITY;
+  var wrs = representedWrsInit();
 
   for (var sourceIndex = 0u; sourceIndex < techniqueCount; sourceIndex++) {
     let source = reservoirs[sourceIndex];
-    candidateLogWeights[sourceIndex] = RESERVOIR_DI_INVALID_LOG_DENSITY;
     areaSupport = reservoirDiSaturatingAddU32(areaSupport, source.areaM);
     environmentSupport =
       reservoirDiSaturatingAddU32(environmentSupport, source.envM);
@@ -242,7 +239,9 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
 
     let sourceSupport =
       reservoirDiSupportForLight(source, source.lightId);
-    if (sourceSupport == 0u || !(source.W > 0.0)) { continue; }
+    if (sourceSupport == 0u || !reservoirDiHasEstimatorNumerator(source)) {
+      continue;
+    }
 
     let sourceDensity = restir_di_compute_phat_xi(
       source.lightId,
@@ -278,6 +277,10 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
         maxLogDensity,
       );
     }
+    let logTechniqueDenominator = reservoirDiLogSumExpFromMaxScale(
+      maxLogDensity,
+      scaledTechniqueDenominator,
+    );
     let canonicalDensity = restir_di_compute_phat_xi(
       source.lightId,
       source.xi,
@@ -285,29 +288,17 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
     );
     let candidateLogWeight = reservoirDiGeneralizedReuseLogWeight(
       reservoirDiLogWeightedDensity(sourceSupport, sourceDensity),
-      maxLogDensity,
-      scaledTechniqueDenominator,
+      logTechniqueDenominator,
       canonicalDensity,
-      source.W,
-    );
-    candidateLogWeights[sourceIndex] = candidateLogWeight;
-    maxCandidateLogWeight = max(
-      maxCandidateLogWeight,
-      candidateLogWeight,
-    );
-  }
-
-  for (var sourceIndex = 0u; sourceIndex < techniqueCount; sourceIndex++) {
-    let source = reservoirs[sourceIndex];
-    let candidateWeight = reservoirDiScaledDensityFromLog(
-      candidateLogWeights[sourceIndex],
-      maxCandidateLogWeight,
+      sourceDensity,
+      source.logEstimatorNumerator,
     );
     updateReservoirDI(
       &output,
+      &wrs,
       source.lightId,
       source.xi,
-      candidateWeight,
+      candidateLogWeight,
       &rng,
     );
   }
@@ -316,7 +307,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   output.envM = environmentSupport;
   output.M = representedAttempts;
   var selectedCanonicalDensity = 0.0;
-  if (output.w_sum > 0.0) {
+  if (wrs.hasSelection) {
     selectedCanonicalDensity = restir_di_compute_phat_xi(
       output.lightId,
       output.xi,
@@ -325,7 +316,7 @@ fn spatialMain(@builtin(global_invocation_id) gid: vec3u) {
   }
   finaliseReservoirDIFromGeneralizedReuse(
     &output,
-    maxCandidateLogWeight,
+    wrs,
     selectedCanonicalDensity,
   );
   storeReservoirDI_rw(pixelIndex, output);

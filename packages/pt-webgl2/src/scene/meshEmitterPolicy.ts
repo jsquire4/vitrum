@@ -18,7 +18,7 @@ export function materialEmissionExcludedFromMeshNee(material: MaterialSpec): boo
   return (
     (ref.magFilter ?? 'nearest') !== 'nearest' ||
     (ref.minFilter ?? 'nearest') !== 'nearest' ||
-    (ref.mipFilter ?? 'none') !== 'none'
+    (ref.mipFilter ?? 'linear') !== 'none'
   );
 }
 

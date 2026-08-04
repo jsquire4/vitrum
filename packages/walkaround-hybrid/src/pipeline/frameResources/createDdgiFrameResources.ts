@@ -18,13 +18,6 @@ export function createDdgiFrameResources(device: GPUDevice): DDGIFrameResources 
     format: 'rgba16float',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  const ddgiSampler = device.createSampler({
-    label: 'ddgi-linear-sampler',
-    magFilter: 'linear',
-    minFilter: 'linear',
-    addressModeU: 'clamp-to-edge',
-    addressModeV: 'clamp-to-edge',
-  });
   const ddgiUboBuffer = device.createBuffer({
     label: 'ddgi-ubo',
     size: 64,
@@ -35,7 +28,6 @@ export function createDdgiFrameResources(device: GPUDevice): DDGIFrameResources 
   return {
     ddgiPlaceholderRgba16f,
     ddgiPlaceholderVisRgba16f,
-    ddgiSampler,
     ddgiUboBuffer,
   };
 }

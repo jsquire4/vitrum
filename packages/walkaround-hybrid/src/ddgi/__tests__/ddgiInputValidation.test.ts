@@ -10,7 +10,17 @@ import {
 import { packDDGIProbeLights } from '../probeUpdateLights.js';
 import type { DDGILight } from '../types.js';
 
-const invalidCadences = [NaN, Infinity, -Infinity, 0, -1, 1.5] as const;
+const invalidCadences = [
+  NaN,
+  Infinity,
+  -Infinity,
+  0,
+  -1,
+  1.5,
+  65_537,
+  0x1_0000_0000,
+  Number.MAX_SAFE_INTEGER,
+] as const;
 const invalidFiniteScalars = [NaN, Infinity, -Infinity] as const;
 
 function passState(pass: ProbeUpdatePass): {
@@ -44,6 +54,8 @@ describe('DDGI public input validation', () => {
     ['maxProbesPerAxis', NaN],
     ['maxProbesPerAxis', Infinity],
     ['maxProbesPerAxis', 0],
+    ['maxProbesPerAxis', 1],
+    ['maxProbesPerAxis', 2],
     ['maxProbesPerAxis', 1.5],
   ] as const)('rejects invalid constructor option %s=%s', (key, value) => {
     expect(() => new DDGI({ [key]: value })).toThrow(RangeError);
@@ -112,6 +124,30 @@ describe('DDGI public input validation', () => {
       ddgi.dispose();
     },
   );
+
+  it('validates restored full-blend cardinality before replacing accepted state', () => {
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid());
+    pass.requestFullBlend(4);
+    const before = pass.captureFullBlendState();
+
+    expect(() => pass.restoreFullBlendState({
+      generation: 1,
+      stride: 65_537,
+      pendingStrata: [],
+    })).toThrow(RangeError);
+    expect(() => pass.restoreFullBlendState({
+      generation: 0x1_0000_0000,
+      stride: 4,
+      pendingStrata: [],
+    })).toThrow(RangeError);
+    expect(() => pass.restoreFullBlendState({
+      generation: 1,
+      stride: 4,
+      pendingStrata: [0, 1, 2, 3, 3],
+    })).toThrow(RangeError);
+    expect(pass.captureFullBlendState()).toEqual(before);
+    pass.dispose();
+  });
 
   it.each(invalidCadences)(
     'keeps pass cadence/full-blend state intact when divisor %s is invalid',
@@ -396,6 +432,42 @@ describe('DDGI public input validation', () => {
 });
 
 describe('ProbeGrid input validation', () => {
+  it('retains a valid direct 1x1x1 publication for placeholder/single-probe consumers', () => {
+    const grid = new ProbeGrid();
+    grid.dims = { x: 1, y: 1, z: 1 };
+    grid.allocateAtlases();
+
+    expect(grid.probeCount).toBe(1);
+    expect(grid.params.dims).toEqual({ x: 1, y: 1, z: 1 });
+    expect(grid.params.irradianceAtlasW).toBe(5);
+    expect(grid.params.irradianceAtlasH).toBe(5);
+    expect(grid.params.visibilityAtlasW).toBe(18);
+    expect(grid.params.visibilityAtlasH).toBe(18);
+  });
+
+  it.each([1, 2])(
+    'rejects maxProbesPerAxis=%s instead of silently exceeding the hard cap',
+    (maxProbesPerAxis) => {
+      const grid = new ProbeGrid();
+      const before = {
+        dims: { ...grid.dims },
+        origin: grid.worldOrigin.clone(),
+        spacing: grid.worldSpacing,
+        dirty: grid.dirty,
+      };
+
+      expect(() => grid.computeFromBounds(
+        { min: [0, 0, 0], max: [2, 3, 4] },
+        1,
+        maxProbesPerAxis,
+      )).toThrow(RangeError);
+      expect(grid.dims).toEqual(before.dims);
+      expect(grid.worldOrigin).toEqual(before.origin);
+      expect(grid.worldSpacing).toBe(before.spacing);
+      expect(grid.dirty).toBe(before.dirty);
+    },
+  );
+
   it.each([
     ['non-finite min', { min: [NaN, 0, 0], max: [1, 1, 1] }],
     ['non-finite max', { min: [0, 0, 0], max: [1, Infinity, 1] }],
@@ -431,6 +503,29 @@ describe('ProbeGrid input validation', () => {
       expect(grid.worldSpacing).toBe(before.spacing);
     },
   );
+
+  it('rejects invalid direct geometry candidates before publishing any component', () => {
+    const grid = new ProbeGrid();
+    grid.computeFromBounds({ min: [0, 0, 0], max: [2, 3, 4] }, 1, 8);
+    grid.allocateAtlases();
+    const before = {
+      dims: { ...grid.dims },
+      origin: { x: grid.worldOrigin.x, y: grid.worldOrigin.y, z: grid.worldOrigin.z },
+      spacing: grid.worldSpacing,
+      dirty: grid.dirty,
+    };
+
+    expect(() => { grid.dims = { x: 65_536, y: 65_536, z: 1 }; })
+      .toThrow(RangeError);
+    expect(() => { grid.worldSpacing = 3e38; }).toThrow(RangeError);
+    expect(() => { grid.worldOrigin.x = Math.fround(1e30); }).toThrow(RangeError);
+    expect(() => grid.worldOrigin.set(0, Math.fround(1e30), 0)).toThrow(RangeError);
+
+    expect(grid.dims).toEqual(before.dims);
+    expect(grid.worldOrigin).toMatchObject(before.origin);
+    expect(grid.worldSpacing).toBe(before.spacing);
+    expect(grid.dirty).toBe(before.dirty);
+  });
 
   it('keeps a fully degenerate finite AABB finite', () => {
     const grid = new ProbeGrid();

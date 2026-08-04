@@ -17,6 +17,16 @@ import { NRC_DIAGNOSTIC_BYTES } from '../src/neural/nrc/nrcDiagnostics.js';
 
 installWebGPUPolyfills();
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 interface MemoryBuffer {
   readonly label: string;
   readonly size: number;
@@ -123,7 +133,9 @@ function learnedState(): NrcLearnedStateSnapshot {
   };
 }
 
-function memoryDevice() {
+function memoryDevice(options: {
+  readonly learnedStateMapPromise?: Promise<void>;
+} = {}) {
   const copies: Array<readonly [MemoryBuffer, MemoryBuffer, number, number, number]> = [];
   const encoder = {
     copyBufferToBuffer(
@@ -148,6 +160,16 @@ function memoryDevice() {
     createBuffer: vi.fn((descriptor: GPUBufferDescriptor) => {
       const buffer = memoryBuffer(String(descriptor.label ?? 'buffer'), Number(descriptor.size));
       if (descriptor.mappedAtCreation) buffer.mapState = 'mapped';
+      if (
+        descriptor.label === 'nrc-learned-state-readback' &&
+        options.learnedStateMapPromise != null
+      ) {
+        buffer.mapAsync = async () => {
+          buffer.mapState = 'pending';
+          await options.learnedStateMapPromise;
+          buffer.mapState = 'mapped';
+        };
+      }
       return buffer;
     }),
     createCommandEncoder: vi.fn(() => encoder),
@@ -291,6 +313,24 @@ describe('NrcSubsystem learned-state persistence', () => {
       .toEqual(Array.from(state.hashGrid.secondMoment));
     expect(harness.copies).toHaveLength(9);
     expect(harness.device.queue.submit).toHaveBeenCalledOnce();
+  });
+
+  it('labels deferred GPU bytes with the trained-step counter captured before mapAsync', async () => {
+    const state = learnedState();
+    const mapGate = deferred<void>();
+    const harness = memoryDevice({
+      learnedStateMapPromise: mapGate.promise,
+    });
+    const subsystem = new NrcSubsystem(harness.device, {} as never, config);
+    installReadyState(subsystem, state, harness);
+
+    const pending = subsystem.exportLearnedState();
+    (subsystem as unknown as { _trainedSteps: number })._trainedSteps = 99;
+    mapGate.resolve();
+
+    const exported = await pending;
+    expect(exported?.trainedSteps).toBe(state.trainedSteps);
+    expect(subsystem.diagnostics().trainedSteps).toBe(99);
   });
 
   it('publishes and rolls back the complete learned-state handle cohort', () => {

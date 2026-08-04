@@ -11,10 +11,10 @@ describe('unified MNEE refraction closure', () => {
   });
 
   it('tracks nested media by object identity', () => {
-    expect(code).toContain('objectIds: array<u32, 8>');
-    expect(code).toContain('stack.objectIds[index] = optics.objectId;');
-    expect(code).toContain('stack.objectIds[scan] == optics.objectId');
-    expect(code).toContain('stack.objectIds[shift] = stack.objectIds[shift + 1u];');
+    expect(code).toContain('boundaryKinds: array<u32, 8>');
+    expect(code).toContain('stack.boundaryIndices[index] = optics.boundaryIndex;');
+    expect(code).toContain('mediumBoundaryMatches(');
+    expect(code).toContain('stack.boundaryComponents[stack.depth - 1u],');
   });
 
   it('keeps spectral dispersion, coherent films, and every Jacobian domain', () => {

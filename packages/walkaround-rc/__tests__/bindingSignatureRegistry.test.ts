@@ -79,6 +79,8 @@ function fullOpts(device: GPUDevice): RCDispatchOptsRaw {
     bvhNormalsBuf: makeBuffer('bvh-normals'),
     materialsBuf: makeBuffer('materials'),
     triMaterialIdBuf: makeBuffer('tri-mat-id'),
+    opticalTriangleIdentityBuf: makeBuffer('optical-triangle-identity', 32),
+    opticalInstanceBoundaryIdBasePlusOneBuf: makeBuffer('optical-instance-base', 4),
     cascadeBufs: [makeBuffer('cascade-0', 256), makeBuffer('cascade-1', 1024)],
     probeOriginWorld: [0, 0, 0],
     roomSize: [1, 1, 1],

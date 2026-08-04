@@ -26,7 +26,11 @@ function makeStubDevice() {
     createBuffer,
     ...textureStubMethods(),
     createCommandEncoder: vi.fn(),
-    limits: { maxStorageBuffersPerShaderStage: 64, maxTextureDimension2D: 8192 },
+    limits: {
+      maxStorageBuffersPerShaderStage: 64,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
+    },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     lost: new Promise<never>(() => {}),

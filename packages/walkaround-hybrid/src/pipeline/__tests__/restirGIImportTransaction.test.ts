@@ -55,7 +55,7 @@ function snapshot(overrides: Partial<RestirGISnapshot> = {}): RestirGISnapshot {
     const values = new Uint32Array(RESERVOIR_U32);
     const floats = new Float32Array(values.buffer);
     const floatLanes = [
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
+      0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
       20, 21, 22, 23, 26,
     ];
     for (let record = 0; record < 4; record += 1) {
@@ -64,7 +64,7 @@ function snapshot(overrides: Partial<RestirGISnapshot> = {}): RestirGISnapshot {
         floats[base + lane] = (seed + record + lane) * 0.001;
       }
       values[base + 15] = (seed + record) >>> 0;
-      values[base + 19] = (seed * 17 + record) >>> 0;
+      values[base + 19] = 0;
       values[base + 24] = 1;
       values[base + 25] = record & 1;
       values[base + 27] = 37;
@@ -72,6 +72,7 @@ function snapshot(overrides: Partial<RestirGISnapshot> = {}): RestirGISnapshot {
     return values;
   };
   return {
+    representationVersion: 1,
     halfW: 2,
     halfH: 2,
     strideU32: STRIDE_U32,
@@ -239,6 +240,9 @@ describe('ReSTIR-GI reservoir import transaction', () => {
     const gpu = makeDevice();
     const made = makePipeline(gpu.device);
     const value = snapshot();
+    // A valid logW may be non-positive. The pre-log migration predicate used
+    // lane 7 as linear W>0 and would silently ignore this live record.
+    new Float32Array(value.previous.buffer)[7] = -10;
     value.previous[27] = 38;
 
     expect(

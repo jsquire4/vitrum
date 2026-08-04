@@ -7,7 +7,7 @@
  * regardless of light count (instead of an O(log N) light-tree descent per
  * pixel × M candidates). The grid is SEEDED BY THE LIGHT TREE: each cell's WRS
  * draws candidates via the tree's descent at the cell centroid (see
- * `regir.wgsl` + `shared-samplers/lightTree.ts regirBuildSurvivorCPU`).
+ * `regir.wgsl` + `shared-samplers/regir.ts regirBuildSurvivorCPU`).
  *
  * This coordinator resolves the grid geometry (world bounds → cell dims +
  * inverse cell size), computes the grid-region byte count for the COMBINED
@@ -21,7 +21,12 @@
  * only the grid region. See `regir.wgsl` for the full rationale.
  */
 
-import { REGIR_FLOATS_PER_SURVIVOR, LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
+import {
+  LIGHT_TREE_FLOATS_PER_NODE,
+  REGIR_FLOATS_PER_SURVIVOR,
+  REGIR_MAX_CANDIDATES_PER_CELL,
+} from '@vitrum/shared-samplers';
+export { REGIR_MAX_CANDIDATES_PER_CELL } from '@vitrum/shared-samplers';
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { REGIR_OFF } from './uboUpdater.js';
@@ -40,7 +45,8 @@ export interface ReGIRConfig {
   /** Cells per axis (cubic-ish grid; the world bounds set the per-axis cell
    *  size, but the count is shared). Default 16 ⇒ 4096 cells. Clamped ≥ 1. */
   readonly cellsPerAxis: number;
-  /** M — WRS candidates drawn per sub-reservoir at grid build. Default 32. */
+  /** M — WRS candidates drawn per sub-reservoir at grid build. Default 32;
+   * bounded so one compute invocation cannot run an unbounded serial loop. */
   readonly candidatesPerCell: number;
   /** K — survivors stored per cell (per-pixel candidate diversity). Default 8. */
   readonly survivorsPerCell: number;
@@ -50,17 +56,11 @@ const REGIR_U32_MAX = 0xffff_ffff;
 const REGIR_U32_ELEMENT_CAPACITY = BigInt(REGIR_U32_MAX) + 1n;
 export const REGIR_BUILD_WORKGROUP_SIZE = 64;
 
-function finitePositiveInt(
-  value: number | undefined,
-  fallback: number,
-  label: string,
-): number {
+function finitePositiveInt(value: number | undefined, fallback: number, label: string): number {
   if (value === undefined || !Number.isFinite(value)) return fallback;
   const resolved = Math.max(1, Math.floor(value));
   if (!Number.isSafeInteger(resolved) || resolved > REGIR_U32_MAX) {
-    throw new RangeError(
-      `[ReGIR] ${label} must resolve to an integer representable by WGSL u32.`,
-    );
+    throw new RangeError(`[ReGIR] ${label} must resolve to an integer representable by WGSL u32.`);
   }
   return resolved;
 }
@@ -75,9 +75,7 @@ function capacity(config: ReGIRConfig): {
   const survivors = cells * BigInt(config.survivorsPerCell);
   const floats = survivors * BigInt(REGIR_FLOATS_PER_SURVIVOR);
   if (cells > BigInt(REGIR_U32_MAX)) {
-    throw new RangeError(
-      '[ReGIR] cellsPerAxis³ exceeds the WGSL u32 cell-index domain.',
-    );
+    throw new RangeError('[ReGIR] cellsPerAxis³ exceeds the WGSL u32 cell-index domain.');
   }
   if (survivors > BigInt(REGIR_U32_MAX)) {
     throw new RangeError(
@@ -85,9 +83,7 @@ function capacity(config: ReGIRConfig): {
     );
   }
   if (floats > REGIR_U32_ELEMENT_CAPACITY) {
-    throw new RangeError(
-      '[ReGIR] grid storage exceeds the WGSL u32 element-index domain.',
-    );
+    throw new RangeError('[ReGIR] grid storage exceeds the WGSL u32 element-index domain.');
   }
   return { cells, survivors, floats };
 }
@@ -101,11 +97,7 @@ export function resolveReGIRMaxSpan(
   min: readonly [number, number, number],
   max: readonly [number, number, number],
 ): number {
-  const spans = [
-    max[0] - min[0],
-    max[1] - min[1],
-    max[2] - min[2],
-  ] as const;
+  const spans = [max[0] - min[0], max[1] - min[1], max[2] - min[2]] as const;
   if (spans.some((span) => !Number.isFinite(span) || span < 0)) {
     throw new RangeError('[ReGIR] scene AABB must contain finite ordered bounds.');
   }
@@ -119,17 +111,12 @@ export function resolveReGIRMaxSpan(
     Math.abs(max[1]),
     Math.abs(max[2]),
   );
-  return Math.max(
-    coordinateScale * 2 ** -20,
-    1.1754943508222875e-38,
-  );
+  return Math.max(coordinateScale * 2 ** -20, 1.1754943508222875e-38);
 }
 
 function reportedDeviceLimit(device: GPUDevice, name: string): number | undefined {
   const raw = (device.limits as unknown as Record<string, unknown> | undefined)?.[name];
-  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0
-    ? raw
-    : undefined;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : undefined;
 }
 
 /** Resolve a partial host config to the full {@link ReGIRConfig} with defaults. */
@@ -137,17 +124,15 @@ export function resolveReGIRConfig(opts?: Partial<ReGIRConfig>): ReGIRConfig {
   const resolved: ReGIRConfig = {
     enabled: opts?.enabled ?? false,
     cellsPerAxis: finitePositiveInt(opts?.cellsPerAxis, 16, 'cellsPerAxis'),
-    candidatesPerCell: finitePositiveInt(
-      opts?.candidatesPerCell,
-      32,
-      'candidatesPerCell',
-    ),
-    survivorsPerCell: finitePositiveInt(
-      opts?.survivorsPerCell,
-      8,
-      'survivorsPerCell',
-    ),
+    candidatesPerCell: finitePositiveInt(opts?.candidatesPerCell, 32, 'candidatesPerCell'),
+    survivorsPerCell: finitePositiveInt(opts?.survivorsPerCell, 8, 'survivorsPerCell'),
   };
+  if (resolved.candidatesPerCell > REGIR_MAX_CANDIDATES_PER_CELL) {
+    throw new RangeError(
+      `[ReGIR] candidatesPerCell must be <= ${REGIR_MAX_CANDIDATES_PER_CELL}; ` +
+        'the grid-build shader executes this loop serially in every survivor invocation.',
+    );
+  }
   if (resolved.enabled) capacity(resolved);
   return resolved;
 }
@@ -186,10 +171,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
   /** Number of 64-wide workgroups required by the live grid geometry. */
   get buildDispatchWorkgroups(): number {
     if (!this._live) return 0;
-    return Math.ceil(
-      (this.cellCount * this._config.survivorsPerCell) /
-        REGIR_BUILD_WORKGROUP_SIZE,
-    );
+    return Math.ceil((this.cellCount * this._config.survivorsPerCell) / REGIR_BUILD_WORKGROUP_SIZE);
   }
 
   /**
@@ -201,36 +183,23 @@ export class ReGIRCoordinator implements PipelineSubsystem {
   assertDeviceLimits(device: GPUDevice): void {
     if (!this._config.enabled) return;
     const { survivors } = capacity(this._config);
-    const workgroupInvocations = reportedDeviceLimit(
-      device,
-      'maxComputeInvocationsPerWorkgroup',
-    );
-    if (
-      workgroupInvocations !== undefined &&
-      REGIR_BUILD_WORKGROUP_SIZE > workgroupInvocations
-    ) {
+    const workgroupInvocations = reportedDeviceLimit(device, 'maxComputeInvocationsPerWorkgroup');
+    if (workgroupInvocations !== undefined && REGIR_BUILD_WORKGROUP_SIZE > workgroupInvocations) {
       throw new RangeError(
         `[ReGIR] build workgroup size ${REGIR_BUILD_WORKGROUP_SIZE} exceeds ` +
           `maxComputeInvocationsPerWorkgroup=${workgroupInvocations}.`,
       );
     }
     const workgroupSizeX = reportedDeviceLimit(device, 'maxComputeWorkgroupSizeX');
-    if (
-      workgroupSizeX !== undefined &&
-      REGIR_BUILD_WORKGROUP_SIZE > workgroupSizeX
-    ) {
+    if (workgroupSizeX !== undefined && REGIR_BUILD_WORKGROUP_SIZE > workgroupSizeX) {
       throw new RangeError(
         `[ReGIR] build workgroup X ${REGIR_BUILD_WORKGROUP_SIZE} exceeds ` +
           `maxComputeWorkgroupSizeX=${workgroupSizeX}.`,
       );
     }
     const dispatchX =
-      (survivors + BigInt(REGIR_BUILD_WORKGROUP_SIZE - 1)) /
-      BigInt(REGIR_BUILD_WORKGROUP_SIZE);
-    const dispatchLimit = reportedDeviceLimit(
-      device,
-      'maxComputeWorkgroupsPerDimension',
-    );
+      (survivors + BigInt(REGIR_BUILD_WORKGROUP_SIZE - 1)) / BigInt(REGIR_BUILD_WORKGROUP_SIZE);
+    const dispatchLimit = reportedDeviceLimit(device, 'maxComputeWorkgroupsPerDimension');
     if (dispatchLimit !== undefined && dispatchX > BigInt(dispatchLimit)) {
       throw new RangeError(
         `[ReGIR] build dispatch requires ${dispatchX} workgroups in X, exceeding ` +
@@ -251,9 +220,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
     if (!this._config.enabled) return 0;
     const bytes = capacity(this._config).floats * 4n;
     if (bytes > BigInt(Number.MAX_SAFE_INTEGER)) {
-      throw new RangeError(
-        '[ReGIR] configured grid byte length exceeds Number.MAX_SAFE_INTEGER.',
-      );
+      throw new RangeError('[ReGIR] configured grid byte length exceeds Number.MAX_SAFE_INTEGER.');
     }
     return Number(bytes);
   }
@@ -291,9 +258,7 @@ export class ReGIRCoordinator implements PipelineSubsystem {
       Math.min(N, Math.max(1, Math.ceil(spanY / this._cellSize))),
       Math.min(N, Math.max(1, Math.ceil(spanZ / this._cellSize))),
     ];
-    this._gridFloatOffset = this._checkedGridFloatOffset(
-      bvh.lightTreeNodeCount ?? 0,
-    );
+    this._gridFloatOffset = this._checkedGridFloatOffset(bvh.lightTreeNodeCount ?? 0);
   }
 
   /**
@@ -307,25 +272,23 @@ export class ReGIRCoordinator implements PipelineSubsystem {
     if (!this._config.enabled) return;
     const lightTreeLive = !!bvh.lightTreeEnabled && (bvh.lightTreeNodeCount ?? 0) > 0;
     this._live = this._gridBuildPipelineReady && lightTreeLive;
-    this._gridFloatOffset = this._checkedGridFloatOffset(
-      bvh.lightTreeNodeCount ?? 0,
-    );
+    this._gridFloatOffset = this._checkedGridFloatOffset(bvh.lightTreeNodeCount ?? 0);
   }
 
   private _checkedGridFloatOffset(lightTreeNodeCount: number): number {
-    if (
-      !Number.isSafeInteger(lightTreeNodeCount) ||
-      lightTreeNodeCount < 0
-    ) {
-      throw new RangeError(
-        '[ReGIR] lightTreeNodeCount must be a non-negative safe integer.',
-      );
+    if (!Number.isSafeInteger(lightTreeNodeCount) || lightTreeNodeCount < 0) {
+      throw new RangeError('[ReGIR] lightTreeNodeCount must be a non-negative safe integer.');
     }
-    const offset =
-      BigInt(lightTreeNodeCount) * BigInt(LIGHT_TREE_FLOATS_PER_NODE);
+    const offset = BigInt(lightTreeNodeCount) * BigInt(LIGHT_TREE_FLOATS_PER_NODE);
     if (offset > BigInt(REGIR_U32_MAX)) {
       throw new RangeError(
         '[ReGIR] light-tree grid offset exceeds the WGSL u32 element-index domain.',
+      );
+    }
+    const combinedFloats = offset + capacity(this._config).floats;
+    if (combinedFloats > REGIR_U32_ELEMENT_CAPACITY) {
+      throw new RangeError(
+        '[ReGIR] combined light-tree + grid storage exceeds the WGSL u32 element-index domain.',
       );
     }
     return Number(offset);

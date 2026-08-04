@@ -12,7 +12,10 @@
  * (`packBVHRoughMetalFromCore`) packers.
  */
 import { describe, it, expect } from 'vitest';
-import type { MaterialSpec } from '@vitrum/core';
+import {
+  KHR_MATERIALS_IOR_INFINITY_APPROX,
+  type MaterialSpec,
+} from '@vitrum/core';
 import {
   packBVHRoughMetalFromCore,
   packBVHIndexWFromCore,
@@ -38,7 +41,7 @@ function decodeRoughMetal(packed: number): { rough: number; metal: number } {
 /** Mirror of WGSL transport decode. Byte 0 is the infinite-IOR endpoint. */
 function decodeIor(packed: number): number {
   const byte = (packed >>> 8) & 0xff;
-  if (byte === 0) return 1e6;
+  if (byte === 0) return KHR_MATERIALS_IOR_INFINITY_APPROX;
   return 1.0 + ((byte - 1) / 254) * 2.0;
 }
 
@@ -253,7 +256,7 @@ describe('B1-ior-per-tri — IOR lane in packBVHRoughMetal (structural packer)',
     const mats: PbrMaterialLike[] = [{ transmission: 1.0, ior: 0 }];
     const buf = packBVHRoughMetal(new Uint32Array([0]), mats, 1);
     expect((buf[0]! >>> 8) & 0xff).toBe(0);
-    expect(decodeIor(buf[0]!)).toBe(1e6);
+    expect(decodeIor(buf[0]!)).toBe(KHR_MATERIALS_IOR_INFINITY_APPROX);
   });
 
   it('rough+metal+IOR bits are co-packed without interfering', () => {

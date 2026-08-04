@@ -102,6 +102,9 @@ const ANALYTIC_FALLBACKS = Object.freeze({
   'h-channel-came': 'fallback-generated-mesh',
 } as const);
 
+/** Fixed capacity of every eye, shadow, and BDPT optical-medium stack. */
+export const PT_WEBGL2_MAX_NESTED_MEDIA = 8;
+
 /**
  * Backend-local source of truth for live capability reporting and scene
  * acceptance. The core promise ledger is intentionally not read here.
@@ -128,6 +131,11 @@ export const PT_WEBGL2_SUPPORT_MANIFEST = defineBackendSupportManifest({
   shadows: {
     primitiveCastShadow: 'native',
     emitterCastShadow: 'native',
+  },
+  opticalMedia: {
+    maxNestedMedia: PT_WEBGL2_MAX_NESTED_MEDIA,
+    topology: 'closed-oriented-disjoint-or-nested',
+    overflowPolicy: 'reject-scene',
   },
   denoisers: {
     none: 'native',

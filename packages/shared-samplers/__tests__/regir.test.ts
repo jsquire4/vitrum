@@ -1,20 +1,22 @@
 /**
- * regir.test.ts — ReGIR (Boksansky 2021) per-cell WRS + selection pmf.
+ * regir.test.ts — ReGIR represented per-cell WRS + effective log density.
  *
- * Correctness-critical for ReSTIR unbiasedness: the per-cell selection pmf the
- * grid stores (`q̂_c(e)/Ŝ`) must be a VALID pmf (sum to 1 over the emitter set)
- * — RIS divides the target p̂ by exactly this pmf, so a pmf that doesn't sum to
- * 1 biases the estimator. The WGSL grid-build kernel + RIS read path mirror
- * `regirBuildSurvivorCPU` / `regirCellPmfExact` byte-for-byte, so verifying the
- * CPU reference pins the GPU behaviour too.
+ * Correctness-critical for ReSTIR unbiasedness: lane 1 stores
+ * `log2(M * r_i * p_tree_i)`, with `r_i` measured from the actual integer
+ * replace/keep buckets. The tests pin extreme support and estimator identities.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
   buildLightTree,
+  packLightTreeForGPU,
+  packedLightTreeNodeImportanceCPU,
+  packedLightTreePdfCPU,
   type LightTreeBuildInput,
 } from '../src/lightTree.js';
 import {
+  REGIR_LOG2_PSEL_INVALID,
+  REGIR_MAX_CANDIDATES_PER_CELL,
   regirBuildSurvivorCPU,
   regirCellTargetFromTree,
   regirCellPmfExact,
@@ -24,7 +26,9 @@ import * as pkgIndex from '../src/index.js';
 const FLOOR = 0.01;
 
 function pointAabb(
-  cx: number, cy: number, cz: number,
+  cx: number,
+  cy: number,
+  cz: number,
 ): { min: readonly [number, number, number]; max: readonly [number, number, number] } {
   return { min: [cx - 0.5, cy - 0.5, cz - 0.5], max: [cx + 0.5, cy + 0.5, cz + 0.5] };
 }
@@ -47,11 +51,13 @@ function lcg(seed: number): () => number {
   };
 }
 
-describe('ReGIR public surface — re-export equivalence (regir.ts move)', () => {
-  it('the 4 ReGIR exports remain importable from the package index, identical to ./regir.js', () => {
+describe('ReGIR public surface — re-export equivalence', () => {
+  it('the ABI constants and helpers remain importable from the package index', () => {
     // After the lightTree.ts → regir.ts split the public surface must be UNCHANGED:
     // consumers import these from '@vitrum/shared-samplers' (the index), not deep.
     expect(pkgIndex.REGIR_FLOATS_PER_SURVIVOR).toBe(2);
+    expect(pkgIndex.REGIR_LOG2_PSEL_INVALID).toBe(REGIR_LOG2_PSEL_INVALID);
+    expect(pkgIndex.REGIR_MAX_CANDIDATES_PER_CELL).toBe(REGIR_MAX_CANDIDATES_PER_CELL);
     expect(pkgIndex.regirBuildSurvivorCPU).toBe(regirBuildSurvivorCPU);
     expect(pkgIndex.regirCellTargetFromTree).toBe(regirCellTargetFromTree);
     expect(pkgIndex.regirCellPmfExact).toBe(regirCellPmfExact);
@@ -70,19 +76,24 @@ describe('ReGIR public surface — re-export equivalence (regir.ts move)', () =>
     const tgtIndex = pkgIndex.regirCellTargetFromTree(nodes, xc, FLOOR);
     for (const e of powers.keys()) expect(tgtIndex(e)).toBe(tgtDirect(e));
     // regirBuildSurvivorCPU — identical survivor for the same RNG seed.
-    const sDirect = regirBuildSurvivorCPU(nodes, xc, FLOOR, 32, tgtDirect, lcg(0xBEEF));
-    const sIndex = pkgIndex.regirBuildSurvivorCPU(nodes, xc, FLOOR, 32, tgtIndex, lcg(0xBEEF));
+    const sDirect = regirBuildSurvivorCPU(nodes, xc, FLOOR, 32, tgtDirect, lcg(0xbeef));
+    const sIndex = pkgIndex.regirBuildSurvivorCPU(nodes, xc, FLOOR, 32, tgtIndex, lcg(0xbeef));
     expect(sIndex).toEqual(sDirect);
   });
 });
 
-describe('ReGIR cell pmf — validity (correctness-critical for unbiasedness)', () => {
-  it('the exact normalized cell pmf integrates to 1 over the emitter set, for EVERY cell centroid', () => {
+describe('ReGIR normalized represented target diagnostic', () => {
+  it('integrates to 1 over the emitter set for every cell centroid', () => {
     const powers = [1, 2, 4, 8, 3, 5, 6, 7];
     const { nodes } = buildLightTree(makeInput(powers));
     // Probe several cell centroids spanning + outside the emitter spread.
     for (const xc of [
-      [-2, 0, 0], [0, 0, 0], [6, 0, 0], [14, 0, 0], [28, 0, 0], [50, 2, -3],
+      [-2, 0, 0],
+      [0, 0, 0],
+      [6, 0, 0],
+      [14, 0, 0],
+      [28, 0, 0],
+      [50, 2, -3],
     ] as const) {
       const pmf = regirCellPmfExact(nodes, xc, FLOOR);
       let sum = 0;
@@ -118,8 +129,25 @@ describe('ReGIR cell pmf — validity (correctness-critical for unbiasedness)', 
   });
 });
 
-describe('ReGIR per-cell WRS survivor — unbiased selection pmf', () => {
-  it('the WRS survivor distribution converges to the exact cell pmf, and pSel matches q̂(e*)/Ŝ', () => {
+describe('ReGIR per-cell represented WRS survivor', () => {
+  it('keeps qHat/pdf finite through the one-bucket/max-f32 adversarial case', () => {
+    const { nodes } = buildLightTree(makeInput([Number.MIN_VALUE, Number.MAX_VALUE]));
+    const draws = [0, 0]; // choose the first root bucket, then accept the WRS item
+    let cursor = 0;
+    const survivor = regirBuildSurvivorCPU(
+      nodes,
+      [0, 0, 0],
+      FLOOR,
+      1,
+      () => Math.fround(3.4028234663852886e38),
+      () => draws[cursor++] ?? 0,
+    );
+    expect(survivor.emitterIndex).toBe(0);
+    expect(survivor.log2PSel).toBe(-24);
+    expect(Number.isFinite(survivor.log2PSel)).toBe(true);
+  });
+
+  it('the represented survivor distribution remains close to the normalized target', () => {
     const powers = [1, 3, 9, 2, 5];
     const { nodes } = buildLightTree(makeInput(powers));
     const xc: readonly [number, number, number] = [6, 0, 0];
@@ -127,7 +155,7 @@ describe('ReGIR per-cell WRS survivor — unbiased selection pmf', () => {
     const target = regirCellTargetFromTree(nodes, xc, FLOOR);
     const S = powers.reduce((acc, _, i) => acc + target(i), 0);
 
-    const rand = lcg(0xC0FFEE);
+    const rand = lcg(0xc0ffee);
     const M = 64; // candidates per sub-reservoir
     const TRIALS = 40000;
     const survivorCounts = new Map<number, number>();
@@ -135,17 +163,10 @@ describe('ReGIR per-cell WRS survivor — unbiased selection pmf', () => {
       const s = regirBuildSurvivorCPU(nodes, xc, FLOOR, M, target, rand);
       if (s.emitterIndex < 0) continue;
       survivorCounts.set(s.emitterIndex, (survivorCounts.get(s.emitterIndex) ?? 0) + 1);
-      // pSel MUST equal the exact q̂(e*)/S relation up to the wSum/M estimate.
-      // For a converged-enough M, pSel ≈ q̂(e*)/S = exactPmf(e*).
       const exact = exactPmf.get(s.emitterIndex)!;
-      // pSel = q̂(e*) · M / wSum; with the unbiased Ŝ = wSum/M ≈ S, pSel ≈ q̂/S.
-      // Assert pSel is within a generous tolerance of the exact pmf (the WRS
-      // normalisation estimate Ŝ has variance; the relation is exact only in
-      // expectation per draw — see below for the aggregate check).
-      expect(s.pSel).toBeGreaterThan(0);
-      expect(Number.isFinite(s.pSel)).toBe(true);
-      // q̂(e*)/Ŝ ≤ 1 always (q̂(e*) ≤ Ŝ in any single reservoir that selected e*).
-      expect(s.pSel).toBeLessThanOrEqual(1 + 1e-6);
+      // The stored value is an occurrence correction, not this target PMF.
+      expect(s.log2PSel).toBeGreaterThan(REGIR_LOG2_PSEL_INVALID);
+      expect(Number.isFinite(s.log2PSel)).toBe(true);
       expect(exact).toBeGreaterThan(0);
       expect(S).toBeGreaterThan(0);
     }
@@ -159,11 +180,50 @@ describe('ReGIR per-cell WRS survivor — unbiased selection pmf', () => {
     }
   });
 
-  it('the estimator E[ q̂(e*) · 1/pSel ] equals S_c (unbiased normalisation) — the RIS-weight identity', () => {
-    // RIS divides p̂ by pSel. The unbiasedness identity behind that division is
-    // that pSel = q̂(e*)/Ŝ is the survivor effective pdf, so q̂(e*)/pSel = Ŝ is an
-    // unbiased estimate of S_c. Average q̂(e*)/pSel over many sub-reservoirs and
-    // assert it recovers S_c.
+  it('stores the one-bucket newcomer occurrence as log2(M*r*pTree)', () => {
+    const { nodes } = buildLightTree(makeInput([1, 1]));
+    const lastRootBucket = (2 ** 24 - 1) / 2 ** 24;
+    // Draw emitter 0 with a huge WRS weight, then emitter 1 with a tiny one.
+    // Ticket zero selects the newcomer through its one represented bucket.
+    const draws = [0, lastRootBucket, 0];
+    let cursor = 0;
+    const survivor = regirBuildSurvivorCPU(
+      nodes,
+      [0, 0, 0],
+      FLOOR,
+      2,
+      (emitterIndex) => (emitterIndex === 0 ? 3.4028234663852886e38 : 1.1754943508222875e-38),
+      () => draws[cursor++] ?? 0.5,
+    );
+
+    expect(survivor.emitterIndex).toBe(1);
+    const selectedTreePmf = packedLightTreePdfCPU(packLightTreeForGPU(nodes), [0, 0, 0], FLOOR, 1);
+    expect(survivor.log2PSel).toBe(Math.fround(1 - 24 + Math.log2(selectedTreePmf)));
+    expect(cursor).toBe(3);
+  });
+
+  it('stores the B-1-bucket newcomer probability without rounding it to one', () => {
+    const { nodes } = buildLightTree(makeInput([1, 1]));
+    const lastRootBucket = (2 ** 24 - 1) / 2 ** 24;
+    const draws = [0, lastRootBucket, 0];
+    let cursor = 0;
+    const survivor = regirBuildSurvivorCPU(
+      nodes,
+      [0, 0, 0],
+      FLOOR,
+      2,
+      (emitterIndex) => (emitterIndex === 0 ? 1.1754943508222875e-38 : 3.4028234663852886e38),
+      () => draws[cursor++] ?? 0.5,
+    );
+
+    expect(survivor.emitterIndex).toBe(1);
+    const selectedTreePmf = packedLightTreePdfCPU(packLightTreeForGPU(nodes), [0, 0, 0], FLOOR, 1);
+    const representedLogR = Math.fround(Math.log2(Math.fround((2 ** 24 - 1) / 2 ** 24)));
+    expect(representedLogR).toBeLessThan(0);
+    expect(survivor.log2PSel).toBe(Math.fround(1 + representedLogR + Math.log2(selectedTreePmf)));
+  });
+
+  it('the represented occurrence correction recovers the target-mass integral', () => {
     const powers = [2, 4, 1, 8, 3];
     const { nodes } = buildLightTree(makeInput(powers));
     const xc: readonly [number, number, number] = [5, 0, 0];
@@ -177,13 +237,52 @@ describe('ReGIR per-cell WRS survivor — unbiased selection pmf', () => {
     let n = 0;
     for (let t = 0; t < TRIALS; t++) {
       const s = regirBuildSurvivorCPU(nodes, xc, FLOOR, M, target, rand);
-      if (s.emitterIndex < 0 || s.pSel <= 0) continue;
-      // q̂(e*) / pSel = q̂(e*) / (q̂(e*)/Ŝ) = Ŝ — an unbiased estimate of S_c.
-      sumEst += target(s.emitterIndex) / s.pSel;
+      if (s.emitterIndex < 0) continue;
+      const pSel = 2 ** s.log2PSel;
+      expect(pSel).toBeGreaterThan(0);
+      sumEst += target(s.emitterIndex) / pSel;
       n++;
     }
     expect(n).toBeGreaterThan(0);
     expect(sumEst / n).toBeCloseTo(S, 0); // within ~1 of S_c
+  });
+
+  it('keeps a positive-power leaf selectable when its centroid cone target is zero', () => {
+    const input: LightTreeBuildInput = {
+      powers: [1],
+      centroids: [[0, 0, 0]],
+      aabbs: [pointAabb(0, 0, 0)],
+      cones: [{ axis: [1, 0, 0], thetaO: 0, thetaE: Math.PI / 2 }],
+    };
+    const { nodes } = buildLightTree(input);
+    const xc: readonly [number, number, number] = [-10, 0, 0];
+    const packed = packLightTreeForGPU(nodes);
+    expect(packedLightTreeNodeImportanceCPU(packed, 0, xc, FLOOR)).toBe(0);
+
+    const target = regirCellTargetFromTree(nodes, xc, FLOOR);
+    expect(target(0)).toBe(1.1754943508222875e-38);
+    let randomCalls = 0;
+    const survivor = regirBuildSurvivorCPU(nodes, xc, FLOOR, 1, target, () => {
+      randomCalls++;
+      return 0;
+    });
+    expect(survivor).toEqual({ emitterIndex: 0, log2PSel: 0 });
+    expect(randomCalls).toBe(0);
+  });
+
+  it('rejects candidate loops above the shared bounded serial limit', () => {
+    const { nodes } = buildLightTree(makeInput([1]));
+    const target = regirCellTargetFromTree(nodes, [0, 0, 0], FLOOR);
+    expect(() =>
+      regirBuildSurvivorCPU(
+        nodes,
+        [0, 0, 0],
+        FLOOR,
+        REGIR_MAX_CANDIDATES_PER_CELL + 1,
+        target,
+        () => 0,
+      ),
+    ).toThrow(/\[1, 4096\]/);
   });
 
   it('returns an empty survivor (skipped, never an infinite weight) when no positive-power emitter is reachable', () => {
@@ -192,6 +291,6 @@ describe('ReGIR per-cell WRS survivor — unbiased selection pmf', () => {
     const target = regirCellTargetFromTree(nodes, [0, 0, 0], FLOOR);
     const s = regirBuildSurvivorCPU(nodes, [0, 0, 0], FLOOR, 16, target, lcg(7));
     expect(s.emitterIndex).toBe(-1);
-    expect(s.pSel).toBe(0);
+    expect(s.log2PSel).toBe(REGIR_LOG2_PSEL_INVALID);
   });
 });

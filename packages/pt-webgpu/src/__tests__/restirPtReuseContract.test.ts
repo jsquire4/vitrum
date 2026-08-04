@@ -94,12 +94,14 @@ function restirPtTemporalWeightsReference(input: TemporalReuseWeightsInput): {
 
 function finaliseReservoirPTWGrisReference(opts: {
   readonly M: number;
-  readonly wSum: number;
+  readonly selectedWeight: number;
+  readonly selectionProbability: number;
   readonly pHat: number;
 }): number {
-  if (opts.M <= 0 || !Number.isFinite(opts.wSum) || opts.wSum <= 0 ||
+  if (opts.M <= 0 || !Number.isFinite(opts.selectedWeight) || opts.selectedWeight <= 0 ||
+      !Number.isFinite(opts.selectionProbability) || opts.selectionProbability <= 0 ||
       !Number.isFinite(opts.pHat) || opts.pHat <= 1e-9) return Number.NEGATIVE_INFINITY;
-  return Math.log(opts.wSum) - Math.log(opts.pHat);
+  return Math.log(opts.selectedWeight) - Math.log(opts.selectionProbability) - Math.log(opts.pHat);
 }
 
 describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finalize', () => {
@@ -114,8 +116,14 @@ describe('ReSTIR-PT temporal — calls the reconnection shift + the GRIS finaliz
     // The GRIS finalize must NOT divide by M (the MIS weights already sum to 1).
     const finalizeBody = RESERVOIR_PT_HERO_WGSL.slice(
       RESERVOIR_PT_HERO_WGSL.indexOf('fn finaliseReservoirPTWGris('),
-    ).split('\n').slice(0, 30).join('\n');
-    expect(finalizeBody).toContain('(*r).logWeightSum - log(pHatF)');
+    ).split('\n').slice(0, 40).join('\n');
+    expect(finalizeBody).toContain('(*r).selectedLogWeight,');
+    expect(finalizeBody).toContain('-(*r).logSelectionProbability,');
+    expect(finalizeBody).toContain('-(*r).logSelectionProbabilityLow,');
+    expect(finalizeBody).toContain(
+      'let logW = selectedCorrection.x + selectedCorrection.y - log(pHatF);',
+    );
+    expect(finalizeBody).not.toContain('(*r).logWeightSum - log(pHatF)');
     expect(finalizeBody).not.toContain('wCap');
     expect(finalizeBody).not.toMatch(/f32\(\(\*r\)\.M\)/); // no ·M normalisation
   });
@@ -255,26 +263,38 @@ describe('ReSTIR-PT temporal — log weight is log(m·p̂·W·J) with NO /p_src'
 
   it('CPU oracle: log GRIS finalization is independent of M and unclamped', () => {
     const expected = Math.log(4);
-    expect(finaliseReservoirPTWGrisReference({ M: 1, wSum: 12, pHat: 3 })).toBeCloseTo(expected, 14);
-    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 3 })).toBeCloseTo(expected, 14);
-    expect(finaliseReservoirPTWGrisReference({ M: 128, wSum: 12, pHat: 0 })).toBe(Number.NEGATIVE_INFINITY);
-    expect(finaliseReservoirPTWGrisReference({ M: 0, wSum: 12, pHat: 3 })).toBe(Number.NEGATIVE_INFINITY);
+    const finiteSelection = {
+      selectedWeight: 6,
+      selectionProbability: 0.5,
+      pHat: 3,
+    };
+    expect(finaliseReservoirPTWGrisReference({ M: 1, ...finiteSelection })).toBeCloseTo(expected, 14);
+    expect(finaliseReservoirPTWGrisReference({ M: 128, ...finiteSelection })).toBeCloseTo(expected, 14);
+    expect(finaliseReservoirPTWGrisReference({ M: 128, ...finiteSelection, pHat: 0 })).toBe(Number.NEGATIVE_INFINITY);
+    expect(finaliseReservoirPTWGrisReference({ M: 0, ...finiteSelection })).toBe(Number.NEGATIVE_INFINITY);
   });
 
   it('max-log arithmetic preserves adversarial ratios without a biased ceiling', () => {
-    const finalizeLog = (wSum: number, pHat: number): number =>
-      Math.log(wSum) - Math.log(pHat);
-    for (const [wSum, pHat] of [
-      [1, 1],
-      [1e20, 1e-8],
-      [Number.MAX_VALUE, 1e-8],
-      [Number.MAX_VALUE, Number.MIN_VALUE],
+    const finalizeLog = (
+      selectedWeight: number,
+      selectionProbability: number,
+      pHat: number,
+    ): number =>
+      Math.log(selectedWeight) - Math.log(selectionProbability) - Math.log(pHat);
+    for (const [selectedWeight, selectionProbability, pHat] of [
+      [1, 1, 1],
+      [1e20, 0.5, 1e-8],
+      [Number.MAX_VALUE, 1, 1e-8],
+      [Number.MAX_VALUE, 1, Number.MIN_VALUE],
     ] as const) {
-      expect(Number.isFinite(finalizeLog(wSum, pHat))).toBe(true);
+      expect(Number.isFinite(finalizeLog(selectedWeight, selectionProbability, pHat))).toBe(true);
     }
-    expect(Math.exp(finalizeLog(12, 3))).toBeCloseTo(4, 14);
+    expect(Math.exp(finalizeLog(6, 0.5, 3))).toBeCloseTo(4, 14);
     expect(RESERVOIR_PT_HERO_WGSL).toContain('fn rptLogAddExp(');
-    expect(RESERVOIR_PT_HERO_WGSL).toContain('let logW = (*r).logWeightSum - log(pHatF);');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain('fn rptAddRepresentedLogTerm(');
+    expect(RESERVOIR_PT_HERO_WGSL).toContain(
+      'let logW = selectedCorrection.x + selectedCorrection.y - log(pHatF);',
+    );
     expect(RESERVOIR_PT_HERO_WGSL).not.toContain('wCap');
   });
 
@@ -288,7 +308,7 @@ describe('ReSTIR-PT temporal — log weight is log(m·p̂·W·J) with NO /p_src'
     expect(updateBody).toContain('|| !rptFinitePositive(pdfSrc)');
     expect(updateBody).toContain('let nextLogWeightSum = rptLogAddExp(');
     expect(updateBody).toContain('rptMarkReservoirNumericFailure(r);');
-    expect(updateBody.indexOf('if (!rptFinitePositive(w)')).toBeLessThan(
+    expect(updateBody.indexOf('if (!rptFiniteScalar(logWeight)')).toBeLessThan(
       updateBody.indexOf('(*r).M = (*r).M + 1u;'),
     );
     expect(RESTIR_PT_TEMPORAL_WGSL).toContain(
@@ -317,11 +337,11 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
 
   it('samples clearcoat and sheen source lobes with a matching normalized pdf', () => {
     for (const line of [
-      'fn rptSourceLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {',
       'fn rptSampleSourceReconnectionDirection(',
       'sheenRoughness: f32,',
-      'let xiSource = rand_f32(rng) * lobeWeightSum;',
-      'if (xiSource < 1.0 + max(clearcoat, 0.0)) {',
+      'let extensionProbabilities = brdfRepresentedExtensionLobeProbabilities(',
+      'if (rand_f32(rng) < extensionProbabilities.x) {',
+      'if (rand_f32(rng) < extensionProbabilities.w) {',
       'buildOnb(clearcoatNormal, &ccTanT, &ccTanB);',
       'let bs = glossyReflectionSample(rng, wo, clearcoatNormal, ccTanT, ccTanB, clearcoatRoughness);',
       'let bs = charlieSheenSample(rng, wo, normal, tanT, tanB, sheenRoughness);',
@@ -454,7 +474,7 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'var transmissionV = clamp(vMat.transmission * sampleTransmissionTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
       'nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex, vIsFront);',
       'nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
-      'let clearcoatNormalV = applyClearcoatNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);',
+      'vMatId, vHit.triIndex, vHit.baryVW, interfaceBaseNormalV, vHit.instanceIndex,',
       'var clearcoatV = clamp(vMat.clearcoat * sampleClearcoatTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
       'var clearcoatRoughnessV = clamp(vMat.clearcoatRoughness * sampleClearcoatRoughnessTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), 0.0, 1.0);',
       'var sheenColorV = clamp(vMat.sheenColor * sampleSheenColorTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex), vec3f(0.0), vec3f(1.0));',
@@ -504,11 +524,14 @@ describe('ReSTIR-PT producer — unbiased candidate weight + specular gate', () 
       'out.baseColor = mat.baseColor * sampleVertexColor(hit.triIndex, hit.baryVW).rgb * sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;',
       'out.baseColor = out.baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
       'let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
-      'out.emissive = mat.emissive * sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;',
+      `out.emissive = ptFiniteNonNegativeRadianceProduct(
+    mat.emissive,
+    sampleEmissiveTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb,
+  );`,
       'out.transmission = clamp(mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
       'out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex, isFrontFace);',
       'out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
-      'out.clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);',
+      'matId, hit.triIndex, hit.baryVW, interfaceBaseNormal, hit.instanceIndex,',
       'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',
       'out.sheenColor = clamp(mat.sheenColor * sampleSheenColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), vec3f(0.0), vec3f(1.0));',
       'out.iridescence = clamp(mat.iridescence * sampleIridescenceTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);',

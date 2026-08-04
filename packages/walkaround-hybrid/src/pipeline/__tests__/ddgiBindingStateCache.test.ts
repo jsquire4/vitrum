@@ -49,7 +49,6 @@ function makeFrameResources(): FrameResources {
     ddgi: {
       ddgiPlaceholderRgba16f: makeTexture(),
       ddgiPlaceholderVisRgba16f: makeTexture(),
-      ddgiSampler: {} as GPUSampler,
       ddgiUboBuffer: { size: 64, usage: GPUBufferUsage.UNIFORM } as GPUBuffer,
     },
     ppg: {},
@@ -57,6 +56,71 @@ function makeFrameResources(): FrameResources {
 }
 
 describe('OptionalSubsystemBindingState resource cache and memory sections', () => {
+  it.each([0, 63, 65])(
+    'rejects a %i-byte DDGI grid UBO before changing texture identities',
+    (byteLength) => {
+      const device = makeDevice();
+      const state = new OptionalSubsystemBindingState(device);
+      const frameResources = makeFrameResources();
+      const firstIrr = makeTexture();
+      const firstVis = makeTexture();
+      state.setInputs({
+        irradianceTex: firstIrr,
+        visibilityTex: firstVis,
+        gridParams: new ArrayBuffer(64),
+      }, frameResources);
+      const internal = state as unknown as {
+        _irrTex: GPUTexture | null;
+        _visTex: GPUTexture | null;
+      };
+
+      expect(() => state.setInputs({
+        irradianceTex: makeTexture(),
+        visibilityTex: makeTexture(),
+        gridParams: new ArrayBuffer(byteLength),
+      }, frameResources)).toThrow('gridParams must be exactly 64 bytes');
+      expect(internal._irrTex).toBe(firstIrr);
+      expect(internal._visTex).toBe(firstVis);
+      expect(device.queue.writeBuffer).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps the accepted DDGI texture generation when a UBO write fails', () => {
+    const device = makeDevice();
+    const state = new OptionalSubsystemBindingState(device);
+    const frameResources = makeFrameResources();
+    const firstIrr = makeTexture();
+    const firstVis = makeTexture();
+    state.setInputs({
+      irradianceTex: firstIrr,
+      visibilityTex: firstVis,
+      gridParams: new ArrayBuffer(64),
+    }, frameResources);
+    const internal = state as unknown as {
+      _irrTex: GPUTexture | null;
+      _visTex: GPUTexture | null;
+    };
+    vi.mocked(device.queue.writeBuffer).mockImplementationOnce(() => {
+      throw new Error('queue write failed');
+    });
+
+    expect(() => state.setInputs({
+      irradianceTex: makeTexture(),
+      visibilityTex: makeTexture(),
+      gridParams: new ArrayBuffer(64),
+    }, frameResources)).toThrow('queue write failed');
+    expect(internal._irrTex).toBe(firstIrr);
+    expect(internal._visTex).toBe(firstVis);
+
+    vi.mocked(device.queue.writeBuffer).mockImplementationOnce(() => {
+      throw new Error('placeholder write failed');
+    });
+    expect(() => state.setInputs(null, frameResources))
+      .toThrow('placeholder write failed');
+    expect(internal._irrTex).toBe(firstIrr);
+    expect(internal._visTex).toBe(firstVis);
+  });
+
   it('reuses the hybrid-layers bind group while resource identities are unchanged', () => {
     const device = makeDevice();
     const state = new OptionalSubsystemBindingState(device);

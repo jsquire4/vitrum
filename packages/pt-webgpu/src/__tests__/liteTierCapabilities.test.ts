@@ -27,6 +27,8 @@ function makeLiteDevice(): GPUDevice {
     limits: {
       maxStorageBuffersPerShaderStage: 8,
       maxStorageTexturesPerShaderStage: 4,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
     },
     createCommandEncoder: vi.fn(),
     addEventListener: vi.fn(),
@@ -58,6 +60,8 @@ function makeLiteDeviceForSetScene(): GPUDevice {
     limits: {
       maxStorageBuffersPerShaderStage: 8,
       maxStorageTexturesPerShaderStage: 4,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
     },
     queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },
     createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
@@ -76,6 +80,8 @@ function makeFullDeviceForSetScene(): GPUDevice {
     limits: {
       maxStorageBuffersPerShaderStage: PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
       maxStorageTexturesPerShaderStage: 8,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
     },
     queue: { writeBuffer: vi.fn(), writeTexture: vi.fn() },
     createBuffer: vi.fn(() => ({ destroy: vi.fn() })),
@@ -358,7 +364,10 @@ describe('H12: lite-tier capabilities truth', () => {
     });
     warn.mockClear();
     structured.length = 0;
-    const displacementMap = { handle: { id: 'height' } };
+    const displacementMap = {
+      handle: { id: 'height' },
+      mipFilter: 'none' as const,
+    };
     Object.defineProperty(displacementMap, Symbol('vitrum.gltf.textureRefSource'), {
       value: { path: 'materials[0].extensions.VITRUM_displacement.displacementTexture' },
     });

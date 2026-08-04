@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning } from '@vitrum/core';
 import type { DDGI } from '../ddgi/DDGI.js';
+import type { ProbeAtlasSnapshot } from '../ddgi/probeUpdatePass.js';
 import {
   deserializeGIState,
   serializeGIState,
@@ -29,6 +30,16 @@ const IRR_H = 45;
 const VIS_W = 54;
 const VIS_H = 162;
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 function makeCompatibility(seed = 0): Uint32Array {
   const compatibility = new Uint32Array(GI_STATE_COMPATIBILITY_WORDS);
   compatibility[0] = GI_STATE_COMPATIBILITY_SCHEMA;
@@ -39,6 +50,7 @@ function makeCompatibility(seed = 0): Uint32Array {
 function makeRestirGISnapshot(): NonNullable<GIStateSnapshot['restirGI']> {
   const length = 2 * 2 * 28;
   return {
+    representationVersion: 1,
     halfW: 2,
     halfH: 2,
     strideU32: 28,
@@ -51,6 +63,7 @@ function makeRestirGISnapshot(): NonNullable<GIStateSnapshot['restirGI']> {
 function makeRestirDISnapshot(): RestirDISnapshot {
   const length = 4 * 4 * 8;
   return {
+    representationVersion: 1,
     width: 4,
     height: 4,
     strideU32: 8,
@@ -139,6 +152,21 @@ function makeSnapshot(
     restirGI: makeRestirGISnapshot(),
     restirDI: makeRestirDISnapshot(),
     ...extra,
+  };
+}
+
+function makeAtlasSnapshot(): ProbeAtlasSnapshot {
+  const snapshot = makeSnapshot();
+  return {
+    irrW: snapshot.irrW,
+    irrH: snapshot.irrH,
+    visW: snapshot.visW,
+    visH: snapshot.visH,
+    probeStateW: snapshot.probeStateW,
+    probeStateH: snapshot.probeStateH,
+    irrData: snapshot.irrData,
+    visData: snapshot.visData,
+    probeStateData: snapshot.probeStateData,
   };
 }
 
@@ -570,6 +598,57 @@ describe('HybridEngine complete estimator-state export', () => {
     });
     expect(snapshot?.compatibility).toEqual(made.deps.compatibility);
     expect(snapshot?.compatibility).not.toBe(made.deps.compatibility);
+  });
+
+  it('keeps CPU metadata and optional-mode ownership from the queued generation', async () => {
+    const made = makeHarness([], { ppg: true, nrc: true });
+    const atlasGate = deferred<ProbeAtlasSnapshot | null>();
+    vi.mocked(made.ddgi.exportAtlasData).mockReturnValueOnce(
+      atlasGate.promise,
+    );
+
+    const pending = exportGIStateImpl(made.deps);
+
+    const grid = made.ddgi.gridParams as unknown as {
+      dims: { x: number; y: number; z: number };
+      origin: { x: number; y: number; z: number };
+      spacing: number;
+    };
+    grid.dims = { x: 9, y: 8, z: 7 };
+    grid.origin = { x: 10, y: 20, z: 30 };
+    grid.spacing = 99;
+    made.deps.compatibility[1] = 1234;
+    (made.pipeline as unknown as { ppgStateRequired: boolean })
+      .ppgStateRequired = false;
+    (made.pipeline as unknown as { nrcStateRequired: boolean })
+      .nrcStateRequired = false;
+    atlasGate.resolve(makeAtlasSnapshot());
+
+    const snapshot = await pending;
+    expect(snapshot).toMatchObject({
+      dims: DIMS,
+      origin: [0, 0, 0],
+      spacing: 2,
+      ppg: { maxSpatialCells: 128 },
+      nrc: { trainedSteps: 9 },
+    });
+    expect(snapshot?.compatibility?.[1]).toBe(0);
+  });
+
+  it('does not publish a partial cohort when a required flag changes during readback', async () => {
+    const made = makeHarness([], { ppg: true });
+    const atlasGate = deferred<ProbeAtlasSnapshot | null>();
+    vi.mocked(made.ddgi.exportAtlasData).mockReturnValueOnce(
+      atlasGate.promise,
+    );
+    vi.mocked(made.pipeline.exportPPGSTree).mockReturnValueOnce(null);
+
+    const pending = exportGIStateImpl(made.deps);
+    (made.pipeline as unknown as { ppgStateRequired: boolean })
+      .ppgStateRequired = false;
+    atlasGate.resolve(makeAtlasSnapshot());
+
+    await expect(pending).resolves.toBeNull();
   });
 
   it.each([

@@ -339,10 +339,13 @@ describe('ReSTIR-PT glossy reuse closure — proposals and domain state', () => 
     expect(counts[2]! / samples).toBeCloseTo(sheen / sum, 2);
 
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
-      'return max(1.0 + max(clearcoat, 0.0) + max(sheen, 0.0), 1e-4);',
+      'let extensionProbabilities = brdfRepresentedExtensionLobeProbabilities(',
     );
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
-      'let xiSource = rand_f32(rng) * lobeWeightSum;',
+      'if (rand_f32(rng) < extensionProbabilities.x) {',
+    );
+    expect(RESTIR_PT_PRODUCER_WGSL).toContain(
+      'if (rand_f32(rng) < extensionProbabilities.w) {',
     );
     expect(RESTIR_PT_PRODUCER_WGSL).toContain(
       'return brdfDirectionalPdfFullSampledWithClearcoatNormal(',

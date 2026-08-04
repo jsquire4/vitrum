@@ -23,6 +23,8 @@ const bvhKeys = [
   'tlasBlasRootsBuf',
   'tlasW2lBuf',
   'tlasL2wBuf',
+  'opticalTriangleIdentityBuf',
+  'opticalInstanceBoundaryIdBasePlusOneBuf',
 ] as const satisfies readonly (keyof ProbeUpdateBvhGpuBuffers)[];
 
 function trackedBuffer(size = 256): TrackedBuffer {
@@ -147,6 +149,8 @@ function restirSnapshot(): never {
     bvhIndex: new ArrayBuffer(32),
     normals: new ArrayBuffer(64),
     triMaterialIds: new ArrayBuffer(16),
+    opticalTriangleIdentity: new ArrayBuffer(16),
+    opticalInstanceBoundaryIdBasePlusOne: new ArrayBuffer(16),
   } as never;
 }
 
@@ -256,6 +260,8 @@ describe('probeUpdateBvhBuffers', () => {
       tlasBlasRootsBuf: old,
       tlasW2lBuf: old,
       tlasL2wBuf: old,
+      opticalTriangleIdentityBuf: old,
+      opticalInstanceBoundaryIdBasePlusOneBuf: old,
     };
     const buffers = {
       bvhNodes: new Float32Array(8),
@@ -263,6 +269,8 @@ describe('probeUpdateBvhBuffers', () => {
       indices: new Uint32Array([0, 1, 2]),
       normals: new Float32Array(8),
       triMaterialId: new Uint32Array(4),
+      opticalTriangleIdentity: new Uint32Array(4),
+      opticalInstanceBoundaryIdBasePlusOne: new Uint32Array([1]),
     } as never;
     rebuildProbeBvhFromScene(device, g, buffers);
     expect(device.createBuffer).toHaveBeenCalled();
@@ -288,6 +296,8 @@ describe('probeUpdateBvhBuffers', () => {
       indices: new Uint32Array([0, 1, 2]),
       normals: new Float32Array(4),
       triMaterialId: new Uint32Array([0]),
+      opticalTriangleIdentity: new Uint32Array([0, 1]),
+      opticalInstanceBoundaryIdBasePlusOne: new Uint32Array([1]),
     } as never;
 
     rebuildProbeBvhFromScene(device, prior.gpu, buffers);
@@ -317,6 +327,8 @@ describe('probeUpdateBvhBuffers', () => {
       indices: new Uint32Array([0, 1, 2]),
       normals: new Float32Array(4),
       triMaterialId: new Uint32Array([0]),
+      opticalTriangleIdentity: new Uint32Array([0, 1]),
+      opticalInstanceBoundaryIdBasePlusOne: new Uint32Array([1]),
     } as never;
 
     rebuildProbeBvhFromScene(device, prior.gpu, buffers);
@@ -353,6 +365,8 @@ describe('probeUpdateBvhBuffers', () => {
       tlasBlasRootsBuf: old,
       tlasW2lBuf: old,
       tlasL2wBuf: old,
+      opticalTriangleIdentityBuf: old,
+      opticalInstanceBoundaryIdBasePlusOneBuf: old,
     };
     const snap = {
       bvhNodes: new ArrayBuffer(32),
@@ -360,6 +374,8 @@ describe('probeUpdateBvhBuffers', () => {
       bvhIndex: new ArrayBuffer(32),
       normals: new ArrayBuffer(64),
       triMaterialIds: new ArrayBuffer(16),
+      opticalTriangleIdentity: new ArrayBuffer(16),
+      opticalInstanceBoundaryIdBasePlusOne: new ArrayBuffer(16),
     } as never;
 
     rebuildProbeBvhFromRestir(device, g, snap);
@@ -371,8 +387,8 @@ describe('probeUpdateBvhBuffers', () => {
     expect(created[9]?.size).toBe(16);
   });
 
-  it.each([1, 5, 10])(
-    'keeps the ten-buffer BVH cohort intact when candidate create #%i fails, then retries',
+  it.each([1, 6, 12])(
+    'keeps the twelve-buffer BVH cohort intact when candidate create #%i fails, then retries',
     (createAt) => {
       const prior = trackedCohort();
       const previous = bvhKeys.map((key) => prior.gpu[key]);

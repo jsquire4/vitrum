@@ -95,8 +95,8 @@ export interface DTreeNode {
   solidAngle: number;
   /**
    * Accumulated non-negative directional training mass at this node. The GPU
-   * deposits the initial RIS histogram estimator `w_sum / M` at the selected
-   * direction; interior values are recomputed as subtree sums before upload.
+   * deposits the represented initial-RIS histogram estimator `exp2(H)` at the
+   * selected direction; interior values are recomputed as subtree sums before upload.
    * `totalFlux` is the root/subtree mass used to normalise guide probabilities.
    */
   flux: number;

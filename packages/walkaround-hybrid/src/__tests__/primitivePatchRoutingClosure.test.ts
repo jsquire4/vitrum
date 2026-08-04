@@ -6,6 +6,7 @@ import {
 import { describe, expect, it, vi } from 'vitest';
 import { HybridEngine } from '../HybridEngine.js';
 import {
+  materialPatchAffectsDisplacementGeometry,
   SKIN_POSE_PATCH_FIELDS,
   SKIN_REST_STREAM_PATCH_FIELDS,
 } from '../HybridEnginePrimitiveUpdates.js';
@@ -126,5 +127,21 @@ describe('primitive patch routing closure', () => {
       'colors',
       'colorSets',
     ]);
+  });
+
+  it('treats omitted displacement mip filtering as the public linear default', () => {
+    const handle = { name: 'height' };
+    const previous = {
+      baseColor: [1, 1, 1] as const,
+      roughness: 0.5,
+      metallic: 0,
+      displacementMap: { handle },
+    };
+    expect(materialPatchAffectsDisplacementGeometry(previous, {
+      displacementMap: { handle, mipFilter: 'linear' },
+    })).toBe(false);
+    expect(materialPatchAffectsDisplacementGeometry(previous, {
+      displacementMap: { handle, mipFilter: 'none' },
+    })).toBe(true);
   });
 });

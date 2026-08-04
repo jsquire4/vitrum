@@ -168,7 +168,8 @@ export const spectral_accumulator = /* glsl */`
 
 	// Mixture pdf evaluated at λ — used by both legacy single-strategy and
 	// MIS multi-strategy samplers as the Monte Carlo weight denominator.
-	// pdf_mis(λ) = (X(λ)/∫X + Y(λ)/∫Y + Z(λ)/∫Z) / 3   (balance heuristic)
+	// pdf_mis(λ) is the balance mixture of X/Y/Z using the nearest exact
+	// equal-strategy probabilities on the backend's 2^24-point RNG lattice.
 	float misMixturePdf( int lo, float t ) {
 		float x = cmfAtSegment( CMF_STRATEGY_X, lo, t );
 		float y = cmfAtSegment( CMF_STRATEGY_Y, lo, t );
@@ -176,13 +177,15 @@ export const spectral_accumulator = /* glsl */`
 		float pX = ( uXCmfIntegral > 0.0 ) ? x / uXCmfIntegral : 0.0;
 		float pY = ( uYCmfIntegral > 0.0 ) ? y / uYCmfIntegral : 0.0;
 		float pZ = ( uZCmfIntegral > 0.0 ) ? z / uZCmfIntegral : 0.0;
-		return ( pX + pY + pZ ) / 3.0;
+		vec3 strategyProbability = representedEqualThreeWayProbabilities();
+		return dot( strategyProbability, vec3( pX, pY, pZ ) );
 	}
 
 	// One-sample MIS hero wavelength sampler across X, Y, Z CMFs (Wilkie 2015 §3.3).
 	// GLSL mirror of @vitrum/shared-samplers/src/wavelengthSampling.ts::sampleHeroWavelengthMIS.
 	//
-	// uStrategy picks one of {X, Y, Z} with probability 1/3 each;
+	// uStrategy picks one of {X, Y, Z} with the nearest RNG-representable
+	// equal-strategy probabilities;
 	// uLambda   inverse-CDF-samples within the chosen strategy.
 	// The returned pdf is the MIXTURE pdf (balance heuristic), not the
 	// per-strategy pdf — this is the correct denominator for the MC estimator.
@@ -191,9 +194,10 @@ export const spectral_accumulator = /* glsl */`
 		int lo;
 		float t;
 		float lambda;
-		if ( s < 1.0 / 3.0 ) {
+		vec3 strategyProbability = representedEqualThreeWayProbabilities();
+		if ( s < strategyProbability.x ) {
 			lambda = sampleCmfCdfInverse( uLambda, CMF_STRATEGY_X, lo, t );
-		} else if ( s < 2.0 / 3.0 ) {
+		} else if ( s < strategyProbability.x + strategyProbability.y ) {
 			lambda = sampleCmfCdfInverse( uLambda, CMF_STRATEGY_Y, lo, t );
 		} else {
 			lambda = sampleCmfCdfInverse( uLambda, CMF_STRATEGY_Z, lo, t );

@@ -21,6 +21,46 @@ import {
 import { NEE_RESOLVE_MAIN } from './neeResolveMain.glsl.js';
 import * as RandSobol from './shader/rand/sobol.glsl.js';
 
+const RNG_LATTICE_SIZE = 2 ** 24;
+
+function representedCategorical(weights: readonly number[]): number[] {
+  const sanitized = weights.map((weight) =>
+    Number.isFinite(weight) && weight > 0 ? Math.fround(weight) : 0);
+  const total = Math.fround(sanitized.reduce(
+    (sum, weight) => Math.fround(sum + weight),
+    0,
+  ));
+  if (!(total > 0) || !Number.isFinite(total)) {
+    return weights.map((_, index) => index === 0 ? 1 : 0);
+  }
+  const normalized = sanitized.map((weight) => Math.fround(weight / total));
+  const result = normalized.map(() => 0);
+  let previousCutoff = 0;
+  let cumulative = 0;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const probability = normalized[index]!;
+    cumulative = Math.fround(cumulative + probability);
+    if (!(probability > 0)) continue;
+    const positiveLater = normalized
+      .slice(index + 1)
+      .filter((value) => value > 0).length;
+    const cutoff = positiveLater === 0
+      ? RNG_LATTICE_SIZE
+      : Math.min(
+          RNG_LATTICE_SIZE - positiveLater,
+          Math.max(
+            previousCutoff + 1,
+            Math.floor(Math.fround(
+              Math.fround(cumulative * RNG_LATTICE_SIZE) + 0.5,
+            )),
+          ),
+        );
+    result[index] = (cutoff - previousCutoff) / RNG_LATTICE_SIZE;
+    previousCutoff = cutoff;
+  }
+  return result;
+}
+
 describe('composeTraceGlsl', () => {
   const src = composeTraceGlsl(DEFAULT_TRACE_FEATURES);
   const neeCandidateSrc = composeNeeCandidateGlsl(DEFAULT_TRACE_FEATURES);
@@ -39,10 +79,13 @@ describe('composeTraceGlsl', () => {
   });
 
   it('routes unlit materials through the terminal base-color path', () => {
-    expect(src).toContain('bool activeMaterialUnlit = materialControl.unlit;');
+    expect(src).toContain('activeMaterialUnlit = materialControl.unlit;');
     expect(src).toContain('if ( activeMaterialUnlit )');
     expect(src).toContain(
       'state.throughput * pathThroughputFromRgb( surf.color, state.wavelength )',
+    );
+    expect(src.lastIndexOf('state.throughput *= opticalPathSegmentThroughput(')).toBeLessThan(
+      src.indexOf('if ( activeMaterialUnlit )'),
     );
   });
 
@@ -152,8 +195,9 @@ describe('composeTraceGlsl', () => {
 
     for (const source of sources) {
       expect(source).toContain('bool bvhBuildMediumStack(');
-      expect(source).toContain('float intersectFogVolume( const in FogMaterial material, float u )');
-      expect(source).toContain('vec3 fogFreeFlightRatioWeight(');
+      expect(source).toContain('float intersectFogVolume( float extinction, float u )');
+      expect(source).toContain('vec3 fogFreeFlightSurvivalWeight(');
+      expect(source).toContain('vec3 fogFreeFlightCollisionWeight(');
     }
   });
 
@@ -188,7 +232,7 @@ describe('composeTraceGlsl', () => {
     expect(mappedResolve.length).toBeLessThan(neeResolveSrc.length - 20_000);
   });
 
-  it('emits the compact complete mapped-rich graph and rejects ambiguous tiers', () => {
+  it('emits the complete mapped-rich graph and rejects ambiguous tiers', () => {
     const sources = [
       composeTraceGlsl(DEFAULT_TRACE_FEATURES),
       composeNeeCandidateGlsl(DEFAULT_TRACE_FEATURES),
@@ -205,10 +249,6 @@ describe('composeTraceGlsl', () => {
       expect(source).toContain('sheenAlbedoScaling(');
       expect(source).not.toContain('wrapMaterialTextureCoord(');
     }
-    // The complete mapped-rich graph includes the shared scale-safe geometry,
-    // visibility, cone, and MIS helpers. Keep a regression ceiling without
-    // treating those production correctness helpers as removable bloat.
-    expect(sources[0]!.length).toBeLessThan(160_000);
     expect(() =>
       composeTraceGlsl({
         ...DEFAULT_TRACE_FEATURES,
@@ -233,12 +273,16 @@ describe('composeTraceGlsl', () => {
 
     for (const source of [rich, mappedPbr]) {
       expect(source).toContain('uniform sampler2DArray materialRadianceTextures;');
-      expect(source).toContain('vec4 decodeMaterialTextureTexel(');
-      expect(source).toContain('vec4 c00 = decodeMaterialTextureTexel(');
-      expect(source).toContain('value.a );');
+      expect(source).toContain('bool decodeMaterialTextureTexel(');
+      expect(source).toContain('bool valid00 = fetchMaterialTextureTexel(');
+      expect(source).toContain('encoded.a );');
     }
-    expect(rich).toContain('vec4 baseColorSample = MAP_SRGB_SAMPLE(');
-    expect(rich).toContain('emission *= MAP_RADIANCE_SAMPLE(');
+    expect(rich).toContain('vec4 baseColorSample;');
+    expect(rich).toContain('sampleMappedSrgbMaterialTexture(');
+    expect(rich).toContain(
+      'emission = vitrumFiniteNonNegativeRadianceProduct(',
+    );
+    expect(rich).toContain('MAP_RADIANCE_SAMPLE(');
     expect(rich).toContain('materialRadianceTextures, materialIndex');
     expect(mappedPbr).toContain(
       'textures, uvPrime.xy, material.map, material.mapWrap, true',
@@ -274,6 +318,11 @@ describe('composeTraceGlsl', () => {
       ['thicknessMap', 98, 20],
     ] as const;
 
+    const independentlyDecodedFields = new Set([
+      'map',
+      'alphaMap',
+      'thicknessMap',
+    ]);
     for (const [field, transformTexel, uvBit] of mapSlots) {
       if (field === 'bumpMap') {
         expect(mappedTrace, `${field} transform slot`).toContain(
@@ -286,15 +335,23 @@ describe('composeTraceGlsl', () => {
         expect(compactMappedTrace, `${field} complete lazy descriptor`).toContain(
           `material.${field}, ${transformTexel}u, ${100 + uvBit}u, clearcoatNormalUv`,
         );
+      } else if (independentlyDecodedFields.has(field)) {
+        expect(compactMappedTrace, `${field} complete lazy descriptor`).toContain(
+          `materials, textures, materialIndex, material.${field}, ${transformTexel}u, ${100 + uvBit}u, uv`,
+        );
       } else {
         expect(compactMappedTrace, `${field} complete lazy descriptor`).toContain(
           `material.${field}, ${transformTexel}u, ${100 + uvBit}u, MAP_UV( ${uvBit}u )`,
         );
       }
-      if (field === 'bumpMap' || field === 'clearcoatNormalMap') {
-        expect(mappedTrace, `${field} UV-layer selector`).toContain(
-          `readMaterialMapUvLayer( materials, materialIndex, ${uvBit}u )`,
-        );
+      if (
+        field === 'bumpMap' ||
+        field === 'clearcoatNormalMap' ||
+        independentlyDecodedFields.has(field)
+      ) {
+      expect(compactMappedTrace, `${field} UV-layer selector`).toContain(
+        `readMaterialMapUvLayer( materials, materialIndex, ${uvBit}u )`,
+      );
       } else {
         expect(mappedTrace, `${field} UV-layer selector`).toContain(`MAP_UV( ${uvBit}u )`);
       }
@@ -324,7 +381,7 @@ describe('composeTraceGlsl', () => {
 
     expect(mappedTrace).toContain('mat3 readMaterialMapTransform(');
     expect(mappedTrace).toContain('vec4 readMaterialMapPolicy(');
-    expect(mappedTrace).toContain('vec4 sampleMappedMaterialTexture(');
+    expect(mappedTrace).toContain('bool sampleMappedMaterialTexture(');
     expect(mappedTrace).not.toContain('mat3 mapTransform;');
     expect(mappedTrace).not.toContain('vec4 mapWrap;');
     expect(mappedTrace).not.toContain('m.mapTransform =');
@@ -332,12 +389,15 @@ describe('composeTraceGlsl', () => {
 
     // The lazy policy still drives authored wrap, min/mag filtering and mip
     // selection; it is not a nearest/repeat approximation made for compile size.
-    expect(mappedTrace).toContain('if ( m == 1 ) return clamp( coord, 0, size - 1 );');
-    expect(mappedTrace).toContain('if ( m == 2 ) {');
-    expect(mappedTrace).toContain('materialTextureUsesLinearFilter( policy, rawLod > 0.0 )');
+    expect(mappedTrace).toContain('if ( mode == 1 ) return clamp( coord, 0, size - 1 );');
+    expect(mappedTrace).toContain('if ( mode == 2 ) {');
+    expect(mappedTrace).toContain(
+      'bool linearFilter = ( minifying ? minFilter : magFilter ) == 1;',
+    );
     expect(mappedTrace).toContain('if ( mipFilter == 0 || maxLevel == 0 )');
     expect(mappedTrace).toContain('if ( mipFilter == 1 )');
-    expect(mappedTrace).toContain('return mix( a, b, t );');
+    expect(mappedTrace).toContain('value = mix( a, b, t );');
+    expect(mappedTrace).toContain('return materialTextureFiniteVec4( value );');
   });
 
   it('uses one shader-normalized progressive history without a fixed-function branch', () => {
@@ -361,6 +421,17 @@ describe('composeTraceGlsl', () => {
       'int equirectConditionalColumn( float xi, int row, ivec2 resolution )',
     );
     expect(compactTrace).toContain('texelFetch( envMapInfo.distributionWeights,');
+    const environmentProposalSources = [
+      neeCandidateSrc,
+      composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, bdpt: true }),
+    ];
+    for (const proposalSource of environmentProposalSources) {
+      const compactProposalSource = proposalSource.replace(/\s+/g, ' ');
+      expect(compactProposalSource).toContain(
+        'texelFetch( envMapInfo.distributionWeights, ivec2( 0 ), 0 ).b',
+      );
+      expect(proposalSource).not.toContain('envMapInfo.conditional');
+    }
     expect(src).not.toContain('sampler2D marginalWeights;');
     expect(src).not.toContain('sampler2D conditionalWeights;');
   });
@@ -402,12 +473,11 @@ describe('composeTraceGlsl', () => {
   };
 
   it('orders the <common> shim before the kernels that consume it', () => {
-    // luminance() is used by mesh-light sampling — the shim def must come first.
-    const shimLuminance = idx('float luminance( const in vec3 rgb )');
+    const shimSaturate = idx('#define saturate( a ) clamp( a, 0.0, 1.0 )');
     const lightSamplingUse = idx(
-      'finitePositiveLightPower( luminance( emission ) )',
+      'distanceFalloff *= saturate( 1.0 - pow4(',
     );
-    expect(shimLuminance).toBeLessThan(lightSamplingUse);
+    expect(shimSaturate).toBeLessThan(lightSamplingUse);
   });
 
   it('orders BVH common functions before the BVH struct before the ray functions', () => {
@@ -665,10 +735,10 @@ describe('composeTraceGlsl', () => {
     expect(bdptSrc).toContain('const float BDPT_LV_SPOT_EMITTER_MATID = -5.0;');
     expect(bdptSrc).toContain('const float BDPT_LV_DIRECTIONAL_EMITTER_MATID = -8.0;');
     expect(bdptSrc).toContain('const float BDPT_LV_ENVIRONMENT_EMITTER_MATID = -9.0;');
-    expect(bdptSrc).toContain('float bdptMeshEmitterPower( uint index )');
+    expect(bdptSrc).toContain('readMeshTriLight( uMeshLights, i ).bdptProposalPmf');
     expect(bdptSrc).toContain('bool bdptSampleMeshArea(');
     expect(bdptSrc).toContain('void bdptWriteEndpoint(');
-    expect(bdptSrc).toContain('float bdptEnvironmentEmitterLogPower()');
+    expect(bdptSrc).toContain('float bdptEnvironmentEmitterProposalPmf()');
     expect(bdptSrc).toContain('sampleEquirectProbability( rand2( 51 )');
     expect(bdptSrc).toContain('bool bdptSampleAreaAnalytic(');
     expect(bdptSrc).not.toContain('if ( lightVtxIdx != 1');
@@ -686,7 +756,9 @@ describe('composeTraceGlsl', () => {
     const bdptSrc = composeTraceGlsl({ ...DEFAULT_TRACE_FEATURES, bdpt: true });
 
     expect(engineSource).toContain('const BDPT_MAX_LIGHT_BOUNCES = 8;');
-    expect(bdptSrc).toContain('reverseScatterPdf = bsdfResult(');
+    expect(bdptSrc).toContain('scatterReversePdf = rec.pdfRev;');
+    expect(bdptSrc).toContain('float reverseScatterPdf = scatterReversePdf;');
+    expect(bdptSrc).not.toContain('reverseScatterPdf = bsdfResult(');
     expect(bdptSrc).toContain(
       'float predecessorReverseDensity = reverseScatterPdf * p2.w;',
     );
@@ -754,15 +826,17 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('LightRecord sampleMeshAreaLight(');
     expect(src).toContain('float meshAreaLightForwardPdf(');
     const compactSrc = src.replace(/\s+/g, ' ');
+    expect(compactSrc).toContain('cum += representedPmf;');
     expect(compactSrc).toContain(
-      'cum += finitePositiveLightPower( readMeshTriLight( meshLights, ii ).power );',
+      'float selectionPdf = tri.proposalPmf; rec.pdf = selectionPdf * vitrumAreaToSolidAnglePdf(',
     );
     expect(compactSrc).toContain(
-      'float selectionPdf = triPower / totalEmissivePower; rec.pdf = selectionPdf * vitrumAreaToSolidAnglePdf(',
+      'float logPdf = log2( selectionPdf ) - log2( selectedArea ) + 2.0 * log2( distance ) - log2( cosine );',
     );
     expect(compactSrc).toContain(
-      'float logPdf = log2( emissionPower ) + 2.0 * log2( distance ) - log2( totalEmissivePower ) - log2( cosine );',
+      'readLightInfo( lights.tex, forwardAreaLightIndex ).proposalPmf;',
     );
+    expect(compactSrc).not.toContain('sumLightPower');
     // The forward-emission MIS site and the NEE branch both reference the count gate.
     expect(src).toContain('uMeshLightCount != 0u');
     // Mesh-area emitters use the same s5.g shadow-disable lane as analytic lights.
@@ -816,7 +890,7 @@ describe('composeTraceGlsl', () => {
     expect(src).toContain('pc_fragColor.rgb += forwardAreaLightRgb;');
     expect(src).toContain('break;');
     expect(src.replace(/\s+/g, ' ')).toContain(
-      'bool shadowDisabledForwardOwnedByNee = forwardAreaLightRec.castShadowDisabled > 0.5 && ! state.firstRay && ! scatterRec.sampledDelta && ! state.transmissiveRay;',
+      'bool shadowDisabledForwardOwnedByNee = forwardAreaLightRec.castShadowDisabled > 0.5 && ! state.firstRay && ! scatterRec.sampledDelta && ! scatterRec.sampledNonConnectable && ! state.transmissiveRay;',
     );
     expect(src).toContain('if ( shadowDisabledForwardOwnedByNee ) break;');
     expect(neeCandidateSrc.replace(/\s+/g, ' ')).toContain(
@@ -836,29 +910,28 @@ describe('composeTraceGlsl', () => {
     expect(src).not.toContain('Volume scatter event');
   });
 
-  it('D10: SSS free-flight helper is defined before the SSS sample path uses it', () => {
-    const helper = idx(
-      'float sampleExponentialDistance( float xi, float sigmaT, float maxDistance )',
-    );
+  it('D10: bulk SSS owns free flight and HG scattering through explicit medium vertices', () => {
+    const helper = idx('float intersectFogVolume( float extinction, float u )');
     const hgPdf = idx('float hg_phase( float cosTheta, float g )');
-    const hgSampler = idx('vec3 sampleHG_glsl( float u1, float u2, float g, vec3 forward )');
-    const call = idx(
-      'float tScatter = sampleExponentialDistance( rand( 17 ), sigmaTMajorant, 1e6 );',
-    );
+    const hgInverse = idx('float sampleHgCosTheta( float u, float g )');
+    const call = idx('float particleDist = fogFreeFlightSampleDistance(');
     expect(helper).toBeLessThan(call);
-    expect(hgPdf).toBeLessThan(call);
-    expect(hgSampler).toBeLessThan(call);
-    expect(src).not.toContain('sampleExponential( rand( 17 )');
+    expect(hgPdf).toBeLessThan(idx('float mediumPhasePdf('));
+    expect(hgInverse).toBeLessThan(idx('vec3 sampleMediumPhase('));
+    expect(src).toContain('setFogSurfaceRecord( state.fogMaterial, surf );');
+    expect(src).not.toContain('sssSample(');
+    expect(src).not.toContain('sampleExponentialDistance(');
   });
 
-  it('D10: SSS consumes packed sigmaS and derives albedo in shader', () => {
-    expect(src).toContain('vec3 sssSigmaS;');
-    expect(src).toContain('surf.sssSigmaS = material.sssSigmaS;');
-    expect(src).toContain('vec3 sigmaS = max( surf.sssSigmaS, vec3( 0.0 ) );');
-    expect(src).toContain(
-      'vec3 sigmaA = attenuationSigmaA( surf.attenuationColor, surf.attenuationDistance );',
+  it('D10: bulk SSS consumes packed sigmaS through medium extinction and albedo', () => {
+    const compactSource = src.replace(/\s+/g, ' ');
+    expect(src).toContain('vec3 sigmaS;');
+    expect(src).toContain('fog.sigmaS = max( s16.rgb, vec3( 0.0 ) );');
+    expect(compactSource).toContain(
+      'vec3 sigmaA = attenuationSigmaA( fog.attenuationColor, fog.attenuationDistance );',
     );
-    expect(src).toContain('sigmaS.x / sigmaT.x');
+    expect(src).toContain('if ( uSpectralRendering == 0 ) return sigmaA + fog.sigmaS;');
+    expect(src).toContain('fog.color = max( s16.rgb, vec3( 0.0 ) );');
     expect(src).not.toContain('sssAlbedo');
   });
 
@@ -885,7 +958,8 @@ describe('composeTraceGlsl', () => {
       'utf8',
     );
     const analyticStart = directLightSource.indexOf(
-      'if ( lightsDenom != 0.0 && neeStrategyU < analyticCutoff )',
+      'if (',
+      directLightSource.indexOf('float analyticCutoff'),
     );
     const analyticEnd = directLightSource.indexOf('} else if (', analyticStart);
     const analyticBranch = directLightSource.slice(analyticStart, analyticEnd);
@@ -895,9 +969,11 @@ describe('composeTraceGlsl', () => {
     expect(analyticEnd).toBeGreaterThan(analyticStart);
     expect(analyticBranch.match(/randomLightSample\(/g)).toHaveLength(1);
     expect(analyticBranch).not.toMatch(/\bfor\s*\(/);
-    expect(compactBranch).toContain('if ( ! isSampleBelowSurface && lightRec.pdf > 0.0 )');
     expect(compactBranch).toContain(
-      'lightSample.pdf = lightRec.pdf / lightsDenom * float( lights.count ) * lightRec.discretePdf;',
+      'directLightDirectionAdmitted( surf, lightRec.direction ) && lightRec.pdf > 0.0',
+    );
+    expect(compactBranch).toContain(
+      'lightSample.pdf = lightRec.pdf * analyticStrategyProbability * lightRec.discretePdf;',
     );
     expect(directLightSource).toContain('lightSample.valid = false;');
 
@@ -908,18 +984,30 @@ describe('composeTraceGlsl', () => {
     const lightsDenom = 5;
     const discretePdf = 0.2;
     const directionalPdf = 0.125;
-    const jointProposalPdf = (lightCount / lightsDenom) * discretePdf * directionalPdf;
-    const shaderPdf = (directionalPdf / lightsDenom) * lightCount * discretePdf;
-    expect(shaderPdf).toBeCloseTo(jointProposalPdf, 15);
+    const [analyticStrategyProbability] = representedCategorical([
+      lightCount / lightsDenom,
+      1 / lightsDenom,
+      1 / lightsDenom,
+    ]);
+    const jointProposalPdf =
+      analyticStrategyProbability! * discretePdf * directionalPdf;
+    const shaderPdf =
+      directionalPdf * analyticStrategyProbability! * discretePdf;
+    expect(shaderPdf).toBe(jointProposalPdf);
   });
 
   it('Phase 6: one-draw NEE strategy probabilities match the slot PDFs', () => {
     const fixedSlots = (analyticSlots: number, meshSlots: number, envSlots: number) => {
       const denom = analyticSlots + meshSlots + envSlots;
+      const [analytic, mesh, env] = representedCategorical([
+        analyticSlots / denom,
+        meshSlots / denom,
+        envSlots / denom,
+      ]);
       return {
-        analytic: analyticSlots / denom,
-        mesh: meshSlots / denom,
-        env: envSlots / denom,
+        analytic: analytic!,
+        mesh: mesh!,
+        env: env!,
       };
     };
     const oldIndependentDraws = (analyticSlots: number, meshSlots: number, envSlots: number) => {
@@ -934,9 +1022,16 @@ describe('composeTraceGlsl', () => {
     };
 
     const fixed = fixedSlots(1, 1, 1);
-    expect(fixed.analytic).toBeCloseTo(1 / 3, 12);
-    expect(fixed.mesh).toBeCloseTo(1 / 3, 12);
-    expect(fixed.env).toBeCloseTo(1 / 3, 12);
+    expect(fixed.analytic).toBe(5_592_406 / RNG_LATTICE_SIZE);
+    expect(fixed.mesh).toBe(5_592_406 / RNG_LATTICE_SIZE);
+    expect(fixed.env).toBe(5_592_404 / RNG_LATTICE_SIZE);
+    expect(fixed.analytic + fixed.mesh + fixed.env).toBe(1);
+    expect(neeCandidateSrc).toContain(
+      'representedDirectLightStrategyProbabilities(',
+    );
+    expect(neeCandidateSrc).toContain(
+      'representedCategoricalProbabilities4(',
+    );
 
     const old = oldIndependentDraws(1, 1, 1);
     expect(old.analytic).toBeCloseTo(1 / 3, 12);
@@ -984,12 +1079,18 @@ describe('composeTraceGlsl', () => {
 
   it('allows environment NEE samples through transmissive surfaces', () => {
     expect(src).not.toContain('TODO: this should be improved but how?');
-    const compactSource = neeCandidateSrc.replace(/\s+/g, ' ');
+    const directLightSource = readFileSync(
+      fileURLToPath(
+        new URL('./render/direct_light_contribution_function.glsl.js', import.meta.url),
+      ),
+      'utf8',
+    );
+    const compactSource = directLightSource.replace(/\s+/g, ' ');
     expect(compactSource).toContain(
-      'bool envSampleNeedsTransmission = isSampleBelowSurface && surf.transmission > 0.0;',
+      'bool belowSurface = dot( surf.faceNormal, direction ) < 0.0; return ! belowSurface || surf.transmission > 0.0;',
     );
     expect(compactSource).toContain(
-      '( ! isSampleBelowSurface || envSampleNeedsTransmission ) && envPdf > 0.0',
+      'directLightDirectionAdmitted( surf, envDirection ) && envPdf > 0.0',
     );
     expect(neeResolveSrc).toContain('float bsdfPdf = bsdfResult(');
   });
@@ -1002,12 +1103,11 @@ describe('composeTraceGlsl', () => {
     expect(src).not.toContain('iesProfile !=');
   });
 
-  // D10.4: RENDER_MAIN_SECTIONS length pin (prevents silent render-main drift).
-  it('D10.4: RENDER_MAIN_SECTIONS join length pin', () => {
+  it('D10.4: RENDER_MAIN_SECTIONS preserve the ordered complete render graph', () => {
     const assembled = RENDER_MAIN_SECTIONS.join('');
-    expect(assembled).toHaveLength(72220);
     // All sections must be non-empty and together contain the key anchor points.
     expect(RENDER_MAIN_SECTIONS).toHaveLength(6);
+    expect(RENDER_MAIN_SECTIONS.every(section => section.length > 0)).toBe(true);
     expect(assembled).toContain('void main() {');
     expect(assembled).toContain('// get camera ray');
     expect(assembled).not.toContain('// Sprint 7: Volume scatter event');

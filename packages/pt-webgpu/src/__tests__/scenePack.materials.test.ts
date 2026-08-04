@@ -72,8 +72,15 @@ describe('buildPackedScene material payload packing', () => {
       primitives: [{
         kind: 'mesh',
         id: 'tri',
-        positions: new Float32Array([0,0,0, 1,0,0, 0,1,0]),
-        normals: new Float32Array([0,0,1, 0,0,1, 0,0,1]),
+        positions: new Float32Array([
+          1,1,1, -1,-1,1, -1,1,-1, 1,-1,-1,
+        ]),
+        normals: new Float32Array([
+          0,0,1, 0,0,1, 0,0,1, 0,0,1,
+        ]),
+        indices: new Uint32Array([
+          0,2,1, 0,1,3, 0,3,2, 1,2,3,
+        ]),
         material: {
           baseColor: [0.4, 0.5, 0.6], roughness: 0.35, metallic: 0.1, transmission: 1, ior: 1.52,
           scatteringCoefficient: 0.8, scatteringAnisotropy: 0.4, scatteringCoefficientRGB: [0.2, 0.3, 0.4],
@@ -98,7 +105,7 @@ describe('buildPackedScene material payload packing', () => {
     expect(packed.materials[87]).toBeCloseTo(32);
   });
 
-  it('clamps unsafe material values', () => {
+  it('rejects unsafe material values at the canonical scene boundary', () => {
     const scene: Scene = {
       primitives: [{
         kind: 'mesh',
@@ -116,12 +123,9 @@ describe('buildPackedScene material payload packing', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    const packed = buildPackedScene(scene);
-    expect(packed.materials[16]).toBeCloseTo(0);
-    expect(packed.materials[18]).toBeCloseTo(1);
-    expect(packed.materials[23]).toBeCloseTo(0);
-    expect(packed.materials[29]).toBeGreaterThanOrEqual(0);
-    expect(packed.materials[52]).toBeGreaterThanOrEqual(0);
+    expect(() => buildPackedScene(scene)).toThrow(
+      /frontLayer\.transmission\[0\] must be in \[0, 1\]/,
+    );
   });
 
   it('fails closed instead of silently clamping invalid spectral samples', () => {
@@ -144,7 +148,7 @@ describe('buildPackedScene material payload packing', () => {
       environment: { kind: 'none' },
     };
     expect(() => buildPackedScene(scene)).toThrow(
-      /sampleSpectralCurve\.values\[0\] must be finite and non-negative/,
+      /spectralAttenuation\.values\[0\] must be >= 0/,
     );
   });
 });
@@ -446,7 +450,7 @@ describe('VOL-THICKNESS KHR_materials_volume scalar packing', () => {
     expect(packed[VOLUME_THICKNESS_OFFSET + 1]).toBe(1);
   });
 
-  it('marks presence when only thicknessMap is authored, preserving glTF default factor 0', () => {
+  it('keeps glTF default thicknessFactor 0 absent when only thicknessMap is authored', () => {
     const packed = materialToPackedVec4s({
       baseColor: [0.7, 0.7, 0.7],
       roughness: 0.5,
@@ -454,7 +458,7 @@ describe('VOL-THICKNESS KHR_materials_volume scalar packing', () => {
       thicknessMap: { handle: { id: 'thickness' } },
     } as never);
     expect(packed[VOLUME_THICKNESS_OFFSET]).toBe(0);
-    expect(packed[VOLUME_THICKNESS_OFFSET + 1]).toBe(1);
+    expect(packed[VOLUME_THICKNESS_OFFSET + 1]).toBe(0);
   });
 
   it('leaves the clamp absent for legacy materials', () => {

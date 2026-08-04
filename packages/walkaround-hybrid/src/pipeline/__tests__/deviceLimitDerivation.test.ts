@@ -178,7 +178,7 @@ describe('walkaround explicit pipeline device-limit derivation', () => {
       storageBuffers: 8,
       storageTextures: 7,
       sampledTextures: 17,
-      samplers: 2,
+      samplers: 1,
       uniformBuffers: 4,
       bindGroups: 4,
     });

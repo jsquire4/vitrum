@@ -128,8 +128,9 @@ export function findSTreeLeaf(
  * Semantics:
  *   - `position` = sample position in WORLD space
  *   - `octUV`    = cylindrical equal-area map of the selected direction (world frame)
- *   - `flux`     = non-negative histogram mass. The GPU path uses the initial
- *                  RIS estimator `w_sum / M`, not raw incoming/outgoing radiance.
+ *   - `flux`     = non-negative histogram mass. The GPU path converts the
+ *                  represented initial-RIS `H` to `exp2(H)` only at this
+ *                  accumulation endpoint, not raw incoming/outgoing radiance.
  *
  * DEVIATION 4 FIX: octUV is computed from direction in WORLD space. No
  * per-surface ONB transform is applied here.
@@ -248,6 +249,13 @@ export function splitOverflowLeaves(
     // Split this leaf.
     const axis = longestAxis(node.aabb);
     const splitVal = (node.aabb.min[axis] + node.aabb.max[axis]) * 0.5;
+    // A zero-width cell, or one whose midpoint rounds to an endpoint, has no
+    // representable binary partition. Publishing two degenerate children
+    // would let the same hot cell split again every rebuild until maxCells was
+    // exhausted. Leave it as a terminal guide cell instead.
+    if (!(splitVal > node.aabb.min[axis] && splitVal < node.aabb.max[axis])) {
+      continue;
+    }
 
     // Both children inherit a COPY of the parent's directional distribution
     // (Müller §3.1). REUSE the parent's dTree slot for the left child instead
@@ -358,7 +366,8 @@ export function resetAccumulators(sTree: STree): void {
  * RUNAWAY FIX — Müller §5 per-iteration flux DECAY (replaces the full reset on
  * the persistent CPU accumulator).
  *
- * The training loop deposits initial-reservoir histogram mass `w_sum / M`
+ * The training loop deposits represented initial-reservoir histogram mass
+ * `exp2(H)`
  * summed over selected samples in each window.
  * If the trained flux were simply ACCUMULATED across windows with no reset and
  * no decay, the total grows without bound (linear in window count — verified in

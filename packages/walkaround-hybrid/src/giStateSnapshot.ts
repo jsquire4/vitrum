@@ -62,6 +62,10 @@ import {
   RESERVOIR_GI_STRIDE_U32,
 } from './gi/giLayout.js';
 import type { RestirDISnapshot } from './restir/restirDiStateSnapshot.js';
+import {
+  RESTIR_RESERVOIR_LOG_ZERO,
+  RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1,
+} from './restir/reservoirRepresentation.js';
 import type { NrcLearnedStateSnapshot } from './neural/nrc/nrcStateSnapshot.js';
 import {
   assertGIStateExtendedSections,
@@ -109,7 +113,15 @@ const GI_SNAPSHOT_MAGIC = 0x47495353; // "GISS"
  *      scene/light/environment compatibility key plus optional ReSTIR-DI and
  *      NRC learned-state sections for the active subsystems.
  */
-const GI_SNAPSHOT_VERSION = 8;
+// v9 changes the semantic meaning of the historical ReSTIR running-weight
+// lanes. Reservoir sub-headers now identify corrected logarithmic mass; older
+// payloads are structurally validated and cold-migrated, never reinterpreted.
+// v10 adds the shade-recast RGB-tint flag to the ReSTIR-GI word-19 semantics.
+// A v9 shifted record contains only scalar tint and cannot be distinguished
+// from a native record, so its GI cohort is cold-migrated on import.
+const GI_SNAPSHOT_VERSION = 10;
+const LOG_MASS_SNAPSHOT_VERSION = 9;
+const LEGACY_COMPLETE_SNAPSHOT_VERSION = 8;
 const HEADER_BYTES = 64; // fixed header, data blocks follow
 
 /** Header section-flags bitfield (header offset 52, u32). Bit 0 = ReSTIR-GI present. */
@@ -121,7 +133,7 @@ const SECTION_DDGI_PROBE_STATE = 1 << 2;
 /** Bit 3 = v8 complete-state extension (compatibility + optional DI/NRC). */
 const SECTION_COMPLETE_STATE = 1 << 3;
 /** Sub-header preceding the three packed reservoir buffers when SECTION_RESTIR_GI is set. */
-const RESTIR_GI_SUBHEADER_BYTES = 20; // halfW(u32) halfH(u32) strideU32(u32) bufU32Len(u32) reserved(u32)
+const RESTIR_GI_SUBHEADER_BYTES = 20; // halfW(u32) halfH(u32) strideU32(u32) bufU32Len(u32) representationVersion(u32)
 /**
  * Sub-header preceding the PPG blob when SECTION_PPG is set (v4+).
  *
@@ -173,6 +185,8 @@ const KNOWN_SECTION_FLAGS =
  * necessarily `halfW*halfH*strideU32` — that exact-fit holds only above the floor).
  */
 export interface RestirGISnapshot {
+  /** Semantic encoding of the historical running-weight lane. */
+  readonly representationVersion: typeof RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1;
   /** Active GI reservoir grid; see the compatibility formula above. */
   readonly halfW: number;
   readonly halfH: number;
@@ -312,10 +326,25 @@ export function f32SnapshotMetadataMatches(
   return snapshotF32 === liveF32;
 }
 
-function assertPositiveU32(value: number, label: string): void {
-  if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_U32) {
+function assertPositiveU32(
+  value: unknown,
+  label: string,
+): asserts value is number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value <= 0 ||
+    value > MAX_U32
+  ) {
     throw new RangeError(`${label} must be a positive uint32 integer.`);
   }
+}
+
+function requireUint32Array(value: unknown, label: string): Uint32Array {
+  if (!(value instanceof Uint32Array)) {
+    throw new TypeError(`${label} must be a Uint32Array.`);
+  }
+  return value;
 }
 
 function assertFiniteF32(
@@ -456,7 +485,7 @@ function assertRgba16Atlas(
 }
 
 const RESTIR_GI_BASE_FLOAT_LANES = [
-  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
+  0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
 ] as const;
 const RESTIR_GI_GRIS_FLOAT_LANES = [20, 21, 22, 23, 26] as const;
 
@@ -464,6 +493,7 @@ function restirReservoirPayloadIsValid(
   data: Uint32Array,
   recordCount: number,
   strideU32: number,
+  logMassRepresentation: boolean,
 ): boolean {
   const floats = new Float32Array(
     data.buffer,
@@ -489,6 +519,68 @@ function restirReservoirPayloadIsValid(
       }
       const sampleKind = data[base + 25];
       if (sampleKind !== 0 && sampleKind !== 1) return false;
+      const sampleVisibility = floats[base + 23]!;
+      if (sampleVisibility < 0 || sampleVisibility > 1) return false;
+    }
+    const historicalWeightLane = floats[base + 7]!;
+    const historicalMassLane = floats[base + 11]!;
+    if (logMassRepresentation) {
+      const sampleFlags = data[base + 19]!;
+      const localTechnique = (sampleFlags & 1) !== 0;
+      const localEstimator = (sampleFlags & 2) !== 0;
+      const recastTint = (sampleFlags & 4) !== 0;
+      if ((sampleFlags & 0xffff_fff8) !== 0) return false;
+      if (localTechnique && localEstimator) return false;
+      if (recastTint && (localTechnique || localEstimator)) return false;
+      const nativeLogTargetLane = floats[base + 26]!;
+      if (
+        historicalWeightLane < RESTIR_RESERVOIR_LOG_ZERO ||
+        historicalMassLane < RESTIR_RESERVOIR_LOG_ZERO ||
+        nativeLogTargetLane < RESTIR_RESERVOIR_LOG_ZERO
+      ) {
+        return false;
+      }
+      const representedAttempts = data[base + 15]!;
+      if (representedAttempts === 0) {
+        const isColdZero =
+          historicalWeightLane === 0 &&
+          historicalMassLane === 0 &&
+          nativeLogTargetLane === 0;
+        const isCanonicalEmpty =
+          historicalWeightLane === RESTIR_RESERVOIR_LOG_ZERO &&
+          historicalMassLane === RESTIR_RESERVOIR_LOG_ZERO &&
+          nativeLogTargetLane === RESTIR_RESERVOIR_LOG_ZERO;
+        if (
+          (!isColdZero && !isCanonicalEmpty) ||
+          data[base + 24] !== 0 ||
+          sampleFlags !== 0
+        ) return false;
+      } else {
+        const prefixSupport = data[base + 24]!;
+        if (
+          prefixSupport === 0 ||
+          (sampleFlags !== 0 && prefixSupport !== 1)
+        ) return false;
+        const hasSelectedOccurrence =
+          historicalMassLane > RESTIR_RESERVOIR_LOG_ZERO;
+        if (
+          (historicalWeightLane > RESTIR_RESERVOIR_LOG_ZERO) !==
+            hasSelectedOccurrence ||
+          (nativeLogTargetLane > RESTIR_RESERVOIR_LOG_ZERO) !==
+            hasSelectedOccurrence
+        ) {
+          return false;
+        }
+        if (localEstimator && !hasSelectedOccurrence) return false;
+        if (recastTint && !hasSelectedOccurrence) return false;
+      }
+    } else if (historicalWeightLane < 0 || historicalMassLane < 0) {
+      return false;
+    } else if (
+      strideU32 === RESERVOIR_GI_STRIDE_U32 &&
+      floats[base + 26]! < 0
+    ) {
+      return false;
     }
   }
   const logicalWordCount = recordCount * strideU32;
@@ -498,56 +590,139 @@ function restirReservoirPayloadIsValid(
   return true;
 }
 
+/**
+ * Validate and cold-migrate a pre-log-mass ReSTIR-GI cohort. Only the active
+ * grid survives; no historical linear-weight word is ever interpreted as H.
+ */
+function coldMigrateLegacyRestirGISnapshot(
+  value: Omit<RestirGISnapshot, 'representationVersion'>,
+  logMassRepresentation = false,
+): RestirGISnapshot {
+  assertPositiveU32(value.halfW, 'Legacy GI snapshot ReSTIR halfW');
+  assertPositiveU32(value.halfH, 'Legacy GI snapshot ReSTIR halfH');
+  if (
+    value.strideU32 !== RESERVOIR_GI_LEGACY_STRIDE_U32 &&
+    value.strideU32 !== RESERVOIR_GI_STRIDE_U32
+  ) {
+    throw new RangeError(
+      'Legacy GI snapshot ReSTIR stride is not a recognized reservoir ABI.',
+    );
+  }
+  const recordCount = checkedProduct(
+    'Legacy GI snapshot ReSTIR logical record count',
+    value.halfW,
+    value.halfH,
+  );
+  const sourceLength = Math.max(
+    64,
+    checkedProduct(
+      'Legacy GI snapshot ReSTIR reservoir element count',
+      recordCount,
+      value.strideU32,
+    ),
+  );
+  if (sourceLength > MAX_U32) {
+    throw new RangeError(
+      'Legacy GI snapshot ReSTIR buffer length exceeds the uint32 domain.',
+    );
+  }
+  for (const [name, data] of [
+    ['current', value.current],
+    ['previous', value.previous],
+    ['spatial', value.spatial],
+  ] as const) {
+    if (
+      !(data instanceof Uint32Array) ||
+      data.length !== sourceLength ||
+      !restirReservoirPayloadIsValid(
+        data,
+        recordCount,
+        value.strideU32,
+        logMassRepresentation,
+      )
+    ) {
+      throw new RangeError(
+        `Legacy GI snapshot ReSTIR ${name} contains an invalid reservoir cohort.`,
+      );
+    }
+  }
+  const liveLength = Math.max(
+    64,
+    checkedProduct(
+      'Cold-migrated GI snapshot ReSTIR reservoir element count',
+      recordCount,
+      RESERVOIR_GI_STRIDE_U32,
+    ),
+  );
+  if (liveLength > MAX_U32) {
+    throw new RangeError(
+      'Cold-migrated GI snapshot ReSTIR buffer length exceeds the uint32 domain.',
+    );
+  }
+  return {
+    representationVersion:
+      RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1,
+    halfW: value.halfW,
+    halfH: value.halfH,
+    strideU32: RESERVOIR_GI_STRIDE_U32,
+    current: new Uint32Array(liveLength),
+    previous: new Uint32Array(liveLength),
+    spatial: new Uint32Array(liveLength),
+  };
+}
+
 function assertSerializableRestirSnapshot(
   value: unknown,
-  allowLegacyCompact = false,
 ): asserts value is RestirGISnapshot {
   if (value == null || typeof value !== 'object') {
     throw new TypeError('GI snapshot ReSTIR section must be an object.');
   }
-  const snapshot = value as RestirGISnapshot;
-  assertPositiveU32(snapshot.halfW, 'GI snapshot ReSTIR halfW');
-  assertPositiveU32(snapshot.halfH, 'GI snapshot ReSTIR halfH');
-  assertPositiveU32(snapshot.strideU32, 'GI snapshot ReSTIR strideU32');
+  const snapshot = value as Record<keyof RestirGISnapshot, unknown>;
   if (
-    snapshot.strideU32 !== RESERVOIR_GI_LEGACY_STRIDE_U32 &&
-    snapshot.strideU32 !== RESERVOIR_GI_STRIDE_U32
+    snapshot.representationVersion !==
+    RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1
   ) {
     throw new RangeError(
-      'GI snapshot ReSTIR stride is not a recognized reservoir ABI.',
+      `GI snapshot ReSTIR representationVersion must be ${RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1}.`,
     );
   }
-  if (
-    !allowLegacyCompact &&
-    snapshot.strideU32 === RESERVOIR_GI_LEGACY_STRIDE_U32
-  ) {
+  const halfW = snapshot.halfW;
+  const halfH = snapshot.halfH;
+  const strideU32 = snapshot.strideU32;
+  assertPositiveU32(halfW, 'GI snapshot ReSTIR halfW');
+  assertPositiveU32(halfH, 'GI snapshot ReSTIR halfH');
+  assertPositiveU32(strideU32, 'GI snapshot ReSTIR strideU32');
+  if (strideU32 !== RESERVOIR_GI_STRIDE_U32) {
     throw new RangeError(
-      'GI snapshot serialization cannot publish retired 20-u32 ReSTIR-GI history.',
+      'GI snapshot ReSTIR stride does not match the live reservoir ABI.',
     );
   }
-  for (const [name, data] of [
-    ['current', snapshot.current],
-    ['previous', snapshot.previous],
-    ['spatial', snapshot.spatial],
-  ] as const) {
-    if (!(data instanceof Uint32Array)) {
-      throw new TypeError(`GI snapshot ReSTIR ${name} must be a Uint32Array.`);
-    }
-  }
+  const current = requireUint32Array(
+    snapshot.current,
+    'GI snapshot ReSTIR current',
+  );
+  const previous = requireUint32Array(
+    snapshot.previous,
+    'GI snapshot ReSTIR previous',
+  );
+  const spatial = requireUint32Array(
+    snapshot.spatial,
+    'GI snapshot ReSTIR spatial',
+  );
   const expectedLength = Math.max(
     64,
     checkedProduct(
       'GI snapshot ReSTIR reservoir element count',
-      snapshot.halfW,
-      snapshot.halfH,
-      snapshot.strideU32,
+      halfW,
+      halfH,
+      strideU32,
     ),
   );
   if (
     expectedLength > MAX_U32 ||
-    snapshot.current.length !== expectedLength ||
-    snapshot.previous.length !== expectedLength ||
-    snapshot.spatial.length !== expectedLength
+    current.length !== expectedLength ||
+    previous.length !== expectedLength ||
+    spatial.length !== expectedLength
   ) {
     throw new RangeError(
       'GI snapshot ReSTIR reservoir buffers do not match their declared layout.',
@@ -555,19 +730,20 @@ function assertSerializableRestirSnapshot(
   }
   const recordCount = checkedProduct(
     'GI snapshot ReSTIR logical record count',
-    snapshot.halfW,
-    snapshot.halfH,
+    halfW,
+    halfH,
   );
   for (const [name, data] of [
-    ['current', snapshot.current],
-    ['previous', snapshot.previous],
-    ['spatial', snapshot.spatial],
+    ['current', current],
+    ['previous', previous],
+    ['spatial', spatial],
   ] as const) {
     if (
       !restirReservoirPayloadIsValid(
         data,
         recordCount,
-        snapshot.strideU32,
+        strideU32,
+        true,
       )
     ) {
       throw new RangeError(
@@ -582,9 +758,7 @@ export function isValidRestirGISnapshot(
   value: unknown,
 ): value is RestirGISnapshot {
   try {
-    // Import compatibility: old compact sections are validated fully, then
-    // migrated transactionally to an empty live generalized reservoir cohort.
-    assertSerializableRestirSnapshot(value, true);
+    assertSerializableRestirSnapshot(value);
     return true;
   } catch {
     return false;
@@ -645,7 +819,6 @@ function assertSerializablePpgSnapshot(snapshot: PpgSnapshot): void {
 function assertSerializableSnapshot(
   value: unknown,
   validatePpg = true,
-  allowLegacyCompact = false,
   requireCompleteState = true,
 ): asserts value is GIStateSnapshot {
   if (value == null || typeof value !== 'object') {
@@ -705,7 +878,7 @@ function assertSerializableSnapshot(
     );
   }
   if (snapshot.restirGI != null) {
-    assertSerializableRestirSnapshot(snapshot.restirGI, allowLegacyCompact);
+    assertSerializableRestirSnapshot(snapshot.restirGI);
   }
   if (validatePpg && snapshot.ppg != null) {
     assertSerializablePpgSnapshot(snapshot.ppg);
@@ -773,7 +946,7 @@ export function isValidRequiredGIStateSnapshot(
   value: unknown,
 ): value is GIStateSnapshot {
   try {
-    assertSerializableSnapshot(value, false, true, true);
+    assertSerializableSnapshot(value, false, true);
     return true;
   } catch {
     return false;
@@ -870,7 +1043,7 @@ export function serializeGIState(s: GIStateSnapshot): ArrayBuffer {
     dv.setUint32(ro, r.halfH, true); ro += 4;
     dv.setUint32(ro, r.strideU32, true); ro += 4;
     dv.setUint32(ro, r.current.length, true); ro += 4; // bufU32Len (per-buffer)
-    dv.setUint32(ro, 0, true); ro += 4; // reserved
+    dv.setUint32(ro, r.representationVersion, true); ro += 4;
     const cur = r.current, prev = r.previous, sp = r.spatial;
     new Uint8Array(buf, ro, cur.byteLength).set(new Uint8Array(cur.buffer, cur.byteOffset, cur.byteLength));
     ro += cur.byteLength;
@@ -937,7 +1110,9 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
   const version = dv.getUint32(o, true); o += 4;
   // v3 (SH irradiance, no PPG), v4 (adds optional PPG), v5 (adds PPG
   // maxDTreeNodesPerCell), v6 (probe relocation/classification state), v7
-  // (generalized-only live ReSTIR ABI), and v8 (complete-state extension) are
+  // (generalized-only live ReSTIR ABI), v8 (linear reservoir weights), and v9
+  // (represented log-mass reservoirs), and v10 (RGB shifted-visibility
+  // semantics) are
   // accepted. Older SH snapshots
   // synthesize zero-offset active probe state.
   // v3 readers see no PPG
@@ -951,9 +1126,11 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     version !== 5 &&
     version !== 6 &&
     version !== 7 &&
+    version !== LEGACY_COMPLETE_SNAPSHOT_VERSION &&
+    version !== LOG_MASS_SNAPSHOT_VERSION &&
     version !== GI_SNAPSHOT_VERSION
   ) {
-    throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION}, 7, 6, 5, 4, or 3; v1/v2 octahedral irradiance is incompatible with SH).`);
+    throw new Error(`deserializeGIState: unsupported version ${version} (expected ${GI_SNAPSHOT_VERSION}, ${LOG_MASS_SNAPSHOT_VERSION}, ${LEGACY_COMPLETE_SNAPSHOT_VERSION}, 7, 6, 5, 4, or 3; v1/v2 octahedral irradiance is incompatible with SH).`);
   }
   const dx = dv.getUint32(o, true); o += 4;
   const dy = dv.getUint32(o, true); o += 4;
@@ -991,7 +1168,7 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     (sectionFlags & SECTION_COMPLETE_STATE) !== 0;
   if (version >= 8 && !hasCompleteState) {
     throw new Error(
-      'deserializeGIState: v8 snapshot is missing its complete-state extension.',
+      `deserializeGIState: v${version} snapshot is missing its complete-state extension.`,
     );
   }
   assertAtlasMetadata({ x: dx, y: dy, z: dz }, irrW, irrH, visW, visH);
@@ -1109,10 +1286,17 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     const halfH = dv.getUint32(ro, true); ro += 4;
     const strideU32 = dv.getUint32(ro, true); ro += 4;
     const bufU32Len = dv.getUint32(ro, true); ro += 4;
-    const reserved = dv.getUint32(ro, true); ro += 4;
-    if (reserved !== 0) {
+    const representationVersion = dv.getUint32(ro, true); ro += 4;
+    const hasLogMassRepresentation =
+      version >= LOG_MASS_SNAPSHOT_VERSION;
+    if (
+      (hasLogMassRepresentation &&
+        representationVersion !==
+          RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1) ||
+      (!hasLogMassRepresentation && representationVersion !== 0)
+    ) {
       throw new Error(
-        'deserializeGIState: ReSTIR-GI reserved sub-header word must be zero.',
+        'deserializeGIState: ReSTIR-GI representation marker is incompatible with the snapshot version.',
       );
     }
     assertPositiveU32(halfW, 'GI snapshot ReSTIR halfW');
@@ -1151,11 +1335,37 @@ export function deserializeGIState(buf: ArrayBuffer): GIStateSnapshot {
     const current  = new Uint32Array(buf.slice(ro, ro + bufBytes)); ro += bufBytes;
     const previous = new Uint32Array(buf.slice(ro, ro + bufBytes)); ro += bufBytes;
     const spatial  = new Uint32Array(buf.slice(ro, ro + bufBytes)); ro += bufBytes;
-    restirGI = { halfW, halfH, strideU32, current, previous, spatial };
-    if (!isValidRestirGISnapshot(restirGI)) {
-      throw new Error(
-        'deserializeGIState: ReSTIR-GI payload contains an invalid logical reservoir record.',
-      );
+    if (hasLogMassRepresentation) {
+      const parsedRestirGI: RestirGISnapshot = {
+        representationVersion:
+          RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1,
+        halfW,
+        halfH,
+        strideU32,
+        current,
+        previous,
+        spatial,
+      };
+      if (!isValidRestirGISnapshot(parsedRestirGI)) {
+        throw new Error(
+          'deserializeGIState: ReSTIR-GI payload contains an invalid logical reservoir record.',
+        );
+      }
+      restirGI = version === GI_SNAPSHOT_VERSION
+        ? parsedRestirGI
+        : coldMigrateLegacyRestirGISnapshot(
+            parsedRestirGI,
+            true,
+          );
+    } else {
+      restirGI = coldMigrateLegacyRestirGISnapshot({
+        halfW,
+        halfH,
+        strideU32,
+        current,
+        previous,
+        spatial,
+      });
     }
     cursor = ro;
   }

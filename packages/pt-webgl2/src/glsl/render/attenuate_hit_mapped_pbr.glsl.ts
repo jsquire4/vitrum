@@ -20,7 +20,14 @@ bool attenuateHit(
     if ( remainingTraversals <= 0 ) break;
     remainingTraversals --;
     sobolBounceIndex ++;
-    int hitType = traceScene( ray, state.fogMaterial, surfaceHit );
+    int hitType = traceScene(
+      ray, state.mediumStack,
+      state.fogMaterial, state.wavelength, surfaceHit
+    );
+    if ( hitType == INVALID_HIT ) {
+      result = true;
+      break;
+    }
     if ( hitType != SURFACE_HIT ) {
       result = false;
       break;
@@ -51,19 +58,26 @@ bool attenuateHit(
     if ( finiteRayDistance ) {
       traveledDistance += max( surfaceHit.dist, 0.0 );
     }
-    ray.origin = stepRayOrigin(
-      ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
-    );
-    if ( ! material.castShadow && state.isShadowRay ) continue;
+    if ( ! material.castShadow && state.isShadowRay ) {
+      if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+        result = true;
+        break;
+      }
+      continue;
+    }
 
     #define MAPPED_SHADOW_UV(mapIndex) textureSampleBarycoord( attributesArray, readMaterialMapUvLayer( materials, materialIndex, mapIndex ), surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy
     vec4 albedo = vec4( material.color, material.opacity );
     if ( material.map != -1 ) {
       vec3 uvPrime =
         material.mapTransform * vec3( MAPPED_SHADOW_UV( 0u ), 1.0 );
-      albedo *= sampleMaterialTexture(
-        textures, uvPrime.xy, material.map, material.mapWrap, true
-      );
+      vec4 mapSample;
+      if (
+        sampleMaterialTexture(
+          textures, uvPrime.xy, material.map,
+          material.mapWrap, true, mapSample
+        )
+      ) albedo *= mapSample;
     }
     if ( material.vertexColors ) {
       albedo *= textureSampleBarycoord(
@@ -74,18 +88,27 @@ bool attenuateHit(
     if ( material.alphaMap != -1 ) {
       vec3 uvPrime =
         material.alphaMapTransform * vec3( MAPPED_SHADOW_UV( 6u ), 1.0 );
-      albedo.a *= sampleMaterialTexture(
-        textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap
-      ).r;
+      vec4 alphaSample;
+      if (
+        sampleMaterialTexture(
+          textures, uvPrime.xy, material.alphaMap,
+          material.alphaMapWrap, alphaSample
+        )
+      ) albedo.a *= alphaSample.r;
     }
 
     bool useAlphaTest = material.alphaTest != 0.0;
     bool passThrough =
-      material.side != 0.0 && surfaceHit.side == material.side ||
+      material.side != 0.0 && surfaceHit.side != material.side ||
       useAlphaTest && albedo.a < material.alphaTest ||
-      material.transparent && ! useAlphaTest && albedo.a < rand( 10 );
+      material.transparent && ! useAlphaTest &&
+        rand( 10 ) >= representedBernoulliProbabilityF32( albedo.a );
     #undef MAPPED_SHADOW_UV
     if ( ! passThrough ) {
+      result = true;
+      break;
+    }
+    if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
       result = true;
       break;
     }

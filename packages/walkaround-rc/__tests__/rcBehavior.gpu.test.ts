@@ -100,6 +100,12 @@ describe('walkaround-rc behavior acceptance (real WebGPU)', () => {
       const bvhNormalsBuf = add(uploadBuffer(device, 'rc-test-normals', new ArrayBuffer(16), 16));
       const materialsBuf = add(uploadBuffer(device, 'rc-test-materials', new ArrayBuffer(64), 64));
       const triMaterialIdBuf = add(uploadBuffer(device, 'rc-test-tri-material', new ArrayBuffer(4), 4));
+      const opticalTriangleIdentityBuf = add(uploadBuffer(
+        device, 'rc-test-optical-triangle-identity', new ArrayBuffer(8), 8,
+      ));
+      const opticalInstanceBoundaryIdBasePlusOneBuf = add(uploadBuffer(
+        device, 'rc-test-optical-instance-base', new Uint32Array([1]).buffer, 4,
+      ));
       const cascadeBuf = add(device.createBuffer({
         label: 'rc-test-cascade-c0',
         size: 16 * 16,
@@ -127,6 +133,8 @@ describe('walkaround-rc behavior acceptance (real WebGPU)', () => {
         bvhNormalsBuf,
         materialsBuf,
         triMaterialIdBuf,
+        opticalTriangleIdentityBuf,
+        opticalInstanceBoundaryIdBasePlusOneBuf,
         cascadeBufs: [cascadeBuf],
         probeOriginWorld: [0, 0, 0],
         roomSize: [1, 1, 1],

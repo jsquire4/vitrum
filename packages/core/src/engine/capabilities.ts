@@ -294,6 +294,29 @@ export interface BackendSupportDetails {
    * built-in backends publish it on every live support manifest.
    */
   readonly bounceSemantics?: BounceSemanticsSupportDetails;
+  /**
+   * End-to-end contract for authored closed homogeneous optical media.
+   *
+   * `maxNestedMedia` counts simultaneously live bulk media along a path.
+   * A transmissive material is bulk when it has positive authored thickness,
+   * positive effective scattering (RGB override when authored, otherwise
+   * scalar), positive RGB absorption derived from finite
+   * attenuationColor+attenuationDistance, or spectral attenuation.
+   * Positive-thickness clear
+   * dielectrics therefore consume a slot for nested-IOR tracking. Only
+   * reciprocal zero-thickness materials with none of those bulk payloads are
+   * sheets. The topology literal is a laminar-boundary promise: every pair of
+   * closed oriented volumes is spatially disjoint or one volume wholly contains
+   * the other. A backend publishing this record must synchronously reject open,
+   * reversed, self/intersecting, touching, non-laminar, non-deterministically
+   * covered, or over-capacity scenes before mutating GPU state; a shader-only
+   * overflow fallback is not conformance.
+   */
+  readonly opticalMedia?: {
+    readonly maxNestedMedia: number;
+    readonly topology: 'closed-oriented-disjoint-or-nested';
+    readonly overflowPolicy: 'reject-scene';
+  };
   /** Sampling-sequence support and, when applicable, Sobol overflow semantics. */
   readonly samplingSequences?: SamplingSequenceSupportDetails;
   /** Optional estimator-scope and composition constraints for caustic modes. */

@@ -80,6 +80,13 @@ interface TextureCellInterval {
   readonly texel: number;
 }
 
+interface StagedEmissiveTexelCell {
+  readonly clipped: readonly TexelClipVertex[];
+  readonly radiance: readonly [number, number, number];
+  readonly texelX: number;
+  readonly texelY: number;
+}
+
 function textureHint(handle: ReadableTextureHandle): TextureHandleHint | undefined {
   if (handle.__vitrum_hint__ != null) return handle.__vitrum_hint__;
   const source = handle.cpuMirror ?? handle;
@@ -204,7 +211,13 @@ function averageReadableTextureRgb(
       pg = srgbToLinear(pg);
       pb = srgbToLinear(pb);
     }
-    if (!Number.isFinite(pr) || !Number.isFinite(pg) || !Number.isFinite(pb)) continue;
+    // Backend atlas ingestion rejects the entire payload when any decoded
+    // texel is non-finite. Fall back from the entire map here as well;
+    // averaging only the remaining texels would build a proposal for radiance
+    // the shader never publishes.
+    if (!Number.isFinite(pr) || !Number.isFinite(pg) || !Number.isFinite(pb)) {
+      return null;
+    }
     r += pr;
     g += pg;
     b += pb;
@@ -588,7 +601,15 @@ export function forEachEmissiveMapTexelSubTriangle(
   ],
   resolveTexelRadiance?: EmissiveMapTexelRadianceResolver,
 ): boolean {
-  if (!Number.isSafeInteger(maxCoveredCells) || maxCoveredCells < 1) return false;
+  // JavaScript arrays cannot represent more than 2^32-1 entries. The exact
+  // splitter stages at most one convex polygon per covered cell so that a
+  // failed return is callback-atomic; reject an impossible staging capacity
+  // before materializing intervals or invoking a backend resolver.
+  if (
+    !Number.isSafeInteger(maxCoveredCells) ||
+    maxCoveredCells < 1 ||
+    maxCoveredCells > 0xffff_ffff
+  ) return false;
   // `skipEmitter` suppresses light-sampling classification, not the material's
   // camera-visible emissive radiance. Report "handled" so callers do not fall
   // back to a scalar implicit-emitter proposal.
@@ -598,6 +619,11 @@ export function forEachEmissiveMapTexelSubTriangle(
   if (scalar == null || ref == null) return false;
   const dims = readableTextureDimensions(ref);
   if (dims == null) return false;
+  // Validate the complete immutable payload before invoking `visit`. Besides
+  // matching atlas rejection semantics, this keeps a failed return
+  // transactional: callers never retain sub-triangles emitted before a later
+  // malformed texel was discovered.
+  if (!isTextureRefCpuReadable(ref, 'srgb')) return false;
   const resolveRadiance = (
     texelRgb: readonly [number, number, number],
     texelX: number,
@@ -644,7 +670,7 @@ export function forEachEmissiveMapTexelSubTriangle(
   if (
     (ref.magFilter ?? 'nearest') !== 'nearest' ||
     (ref.minFilter ?? 'nearest') !== 'nearest' ||
-    (ref.mipFilter ?? 'none') !== 'none'
+    (ref.mipFilter ?? 'linear') !== 'none'
   ) return false;
   if (texCoord === 1 && (uv1A == null || uv1B == null || uv1C == null)) return false;
   if (texCoord > 1 && selectedHighUv == null) return false;
@@ -699,7 +725,11 @@ export function forEachEmissiveMapTexelSubTriangle(
     { weights: [0, 0, 1], texUv: texC },
   ];
 
-  let ordinal = 0;
+  // Resolve every covered texel before publishing any sub-triangle. A backend
+  // resolver is explicitly allowed to reject one texel with `null`; staging
+  // keeps that late failure transactional instead of leaking earlier visits to
+  // a caller that may subsequently choose a fallback proposal.
+  const stagedCells: StagedEmissiveTexelCell[] = [];
   for (const xi of xIntervals) {
     for (const yi of yIntervals) {
       const clipped = clipTexelPolygonToCell(initial, xi.lo, xi.hi, yi.lo, yi.hi);
@@ -709,14 +739,40 @@ export function forEachEmissiveMapTexelSubTriangle(
       const radiance = resolveRadiance(texelRgb, xi.texel, yi.texel);
       if (radiance == null) return false;
       if (radiance[0] <= 0 && radiance[1] <= 0 && radiance[2] <= 0) continue;
-      const anchor = clipped[0]!;
-      for (let i = 1; i + 1 < clipped.length; i += 1) {
-        const b = clipped[i]!;
-        const c = clipped[i + 1]!;
-        if (texUvArea2(anchor.texUv, b.texUv, c.texUv) < 1e-16) continue;
-        visit(anchor.weights, b.weights, c.weights, radiance, xi.texel, yi.texel, ordinal);
-        ordinal += 1;
+      if (stagedCells.length >= maxCoveredCells) return false;
+      try {
+        stagedCells.push({
+          clipped,
+          radiance,
+          texelX: xi.texel,
+          texelY: yi.texel,
+        });
+      } catch (error) {
+        // Array-capacity failures are a normal unrepresentable-split result;
+        // preserve programmer/backend exceptions rather than masking them.
+        if (error instanceof RangeError) return false;
+        throw error;
       }
+    }
+  }
+
+  let ordinal = 0;
+  for (const cell of stagedCells) {
+    const anchor = cell.clipped[0]!;
+    for (let i = 1; i + 1 < cell.clipped.length; i += 1) {
+      const b = cell.clipped[i]!;
+      const c = cell.clipped[i + 1]!;
+      if (texUvArea2(anchor.texUv, b.texUv, c.texUv) < 1e-16) continue;
+      visit(
+        anchor.weights,
+        b.weights,
+        c.weights,
+        cell.radiance,
+        cell.texelX,
+        cell.texelY,
+        ordinal,
+      );
+      ordinal += 1;
     }
   }
   return true;

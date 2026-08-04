@@ -228,8 +228,9 @@ describe('compressed geometry import resource accounting', () => {
     const importAttempt = gltfToScene(gltf, {
       buffers,
       // Failed built-in target (36) + fallback validation (36) + node
-      // matrices (128) reaches 200. The final POSITION decode must therefore
-      // fail at 236 rather than silently accepting 236 bytes of allocations.
+      // matrices (128) reaches 200. Generated normals then preflight both the
+      // Float32 result (36) and Float64 accumulator (72), so the next attempted
+      // allocation reaches 308 rather than silently omitting scratch storage.
       resourceLimits: { maxDecodedGeometryBytes: 200 },
     });
 
@@ -237,7 +238,7 @@ describe('compressed geometry import resource accounting', () => {
     await expect(importAttempt).rejects.toMatchObject({
       limitKind: 'decoded-geometry-bytes',
       limit: 200,
-      actual: 236,
+      actual: 308,
       path: 'meshes[0].primitives[0] generated normals',
     });
   });
@@ -263,8 +264,9 @@ describe('compressed geometry import resource accounting', () => {
     const result = await gltfToScene(gltf, {
       buffers,
       // Built-in output (36) + retained synthetic copy (36) + node matrices
-      // (128) + POSITION decode (36) + generated normals (36) = 272 exactly.
-      resourceLimits: { maxDecodedGeometryBytes: 272 },
+      // (128) + POSITION decode (36) + generated normals/result scratch
+      // (36 + 72) = 344 exactly.
+      resourceLimits: { maxDecodedGeometryBytes: 344 },
     });
 
     expect(result.scene.primitives).toHaveLength(1);

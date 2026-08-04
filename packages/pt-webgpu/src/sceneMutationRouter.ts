@@ -68,6 +68,7 @@ import {
   type PackedEmitterArrays,
 } from './scene/emitterPacking.js';
 import { environmentParams } from './scene/environmentPacking.js';
+import { applyDistantDirectProposalPmf } from './scene/distantDirectProposal.js';
 import { collectUnsupportedMaterialFieldsForTraceTier } from './supportDetails.js';
 import { assertPtWebgpuEnvironmentMaterialEnvelopeF32 } from './environmentRadianceScale.js';
 
@@ -217,6 +218,50 @@ function isMaterialOnlyPatch(patch: ScenePrimitivePatch): patch is ScenePrimitiv
   return Object.keys(patch).every((key) => key === 'material');
 }
 
+const OPTICAL_TOPOLOGY_MATERIAL_FIELDS = new Set([
+  'transmission',
+  'thickness',
+  'thicknessMap',
+  'scatteringCoefficient',
+  'scatteringCoefficientRGB',
+  'attenuationColor',
+  'attenuationDistance',
+  'spectralAttenuation',
+]);
+
+function materialPatchTouchesOpticalTopology(
+  materialPatch: Readonly<Record<string, unknown>> | null,
+): boolean {
+  return materialPatch != null && Object.keys(materialPatch).some(
+    (field) => OPTICAL_TOPOLOGY_MATERIAL_FIELDS.has(field),
+  );
+}
+
+function materialPatchChangesMappedOutgoingRadiance(
+  primitive: ScenePrimitive,
+  materialPatch: Readonly<Record<string, unknown>> | null,
+): boolean {
+  if (materialPatch == null) return false;
+  return (
+    primitive.material.emissiveMap != null &&
+    ('emissive' in materialPatch || 'emissiveIntensity' in materialPatch)
+  ) || (
+    primitive.material.lightMap != null &&
+    'lightMapIntensity' in materialPatch
+  );
+}
+
+function meshAreaEmitterOwnerHasEmissiveMap(
+  scene: Scene,
+  emitter: SceneEmitter | null,
+): boolean {
+  if (emitter?.kind !== 'mesh-area') return false;
+  const owner = scene.primitives.find(
+    (primitive) => String(primitive.id) === String(emitter.meshId),
+  );
+  return owner?.material.emissiveMap != null;
+}
+
 function materialSpecsForScene(
   scene: Scene,
   supportedAnalyticShapes: ReadonlySet<string>,
@@ -299,6 +344,12 @@ function emitterAndLightTreeMutationPatch(
   packed: PackedEmitterArrays,
   envSummary: EnvSummaryForTree,
 ): SceneBufferMutationPatch {
+  const environmentDistantProposalPmf = applyDistantDirectProposalPmf(
+    packed.directionalLightsData,
+    packed.directionalLightCount,
+    envSummary.lightTreePower,
+    envSummary.hasHdri,
+  );
   const tree = packLightTreeForScene(scene, {
     packed,
     envSummary,
@@ -315,6 +366,7 @@ function emitterAndLightTreeMutationPatch(
     spotLightCount: packed.spotLightCount,
     rectAreaLightCount: packed.rectAreaLightCount,
     meshAreaLightCount: packed.meshAreaLightCount,
+    environmentDistantProposalPmf,
     lightTreeNodeCount: tree.lightTreeNodeCount,
     lightTreeEnabled: tree.lightTreeEnabled,
   };
@@ -587,6 +639,14 @@ export class SceneMutationRouter {
         );
       }
     }
+    // Optical component IDs live in the packed triangle payload. A patch can
+    // switch a material among opaque, virtual-sheet, and closed-bulk roles even
+    // when no geometry bytes changed, so it must rebuild/stamp the complete
+    // candidate before publication.
+    if (materialPatchTouchesOpticalTopology(patchedMaterial ?? null)) {
+      host.repackScene(authoredNextScene, { warnOnEmpty: false });
+      return;
+    }
     // Some analytics are represented by generated/authored fallback meshes in
     // the packed scene (mapped surfaces and every analytic emitter). Their
     // BLAS/TLAS and material classification differ from the authored analytic
@@ -598,6 +658,31 @@ export class SceneMutationRouter {
       sceneHasAnalyticRenderFallback(currentScene) ||
       sceneHasAnalyticRenderFallback(authoredNextScene)
     ) {
+      host.repackScene(authoredNextScene, { warnOnEmpty: false });
+      return;
+    }
+    const sceneContainsTransmissiveSurface =
+      currentScene.primitives.some((primitive) =>
+        (primitive.material.transmission ?? 0) > 0) ||
+      authoredNextScene.primitives.some((primitive) =>
+        (primitive.material.transmission ?? 0) > 0);
+    if (
+      sceneContainsTransmissiveSurface && currentPrimitive != null &&
+      (
+        canFastPathGeometryPatch(currentPrimitive, patch) ||
+        canFastPathTopologyResizePatch(currentPrimitive, patch) ||
+        canFastPathInstancedTopologyPatch(currentPrimitive, patch) ||
+        canFastPathTransformPatch(currentPrimitive, patch)
+      )
+    ) {
+      // BLAS rebuild helpers intentionally initialize index payload lanes to
+      // zero. Re-run the canonical topology analysis + component-ID pack so a
+      // geometry or instance-membership mutation cannot publish stale/cleared
+      // boundary identities or lite represented-instance stamps beside
+      // otherwise-current geometry. A transform can also change containment
+      // ordering and therefore dense per-instance boundary bases even when
+      // connectivity is unchanged. Thin sheets need represented-instance
+      // stamps even though they deliberately have no medium-boundary ID.
       host.repackScene(authoredNextScene, { warnOnEmpty: false });
       return;
     }
@@ -757,11 +842,14 @@ export class SceneMutationRouter {
       host.isLiteTier?.() === true &&
       currentPrimitive != null &&
       canFastPathInstancedTopologyPatch(currentPrimitive, fastPathPatch);
+    const liteFallbackMaterialPatch =
+      host.isLiteTier?.() === true && isMaterialOnlyPatch(fastPathPatch);
     if (
       liteFallbackGeometryPatch ||
       liteFallbackMeshTopologyPatch ||
       liteFallbackTransformPatch ||
-      liteFallbackInstancedTopologyPatch
+      liteFallbackInstancedTopologyPatch ||
+      liteFallbackMaterialPatch
     ) {
       const fallbackReason = liteFallbackInstancedTopologyPatch
         ? 'lite-merged-blas-instanced-topology-rebuild'
@@ -769,7 +857,9 @@ export class SceneMutationRouter {
           ? 'lite-merged-blas-mesh-topology-rebuild'
           : liteFallbackGeometryPatch
             ? 'lite-merged-blas-geometry-rebuild'
-            : 'lite-merged-blas-transform-rebuild';
+            : liteFallbackTransformPatch
+              ? 'lite-merged-blas-transform-rebuild'
+              : 'lite-merged-material-rebuild';
       host.repackScene(authoredNextScene, { warnOnEmpty: false });
       deferredWarnings.push({
         warning: {
@@ -779,11 +869,28 @@ export class SceneMutationRouter {
           method: 'updatePrimitive',
           message:
             `[vitrum/pt-webgpu] updatePrimitive("${id}") is using a fallback scene repack ` +
-            'on the lite tier because the lite shader traverses one baked merged BLAS, not TLAS instance transforms.',
+            (liteFallbackMaterialPatch
+              ? 'on the lite tier because merged-material slots are deduplicated independently of primitive order.'
+              : 'on the lite tier because the lite shader traverses one baked merged BLAS, not TLAS instance transforms.'),
           details: { id, fallbackReason },
         },
       });
       drainDeferredWarnings();
+      return;
+    }
+
+    if (
+      authoredNextPrimitive != null &&
+      materialPatchChangesMappedOutgoingRadiance(
+        authoredNextPrimitive,
+        patchedMaterial ?? null,
+      )
+    ) {
+      // The exact outgoing-radiance envelope is evaluated over every generated
+      // texture mip during canonical upload. A material-only buffer slice has
+      // no CPU mirror of those quantized mip texels, so it cannot prove that a
+      // new emissive/light-map scalar remains finite and non-vanishing in f32.
+      host.repackScene(authoredNextScene, { warnOnEmpty: false });
       return;
     }
 
@@ -974,6 +1081,8 @@ export class SceneMutationRouter {
             tlasBlasRoots: tlas.tlasBlasRoots,
             tlasInstanceWorldToLocal: tlas.tlasInstanceWorldToLocal,
             tlasInstanceLocalToWorld: tlas.tlasInstanceLocalToWorld,
+            instancePrimitiveIndices: sceneBuffers.instancePrimitiveIndices,
+            instanceSourceIndices: sceneBuffers.instanceSourceIndices,
             tlasNodeCount: Math.floor(tlas.tlasNodes.length / BVH_NODE_FLOATS),
             primitiveTlasBindings: sceneBuffers.primitiveTlasBindings,
           }),
@@ -1163,6 +1272,21 @@ export class SceneMutationRouter {
     const nextScene = patchEmitterInScene(currentScene, id, patch);
     host.validateEmitterCandidate(nextScene, id);
     const validatedNextScene = this.#validatedCandidate(nextScene);
+    const nextEmitter =
+      nextScene.emitters.find((emitter) => String(emitter.id) === id) ?? null;
+    const changesMappedEmitterRadiance =
+      payloadKeys.some((key) => key === 'color' || key === 'intensity' || key === 'meshId') &&
+      (
+        meshAreaEmitterOwnerHasEmissiveMap(currentScene, currentEmitter) ||
+        meshAreaEmitterOwnerHasEmissiveMap(nextScene, nextEmitter)
+      );
+    if (changesMappedEmitterRadiance) {
+      // Canonical upload validates every exact emissive-map mip against both
+      // the surface-hit and mesh-light proposal factors. Incremental buffer
+      // replacement cannot reproduce that texel-wise proof.
+      host.repackScene(nextScene, { warnOnEmpty: false });
+      return;
+    }
     // Emitter packing must consume the same generated geometry as the live
     // render snapshot. If either scene contains an analytic fallback, use the
     // canonical full pack rather than rebuilding emitters from authored
@@ -1258,12 +1382,23 @@ export class SceneMutationRouter {
     const tree = packLightTreeForScene(renderNextScene, {
       envSummary: envSummaryForTree,
     });
+    const directionalLightsData = new Float32Array(
+      sceneBuffers.directionalLightsData,
+    );
+    const environmentDistantProposalPmf = applyDistantDirectProposalPmf(
+      directionalLightsData,
+      sceneBuffers.directionalLightCount,
+      packed.lightTreePower,
+      packed.hasHdri,
+    );
     const bufferPatch: SceneBufferMutationPatch = {
+      directionalLightsData,
       environmentMapTexels: packed.hdriTexels,
       environmentMapCdf: packed.hdriCdf,
       lightTreeNodes: tree.lightTreeNodes,
       environmentTint: packed.tint,
       environmentLightTreePower: packed.lightTreePower,
+      environmentDistantProposalPmf,
       environmentHdriIntensity: packed.hdriIntensity,
       environmentHdriRotationY: packed.hdriRotationY,
       environmentMapWidth: packed.hdriWidth,
@@ -1347,6 +1482,23 @@ export class SceneMutationRouter {
       host.validateEnvironmentCandidate(nextScene.environment);
     }
     const validatedNextScene = this.#validatedCandidate(nextScene);
+    if (
+      hasEmitters &&
+      (
+        currentScene.emitters.some((emitter) =>
+          meshAreaEmitterOwnerHasEmissiveMap(currentScene, emitter)
+        ) ||
+        nextScene.emitters.some((emitter) =>
+          meshAreaEmitterOwnerHasEmissiveMap(nextScene, emitter)
+        )
+      )
+    ) {
+      // Replacing a mapped mesh-area emitter can change its proposal factor or
+      // expose the owner's authored surface factor. Both multiply exact map
+      // texels/mips and therefore require the canonical upload envelope gate.
+      host.repackScene(nextScene, { warnOnEmpty: false });
+      return;
+    }
     // Preserve generated analytic geometry when replacing the emitter list;
     // the emitter-only path otherwise sees the authored analytic records
     // rather than the mesh records in the live BLAS.

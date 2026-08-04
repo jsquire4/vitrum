@@ -158,6 +158,14 @@ struct ReservoirPTHero {
   logW:    f32,     // log RIS unbiased contribution weight (UCW)
   xs:      vec3f,   // reconnection vertex (held fixed by shift)
   logWeightSum: f32,// log running RIS weight sum
+  // Invocation-local finite-RNG selection state. These three fields are not
+  // serialized: every producer/temporal/spatial fold starts from an empty
+  // reservoir and finalizes before store. They carry the actual occurrence
+  // probability of the selected candidate so the UCW corrects the represented
+  // 24-bit branch rather than pretending the ideal w_i / sum(w) was sampled.
+  selectedLogWeight: f32,
+  logSelectionProbability: f32,
+  logSelectionProbabilityLow: f32,
   ns:      vec3f,   // shading normal at xs
   M:       u32,     // confidence (candidate count; stored exactly through 4095)
   Lo:      vec3f,   // outgoing radiance LEAVING xs toward xv
@@ -215,6 +223,7 @@ const RPT_MAX_FINITE_F32: f32 = 3.402823466e38;
 const RPT_LOG_ZERO: f32 = -3.402823466e38;
 const RPT_LOG_NUMERIC_FAILURE: f32 = 3.402823466e38;
 const RPT_LOG_MAX_FINITE_F32: f32 = 88.7228390521;
+const RPT_REPRESENTED_BUCKET_COUNT: u32 = 16777216u;
 
 fn emptyReservoirPTHero() -> ReservoirPTHero {
   var r: ReservoirPTHero;
@@ -223,6 +232,9 @@ fn emptyReservoirPTHero() -> ReservoirPTHero {
   r.Lo = vec3f(0.0);
   r.logW = RPT_LOG_ZERO;
   r.logWeightSum = RPT_LOG_ZERO;
+  r.selectedLogWeight = RPT_LOG_ZERO;
+  r.logSelectionProbability = 0.0;
+  r.logSelectionProbabilityLow = 0.0;
   r.M = 0u;
   r.pdfSrc = 0.0; r._pad0 = 0.0;
   r.woV = vec3f(0.0, 0.0, 1.0);
@@ -366,8 +378,11 @@ fn rptVisibleMaterialAtSurface(
     materialAnisotropy(matId, triIndex, baryVW, instanceIndex);
   out.anisotropyRotation =
     materialAnisotropyRotation(matId, triIndex, baryVW, shadingNormal, instanceIndex);
+  let interfaceBaseNormal = materialBaseInterfaceNormal(
+    triIndex, baryVW, instanceIndex, isFrontFace, shadingNormal,
+  );
   out.clearcoatNormal = applyClearcoatNormalMap(
-    matId, triIndex, baryVW, shadingNormal, instanceIndex,
+    matId, triIndex, baryVW, interfaceBaseNormal, instanceIndex,
   );
   out.isUnlit = mat.isUnlit;
 
@@ -592,7 +607,7 @@ fn rptHydrateVisibleDomain(r: ptr<function, ReservoirPTHero>) {
   var baryVW = vec2f(0.0);
   if ((*r).triangleIndexV < params.triangleCount) {
     if ((*r).triangleIndexV < arrayLength(&triMaterialIds)) {
-      matId = triMaterialIds[(*r).triangleIndexV];
+      matId = triMaterialIds[(*r).triangleIndexV].x;
     }
     baryVW = (*r).surfaceParamV.xy;
   } else {
@@ -771,6 +786,9 @@ fn rptMarkReservoirNumericFailure(r: ptr<function, ReservoirPTHero>) {
   (*r).M = 0u;
   (*r).logW = RPT_LOG_NUMERIC_FAILURE;
   (*r).logWeightSum = RPT_LOG_NUMERIC_FAILURE;
+  (*r).selectedLogWeight = RPT_LOG_NUMERIC_FAILURE;
+  (*r).logSelectionProbability = RPT_LOG_NUMERIC_FAILURE;
+  (*r).logSelectionProbabilityLow = 0.0;
 }
 
 fn rptFiniteVec3(value: vec3f) -> bool {
@@ -835,6 +853,26 @@ fn rptSaturatingAddU32(a: u32, b: u32) -> u32 {
   return aStored + min(b, RPT_MAX_STORED_M - aStored);
 }
 
+// Add one natural-log term to a double-single f32 pair. Repeated one-bucket
+// keep factors are much smaller than an ordinary accumulated log weight; the
+// residual prevents them from rounding away and keeps the selected occurrence
+// probability equal to the actual sequence of integer-ticket branches.
+fn rptAddRepresentedLogTerm(hi: f32, lo: f32, term: f32) -> vec2f {
+  let sum = hi + term;
+  let virtualTerm = sum - hi;
+  let roundoff = (hi - (sum - virtualTerm)) + (term - virtualTerm);
+  let tail = lo + roundoff;
+  let normalizedHi = sum + tail;
+  let normalizedLo = tail - (normalizedHi - sum);
+  return vec2f(normalizedHi, normalizedLo);
+}
+
+fn rptRepresentedLogBucketProbability(bucketCount: u32) -> f32 {
+  // Form the exact f32 ratio before log. Subtracting log(B - 1) - log(B)
+  // cancels to zero, which would lose every one-bucket keep factor.
+  return log(f32(bucketCount) / f32(RPT_REPRESENTED_BUCKET_COUNT));
+}
+
 fn updateReservoirPTLog(
   r: ptr<function, ReservoirPTHero>,
   xs: vec3f, ns: vec3f, Lo: vec3f, heroLambda: f32, pdfSrc: f32,
@@ -864,8 +902,12 @@ fn updateReservoirPTLog(
     (*r).M = 0u;
     (*r).logWeightSum = RPT_LOG_ZERO;
     (*r).logW = RPT_LOG_ZERO;
+    (*r).selectedLogWeight = RPT_LOG_ZERO;
+    (*r).logSelectionProbability = 0.0;
+    (*r).logSelectionProbabilityLow = 0.0;
   }
   if ((*r).M >= RPT_MAX_STORED_M) { return false; }
+  let firstCandidate = (*r).M == 0u;
   let nextLogWeightSum = rptLogAddExp((*r).logWeightSum, logWeight);
   if (!rptFiniteScalar(nextLogWeightSum)
    || nextLogWeightSum == RPT_LOG_NUMERIC_FAILURE) {
@@ -874,8 +916,45 @@ fn updateReservoirPTLog(
   }
   (*r).M = (*r).M + 1u;
   (*r).logWeightSum = nextLogWeightSum;
-  let selectionProbability = exp(logWeight - nextLogWeightSum);
-  if (rand_f32(rng) < selectionProbability) {
+  var accepted = firstCandidate;
+  if (firstCandidate) {
+    // Preserve the established Sobol/PCG dimension assignment even though the
+    // first positive candidate is selected with probability exactly one.
+    _ = pcgNext(rng);
+    (*r).selectedLogWeight = logWeight;
+    (*r).logSelectionProbability = 0.0;
+    (*r).logSelectionProbabilityLow = 0.0;
+  } else {
+    let replacementRatio = exp(logWeight - nextLogWeightSum);
+    if (!(replacementRatio >= 0.0) || replacementRatio > 1.0) {
+      rptMarkReservoirNumericFailure(r);
+      return false;
+    }
+    let replacementBuckets = clamp(
+      u32(ceil(f32(RPT_REPRESENTED_BUCKET_COUNT) * replacementRatio)),
+      1u,
+      RPT_REPRESENTED_BUCKET_COUNT - 1u,
+    );
+    let ticket = pcgNext(rng) >> 8u;
+    accepted = ticket < replacementBuckets;
+    if (accepted) {
+      (*r).selectedLogWeight = logWeight;
+      (*r).logSelectionProbability = rptRepresentedLogBucketProbability(
+        replacementBuckets,
+      );
+      (*r).logSelectionProbabilityLow = 0.0;
+    } else {
+      let keepBuckets = RPT_REPRESENTED_BUCKET_COUNT - replacementBuckets;
+      let nextLogProbability = rptAddRepresentedLogTerm(
+        (*r).logSelectionProbability,
+        (*r).logSelectionProbabilityLow,
+        rptRepresentedLogBucketProbability(keepBuckets),
+      );
+      (*r).logSelectionProbability = nextLogProbability.x;
+      (*r).logSelectionProbabilityLow = nextLogProbability.y;
+    }
+  }
+  if (accepted) {
     (*r).xs = xs;
     (*r).ns = ns;
     // Canonicalize before target/finalize evaluation. W is therefore computed
@@ -888,7 +967,7 @@ fn updateReservoirPTLog(
     rptHydrateVisibleDomain(r);
     (*r).pdfSrc = pdfSrc;
   }
-  return true;
+  return accepted;
 }
 
 fn copyReservoirPTVisibleDomain(dst: ptr<function, ReservoirPTHero>, src: ReservoirPTHero) {
@@ -1112,14 +1191,24 @@ fn restirPtPairwiseLogDenomCanonical(
 // normalise the sum — dividing by M again would under-energise the estimate.
 //   log W = log(weight_sum) - log(p̂(chosen sample))
 //                                      — Lin 2022 §generalized RIS, NO /M.
-// Mirrors walkaround-hybrid finaliseGIReservoirWGris EXACTLY (the GRIS form),
+// The weight-sum simplification above assumes an ideal real-valued branch.
+// With the finite 24-bit stream the exact identity is
+//   log W = log(selected weight) - log(actual occurrence probability) - log(target).
+// The represented branch state below evaluates that identity and reduces to
+// the ordinary weight-sum form whenever the ideal selection mass is realizable.
+// Mirrors walkaround-hybrid finaliseGIReservoirWGris in its GRIS normalization,
 // with the hero target p̂ via restirPtTargetAt. Keeping the normalization in
 // log space avoids both overflow and any biased contribution clamp.
 fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>) {
   (*r).logW = RPT_LOG_ZERO;
   if ((*r).M == 0u || !rptFiniteScalar((*r).logWeightSum)
    || (*r).logWeightSum == RPT_LOG_ZERO
-   || (*r).logWeightSum == RPT_LOG_NUMERIC_FAILURE) {
+   || (*r).logWeightSum == RPT_LOG_NUMERIC_FAILURE
+   || !rptFiniteScalar((*r).selectedLogWeight)
+   || !rptFiniteScalar((*r).logSelectionProbability)
+   || !rptFiniteScalar((*r).logSelectionProbabilityLow)
+   || (*r).logSelectionProbability > 0.0
+   || (*r).logSelectionProbability + (*r).logSelectionProbabilityLow > 0.0) {
     (*r).M = 0u;
     return;
   }
@@ -1128,7 +1217,17 @@ fn finaliseReservoirPTWGris(r: ptr<function, ReservoirPTHero>) {
     (*r).M = 0u;
     return;
   }
-  let logW = (*r).logWeightSum - log(pHatF);
+  let selectedCorrectionHigh = rptAddRepresentedLogTerm(
+    (*r).selectedLogWeight,
+    0.0,
+    -(*r).logSelectionProbability,
+  );
+  let selectedCorrection = rptAddRepresentedLogTerm(
+    selectedCorrectionHigh.x,
+    selectedCorrectionHigh.y,
+    -(*r).logSelectionProbabilityLow,
+  );
+  let logW = selectedCorrection.x + selectedCorrection.y - log(pHatF);
   if (!rptFiniteScalar(logW)) {
     rptMarkReservoirNumericFailure(r);
     return;

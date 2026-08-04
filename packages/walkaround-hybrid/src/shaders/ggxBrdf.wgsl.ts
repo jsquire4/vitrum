@@ -669,6 +669,51 @@ fn evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
     clearcoatAttenuation + clearcoatLobe;
 }
 
+// glTF/OpenPBR transmission is a continuous material weight, not a surface
+// class switch. The opaque base response fades with (1-transmission), while
+// the dielectric/conductor reflection family remains present and the explicit
+// BTDF path receives the complementary transmission weight. Interpolating the
+// two canonical evaluators also preserves their exact opaque and fully
+// transmissive endpoint behavior.
+fn evalGGXReflectionWithTransmissionMix(
+  albedo: vec3f,
+  rough: f32,
+  metal: f32,
+  specularColor: vec3f,
+  specularIntensity: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  iridescence: vec4f,
+  clearcoat: f32,
+  clearcoatRoughness: f32,
+  sheen: f32,
+  sheenRoughness: f32,
+  sheenColor: vec3f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  n: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  transmission: f32,
+) -> vec3f {
+  let opaque = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
+    albedo, rough, metal, specularColor, specularIntensity,
+    anisotropy, anisotropyRotation, iridescence,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    anisotropyTangent, anisotropyBitangent,
+    n, clearcoatNormal, wo, wi,
+  );
+  let reflection = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
+    albedo, rough, metal, specularColor, specularIntensity,
+    anisotropy, anisotropyRotation, iridescence,
+    clearcoat, clearcoatRoughness, sheen, sheenRoughness, sheenColor,
+    anisotropyTangent, anisotropyBitangent,
+    n, clearcoatNormal, wo, wi,
+  );
+  return mix(opaque, reflection, clamp(transmission, 0.0, 1.0));
+}
+
 // ── B16 (road-to-100) — GGX VNDF importance sampler (Heitz 2018) ─────────────
 //
 // Samples a glossy reflection direction wi ∝ the GGX visible-normal distribution
@@ -706,6 +751,42 @@ fn ggxSampleVndfTangent(wo: vec3f, alpha: f32, rng: ptr<function, u32>) -> vec3f
   t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
   let Nh = t1 * T1 + t2 * T2 + sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
   return safe_normalize(vec3f(alpha * Nh.x, alpha * Nh.y, max(0.0, Nh.z)));
+}
+
+// Heitz 2018 Algorithm 1 with independent tangent/bitangent slopes. The
+// stretch/sample/unstretch construction samples the anisotropic visible-normal
+// distribution directly; no isotropic proposal correction is required.
+fn ggxSampleVndfTangentAnisotropic(
+  wo: vec3f,
+  alphaX: f32,
+  alphaY: f32,
+  rng: ptr<function, u32>,
+) -> vec3f {
+  if (alphaX <= 0.0 || alphaY <= 0.0) {
+    return vec3f(0.0, 0.0, 1.0);
+  }
+  let Vh = safe_normalize(vec3f(alphaX * wo.x, alphaY * wo.y, wo.z));
+  let lensq = Vh.x * Vh.x + Vh.y * Vh.y;
+  var T1 = vec3f(1.0, 0.0, 0.0);
+  if (lensq > 0.0) {
+    T1 = vec3f(-Vh.y, Vh.x, 0.0) * inverseSqrt(lensq);
+  }
+  let T2 = cross(Vh, T1);
+  let u1 = rand_f32(rng);
+  let u2 = rand_f32(rng);
+  let r = sqrt(u1);
+  let phi = 2.0 * PI * u2;
+  let t1 = r * cos(phi);
+  var t2 = r * sin(phi);
+  let s = 0.5 * (1.0 + Vh.z);
+  t2 = (1.0 - s) * sqrt(max(0.0, 1.0 - t1 * t1)) + s * t2;
+  let Nh = t1 * T1 + t2 * T2 +
+    sqrt(max(0.0, 1.0 - t1 * t1 - t2 * t2)) * Vh;
+  return safe_normalize(vec3f(
+    alphaX * Nh.x,
+    alphaY * Nh.y,
+    max(0.0, Nh.z),
+  ));
 }
 
 // Sample a world-space glossy reflection direction wi via VNDF. n = surface
@@ -819,6 +900,210 @@ fn ggxSampleDielectricTransmission(
     (etap * etap);
   out.direction = wi;
   out.weight = ft * nDotWiAbs / pdf;
+  out.pdf = pdf;
+  out.transmission = interfaceT;
+  out.microfacetCos = woDotM;
+  out.valid = 1u;
+  return out;
+}
+
+// Positive-roughness anisotropic transmission uses authored perceptual
+// roughness exactly as the existing isotropic BTDF does. A tiny slope floor is
+// applied only to the anisotropic path to keep alphaX*alphaY and the VNDF
+// unstretch finite for positive sub-f32 roughness; roughness==0 remains the
+// exact Snell event in ggxSampleDielectricTransmission.
+fn ggxDielectricTransmissionAxes(rough: f32, anisotropy: f32) -> vec2f {
+  let authoredRoughness = clamp(rough, 0.0, 1.0);
+  let alpha = max(authoredRoughness * authoredRoughness, 1e-6);
+  let aspect = sqrt(1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0));
+  return vec2f(alpha / aspect, alpha * aspect);
+}
+
+fn ggxDielectricTransmissionHalfVector(
+  n: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  etap: f32,
+) -> vec3f {
+  var wm = safe_normalize(wo + wi * etap);
+  if (dot(wm, n) < 0.0) { wm = -wm; }
+  return wm;
+}
+
+// Walter 2007 rough-dielectric BTDF density in solid-angle measure, using the
+// Heitz visible-normal proposal. The eta-dependent half-vector Jacobian is
+// |wi·wm| / (wi·wm + wo·wm/etap)^2, matching the sampled refraction map.
+fn ggxDielectricTransmissionPdfAnisotropyFrame(
+  n: vec3f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  rough: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  etaIncident: f32,
+  etaTarget: f32,
+) -> f32 {
+  let nDotWo = dot(n, wo);
+  let nDotWiAbs = abs(dot(n, wi));
+  if (
+    rough <= 0.0 || nDotWo <= 0.0 || dot(n, wi) >= 0.0 ||
+    nDotWiAbs <= 0.0 || etaIncident <= 0.0 || etaTarget <= 0.0
+  ) { return 0.0; }
+
+  let etap = etaTarget / etaIncident;
+  let wm = ggxDielectricTransmissionHalfVector(n, wo, wi, etap);
+  let woDotM = dot(wo, wm);
+  let wiDotM = dot(wi, wm);
+  let denom = wiDotM + woDotM / etap;
+  if (woDotM <= 0.0 || wiDotM >= 0.0 || abs(denom) <= 1e-8) {
+    return 0.0;
+  }
+
+  let frame = anisotropyTangentFrameFromBasis(
+    n, anisotropyTangent, anisotropyBitangent, anisotropyRotation,
+  );
+  let axes = ggxDielectricTransmissionAxes(rough, anisotropy);
+  let D = distributionGGXAnisotropic(
+    n, frame[0], frame[1], wm, axes.x, axes.y,
+  );
+  let G1o = geometrySmithGGXAnisotropicG1(
+    n, frame[0], frame[1], wo, axes.x, axes.y,
+  );
+  let microfacetPdf = D * G1o * abs(woDotM) / nDotWo;
+  let dWmDWi = abs(wiDotM) / (denom * denom);
+  let pdf = microfacetPdf * dWmDWi;
+  return select(0.0, pdf, pdf > 0.0 && pdf < 1e30);
+}
+
+// Walter 2007 radiance-mode rough BTDF value (before |n·wi|), evaluated in
+// the exact same anisotropic frame and with the same eta convention as the
+// density above. Keeping evaluation separate makes sample/eval/pdf parity
+// explicit for later MIS consumers.
+fn evalGgxDielectricTransmissionAnisotropyFrame(
+  n: vec3f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  rough: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  etaIncident: f32,
+  etaTarget: f32,
+) -> f32 {
+  let nDotWo = dot(n, wo);
+  let nDotWiAbs = abs(dot(n, wi));
+  if (
+    rough <= 0.0 || nDotWo <= 0.0 || dot(n, wi) >= 0.0 ||
+    nDotWiAbs <= 0.0 || etaIncident <= 0.0 || etaTarget <= 0.0
+  ) { return 0.0; }
+
+  let etap = etaTarget / etaIncident;
+  let wm = ggxDielectricTransmissionHalfVector(n, wo, wi, etap);
+  let woDotM = dot(wo, wm);
+  let wiDotM = dot(wi, wm);
+  let denom = wiDotM + woDotM / etap;
+  if (woDotM <= 0.0 || wiDotM >= 0.0 || abs(denom) <= 1e-8) {
+    return 0.0;
+  }
+
+  let frame = anisotropyTangentFrameFromBasis(
+    n, anisotropyTangent, anisotropyBitangent, anisotropyRotation,
+  );
+  let axes = ggxDielectricTransmissionAxes(rough, anisotropy);
+  let D = distributionGGXAnisotropic(
+    n, frame[0], frame[1], wm, axes.x, axes.y,
+  );
+  let G = geometrySmithGGXAnisotropicG1(
+    n, frame[0], frame[1], wo, axes.x, axes.y,
+  ) * geometrySmithGGXAnisotropicG1(
+    n, frame[0], frame[1], -wi, axes.x, axes.y,
+  );
+  let interfaceT = 1.0 - dielectricFresnelExact(
+    woDotM, etaIncident, etaTarget,
+  );
+  let ft = interfaceT * D * G *
+    abs(wiDotM * woDotM / (nDotWiAbs * nDotWo * denom * denom)) /
+    (etap * etap);
+  return select(0.0, ft, ft > 0.0 && ft < 1e30);
+}
+
+// Canonical authored-frame anisotropic rough-dielectric sampler. The exact
+// original helper owns both anisotropy==0 and roughness==0 so those endpoints
+// remain byte-for-byte on the established isotropic/delta implementation.
+fn ggxSampleDielectricTransmissionAnisotropyFrame(
+  n: vec3f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
+  wo: vec3f,
+  rough: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  etaIncident: f32,
+  etaTarget: f32,
+  rng: ptr<function, u32>,
+) -> GgxDielectricTransmissionSample {
+  let aniso = clamp(anisotropy, 0.0, 1.0);
+  if (aniso <= 0.0 || rough <= 0.0) {
+    return ggxSampleDielectricTransmission(
+      n, wo, rough, etaIncident, etaTarget, rng,
+    );
+  }
+
+  var out: GgxDielectricTransmissionSample;
+  out.direction = vec3f(0.0);
+  out.weight = 0.0;
+  out.pdf = 0.0;
+  out.transmission = 0.0;
+  out.microfacetCos = 0.0;
+  out.valid = 0u;
+  let nDotWo = dot(n, wo);
+  if (nDotWo <= 0.0 || etaIncident <= 0.0 || etaTarget <= 0.0) {
+    return out;
+  }
+
+  let frame = anisotropyTangentFrameFromBasis(
+    n, anisotropyTangent, anisotropyBitangent, anisotropyRotation,
+  );
+  let axes = ggxDielectricTransmissionAxes(rough, aniso);
+  let woT = vec3f(
+    dot(wo, frame[0]), dot(wo, frame[1]), dot(wo, n),
+  );
+  let wmT = ggxSampleVndfTangentAnisotropic(
+    woT, axes.x, axes.y, rng,
+  );
+  let wm = safe_normalize(
+    wmT.x * frame[0] + wmT.y * frame[1] + wmT.z * n,
+  );
+  let woDotM = dot(wo, wm);
+  if (woDotM <= 0.0) { return out; }
+  let wiRaw = refract(-wo, wm, etaIncident / etaTarget);
+  if (dot(wiRaw, wiRaw) <= 0.0) { return out; }
+  let wi = safe_normalize(wiRaw);
+  if (dot(n, wi) >= 0.0) { return out; }
+
+  let pdf = ggxDielectricTransmissionPdfAnisotropyFrame(
+    n, anisotropyTangent, anisotropyBitangent,
+    wo, wi, rough, aniso, anisotropyRotation,
+    etaIncident, etaTarget,
+  );
+  let ft = evalGgxDielectricTransmissionAnisotropyFrame(
+    n, anisotropyTangent, anisotropyBitangent,
+    wo, wi, rough, aniso, anisotropyRotation,
+    etaIncident, etaTarget,
+  );
+  let nDotWiAbs = abs(dot(n, wi));
+  let interfaceT = 1.0 - dielectricFresnelExact(
+    woDotM, etaIncident, etaTarget,
+  );
+  if (pdf <= 0.0 || ft <= 0.0 || interfaceT <= 0.0) { return out; }
+  let weight = ft * nDotWiAbs / pdf;
+  if (!(weight > 0.0) || weight >= 1e30) { return out; }
+
+  out.direction = wi;
+  out.weight = weight;
   out.pdf = pdf;
   out.transmission = interfaceT;
   out.microfacetCos = woDotM;

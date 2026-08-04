@@ -170,18 +170,22 @@ function finiteVector(
   expectedLength: number,
   label: string,
 ): Float32Array {
-  if (value.length !== expectedLength) {
+  const sourceLength = value.length;
+  if (sourceLength !== expectedLength) {
     throw new RangeError(
       `ProgressiveHandoffCoordinator.frame: ${label} must contain exactly ${expectedLength} values.`,
     );
   }
-  const copy = Float32Array.from(value);
-  for (let i = 0; i < copy.length; i += 1) {
-    if (!Number.isFinite(copy[i])) {
+  const copy = new Float32Array(expectedLength);
+  for (let i = 0; i < expectedLength; i += 1) {
+    const sourceValue = Number(value[i]);
+    const packed = Math.fround(sourceValue);
+    if (!Number.isFinite(sourceValue) || !Number.isFinite(packed)) {
       throw new TypeError(
         `ProgressiveHandoffCoordinator.frame: ${label}[${i}] must be finite.`,
       );
     }
+    copy[i] = packed;
   }
   return copy;
 }
@@ -194,7 +198,7 @@ function snapshot(input: FrameInput): CameraSnapshot {
   return {
     view: finiteVector(input.viewMatrix, 16, 'viewMatrix'),
     proj: finiteVector(input.projMatrix, 16, 'projMatrix'),
-    pos: Float32Array.from(cameraPosition),
+    pos: finiteVector(cameraPosition, 3, 'cameraPosition'),
   };
 }
 

@@ -530,7 +530,7 @@ describe('Structural symmetric-medium composition with BDPT', () => {
   });
 
   it('does not reinterpret ignored unlit transmission fields as a medium boundary', () => {
-    const boundaryGuard = '!mat.isUnlit && mat.isTranslucent && transmission > 0.0';
+    const boundaryGuard = 'let surfaceCrossesMedium = !mat.isUnlit && mat.isBulkMedium;';
 
     expect(
       sssOn.match(new RegExp(boundaryGuard.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')),
@@ -550,7 +550,7 @@ describe('Structural symmetric-medium composition with BDPT', () => {
   });
 
   it('BDPT-on kernel uses scattering transport on both subpaths', () => {
-    expect(bdptWithSss).toContain('eyeMedium.sigmaS * transmittance');
+    expect(bdptWithSss).toContain('eyeMedium.sigmaS * trueTransmittance /');
     expect(bdptWithSss).toContain('layer.sigmaS * transmittance');
     expect(bdptWithSss).not.toContain('exp(-sigmaT * materialAttenuationDistance(hit.dist, mat))');
   });
@@ -565,11 +565,11 @@ describe('Structural symmetric-medium composition with BDPT', () => {
   });
 
   it('no-collision branch divides out the hero-channel survival probability (V23 double-count fix)', () => {
-    // The surviving throughput must be scaled by exp(-(σ_t − heroSigmaT)·d), NOT
-    // the full exp(-σ_t·d) (which would double-count the transmittance already
-    // realized by the free-flight survival probability).
+    // The surviving throughput divides the true channel transmittance by the
+    // exact represented survival probability, avoiding a second Beer factor.
     expect(sssOn).toContain('let attenuationDist = min(hit.dist, eyeMedium.remainingDistance)');
-    expect(sssOn).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist)');
+    expect(sssOn).toContain('let trueTransmittance = materialBeer(walkSigmaT, attenuationDist);');
+    expect(sssOn).toContain('throughput = throughput * trueTransmittance / survivalPdf;');
     expect(sssOn).not.toContain('throughput = throughput * exp(-walkSigmaT * hit.dist)');
   });
 

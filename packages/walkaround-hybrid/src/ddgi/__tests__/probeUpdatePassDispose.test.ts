@@ -1,9 +1,9 @@
 /**
  * Bug characterization tests for ProbeUpdatePass resource management.
  *
- * (a) BUG 1 — dispose() resource leak: all 22 GPU buffers/textures allocated
- *     in init() (including the 5 TLAS buffers + traceParamsBuf previously
- *     omitted) must be destroyed on dispose().
+ * (a) BUG 1 — dispose() resource leak: all 22 GPU buffers and every owned
+ *     texture allocated in init() (including the optical-identity cohort,
+ *     5 TLAS buffers, and traceParamsBuf) must be destroyed on dispose().
  *
  * (b) BUG 2 — init() re-entry on failed GPU init: if navigator.gpu.requestAdapter
  *     returns null (hard WebGPU failure), _initAttempted must prevent re-issuing
@@ -61,7 +61,10 @@ function deferred<T>(): {
  */
 function makeMockDevice(
   tracking: MockDeviceTracking,
-  options: { readonly failBufferAt?: number } = {},
+  options: {
+    readonly failBufferAt?: number;
+    readonly maxUniformBufferBindingSize?: number;
+  } = {},
 ): GPUDevice {
   let bufferCreateCount = 0;
   let failureAvailable = true;
@@ -69,6 +72,9 @@ function makeMockDevice(
     limits: {
       maxTextureDimension2D: 8192,
       maxTextureArrayLayers: 256,
+      ...(options.maxUniformBufferBindingSize == null
+        ? {}
+        : { maxUniformBufferBindingSize: options.maxUniformBufferBindingSize }),
     },
     createBuffer: vi.fn((desc: GPUBufferDescriptor) => {
       bufferCreateCount++;
@@ -130,6 +136,7 @@ import { ProbeGrid } from '../probeGrid.js';
 import { SceneBvh } from '@vitrum/shared-bvh';
 import { detectGpu } from '@vitrum/core';
 import { EMITTER_TRI_STRIDE_BYTES } from '../../restir/emitterList.js';
+import { DDGI_MATERIAL_STRIDE_BYTES } from '../probeUpdateMaterials.js';
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
@@ -160,12 +167,36 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
     vi.restoreAllMocks();
   });
 
+  it('rejects an oversized material uniform before shader compilation or allocation', async () => {
+    const maxMaterials = 2;
+    const requiredBytes = maxMaterials * DDGI_MATERIAL_STRIDE_BYTES;
+    const constrainedDevice = makeMockDevice(tracking, {
+      maxUniformBufferBindingSize: requiredBytes - 1,
+    });
+    const pass = new ProbeUpdatePass(new SceneBvh(), new ProbeGrid(), { maxMaterials });
+
+    await expect(pass.init({
+      backend: { device: constrainedDevice, isWebGPUBackend: true },
+    })).rejects.toThrow(
+      `[DDGI] material uniform buffer requires ${requiredBytes} bytes ` +
+      `(${maxMaterials} materials × ${DDGI_MATERIAL_STRIDE_BYTES} bytes), ` +
+      `exceeding device.limits.maxUniformBufferBindingSize (${requiredBytes - 1} bytes).`,
+    );
+
+    expect(constrainedDevice.createShaderModule).not.toHaveBeenCalled();
+    expect(constrainedDevice.createBuffer).not.toHaveBeenCalled();
+    expect(constrainedDevice.createTexture).not.toHaveBeenCalled();
+    expect(tracking.createdBuffers).toHaveLength(0);
+    expect(tracking.createdTextures).toHaveLength(0);
+    expect(constrainedDevice.destroy).not.toHaveBeenCalled();
+  });
+
   /**
    * Calls init() with a renderer stub that supplies the mock device, then
    * calls dispose().  Asserts that every buffer allocated by init() is
-   * destroyed — including the 5 TLAS buffers (tlasNodesBuf, tlasInstIdxBuf,
-   * tlasBlasRootsBuf, tlasW2lBuf, tlasL2wBuf) and traceParamsBuf that were
-   * previously missing from dispose().
+   * destroyed — including the optical-identity cohort, the 5 TLAS buffers
+   * (tlasNodesBuf, tlasInstIdxBuf, tlasBlasRootsBuf, tlasW2lBuf, tlasL2wBuf),
+   * and traceParamsBuf.
    */
   it('destroys every buffer/texture allocated during init() — including the 6 previously-leaked resources', async () => {
     const bvh = new SceneBvh();
@@ -180,14 +211,16 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
     expect(ok).toBe(true);
 
     // Buffers known to be allocated by init(): bvhBuf, posBuf, idxBuf, normBuf,
-    // matIdBuf, tlasNodesBuf, tlasInstIdxBuf, tlasBlasRootsBuf, tlasW2lBuf,
-    // tlasL2wBuf, traceParamsBuf, materialsBuf, lightsBuf, gridParamsBuf,
+    // matIdBuf, opticalTriangleIdentityBuf,
+    // opticalInstanceBoundaryIdBasePlusOneBuf, tlasNodesBuf, tlasInstIdxBuf,
+    // tlasBlasRootsBuf, tlasW2lBuf, tlasL2wBuf, traceParamsBuf, materialsBuf,
+    // lightsBuf, gridParamsBuf,
     // frameParamsBuf, blendParamsBuf, borderVisUboBuf, rayResultsBuf,
     // activeProbesBuf, emitterTrisBuf = 20 buffers (borderIrrUboBuf removed
     // with the SH irradiance migration — no irradiance border pass).
     // Wave 4: 1 extra texture (env-map placeholder) is now also allocated.
     const buffersAfterInit = tracking.createdBuffers.length;
-    expect(buffersAfterInit).toBeGreaterThanOrEqual(19); // at least 19 buffers from init
+    expect(buffersAfterInit).toBe(22);
     // Wave 4 — placeholder env texture (rgba16float, 1×1) is created in init().
     expect(tracking.createdTextures.length).toBeGreaterThanOrEqual(1);
 
@@ -247,7 +280,6 @@ describe('ProbeUpdatePass — dispose() destroys all allocated GPU resources', (
       envMapView: GPUTextureView;
       envMapOwnedByPass: boolean;
       envMapPlaceholderTex: GPUTexture | null;
-      linearSampler: GPUSampler;
     }};
     const gpu = internal._gpu;
     const initialPlaceholder = gpu.envMapPlaceholderTex;

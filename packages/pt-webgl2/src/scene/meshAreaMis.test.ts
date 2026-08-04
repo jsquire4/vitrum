@@ -193,6 +193,9 @@ describe('B4 mesh-area NEE/forward MIS consistency', () => {
           0, 255, 0, 255,
         ]),
       },
+      magFilter: 'nearest' as const,
+      minFilter: 'nearest' as const,
+      mipFilter: 'none' as const,
     };
     const out = packMeshAreaLights(
       sceneWithPrimitive(panelPrimitive(material({

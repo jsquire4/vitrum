@@ -159,6 +159,16 @@ fn sceneBvhNormalCount() -> u32 {
   return bvhSceneGeometryArena[${countWord('bvhNormals')}u];
 }
 
+fn sceneLoadOpticalTriangleIdentity(index: u32) -> vec2u {
+  let word =
+    bvhSceneGeometryArena[${offsetWord('opticalTriangleIdentity')}u] + index * 2u;
+  return vec2u(sceneGeometryU32(word), sceneGeometryU32(word + 1u));
+}
+
+fn sceneOpticalTriangleIdentityCount() -> u32 {
+  return bvhSceneGeometryArena[${countWord('opticalTriangleIdentity')}u];
+}
+
 fn tlasLoadNode(index: u32) -> BVHNode {
   let word = sceneTlasArena[${offsetWord('tlasNodes')}u] + index * 8u;
   var node: BVHNode;
@@ -231,6 +241,18 @@ fn sceneLoadMneeFacetDomainAlias(index: u32) -> vec4u {
   let word =
     sceneTlasArena[${offsetWord('mneeFacetDomains')}u] + index * 8u + 4u;
   return sceneTlasVec4u(word);
+}
+
+fn sceneLoadOpticalInstanceBoundaryIdBasePlusOne(index: u32) -> u32 {
+  return sceneTlasU32(
+    sceneTlasArena[${offsetWord('opticalInstanceBoundaryIdBasePlusOne')}u] + index,
+  );
+}
+
+fn sceneOpticalInstanceBoundaryIdBaseCount() -> u32 {
+  return sceneTlasArena[
+    ${countWord('opticalInstanceBoundaryIdBasePlusOne')}u
+  ];
 }
 
 fn sceneEmitterCount() -> u32 {

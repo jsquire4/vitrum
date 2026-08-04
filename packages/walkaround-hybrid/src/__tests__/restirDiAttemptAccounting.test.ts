@@ -138,7 +138,7 @@ describe('ReSTIR-DI attempted-candidate accounting', () => {
     const envLoop = between(
       RIS_WGSL,
       'for (var ei = 0u; ei < M_ENV; ei++) {',
-      '// --- Visibility test on chosen candidate ---',
+      '// Persist attempted multiplicities before finalization.',
     );
 
     const areaCountAt = lightLoop.indexOf('mAreaSupport = mAreaSupport + 1u;');
@@ -258,16 +258,19 @@ describe('ReSTIR-DI attempted-candidate accounting', () => {
 
   it('pins generalized source scaling and null/occluded M persistence', () => {
     expect(RIS_WGSL).toContain(
-      'let areaRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledAreaM));',
+      'let logAreaRisScale =',
     );
     expect(RIS_WGSL).toContain(
-      'let envRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledEnvM));',
+      'let logEnvRisScale =',
+    );
+    expect(RIS_WGSL).toContain(
+      'log2(f32(scheduledTotalM)) - log2(f32(max(1u, scheduledAreaM)))',
     );
     expect(RIS_WGSL).toContain('r.areaM = mAreaSupport;');
     expect(RIS_WGSL).toContain('r.envM = mEnvSupport;');
     expect(RIS_WGSL).toContain('r.M = mAreaSupport + mEnvSupport;');
     expect(RIS_WGSL).toMatch(
-      /r\.M = mAreaSupport \+ mEnvSupport;[\s\S]*\/\/ --- Visibility test/,
+      /r\.M = mAreaSupport \+ mEnvSupport;[\s\S]*finaliseReservoirDIFromNativeWrs\(&r, wrs, pHatZ\);/,
     );
   });
 });

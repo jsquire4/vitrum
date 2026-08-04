@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import type { Scene } from '@vitrum/core';
+import { halfToFloat } from '@vitrum/shared-bvh';
 import { createPTEngine_WebGPU } from '../index.js';
 import {
   createPtWebgpuTextureSource,
   isPtWebgpuTextureSource,
+  type PtWebgpuTextureCpuMirrorInput,
+  type PtWebgpuTextureSourceOptions,
 } from '../materialTextureSource.js';
 import { packEmitterArrays } from '../scene/emitterPacking.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
@@ -157,8 +161,17 @@ describe('PtWebgpuTextureSource', () => {
     expect(Object.isFrozen(first)).toBe(true);
     expect(second.sourceId).not.toBe(first.sourceId);
     expect(isPtWebgpuTextureSource(first)).toBe(true);
-    expect(isPtWebgpuTextureSource({ ...first })).toBe(true);
+    expect(isPtWebgpuTextureSource({ ...first })).toBe(false);
     expect(isPtWebgpuTextureSource({ kind: first.kind })).toBe(false);
+    const descriptorReads = vi.fn();
+    const forgedProxy = new Proxy(first, {
+      get(target, property, receiver) {
+        descriptorReads(property);
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    expect(isPtWebgpuTextureSource(forgedProxy)).toBe(false);
+    expect(descriptorReads).not.toHaveBeenCalled();
   });
 
   it('rejects ambiguous format, transfer, dimension, sample, and subresource declarations', () => {
@@ -226,6 +239,109 @@ describe('PtWebgpuTextureSource', () => {
     // the exact mapped texel at the sampled barycentric point; no quadrature
     // average is baked into the proposal record.
     expect(Array.from(packed.meshAreaLightsData.slice(12, 15))).toEqual([2, 2, 2]);
+  });
+
+  it('rejects SharedArrayBuffer-backed Uint8, Uint16, and Float32 CPU mirrors', () => {
+    installGpuConstStubs();
+    const device = {} as GPUDevice;
+    const cases = [
+      {
+        format: 'r8unorm' as GPUTextureFormat,
+        dataType: 'uint8' as const,
+        data: new Uint8Array(new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT)),
+      },
+      {
+        format: 'r16uint' as GPUTextureFormat,
+        dataType: 'uint16' as const,
+        data: new Uint16Array(new SharedArrayBuffer(Uint16Array.BYTES_PER_ELEMENT)),
+      },
+      {
+        format: 'r32float' as GPUTextureFormat,
+        dataType: 'float32' as const,
+        data: new Float32Array(new SharedArrayBuffer(Float32Array.BYTES_PER_ELEMENT)),
+      },
+    ];
+
+    for (const entry of cases) {
+      expect(() => createPtWebgpuTextureSource(
+        device,
+        makeTexture({ width: 1, height: 1, format: entry.format }),
+        {
+          format: entry.format,
+          colorSpace: 'linear',
+          cpuMirror: {
+            width: 1,
+            height: 1,
+            channels: 1,
+            dataType: entry.dataType,
+            colorSpace: 'linear',
+            data: entry.data,
+          },
+        },
+      )).toThrow(/SharedArrayBuffer-backed cpuMirror\.data/);
+    }
+  });
+
+  it('deep-copies ordinary ArrayBuffer-backed Uint8, Uint16, and Float32 mirrors', () => {
+    installGpuConstStubs();
+    const device = {} as GPUDevice;
+    const cases = [
+      {
+        format: 'r8unorm' as GPUTextureFormat,
+        dataType: 'uint8' as const,
+        data: new Uint8Array([17]),
+      },
+      {
+        format: 'r16uint' as GPUTextureFormat,
+        dataType: 'uint16' as const,
+        data: new Uint16Array([1025]),
+      },
+      {
+        format: 'r32float' as GPUTextureFormat,
+        dataType: 'float32' as const,
+        data: new Float32Array([0.25]),
+      },
+    ];
+
+    for (const entry of cases) {
+      const expected = entry.data[0]!;
+      const source = createPtWebgpuTextureSource(
+        device,
+        makeTexture({ width: 1, height: 1, format: entry.format }),
+        {
+          format: entry.format,
+          colorSpace: 'linear',
+          cpuMirror: {
+            width: 1,
+            height: 1,
+            channels: 1,
+            dataType: entry.dataType,
+            colorSpace: 'linear',
+            data: entry.data,
+          },
+        },
+      );
+      entry.data[0] = 0;
+      expect(source.cpuMirror!.data[0]).toBe(expected);
+    }
+  });
+
+  it('keeps the SAB rejection before the staged GPU cpuMirror copy allocation', () => {
+    const moduleSource = readFileSync(
+      new URL('../scene/materialTextureArray.ts', import.meta.url),
+      'utf8',
+    );
+    const start = moduleSource.indexOf('function snapshotGpuCpuMirror(');
+    const end = moduleSource.indexOf('function snapshotGpuTextureSource(', start);
+    const snapshotter = moduleSource.slice(start, end);
+    const rejectAt = snapshotter.indexOf(
+      "assertUnsharedArrayBufferView(data, 'GPU source cpuMirror data');",
+    );
+    const allocateAt = snapshotter.indexOf('const snapshot = dataType');
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    expect(rejectAt).toBeGreaterThanOrEqual(0);
+    expect(rejectAt).toBeLessThan(allocateAt);
   });
 
   it('keeps explicit mapped mesh emission identical between camera hits and NEE', () => {
@@ -352,6 +468,137 @@ describe('PtWebgpuTextureSource', () => {
     })).toThrow(/cpuMirror\.channels must match rgba8unorm \(4\)/);
   });
 
+  it('rejects float32 CPU-mirror values that overflow or underflow during snapshotting', () => {
+    installGpuConstStubs();
+    const device = {} as GPUDevice;
+    const texture = makeTexture({ width: 1, height: 1, format: 'rgba32float' });
+    const createWithData = (data: readonly number[]) => createPtWebgpuTextureSource(
+      device,
+      texture,
+      {
+        format: 'rgba32float',
+        colorSpace: 'linear',
+        cpuMirror: {
+          width: 1,
+          height: 1,
+          channels: 4,
+          dataType: 'float32',
+          colorSpace: 'linear',
+          data,
+        },
+      },
+    );
+
+    expect(() => createWithData([Number.MAX_VALUE, 0, 0, 1])).toThrow(
+      /representable as finite float32/,
+    );
+    expect(() => createWithData([Number.MIN_VALUE, 0, 0, 1])).toThrow(
+      /must not underflow to zero as float32/,
+    );
+  });
+
+  it('reads accessor-backed CPU mirror length and texels exactly once into the snapshot', () => {
+    installGpuConstStubs();
+    const device = {} as GPUDevice;
+    const expected = [0.25, 0.5, 1, 1] as const;
+    let lengthReads = 0;
+    const elementReads = [0, 0, 0, 0];
+    const data = new Proxy({} as ArrayLike<number>, {
+      get(_target, property) {
+        if (property === 'length') {
+          lengthReads += 1;
+          return 4;
+        }
+        if (typeof property === 'string' && /^[0-3]$/.test(property)) {
+          const index = Number(property);
+          elementReads[index] = (elementReads[index] ?? 0) + 1;
+          return elementReads[index] === 1
+            ? expected[index]
+            : Number.POSITIVE_INFINITY;
+        }
+        return undefined;
+      },
+    });
+
+    const source = createPtWebgpuTextureSource(
+      device,
+      makeTexture({ width: 1, height: 1, format: 'rgba32float' }),
+      {
+        format: 'rgba32float',
+        colorSpace: 'linear',
+        cpuMirror: {
+          width: 1,
+          height: 1,
+          channels: 4,
+          dataType: 'float32',
+          colorSpace: 'linear',
+          data,
+        },
+      },
+    );
+
+    expect(lengthReads).toBe(1);
+    expect(elementReads).toEqual([1, 1, 1, 1]);
+    expect(Array.from(source.cpuMirror!.data)).toEqual(expected);
+  });
+
+  it('snapshots source options and CPU-mirror descriptor fields exactly once', () => {
+    installGpuConstStubs();
+    const device = {} as GPUDevice;
+    const descriptorReads = new Map<PropertyKey, number>();
+    const mirrorValues: Record<PropertyKey, unknown> = {
+      width: 1,
+      height: 1,
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: 'linear',
+      data: new Uint8Array([1, 2, 3, 255]),
+    };
+    const mirror = new Proxy({} as PtWebgpuTextureCpuMirrorInput, {
+      get(_target, property) {
+        descriptorReads.set(property, (descriptorReads.get(property) ?? 0) + 1);
+        return mirrorValues[property];
+      },
+    });
+    const optionReads = new Map<PropertyKey, number>();
+    const optionValues: Record<PropertyKey, unknown> = {
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      baseMipLevel: 0,
+      arrayLayer: 0,
+      cpuMirror: mirror,
+    };
+    const options = new Proxy({} as PtWebgpuTextureSourceOptions, {
+      get(_target, property) {
+        optionReads.set(property, (optionReads.get(property) ?? 0) + 1);
+        return optionValues[property];
+      },
+    });
+
+    const source = createPtWebgpuTextureSource(
+      device,
+      makeTexture({ width: 1, height: 1, format: 'rgba8unorm' }),
+      options,
+    );
+
+    expect(Object.fromEntries(optionReads)).toEqual({
+      format: 1,
+      colorSpace: 1,
+      baseMipLevel: 1,
+      arrayLayer: 1,
+      cpuMirror: 1,
+    });
+    expect(Object.fromEntries(descriptorReads)).toEqual({
+      width: 1,
+      height: 1,
+      channels: 1,
+      dataType: 1,
+      colorSpace: 1,
+      data: 1,
+    });
+    expect(Array.from(source.cpuMirror!.data)).toEqual([1, 2, 3, 255]);
+  });
+
   it('rejects a CPU mirror snapshot above its explicit budget before reading data', () => {
     installGpuConstStubs();
     const device = {} as GPUDevice;
@@ -458,7 +705,7 @@ describe('PtWebgpuTextureSource', () => {
     expect(sourceTexture.destroy).not.toHaveBeenCalled();
     expect(createRenderPipeline).toHaveBeenCalledWith(expect.objectContaining({
       fragment: expect.objectContaining({
-        constants: { decodeSrgb: 1, sourceChannels: 4 },
+        constants: { decodeSignedNormal: 0, decodeSrgb: 1, sourceChannels: 4 },
       }),
     }));
     expect(device.createShaderModule).toHaveBeenCalledWith(expect.objectContaining({
@@ -523,7 +770,7 @@ describe('PtWebgpuTextureSource', () => {
     expect(createRenderPipeline).not.toHaveBeenCalled();
   });
 
-  it('uploads two-channel emissive cpuMirror snapshots as RG0 with opaque alpha', () => {
+  it('uploads two-channel radiance cpuMirror snapshots as RG0 with opaque alpha', () => {
     installGpuConstStubs();
     const { device } = makeUploadDevice();
     const source = createPtWebgpuTextureSource(
@@ -551,13 +798,13 @@ describe('PtWebgpuTextureSource', () => {
         layer: 0,
         uses: [{
           materialIndex: 0,
-          field: 'emissiveMap',
-          colorSpace: 'srgb',
+          field: 'lightMap',
+          colorSpace: 'linear',
           texCoord: 0,
         }],
       }],
       new Set(),
-      { emissiveMap: [[[1, 1, 1]]] },
+      { lightMap: [[[1, 1, 1]]] },
     );
 
     const write = vi.mocked(device.queue.writeTexture).mock.calls[0] as [
@@ -567,6 +814,48 @@ describe('PtWebgpuTextureSource', () => {
       unknown,
     ];
     expect(Array.from(write[1])).toEqual([0x3400, 0x3800, 0, 0x3c00]);
+  });
+
+  it('keeps a declared-linear GPU light-map source and its exact cpuMirror linear', () => {
+    installGpuConstStubs();
+    const { device, createRenderPipeline } = makeUploadDevice();
+    const sourceTexture = makeTexture({ width: 1, height: 1, format: 'rgba8unorm' });
+    const source = createPtWebgpuTextureSource(device, sourceTexture, {
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+      cpuMirror: {
+        width: 1,
+        height: 1,
+        channels: 4,
+        dataType: 'uint8',
+        colorSpace: 'linear',
+        data: new Uint8Array([128, 64, 32, 255]),
+      },
+    });
+
+    createMaterialTextureArray(
+      device,
+      [source],
+      'rgba16float',
+      [{
+        layer: 0,
+        uses: [{ materialIndex: 0, field: 'lightMap', colorSpace: 'linear', texCoord: 0 }],
+      }],
+      new Set(),
+      { lightMap: [[[1, 1, 1]]] },
+    );
+
+    const write = vi.mocked(device.queue.writeTexture).mock.calls[0] as [
+      unknown,
+      Uint16Array,
+      unknown,
+      unknown,
+    ];
+    expect(halfToFloat(write[1][0]!)).toBeCloseTo(128 / 255, 3);
+    expect(halfToFloat(write[1][1]!)).toBeCloseTo(64 / 255, 3);
+    expect(halfToFloat(write[1][2]!)).toBeCloseTo(32 / 255, 3);
+    expect(sourceTexture.createView).not.toHaveBeenCalled();
+    expect(createRenderPipeline).not.toHaveBeenCalled();
   });
 
   it('configures opaque one-channel GPU blits to match CPU RRR expansion', () => {
@@ -582,7 +871,7 @@ describe('PtWebgpuTextureSource', () => {
 
     expect(createRenderPipeline).toHaveBeenCalledWith(expect.objectContaining({
       fragment: expect.objectContaining({
-        constants: { decodeSrgb: 0, sourceChannels: 1 },
+        constants: { decodeSignedNormal: 0, decodeSrgb: 0, sourceChannels: 1 },
       }),
     }));
     expect(MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL).toContain(
@@ -590,6 +879,90 @@ describe('PtWebgpuTextureSource', () => {
     );
     expect(MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL).toContain(
       'value = vec4f(value.r, value.g, 0.0, 1.0);',
+    );
+  });
+
+  it('preserves signed-normalized normal maps and rejects them for scalar roles', () => {
+    installGpuConstStubs();
+    const { device, createRenderPipeline } = makeUploadDevice();
+    const source = createPtWebgpuTextureSource(
+      device,
+      makeTexture({ width: 1, height: 1, format: 'rgba8snorm' }),
+      { format: 'rgba8snorm', colorSpace: 'linear' },
+    );
+    const normalInfo = [{
+      layer: 0,
+      uses: [{ materialIndex: 0, field: 'normalMap', colorSpace: 'linear' as const, texCoord: 0 }],
+    }];
+
+    createMaterialTextureArray(device, [source], 'rgba8unorm', normalInfo);
+
+    expect(createRenderPipeline).toHaveBeenCalledWith(expect.objectContaining({
+      fragment: expect.objectContaining({
+        constants: { decodeSignedNormal: 1, decodeSrgb: 0, sourceChannels: 4 },
+      }),
+    }));
+    expect(MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL).toContain(
+      'value = vec4f(value.xyz * 0.5 + vec3f(0.5), value.a);',
+    );
+    expect(() => createMaterialTextureArray(
+      device,
+      [source],
+      'rgba8unorm',
+      [{
+        layer: 0,
+        uses: [{ materialIndex: 0, field: 'transmissionMap', colorSpace: 'linear', texCoord: 0 }],
+      }],
+    )).toThrow(/signed-normalized GPU source 0 is only valid for normal maps/);
+  });
+
+  it('rejects GPU transfer/format policies that erase invalidity or reinterpret data maps', () => {
+    installGpuConstStubs();
+    {
+      const { device, createTexture } = makeUploadDevice();
+      const source = createPtWebgpuTextureSource(
+        device,
+        makeTexture({ width: 1, height: 1, format: 'rgba16float' }),
+        { format: 'rgba16float', colorSpace: 'linear' },
+      );
+      expect(() => createMaterialTextureArray(device, [source], 'rgba8unorm'))
+        .toThrow(/requires an rgba16float destination/);
+      expect(createTexture).not.toHaveBeenCalled();
+    }
+    {
+      const { device, createTexture } = makeUploadDevice();
+      const source = createPtWebgpuTextureSource(
+        device,
+        makeTexture({ width: 1, height: 1, format: 'rgba8snorm' }),
+        { format: 'rgba8snorm', colorSpace: 'srgb' },
+      );
+      expect(() => createMaterialTextureArray(device, [source], 'rgba8unorm', [{
+        layer: 0,
+        uses: [{ materialIndex: 0, field: 'normalMap', colorSpace: 'srgb', texCoord: 0 }],
+      }])).toThrow(/must use linear color space|data-map roles require linear transfer|signed-normalized.*linear/);
+      expect(createTexture).not.toHaveBeenCalled();
+    }
+    {
+      const { device, createTexture } = makeUploadDevice();
+      const source = createPtWebgpuTextureSource(
+        device,
+        makeTexture({ width: 1, height: 1, format: 'rgba8unorm' }),
+        { format: 'rgba8unorm', colorSpace: 'srgb' },
+      );
+      expect(() => createMaterialTextureArray(device, [source], 'rgba8unorm', [{
+        layer: 0,
+        uses: [{ materialIndex: 0, field: 'transmissionMap', colorSpace: 'srgb', texCoord: 0 }],
+      }])).toThrow(/must use linear color space|data-map roles require linear transfer/);
+      expect(createTexture).not.toHaveBeenCalled();
+    }
+  });
+
+  it('carries non-finite GPU texels into the material sampler validity path', () => {
+    expect(MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL).toContain(
+      'fn gpuSourceFiniteVec4(value: vec4f) -> bool',
+    );
+    expect(MATERIAL_TEXTURE_GPU_SOURCE_BLIT_WGSL).toContain(
+      'return vec4f(bitcast<f32>(0x7fc00000u));',
     );
   });
 });

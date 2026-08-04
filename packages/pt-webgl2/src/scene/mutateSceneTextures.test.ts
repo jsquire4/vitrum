@@ -179,7 +179,39 @@ describe('tryFastPathMaterialMutation', () => {
     expect(swap?.deleteOldTextures).toEqual([current.materials]);
   });
 
-  it('re-packs mesh-area light data after an emissive material mutation', () => {
+  it.each([
+    ['nonbulk to bulk', material({ transmission: 1 }), material({ transmission: 1, thickness: 1 })],
+    ['bulk to nonbulk', material({ transmission: 1, thickness: 1 }), material({ transmission: 1 })],
+  ])('defers %s activation changes so material and optical identity publish atomically', (
+    _label,
+    previous,
+    next,
+  ) => {
+    const gl = fakeGl();
+    const current = fakeCurrent({
+      meshLights: null,
+      meshLightCount: 0,
+      totalEmissiveArea: 0,
+      totalEmissivePower: 0,
+    });
+
+    const swap = tryFastPathMaterialMutation(
+      gl,
+      current,
+      fakeMerged([previous]),
+      sceneWithPrimitive(panelPrimitive(next)),
+      'panel',
+      { material: next },
+    );
+
+    expect(swap).toBeNull();
+    expect(gl.createTexture).not.toHaveBeenCalled();
+    expect(gl.texImage2D).not.toHaveBeenCalled();
+    expect(gl.texSubImage2D).not.toHaveBeenCalled();
+    expect(gl.deleteTexture).not.toHaveBeenCalled();
+  });
+
+  it('defers mesh-emitter material mutations to the complete proposal transaction', () => {
     const gl = fakeGl();
     const previous = material({ emissive: [0.1, 0, 0], emissiveIntensity: 1 });
     const next = material({ emissive: [2, 0, 0], emissiveIntensity: 3 });
@@ -193,33 +225,15 @@ describe('tryFastPathMaterialMutation', () => {
       { material: next },
     );
 
-    expect(swap).not.toBeNull();
-    expect(swap?.geoPack?.materials[0]).toEqual(
-      expect.objectContaining({
-        emissive: [2, 0, 0],
-        emissiveIntensity: 3,
-      }),
-    );
-    expect(swap?.textures.meshLightCount).toBe(2);
-    expect(swap?.textures.totalEmissiveArea).toBeCloseTo(1, 6);
-
-    const calls = (gl.texImage2D as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    expect(swap).toBeNull();
+    expect(gl.createTexture).not.toHaveBeenCalled();
+    expect(gl.texImage2D).not.toHaveBeenCalled();
     expect(gl.texSubImage2D).not.toHaveBeenCalled();
-    expect(calls).toHaveLength(2);
-    const meshLightCall = calls.find((call) => {
-      const data = call[8];
-      return data instanceof Float32Array && data[4] === 6;
-    });
-    expect(meshLightCall).toBeDefined();
-    const meshLightData = meshLightCall?.[8] as Float32Array;
-    expect(meshLightData[4]).toBeCloseTo(6, 6);
-    expect(meshLightData[5]).toBeCloseTo(0, 6);
-    expect(meshLightData[6]).toBeCloseTo(0, 6);
   });
 
   it.each([
-    ['overflowing', Number.MAX_VALUE, /envMapIntensity overflows WebGL float32 storage/],
-    ['positive-underflowing', Number.MIN_VALUE, /envMapIntensity underflows WebGL float32 storage/],
+    ['overflowing', Number.MAX_VALUE, /envMapIntensity must be finite and representable as float32/],
+    ['positive-underflowing', Number.MIN_VALUE, /envMapIntensity must not underflow to zero as float32/],
   ])('rejects a %s envMapIntensity before staging a fast mutation texture', (
     _label,
     envMapIntensity,
@@ -250,7 +264,7 @@ describe('tryFastPathMaterialMutation', () => {
     expect(gl.deleteTexture).not.toHaveBeenCalled();
   });
 
-  it('rolls back every staged texture when a later upload reports a GL error', () => {
+  it('does not touch GL error state before deferring a proposal-changing mutation', () => {
     const gl = fakeGl();
     const oldMaterials = { id: 'old-materials' } as unknown as WebGLTexture;
     const oldMeshLights = { id: 'old-mesh-lights' } as unknown as WebGLTexture;
@@ -259,26 +273,20 @@ describe('tryFastPathMaterialMutation', () => {
       meshLights: oldMeshLights,
     });
     const getError = gl.getError as unknown as ReturnType<typeof vi.fn>;
-    getError
-      .mockReturnValueOnce(gl.NO_ERROR)
-      .mockReturnValueOnce(gl.NO_ERROR)
-      .mockReturnValueOnce(gl.NO_ERROR)
-      .mockReturnValueOnce(gl.OUT_OF_MEMORY)
-      .mockReturnValue(gl.NO_ERROR);
+    getError.mockReturnValue(gl.OUT_OF_MEMORY);
     const previous = material({ emissive: [0.1, 0, 0], emissiveIntensity: 1 });
     const next = material({ emissive: [2, 0, 0], emissiveIntensity: 3 });
 
-    expect(() =>
-      tryFastPathMaterialMutation(
-        gl,
-        current,
-        fakeMerged([previous]),
-        sceneWithPrimitive(panelPrimitive(next)),
-        'panel',
-        { material: next },
-      ),
-    ).toThrow(/mesh-area lights.*OUT_OF_MEMORY/);
+    const swap = tryFastPathMaterialMutation(
+      gl,
+      current,
+      fakeMerged([previous]),
+      sceneWithPrimitive(panelPrimitive(next)),
+      'panel',
+      { material: next },
+    );
 
+    expect(swap).toBeNull();
     const created = (gl.createTexture as unknown as ReturnType<typeof vi.fn>).mock.results
       .map((result) => result.value as WebGLTexture);
     const deleted = (gl.deleteTexture as unknown as ReturnType<typeof vi.fn>).mock.calls
@@ -286,6 +294,7 @@ describe('tryFastPathMaterialMutation', () => {
     expect(new Set(deleted)).toEqual(new Set(created));
     expect(deleted).not.toContain(oldMaterials);
     expect(deleted).not.toContain(oldMeshLights);
+    expect(getError).not.toHaveBeenCalled();
     expect(gl.texSubImage2D).not.toHaveBeenCalled();
     expect(gl.texSubImage3D).not.toHaveBeenCalled();
   });

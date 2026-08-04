@@ -72,6 +72,8 @@ function makeFullTierDevice(rec: Recorder, limitsOverride: Record<string, number
     limits: {
       maxStorageBuffersPerShaderStage: 64,
       maxStorageTexturesPerShaderStage: 8,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
       ...limitsOverride,
     },
     addEventListener: vi.fn(),
@@ -256,7 +258,12 @@ describe('R4 / V2-2 — setScene is atomic (rollback on throw, no leak, old scen
       createComputePipeline: vi.fn(() => ({ getBindGroupLayout: vi.fn(() => ({})) })),
       createBindGroup: vi.fn(() => ({})),
       createCommandEncoder: vi.fn(() => encoder),
-      limits: { maxStorageBuffersPerShaderStage: 64, maxStorageTexturesPerShaderStage: 8 },
+      limits: {
+        maxStorageBuffersPerShaderStage: 64,
+        maxStorageTexturesPerShaderStage: 8,
+        maxTextureDimension2D: 8192,
+        maxTextureArrayLayers: 256,
+      },
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
       lost: new Promise<never>(() => {}),

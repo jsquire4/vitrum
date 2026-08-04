@@ -17,6 +17,16 @@ function makeBuffer(label: string, size = 80): BufferMock {
   } as unknown as BufferMock;
 }
 
+function makeLiveLightState(size = 96): {
+  readonly lightsBuf: GPUBuffer;
+  readonly lightsCapacityBytes: number;
+} {
+  return {
+    lightsBuf: makeBuffer('old-lights', size),
+    lightsCapacityBytes: size,
+  };
+}
+
 function light(id: string, intensity: number): DDGILight {
   return { id, kind: 'fixture', intensity, on: true };
 }
@@ -29,6 +39,8 @@ function passState(ddgi: DDGI) {
     _emitterTrisCount: number;
     _gpu: {
       device: GPUDevice;
+      lightsBuf: GPUBuffer;
+      lightsCapacityBytes: number;
       emitterTrisBuf: GPUBuffer;
       emitterTrisCount: number;
     } | null;
@@ -51,6 +63,7 @@ describe('DDGI prepared lighting mutation', () => {
 
     const oldBuffer = makeBuffer('old');
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer: vi.fn(() => { throw new Error('allocation fault'); }) } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -69,12 +82,86 @@ describe('DDGI prepared lighting mutation', () => {
     expect(oldBuffer.destroy).not.toHaveBeenCalled();
   });
 
+  it('rejects a public live light replacement above device limits before publication', () => {
+    const ddgi = new DDGI();
+    const state = passState(ddgi);
+    const oldLightBuffer = makeBuffer('old-lights', 16);
+    const oldEmitterBuffer = makeBuffer('old-emitter', 80);
+    const createBuffer = vi.fn();
+    state._gpu = {
+      device: {
+        limits: {
+          maxBufferSize: 64,
+          maxStorageBufferBindingSize: 64,
+        },
+        createBuffer,
+      } as unknown as GPUDevice,
+      lightsBuf: oldLightBuffer,
+      lightsCapacityBytes: oldLightBuffer.size,
+      emitterTrisBuf: oldEmitterBuffer,
+      emitterTrisCount: 0,
+    };
+
+    expect(() => ddgi.setLights([light('too-large', 1)])).toThrow(
+      /exceeding device\.limits/,
+    );
+    expect(state._lights).toEqual([]);
+    expect((ddgi as unknown as { _configuredLights: DDGILight[] })._configuredLights)
+      .toEqual([]);
+    expect(state._gpu.lightsBuf).toBe(oldLightBuffer);
+    expect(state._gpu.emitterTrisBuf).toBe(oldEmitterBuffer);
+    expect(createBuffer).not.toHaveBeenCalled();
+    expect(oldLightBuffer.destroy).not.toHaveBeenCalled();
+    expect(oldEmitterBuffer.destroy).not.toHaveBeenCalled();
+  });
+
+  it('prepares full-blend invalidation before a standalone lighting publication', () => {
+    const ddgi = new DDGI();
+    const state = passState(ddgi);
+    const beforeBlend = ddgi.pass.captureFullBlendState();
+    const beforeEpoch = (ddgi as unknown as { _contentEpoch: number })._contentEpoch;
+    vi.spyOn(ddgi.pass, 'prepareFullBlendInvalidation').mockImplementation(() => {
+      throw new Error('invalidation candidate fault');
+    });
+
+    expect(() => ddgi.setLights([light('new', 2)]))
+      .toThrow('invalidation candidate fault');
+    expect(state._lights).toEqual([]);
+    expect((ddgi as unknown as { _configuredLights: DDGILight[] })._configuredLights)
+      .toEqual([]);
+    expect(ddgi.pass.captureFullBlendState()).toEqual(beforeBlend);
+    expect((ddgi as unknown as { _contentEpoch: number })._contentEpoch)
+      .toBe(beforeEpoch);
+  });
+
+  it('commits and rolls back a prepared invalidation without allocating replacement state', () => {
+    const ddgi = new DDGI();
+    const beforeBlend = ddgi.pass.captureFullBlendState();
+    const mutation = ddgi.prepareLightingMutation({
+      lights: [light('new', 2)],
+      sunIntensityMultiplier: 1,
+      emitterTris: new Float32Array(0),
+      emitterCount: 0,
+    });
+    const latePrepare = vi.spyOn(ddgi.pass, 'prepareFullBlendInvalidation')
+      .mockImplementation(() => { throw new Error('late prepare'); });
+    const lateRestore = vi.spyOn(ddgi.pass, 'restoreFullBlendState')
+      .mockImplementation(() => { throw new Error('late restore'); });
+
+    expect(() => mutation.commit()).not.toThrow();
+    expect(() => mutation.rollback()).not.toThrow();
+    expect(ddgi.pass.captureFullBlendState()).toEqual(beforeBlend);
+    expect(latePrepare).not.toHaveBeenCalled();
+    expect(lateRestore).not.toHaveBeenCalled();
+  });
+
   it('completes the configured emitter snapshot before allocating a pass candidate', () => {
     const ddgi = new DDGI();
     const state = passState(ddgi);
     const oldBuffer = makeBuffer('old');
     const createBuffer = vi.fn(() => makeBuffer('candidate', 192));
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -113,6 +200,7 @@ describe('DDGI prepared lighting mutation', () => {
       throw new Error('mapping fault');
     });
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -138,6 +226,7 @@ describe('DDGI prepared lighting mutation', () => {
     const oldBuffer = makeBuffer('old');
     const candidate = makeBuffer('candidate', 192);
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -169,9 +258,16 @@ describe('DDGI prepared lighting mutation', () => {
     const acceptedOldTris = state._emitterTrisData;
 
     const oldBuffer = makeBuffer('old');
+    const oldLightBuffer = makeBuffer('old-lights', 96);
     const candidate = makeBuffer('candidate', 192);
+    const lightCandidate = makeBuffer('light-candidate', 96);
     state._gpu = {
-      device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
+      lightsBuf: oldLightBuffer,
+      lightsCapacityBytes: oldLightBuffer.size,
+      device: {
+        createBuffer: vi.fn((descriptor: GPUBufferDescriptor) =>
+          String(descriptor.label).includes('lights') ? lightCandidate : candidate),
+      } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
     };
@@ -189,14 +285,18 @@ describe('DDGI prepared lighting mutation', () => {
     expect(state._lights[0]?.id).toBe('new');
     expect(state._sunIntensityMul).toBe(5);
     expect(state._emitterTrisCount).toBe(2);
+    expect(state._gpu.lightsBuf).toBe(lightCandidate);
     expect(state._gpu.emitterTrisBuf).toBe(candidate);
+    expect(oldLightBuffer.destroy).not.toHaveBeenCalled();
     expect(oldBuffer.destroy).not.toHaveBeenCalled();
 
     mutation.rollback();
     expect(state._lights[0]?.id).toBe('old');
     expect(state._sunIntensityMul).toBe(2);
     expect(state._emitterTrisData).toBe(acceptedOldTris);
+    expect(state._gpu.lightsBuf).toBe(oldLightBuffer);
     expect(state._gpu.emitterTrisBuf).toBe(oldBuffer);
+    expect(lightCandidate.destroy).toHaveBeenCalledTimes(1);
     expect(candidate.destroy).toHaveBeenCalledTimes(1);
     expect(oldBuffer.destroy).not.toHaveBeenCalled();
   });
@@ -208,6 +308,7 @@ describe('DDGI prepared lighting mutation', () => {
     const oldBuffer = makeBuffer('old');
     const candidate = makeBuffer('candidate', 192);
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -231,6 +332,7 @@ describe('DDGI prepared lighting mutation', () => {
     const state = passState(ddgi);
     const oldBuffer = makeBuffer('old');
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer: vi.fn(() => oldBuffer) } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -250,12 +352,16 @@ describe('DDGI prepared lighting mutation', () => {
     const state = passState(ddgi);
     const oldTris = new Float32Array(20);
     const oldBuffer = makeBuffer('old');
-    const createBuffer = vi.fn();
+    const oldLightBuffer = makeBuffer('old-lights', 96);
+    const lightCandidate = makeBuffer('light-candidate', 96);
+    const createBuffer = vi.fn(() => lightCandidate);
     ddgi.setLights([light('old', 1)]);
     ddgi.setSunIntensityMultiplier(2);
     ddgi.setEmitterTris(oldTris, 1);
     const acceptedOldTris = state._emitterTrisData;
     state._gpu = {
+      lightsBuf: oldLightBuffer,
+      lightsCapacityBytes: oldLightBuffer.size,
       device: { createBuffer } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -267,12 +373,13 @@ describe('DDGI prepared lighting mutation', () => {
       emitterTris: new Float32Array(0),
       emitterCount: 0,
     });
-    expect(createBuffer).not.toHaveBeenCalled();
+    expect(createBuffer).toHaveBeenCalledTimes(1);
 
     mutation.commit();
     expect(state._lights[0]?.id).toBe('new');
     expect(state._emitterTrisData).toHaveLength(0);
     expect(state._emitterTrisCount).toBe(0);
+    expect(state._gpu.lightsBuf).toBe(lightCandidate);
     expect(state._gpu.emitterTrisBuf).toBe(oldBuffer);
     expect(state._gpu.emitterTrisCount).toBe(0);
 
@@ -281,8 +388,11 @@ describe('DDGI prepared lighting mutation', () => {
     expect(state._sunIntensityMul).toBe(2);
     expect(state._emitterTrisData).toBe(acceptedOldTris);
     expect(state._emitterTrisCount).toBe(1);
+    expect(state._gpu.lightsBuf).toBe(oldLightBuffer);
     expect(state._gpu.emitterTrisBuf).toBe(oldBuffer);
     expect(state._gpu.emitterTrisCount).toBe(1);
+    expect(lightCandidate.destroy).toHaveBeenCalledTimes(1);
+    expect(oldLightBuffer.destroy).not.toHaveBeenCalled();
     expect(oldBuffer.destroy).not.toHaveBeenCalled();
   });
 
@@ -293,6 +403,7 @@ describe('DDGI prepared lighting mutation', () => {
     const createBuffer = vi.fn();
     ddgi.setEmitterTris(new Float32Array(20), 1);
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -355,8 +466,12 @@ describe('DDGI prepared lighting mutation', () => {
     const tris = new Float32Array(20);
     ddgi.setEmitterTris(tris, 1);
     const oldBuffer = makeBuffer('old');
-    const createBuffer = vi.fn();
+    const oldLightBuffer = makeBuffer('old-lights', 16);
+    const lightCandidate = makeBuffer('light-candidate', 96);
+    const createBuffer = vi.fn(() => lightCandidate);
     state._gpu = {
+      lightsBuf: oldLightBuffer,
+      lightsCapacityBytes: oldLightBuffer.size,
       device: { createBuffer } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -371,10 +486,13 @@ describe('DDGI prepared lighting mutation', () => {
     mutation.commit();
     mutation.finalize();
 
-    expect(createBuffer).not.toHaveBeenCalled();
+    expect(createBuffer).toHaveBeenCalledTimes(1);
+    expect(state._gpu.lightsBuf).toBe(lightCandidate);
     expect(state._gpu.emitterTrisBuf).toBe(oldBuffer);
     expect(state._gpu.emitterTrisCount).toBe(1);
     expect(oldBuffer.destroy).not.toHaveBeenCalled();
+    expect(oldLightBuffer.destroy).toHaveBeenCalledTimes(1);
+    expect(lightCandidate.destroy).not.toHaveBeenCalled();
   });
 
   it('does not let hostile candidate destruction mask rollback', () => {
@@ -386,6 +504,7 @@ describe('DDGI prepared lighting mutation', () => {
       throw new Error('hostile candidate destroy');
     });
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,
@@ -412,6 +531,7 @@ describe('DDGI prepared lighting mutation', () => {
     });
     const candidate = makeBuffer('candidate', 192);
     state._gpu = {
+      ...makeLiveLightState(),
       device: { createBuffer: vi.fn(() => candidate) } as unknown as GPUDevice,
       emitterTrisBuf: oldBuffer,
       emitterTrisCount: 1,

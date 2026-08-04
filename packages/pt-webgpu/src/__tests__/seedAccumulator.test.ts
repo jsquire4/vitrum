@@ -112,7 +112,12 @@ function makeSeedCapableDevice(): GPUDevice {
     })),
     createBindGroup: vi.fn(() => ({})),
     createCommandEncoder: vi.fn(() => encoder),
-    limits: { maxStorageBuffersPerShaderStage: 64, maxStorageTexturesPerShaderStage: 8 },
+    limits: {
+      maxStorageBuffersPerShaderStage: 64,
+      maxStorageTexturesPerShaderStage: 8,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
+    },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     lost: new Promise<never>(() => {}),

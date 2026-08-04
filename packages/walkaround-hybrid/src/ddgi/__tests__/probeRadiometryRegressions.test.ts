@@ -25,7 +25,8 @@ describe('DDGI probe radiometry regressions', () => {
     expect(source).toContain('fn ddgiEmitterNEE(hitPos: vec3f, n: vec3f, seed0: u32)');
     expect(emitterNee).not.toContain('0.31831');
     expect(emitterNee).toContain('irradiance = irradiance + Le * G * area * shadowT');
-    expect(source).toContain('let direct = direct_analytic + direct_emitter;');
+    expect(source).toContain('let direct = evalDirectLighting(');
+    expect(source).toContain(') + ddgiEmitterNEE(');
     expect(source).toContain(
       'let directRadiance = direct * probeMat.albedo * (1.0 / PI);',
     );
@@ -38,10 +39,10 @@ describe('DDGI probe radiometry regressions', () => {
 
   it('addresses the reciprocal glass face layer by triangle material id', () => {
     expect(source).toContain(
-      'let reverseLayer = ddgiSampleFaceLayerControls(',
+      'let slabLayer = ddgiSampleFaceLayerControls(',
     );
     expect(source).toContain(
-      'entryHit.indices.w,\n      entryHit.side < 0.0,',
+      'currentHit.indices.w, slabFrontFacing,',
     );
     expect(source).not.toContain('ddgiSampleFaceLayerControls(materialId,');
   });

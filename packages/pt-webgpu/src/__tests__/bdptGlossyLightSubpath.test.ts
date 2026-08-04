@@ -1,6 +1,6 @@
 /**
  * A9 — BDPT production-quality structure tests: the REAL glossy/specular light
- * subpath, the 7-row light-path vertex carrying the light-vertex BSDF, hit-local
+ * subpath, the 8-row light-path vertex carrying the light-vertex BSDF, hit-local
  * material payload, and interface eta metadata, the raised bounce cap,
  * and the isotropic point emitter.
  *
@@ -282,10 +282,13 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       'let lightEmitterCastShadowDisabled = lightVtxIdx == 0 && lvMatId < 0.0 && lv4.x > 0.5;',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'if (!lightEmitterCastShadowDisabled && traceAny(',
+      'if (!lightEmitterCastShadowDisabled) {',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'shadowRay, ptRayTMin(), ptFiniteSegmentTMax(dist), rng,',
+      'let visibility = traceSurfaceVisibility(',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'connectionTransmittance = connectionTransmittance *',
     );
   });
 
@@ -348,7 +351,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       'out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, triIndex, baryVW, instanceIndex), 0.0, 1.0);',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'out.clearcoatNormal = applyClearcoatNormalMap(matId, triIndex, baryVW, shadingNormal, instanceIndex);',
+      'matId, triIndex, baryVW, interfaceBaseNormal, instanceIndex,',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevNormal,');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('prevMat.clearcoatNormal,');
@@ -554,7 +557,7 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
       PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL,
       RESTIR_PT_PRODUCER_WGSL,
     ].join('\n');
-    expect(transportCallSites.match(/dispersionAbbe > 0\.0/g)).toHaveLength(7);
+    expect(transportCallSites.match(/dispersionAbbe > 0\.0/g)).toHaveLength(8);
     expect(transportCallSites).not.toContain('dispersionAbbe >= 1.0');
   });
 
@@ -590,8 +593,8 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('const BDPT_LV_AREA_EMITTER_MATID: f32 = -2.0;');
   });
 
-  it('the light-path vertex is 7 rows (row 6 = both medium-side budgets)', () => {
-    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 7u;');
+  it('the light-path vertex is 8 rows (row 6 = remaining budgets, row 7 = original caps)', () => {
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 8u;');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'bdptWriteLvInterfaceEta(col, hitEtaTOverI, incidentIor, transmittedIor);',
     );
@@ -618,15 +621,17 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
 });
 
 describe('A9 — raised bounce cap + isotropic point emitter', () => {
-  it('bounds the invocation-local light path to eight 7-row vertices', () => {
+  it('bounds the invocation-local light path to eight 8-row vertices', () => {
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_MAX_LIGHT_DEPTH = 8u;');
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
-      'var<private> bdptLightPath: array<vec4f, 56>;',
+      'var<private> bdptLightPath: array<vec4f, 64>;',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'let maxB = i32(min(params.bdptMaxLightBounces, BDPT_MAX_LIGHT_DEPTH));',
     );
-    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain('@group(2) @binding(5)');
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain(
+      'var<storage, read_write> bdptLightPath',
+    );
   });
 
   it('the point emitter is ISOTROPIC (uniform sphere, 1/4π), not cosine-up', () => {

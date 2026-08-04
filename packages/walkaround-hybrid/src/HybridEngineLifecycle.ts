@@ -148,6 +148,10 @@ export interface PipelineInitHost {
    *  GPU-validated on dzn (~1.28× whole-frame at static/slow-motion; full-rate
    *  fallback under faster motion). */
   readonly checkerboard: boolean;
+  /** A scene with material transmission must shade every internal pixel because
+   *  its rough refractive camera prefix cannot be reconstructed for the skipped
+   *  checkerboard parity. */
+  readonly cameraPrefixFullRateRequired: boolean;
   /** PPG train-pass dispatch cadence (>= 1). The ppg-update pass dispatches
    *  on `frameCount % ppgDispatchInterval === 0`. */
   readonly ppgDispatchInterval: number;
@@ -570,6 +574,8 @@ export class PipelineInitCoordinator {
           // pixel + ResolvePass passes through = bit-identical to the
           // pre-checkerboard pipeline.
           checkerboard: host.checkerboard,
+          cameraPrefixFullRateRequired:
+            host.cameraPrefixFullRateRequired,
           // Checkerboard motion fallback threshold — camera move²/frame above
           // which checkerboard is forced full-rate (finer than the temporal
           // reset). Only consulted when checkerboard is on.

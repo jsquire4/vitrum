@@ -97,20 +97,21 @@ describe('buildDirectionalEnv', () => {
     }
   });
 
-  it('reports the joint distribution implemented by the Float32 CDFs', () => {
+  it('preserves a dim positive column in the represented Float32 CDF', () => {
     const env = buildDirectionalEnv(
       makeRaw(2, 1, (x) => (x === 0 ? [1, 1, 1] : [1e-8, 1e-8, 1e-8])),
     )!;
     const cellSolidAngle = 2 * Math.PI;
 
     expect(env.marginal[0]).toBe(1);
-    expect(env.conditional[0]).toBe(1);
+    expect(env.conditional[0]).toBeLessThan(1);
     expect(env.conditional[4]).toBe(1);
-    expect(env.pdf[1]).toBe(0);
-    expect(env.pdf[0]! * cellSolidAngle).toBeCloseTo(1, 7);
+    expect(env.conditional[4]).toBeGreaterThan(env.conditional[0]!);
+    expect(env.pdf[1]).toBeGreaterThan(0);
+    expect((env.pdf[0]! + env.pdf[1]!) * cellSolidAngle).toBeCloseTo(1, 7);
   });
 
-  it('assigns zero PDF to a middle column flattened by Float32 CDF quantization', () => {
+  it('retains a positive middle-column CDF interval and PDF', () => {
     const env = buildDirectionalEnv(
       makeRaw(3, 1, (x) => {
         const value = x === 1 ? 1e-12 : 1;
@@ -118,18 +119,16 @@ describe('buildDirectionalEnv', () => {
       }),
     )!;
 
-    expect([
-      env.conditional[0],
-      env.conditional[4],
-      env.conditional[8],
-    ]).toEqual([0.5, 0.5, 1]);
-    expect(env.pdf[1]).toBe(0);
+    expect(env.conditional[0]).toBeCloseTo(0.5, 7);
+    expect(env.conditional[4]).toBeGreaterThan(env.conditional[0]!);
+    expect(env.conditional[8]).toBe(1);
+    expect(env.pdf[1]).toBeGreaterThan(0);
     const cellSolidAngle = (2 * Math.PI / 3) * 2;
-    expect((env.pdf[0]! + env.pdf[2]!) * cellSolidAngle)
+    expect((env.pdf[0]! + env.pdf[1]! + env.pdf[2]!) * cellSolidAngle)
       .toBeCloseTo(1, 7);
   });
 
-  it('assigns zero PDF to a middle row flattened by Float32 CDF quantization', () => {
+  it('retains a positive middle-row CDF interval and PDF', () => {
     const env = buildDirectionalEnv(
       makeRaw(1, 3, (_x, y) => {
         const value = y === 1 ? 1e-12 : 1;
@@ -137,12 +136,10 @@ describe('buildDirectionalEnv', () => {
       }),
     )!;
 
-    expect([
-      env.marginal[0],
-      env.marginal[4],
-      env.marginal[8],
-    ]).toEqual([0.5, 0.5, 1]);
-    expect(env.pdf[1]).toBe(0);
+    expect(env.marginal[0]).toBeCloseTo(0.5, 6);
+    expect(env.marginal[4]).toBeGreaterThan(env.marginal[0]!);
+    expect(env.marginal[8]).toBe(1);
+    expect(env.pdf[1]).toBeGreaterThan(0);
     let integrated = 0;
     for (let y = 0; y < 3; y += 1) {
       const theta0 = y * Math.PI / 3;
@@ -171,6 +168,32 @@ describe('buildDirectionalEnv', () => {
     expect(env.map[1]).toBeCloseTo(4);
     expect(env.map[2]).toBeCloseTo(6);
     expect(env.map[3]).toBe(1);
+  });
+
+  it('rejects finite source radiance that overflows or wholly collapses on f32 publication', () => {
+    expect(() => buildDirectionalEnv({
+      width: 1,
+      height: 1,
+      data: [Number.MAX_VALUE, 0, 0],
+      stride: 3,
+    })).toThrow(/remain finite after Float32 packing/);
+    expect(() => buildDirectionalEnv({
+      width: 1,
+      height: 1,
+      data: [Number.MIN_VALUE, Number.MIN_VALUE, Number.MIN_VALUE],
+      stride: 3,
+    })).toThrow(/must not collapse completely to zero/);
+  });
+
+  it('allows one underflowed lane when another lane preserves published radiance', () => {
+    const env = buildDirectionalEnv({
+      width: 1,
+      height: 1,
+      data: [Number.MIN_VALUE, 1, 0],
+      stride: 3,
+    })!;
+    expect(Array.from(env.map.subarray(0, 4))).toEqual([0, 1, 0, 1]);
+    expect(env.pdf[0]).toBeGreaterThan(0);
   });
 
   it('within-cell solid-angle sampling is unbiased and is not a texel-center delta', () => {

@@ -14,6 +14,10 @@ import {
 } from '../scene/mneeFacetCandidates.js';
 import { MNEE_BOUNDED_CHAIN_CORE_WGSL } from '../wgsl/pathTrace/mneeNewton.wgsl.js';
 import { buildPackedScene } from '../scene/uploadSceneBuffers.js';
+import {
+  collectMaterialTextures,
+  createMaterialInputSnapshotContext,
+} from '../scene/materialTextures.js';
 
 const IDENTITY = asMat4([
   1, 0, 0, 0,
@@ -287,12 +291,34 @@ describe('MNEE facet proposal closure', () => {
       primitives: [trianglePrimitive('mapped', {
         ...DELTA_MATERIAL,
         normalMap: { handle: {} },
+        normalScale: 0,
       })],
       emitters: [],
       environment: { kind: 'none' },
     };
     expect(() => assertMneeInterfaceDomainSupported(mapped))
-      .toThrow(/normal\/bump\/layer-normal maps/);
+      .toThrow(/normal\/bump\/layer-normal\/clearcoat-normal maps/);
+
+    for (const material of [
+      { ...DELTA_MATERIAL, frontLayer: { transmission: [1, 1, 1] as const, normalMap: { handle: {} }, normalScale: 0 } },
+      { ...DELTA_MATERIAL, backLayer: { transmission: [1, 1, 1] as const, normalMap: { handle: {} }, normalScale: 0 } },
+      { ...DELTA_MATERIAL, clearcoatNormalMap: { handle: {} }, clearcoatNormalScale: 0 },
+    ]) {
+      expect(() => assertMneeInterfaceDomainSupported({
+        primitives: [trianglePrimitive('mapped-scale-zero', material)],
+        emitters: [],
+        environment: { kind: 'none' },
+      })).toThrow(/normal\/bump\/layer-normal\/clearcoat-normal maps/);
+    }
+    expect(() => assertMneeInterfaceDomainSupported({
+      primitives: [trianglePrimitive('zero-bump', {
+        ...DELTA_MATERIAL,
+        bumpMap: { handle: {} },
+        bumpScale: 0,
+      })],
+      emitters: [],
+      environment: { kind: 'none' },
+    })).not.toThrow();
 
     const smooth = trianglePrimitive('smooth');
     const varying: Scene = {
@@ -305,5 +331,63 @@ describe('MNEE facet proposal closure', () => {
     };
     expect(() => assertMneeInterfaceDomainSupported(varying))
       .toThrow(/varying vertex normal/);
+  });
+
+  it('rejects active clearcoat and sheen instead of omitting outer-layer attenuation', () => {
+    for (const material of [
+      { ...DELTA_MATERIAL, clearcoat: 1 },
+      { ...DELTA_MATERIAL, sheen: 0.5 },
+    ]) {
+      expect(() => assertMneeInterfaceDomainSupported({
+        primitives: [trianglePrimitive('outer-layer', material)],
+        emitters: [],
+        environment: { kind: 'none' },
+      })).toThrow(/clearcoat or sheen outer layers/);
+    }
+  });
+
+  it('shares one staged texture observation across MNEE admission, table packing, and descriptors', () => {
+    const handle = {};
+    let mapReads = 0;
+    let handleReads = 0;
+    const ref = Object.create(null) as { readonly handle: unknown };
+    Object.defineProperty(ref, 'handle', {
+      enumerable: true,
+      get() {
+        handleReads += 1;
+        if (handleReads !== 1) throw new Error('TextureRef.handle reread');
+        return handle;
+      },
+    });
+    const material = { ...DELTA_MATERIAL } as MaterialSpec;
+    Object.defineProperty(material, 'transmissionMap', {
+      enumerable: true,
+      get() {
+        mapReads += 1;
+        if (mapReads !== 1) throw new Error('transmissionMap reread');
+        return ref;
+      },
+    });
+    const scene: Scene = {
+      primitives: [trianglePrimitive('staged', material)],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const snapshots = createMaterialInputSnapshotContext();
+
+    assertMneeInterfaceDomainSupported(scene, snapshots);
+    const table = buildMneeFacetCandidateTable(
+      scene,
+      [binding('staged', 0, 1, 1)],
+      1024,
+      0,
+      snapshots,
+    );
+    const textures = collectMaterialTextures([material], snapshots);
+
+    expect(table.candidateCount).toBe(1);
+    expect(textures.linearSources).toEqual([handle]);
+    expect(mapReads).toBe(1);
+    expect(handleReads).toBe(1);
   });
 });

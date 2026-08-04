@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning } from '@vitrum/core';
+import { REPRESENTED_PROPOSAL_BUCKET_COUNT } from '@vitrum/shared-samplers';
 import { dTreeAccumulateFlux } from '../../ppg/dTree.js';
 import { buildSTree } from '../../ppg/sTree.js';
-import { serialiseSTree } from '../../ppg/serialise.js';
+import {
+  DTREE_HEADER_F32,
+  DTREE_NODE_F32,
+  serialiseSTree,
+} from '../../ppg/serialise.js';
 import type { STree } from '../../ppg/types.js';
 import { PPGCoordinator } from '../PPGCoordinator.js';
 import type { FrameResources } from '../resourceManager.js';
@@ -55,20 +60,22 @@ function destination(size: number, fill = 0x5a): TrackedBuffer {
   return { size, bytes, destroy: vi.fn() } as unknown as TrackedBuffer;
 }
 
-function frameResources(): FrameResources {
+function frameResources(maxDTreeNodesPerCell = 4): FrameResources {
   const queryArenaLayout = createPpgQueryArenaLayout({
     sTreeCapacityBytes: 512,
     dTreeCapacityBytes: 512,
     dTreeOffsetsCapacityBytes: 32,
     maxSpatialCells: 8,
-    maxDTreeNodesPerCell: 4,
+    maxDTreeNodesPerCell,
   });
   return {
     ppg: {
       queryArenaBuf: destination(queryArenaLayout.byteLength),
       queryArenaLayout,
       queryArenaEpoch: 1,
-      fluxAtomicsBuf: destination(128),
+      fluxAtomicsBuf: destination(
+        8 * maxDTreeNodesPerCell * Uint32Array.BYTES_PER_ELEMENT,
+      ),
       cellSampleCountsBuf: destination(32),
       updateUboBuffer: destination(16),
     },
@@ -288,7 +295,33 @@ function expectBytes(ppg: AllocatedPPG, expected: readonly Uint8Array[]): void {
   });
 }
 
+function queryDTreeView(ppg: AllocatedPPG): Float32Array {
+  const queryArena = ppg.queryArenaBuf as TrackedBuffer;
+  return new Float32Array(
+    queryArena.bytes.buffer,
+    queryArena.bytes.byteOffset + ppg.queryArenaLayout.dTreeByteOffset,
+    ppg.queryArenaLayout.dTreeCapacityBytes / Float32Array.BYTES_PER_ELEMENT,
+  );
+}
+
 describe('PPG snapshot import transaction', () => {
+  it('keeps the persistent ABI canonical while publishing represented query buckets', () => {
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device);
+    const resources = frameResources();
+
+    expect(made.value.importSTree(snapshot(), resources)).toBe(true);
+    const live = resources.ppg as AllocatedPPG;
+    expect(queryDTreeView(live)[DTREE_HEADER_F32 + 6]).toBe(
+      REPRESENTED_PROPOSAL_BUCKET_COUNT,
+    );
+
+    const exported = made.value.exportSTree();
+    expect(exported).not.toBeNull();
+    // Leaf lane 6 is still the canonical firstChild=-1 sentinel on disk.
+    expect(exported!.dTreeBuf[DTREE_HEADER_F32 + 6]).toBe(-1);
+  });
+
   it('accepts large-world scene bounds after their float32 wire round-trip', () => {
     const bounds = {
       min: [
@@ -546,6 +579,32 @@ describe('PPG snapshot import transaction', () => {
 });
 
 describe('PPG refine publication transaction', () => {
+  it('publishes represented subtree and leaf buckets after a training refinement', () => {
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device);
+    const resources = frameResources(5);
+    const trained = buildSTree(BOUNDS, 1);
+    dTreeAccumulateFlux(trained.dTrees[0]!, [0.25, 0.25], 1);
+    made.state._sTree = trained;
+    made.state._maxDTreeNodesPerCell = 5;
+
+    made.state._mergeFluxAndRefine(
+      new Float32Array(5),
+      new Uint32Array(1),
+      resources,
+      8,
+      5,
+    );
+
+    const query = queryDTreeView(resources.ppg as AllocatedPPG);
+    const rootBase = DTREE_HEADER_F32;
+    const firstLeafBase = DTREE_HEADER_F32 + DTREE_NODE_F32;
+    expect(query[rootBase + 5]).toBe(REPRESENTED_PROPOSAL_BUCKET_COUNT);
+    expect(query[firstLeafBase + 6]).toBe(
+      REPRESENTED_PROPOSAL_BUCKET_COUNT,
+    );
+  });
+
   it.each([
     ['allocation', { failAllocationAt: 2 }],
     ['encode', { failCopyAt: 2 }],
@@ -698,6 +757,33 @@ describe('PPG resize transaction', () => {
 });
 
 describe('PPG coordinator initialization transaction', () => {
+  it('publishes the query-only bucket overlay during a scene reset', () => {
+    const gpu = uploadDevice();
+    const made = coordinator(gpu.device);
+    const resources = frameResources(5);
+    made.state._maxDTreeNodesPerCell = 5;
+
+    made.value.resetForSceneBvh(
+      {
+        bvhPositions: {
+          cpuData: new Float32Array([
+            -2, -3, -4, 0,
+            5, 6, 7, 0,
+          ]).buffer,
+        },
+      },
+      resources,
+      16,
+      16,
+    );
+
+    const query = queryDTreeView(resources.ppg as AllocatedPPG);
+    // A cold depth-1 root is interior. Canonical lane 5 is -1; the query view
+    // overlays the represented zero-bucket subtree count instead.
+    expect(query[DTREE_HEADER_F32 + 5]).toBe(0);
+    expect(made.value.exportSTree()!.dTreeBuf[DTREE_HEADER_F32 + 5]).toBe(-1);
+  });
+
   it('retains prior coordinator/resources and destroys the complete candidate on upload failure', () => {
     const gpu = uploadDevice({ failWriteAt: 3 });
     const made = coordinator(gpu.device);

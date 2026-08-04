@@ -132,13 +132,13 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
   it.each([
     [
       'unsupported target format',
-      'depth24plus' as GPUTextureFormat,
+      'depth24plus',
       undefined,
       /swapChainFormat is unsupported/,
     ],
     [
       'linear output on an sRGB attachment',
-      'bgra8unorm-srgb' as GPUTextureFormat,
+      'bgra8unorm-srgb',
       { outputColorSpace: 'linear' } as const,
       /outputColorSpace 'linear' is incompatible/,
     ],
@@ -150,7 +150,9 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
       const input = {
         ...frame(32, 24),
         swapChainFormat:
-          asBackendTextureFormat<'webgpu', GPUTextureFormat>(format),
+          asBackendTextureFormat<'webgpu', GPUTextureFormat>(
+            format as GPUTextureFormat,
+          ),
         ...(quality === undefined ? {} : { quality }),
       } satisfies FrameInput;
 

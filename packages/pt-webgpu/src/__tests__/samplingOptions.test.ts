@@ -183,8 +183,14 @@ describe('pt-webgpu sampling options', () => {
     // C35 composes its native t=1 strategy helper only for BDPT-on modules.
     // Scale-stable transport closure changed shared composed helpers while
     // preserving the audited dimension ownership pinned by this digest.
+    // Re-pinned after the finite RNG audit made every represented branch use
+    // its exact executed probability and nested extension selector ownership.
+    // Re-pinned 2026-08-04 after checked material decode, independent clearcoat
+    // framing, thin-sheet/opposite-interface closure, and the conservative MNEE
+    // admission gate changed the composed assignment surface. Strict texture
+    // source staging remains host-side and consumes no Sobol dimension.
     expect(digest.digest('hex')).toBe(
-      '02c50b373269f5160756e2f171e03c9670ef5c24fa35dd33e870509b507e75e6',
+      'e76bb4f783891df7aa5cca2978e5aa97a9c0576cf0ad1fffef98b10ab7a0ccd3',
     );
   });
   it('builds full and lite path-trace modules from the selected Sobol RNG', () => {
@@ -331,11 +337,14 @@ describe('pt-webgpu sampling options', () => {
     ]);
 
     expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain(
-      'floor(rand_f32(rng) * f32(lightCount))',
+      'let index = ptRandBoundedU32(rng, lightCount);',
     );
 
     expectOrderedNeedles(PT_WEBGPU_PATH_TRACE_BSDF_WGSL, [
-      ['transmission lobe mixture', 'let xiLobe = rand_f32(rng) * lobeWeightSum;'],
+      [
+        'transmission lobe mixture',
+        'if (transmission > 0.0 && metallic == 0.0) {\n    let extensionProbabilities = brdfRepresentedExtensionLobeProbabilities(',
+      ],
       [
         'transmissive microfacet normal samples the shared stream',
         'let wmLocal = sampleGgxVndfTangent(',
@@ -344,7 +353,10 @@ describe('pt-webgpu sampling options', () => {
         'transmissive sheen branch samples the shared stream',
         'let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);',
       ],
-      ['opaque lobe mixture', 'let xiLobe = rand_f32(rng) * lobeWeightSum;'],
+      [
+        'opaque lobe mixture',
+        'let extensionProbabilities = brdfRepresentedExtensionLobeProbabilities(',
+      ],
       [
         'opaque diffuse branch samples the shared stream',
         'let bs = cosineHemisphereSample(rng, normal);',
@@ -356,7 +368,7 @@ describe('pt-webgpu sampling options', () => {
         'photon stream seed',
         'var rng = pcgInit(photonIdx, params.frameSeed, params.frameIndex ^ 0xdeadbeefu);',
       ],
-      ['photon light pick', 'floor(rand_f32(&rng) * f32(availableLightCount))'],
+      ['photon light pick', 'let pick = ptRandBoundedU32(&rng, availableLightCount);'],
       [
         'directional source disk pair',
         'let r2d  = sqrt(rand_f32(&rng)) * extent;\n      let phi2 = 2.0 * PI * rand_f32(&rng);',
@@ -377,7 +389,10 @@ describe('pt-webgpu sampling options', () => {
     ]);
 
     for (const [label, needle] of [
-      ['source lobe selection uses stream', 'let xiSource = rand_f32(rng) * lobeWeightSum;'],
+      [
+        'source lobe selection uses stream',
+        'if (rand_f32(rng) < extensionProbabilities.x)',
+      ],
       ['source base split uses stream', 'if (rand_f32(rng) < specProb)'],
       [
         'suffix direct area pair uses stream',
@@ -420,7 +435,7 @@ describe('pt-webgpu sampling options', () => {
     );
   });
 
-  it('keeps the maximum-bounce alpha and high-depth light-tree path in the Sobol prefix', () => {
+  it('keeps maximum-bounce alpha plus the one-draw light-tree proposal in the Sobol prefix', () => {
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
       'let bounceLimit = max(1u, min(params.maxBounces, 8u));',
     );
@@ -431,15 +446,18 @@ describe('pt-webgpu sampling options', () => {
       'if (alphaSurfaceHitCount >= alphaSurfaceHitLimit) {',
     );
     expect(LIGHT_TREE_TRAVERSAL_WGSL).toContain(
-      'for (var guard: u32 = 0u; guard < nodeCount + 1u; guard = guard + 1u)',
+      'for (var guard = 0u; guard < nodeCount + 1u; guard = guard + 1u)',
     );
-    expect(LIGHT_TREE_TRAVERSAL_WGSL).toContain('if (rand_f32(rng) < pL)');
+    expect(LIGHT_TREE_TRAVERSAL_WGSL).toContain(
+      'u32(floor(rand_f32(rng) * f32(lt_ROOT_BUCKETS)))',
+    );
+    expect(LIGHT_TREE_TRAVERSAL_WGSL).not.toContain('if (rand_f32(rng) < pL)');
 
     const cameraAndSpectralDraws = 4;
     const maximumBounceAlphaDraws = 8 * 8;
-    const highDepthTreeNodes = 513;
-    const highDepthTreeDraws = (highDepthTreeNodes - 1) / 2;
-    const auditedDrawBudget = cameraAndSpectralDraws + maximumBounceAlphaDraws + highDepthTreeDraws;
+    const lightTreeRootBucketDraws = 1;
+    const auditedDrawBudget =
+      cameraAndSpectralDraws + maximumBounceAlphaDraws + lightTreeRootBucketDraws;
     expect(auditedDrawBudget).toBeLessThanOrEqual(SOBOL_DIMENSION_COUNT);
 
     const stream = initOwenScrambledSobolStream(9, 10, sobolFrameKey(123, 0));
@@ -448,7 +466,7 @@ describe('pt-webgpu sampling options', () => {
       nextOwenScrambledSobolU32(stream),
     );
     expect(draws.slice(-4)).toEqual([
-      0xc4b83500, 0x41b58100, 0xf4567900, 0x0904d300,
+      0xa3b28a00, 0x5d1e9e00, 0x28656f00, 0x670cfe00,
     ]);
     expect(stream.dimension).toBe(auditedDrawBudget);
     expect(stream.fallbackState).toBe(fallbackBeforeDraws);

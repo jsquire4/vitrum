@@ -86,10 +86,10 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
       binaryStart,
     );
     const binary = PT_WEBGPU_TRACE_WGSL.slice(binaryStart, binaryEnd);
-    expect(binary).toContain('let triHit = mollerTrumboreCore(');
+    expect(binary).toContain('let triHit = opticalWatertightTriangleIntersect(');
     expect(binary).toContain('tMin,');
-    expect(binary).toContain('var shadeNormal = triHit.normal;');
-    expect(binary).toContain('let frontFace = triHit.det > 0.0;');
+    expect(binary).toContain('var shadeNormal = triHit.normal * triHit.side;');
+    expect(binary).toContain('let frontFace = triHit.side > 0.0;');
     expect(binary).toContain(
       'let shadeBaryVW = vec2f(triHit.bary.y, triHit.bary.z);',
     );
@@ -104,9 +104,10 @@ describe('pt-webgpu CWBVH traversal wiring', () => {
       wideStart,
     );
     const wide = composed.slice(wideStart, wideEnd);
-    expect(wide).toContain('var shadeNormal = cHit.normal * cHit.side;');
+    expect(wide).toContain('let exactHit = opticalWatertightTriangleIntersect(');
+    expect(wide).toContain('var shadeNormal = exactHit.normal * exactHit.side;');
     expect(wide).toContain(
-      'var shadeBaryVW = vec2f(cHit.barycoord.y, cHit.barycoord.z);',
+      'var shadeBaryVW = vec2f(exactHit.bary.y, exactHit.bary.z);',
     );
     expect(wide).not.toContain('safe_normalize(cross(b - a, c - a))');
   });

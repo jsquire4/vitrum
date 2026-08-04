@@ -423,7 +423,7 @@ describe('HybridEngine size transaction', () => {
     engine.setSize(32, 24);
 
     expect(resolveFrameResourceResolution)
-      .toHaveBeenCalledWith(16, 12, 0, undefined);
+      .toHaveBeenCalledWith(16, 12, 0);
     const state = engine as unknown as Record<string, unknown>;
     expect(state._width).toBe(32);
     expect(state._height).toBe(24);
@@ -459,7 +459,7 @@ describe('HybridEngine size transaction', () => {
 
     const state = engine as unknown as Record<string, unknown>;
     expect(resolveFrameResourceResolution)
-      .toHaveBeenCalledWith(16, 12, 123, undefined);
+      .toHaveBeenCalledWith(16, 12, 123);
     expect(resize).toHaveBeenCalledWith(16, 12, 2);
     expect(state._width).toBe(16);
     expect(state._height).toBe(16);

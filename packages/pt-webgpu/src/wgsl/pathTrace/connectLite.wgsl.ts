@@ -20,6 +20,67 @@ import { PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL } from './connectCore.wgsl.js';
 export const PT_WEBGPU_PATH_TRACE_CONNECT_LITE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL}
 
+struct SurfaceVisibility {
+  transmittance: vec3f,
+  visible: bool,
+};
+
+fn traceSurfaceVisibility(
+  ray: Ray,
+  tMin: f32,
+  tMax: f32,
+  heroLambda: f32,
+  incidentIor: f32,
+) -> SurfaceVisibility {
+  var result = SurfaceVisibility(vec3f(1.0), false);
+  var cursor = select(tMin, 0.0, opticalContinuationSourceIsActive());
+  let surfaceHitLimit = sceneSurfaceHitLimit();
+  var surfaceHitCount = 0u;
+  loop {
+    let hit = traceClosestRaw(ray, cursor, tMax);
+    if (!hit.didHit) {
+      opticalClearContinuationSource();
+      result.visible = true;
+      return result;
+    }
+    if (surfaceHitCount >= surfaceHitLimit) {
+      opticalClearContinuationSource();
+      return result;
+    }
+    surfaceHitCount = surfaceHitCount + 1u;
+    let matId = hitMaterialId(hit);
+    if (
+      !materialAcceptsSidedHit(matId, hit.frontFace) ||
+      materialShadowCastDisabled(matId)
+    ) {
+      if (!(hit.dist > cursor)) {
+        opticalClearContinuationSource();
+        return result;
+      }
+      cursor = hit.dist;
+      continue;
+    }
+    let sheetAttenuation = thinSheetExactVisibilityTransmission(
+      hit, ray.direction, heroLambda, incidentIor,
+    );
+    if (max(
+      sheetAttenuation.x,
+      max(sheetAttenuation.y, sheetAttenuation.z),
+    ) > 0.0) {
+      result.transmittance = result.transmittance * sheetAttenuation;
+      if (!(hit.dist > cursor)) {
+        opticalClearContinuationSource();
+        return SurfaceVisibility(vec3f(0.0), false);
+      }
+      cursor = hit.dist;
+      continue;
+    }
+    opticalClearContinuationSource();
+    return SurfaceVisibility(vec3f(0.0), false);
+  }
+  return result;
+}
+
 // B12 — lite-tier env presence: driven by the UBO hasEnvironmentMap flag + dims.
 // The liteEnvTex / liteEnvCdfTex are 1×1 black placeholders when no HDRI is loaded.
 fn hasEnvironmentMap() -> bool {
@@ -231,6 +292,7 @@ fn bsdfAreaLightConnectionContribution(
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
+  var bestVisibility = vec3f(1.0);
   for (var li = 0u; li < params.rectAreaLightCount; li = li + 1u) {
     var rectDist = INFINITY;
     var rectPdf = 0.0;
@@ -238,12 +300,18 @@ fn bsdfAreaLightConnectionContribution(
       let rb = liteRectLightBase() + li * 4u;
       let rectShadowDisabled = textureLoad(liteLightTex, vec2i(i32(rb), 0), 0).w > 0.5;
       let shadowRay = Ray(offsetOrigin, wi);
-      if ((rectShadowDisabled || !traceAny(
-        shadowRay, ptRayTMin(), ptFiniteSegmentTMax(rectDist),
-      )) && rectDist < bestDist) {
+      var visibility = SurfaceVisibility(vec3f(1.0), true);
+      if (!rectShadowDisabled) {
+        visibility = traceSurfaceVisibility(
+          shadowRay, ptRayTMin(), ptFiniteSegmentTMax(rectDist),
+          heroLambda, 1.0,
+        );
+      }
+      if (visibility.visible && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
         bestEmission = textureLoad(liteLightTex, vec2i(i32(rb + 3u), 0), 0).rgb;
+        bestVisibility = visibility.transmittance;
       }
     }
   }
@@ -261,7 +329,8 @@ fn bsdfAreaLightConnectionContribution(
   );
   let emitOut = select(bestEmission, spectralEmissionAtHero(bestEmission, heroLambda), params.spectralEnabled != 0u);
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
-  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / bsdfPdf;
+  return throughputAtVertex * brdf * nDotL * emitOut * bestVisibility *
+    misWeight / bsdfPdf;
 }
 
 fn bsdfEnvironmentConnectionContribution(
@@ -304,7 +373,10 @@ fn bsdfEnvironmentConnectionContribution(
     hitPos + offsetNormal * ptRayOriginBias(),
     wi,
   );
-  if (traceAny(shadowRay, ptRayTMin(), INFINITY)) { return vec3f(0.0); }
+  let visibility = traceSurfaceVisibility(
+    shadowRay, ptRayTMin(), INFINITY, heroLambda, 1.0,
+  );
+  if (!visibility.visible) { return vec3f(0.0); }
   let envPdf = environmentNeeProposalPdf(wi, normal);
   let envRgb = sampleEnvironmentColor(wi);
   let envColor = select(envRgb, spectralEmissionAtHero(envRgb, heroLambda), params.spectralEnabled != 0u);
@@ -317,6 +389,7 @@ fn bsdfEnvironmentConnectionContribution(
     specularColor, specularIntensity,
     0.0, 0.0, thinFilm, false,
   );
-  return throughputAtVertex * brdf * nDotL * envColor * misWeight / bsdfPdf;
+  return throughputAtVertex * brdf * nDotL * envColor *
+    visibility.transmittance * misWeight / bsdfPdf;
 }
 `;

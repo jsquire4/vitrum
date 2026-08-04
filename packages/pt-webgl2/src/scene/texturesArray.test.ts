@@ -5,6 +5,7 @@ import {
   materialTextureAtlasLayerCapacities,
   packMaterialTextureAtlases,
   packTextureAtlas,
+  snapshotMaterialTextureInputs,
   textureAtlasLayerCapacity,
   textureAtlasLayerCapacityForStorage,
   textureAtlasMipElementCounts,
@@ -13,6 +14,8 @@ import {
   type TextureAtlas,
   type TextureHandleHint,
 } from './texturesArray.js';
+import { packMaterialsTexture } from './materialsTexture.js';
+import { collectMaterialTexCoords } from './uvAttributeLayout.js';
 import {
   FLOAT16_HALF_MIN_SUBNORMAL,
   FLOAT16_MAX_FINITE,
@@ -56,6 +59,58 @@ function ldrLinear(data: Uint8Array, index: number): number {
 
 function ldrSrgbLinear(data: Uint8Array, index: number): number {
   return srgbToLinear(ldrLinear(data, index));
+}
+
+function oneShotUint8Handle(
+  label: string,
+  values: readonly [number, number, number, number],
+): { readonly handle: unknown; readonly reads: ReadonlyMap<string, number> } {
+  const reads = new Map<string, number>();
+  const once = (target: object, key: PropertyKey, value: unknown, field: string): void => {
+    Object.defineProperty(target, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        const count = (reads.get(field) ?? 0) + 1;
+        reads.set(field, count);
+        if (count !== 1) throw new Error(`${label}.${field} was read more than once`);
+        return value;
+      },
+    });
+  };
+
+  const data = {};
+  once(data, 'length', values.length, 'data.length');
+  values.forEach((value, index) => once(data, index, value, `data[${index}]`));
+
+  const handle = {};
+  once(handle, 'cpuMirror', undefined, 'cpuMirror');
+  once(handle, 'data', data, 'data');
+  once(handle, 'width', 1, 'width');
+  once(handle, 'height', 1, 'height');
+  once(handle, 'channels', 4, 'channels');
+  once(handle, 'dataType', 'uint8', 'dataType');
+  once(handle, 'colorSpace', undefined, 'colorSpace');
+  once(handle, '__vitrum_hint__', undefined, '__vitrum_hint__');
+  return { handle, reads };
+}
+
+function atlasSourceTexel(
+  atlas: TextureAtlas,
+  colorSpace: 'srgb' | 'linear',
+  handle: unknown,
+): readonly [number, number, number, number] {
+  const placement = atlas.layerOfByColorSpace.placements?.[colorSpace].get(handle);
+  if (placement == null) throw new Error(`missing ${colorSpace} test placement`);
+  const offset =
+    placement.layer * atlas.dim * atlas.dim * 4 +
+    (placement.y * atlas.dim + placement.x) * 4;
+  return [
+    atlas.data[offset] ?? 0,
+    atlas.data[offset + 1] ?? 0,
+    atlas.data[offset + 2] ?? 0,
+    atlas.data[offset + 3] ?? 0,
+  ];
 }
 
 function makeTextureAtlasUploadGl(
@@ -111,6 +166,123 @@ describe('packTextureAtlas', () => {
   it('returns null when no material carries a texture', () => {
     const mats: MaterialSpec[] = [{ baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0 }];
     expect(packTextureAtlas(mats)).toBeNull();
+  });
+
+  it('shares one immutable staging token across UV, atlas, descriptor, and HDR packing', () => {
+    const reads = new Map<string, number>();
+    const once = (
+      target: object,
+      key: PropertyKey,
+      value: unknown,
+      label: string,
+    ): void => {
+      Object.defineProperty(target, key, {
+        enumerable: true,
+        configurable: true,
+        get() {
+          reads.set(label, (reads.get(label) ?? 0) + 1);
+          return value;
+        },
+      });
+    };
+
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 64, 32, 255]),
+    };
+    const transform = {};
+    once(transform, 'rotation', 0.25, 'transform.rotation');
+    const ref = {};
+    once(ref, 'handle', handle, 'ref.handle');
+    once(ref, 'texCoord', 1, 'ref.texCoord');
+    once(ref, 'transform', transform, 'ref.transform');
+    once(ref, 'mipFilter', 'linear', 'ref.mipFilter');
+    const material = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      emissive: [1, 1, 1],
+    } as unknown as MaterialSpec;
+    once(material, 'baseColorMap', ref, 'material.baseColorMap');
+    once(material, 'emissiveMap', ref, 'material.emissiveMap');
+
+    const staged = snapshotMaterialTextureInputs([material]);
+    expect(snapshotMaterialTextureInputs(staged)).toBe(staged);
+    expect(Object.isFrozen(staged)).toBe(true);
+    expect(Object.isFrozen(staged[0])).toBe(true);
+    expect(Object.isFrozen(staged[0]!.baseColorMap)).toBe(true);
+
+    expect(collectMaterialTexCoords(staged)).toContain(1);
+    const atlases = packMaterialTextureAtlases(staged);
+    packMaterialsTexture(staged, {
+      ldr: atlases.ldr?.layerOfByColorSpace ?? null,
+      hdr: atlases.hdr?.layerOfByColorSpace ?? null,
+    });
+
+    expect([...reads.entries()]).toEqual([
+      ['material.baseColorMap', 1],
+      ['material.emissiveMap', 1],
+      ['ref.handle', 1],
+      ['ref.texCoord', 1],
+      ['ref.transform', 1],
+      ['ref.mipFilter', 1],
+      ['transform.rotation', 1],
+    ]);
+  });
+
+  it('observes one raw handle once across LDR sRGB, LDR linear, and HDR sRGB entries', () => {
+    const source = oneShotUint8Handle('shared', [128, 64, 32, 255]);
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      emissive: [1, 1, 1],
+      baseColorMap: { handle: source.handle },
+      normalMap: { handle: source.handle },
+      emissiveMap: { handle: source.handle },
+    };
+
+    const atlases = packMaterialTextureAtlases([material]);
+    expect(atlases.ldr).not.toBeNull();
+    expect(atlases.hdr).not.toBeNull();
+    expect(atlasSourceTexel(atlases.ldr!, 'srgb', source.handle)).toEqual([
+      128, 64, 32, 255,
+    ]);
+    expect(atlasSourceTexel(atlases.ldr!, 'linear', source.handle)).toEqual([
+      128, 64, 32, 255,
+    ]);
+
+    const hdrTexel = atlasSourceTexel(atlases.hdr!, 'srgb', source.handle);
+    expect(float16BitsToFloat32(hdrTexel[0])).toBeCloseTo(srgbToLinear(128 / 255), 3);
+    expect(float16BitsToFloat32(hdrTexel[1])).toBeCloseTo(srgbToLinear(64 / 255), 3);
+    expect(float16BitsToFloat32(hdrTexel[2])).toBeCloseTo(srgbToLinear(32 / 255), 3);
+    expect(float16BitsToFloat32(hdrTexel[3])).toBe(1);
+    expect([...source.reads.values()]).toEqual(new Array(source.reads.size).fill(1));
+  });
+
+  it('keeps distinct raw handles independently inspected and snapshotted', () => {
+    const baseColor = oneShotUint8Handle('baseColor', [11, 22, 33, 255]);
+    const emissive = oneShotUint8Handle('emissive', [201, 155, 99, 255]);
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      emissive: [1, 1, 1],
+      baseColorMap: { handle: baseColor.handle },
+      emissiveMap: { handle: emissive.handle },
+    };
+
+    const atlases = packMaterialTextureAtlases([material]);
+    expect(atlasSourceTexel(atlases.ldr!, 'srgb', baseColor.handle)).toEqual([
+      11, 22, 33, 255,
+    ]);
+    const hdrTexel = atlasSourceTexel(atlases.hdr!, 'srgb', emissive.handle);
+    expect(float16BitsToFloat32(hdrTexel[0])).toBeCloseTo(srgbToLinear(201 / 255), 3);
+    expect(float16BitsToFloat32(hdrTexel[1])).toBeCloseTo(srgbToLinear(155 / 255), 3);
+    expect(float16BitsToFloat32(hdrTexel[2])).toBeCloseTo(srgbToLinear(99 / 255), 3);
+    expect([...baseColor.reads.values()]).toEqual(new Array(baseColor.reads.size).fill(1));
+    expect([...emissive.reads.values()]).toEqual(new Array(emissive.reads.size).fill(1));
   });
 
   it('fails the whole atlas build when any authored handle is unreadable', () => {
@@ -169,7 +341,7 @@ describe('packTextureAtlas', () => {
     expect(thrown).toBeInstanceOf(Error);
     expect((thrown as Error).message).toBe('source-read-reached');
     expect(numericElementReads).toBe(1);
-    expect(decodedAllocations).toBe(0);
+    expect(decodedAllocations).toBe(1);
   });
 
   it('decodes source pixels directly into retained atlas level zero', () => {
@@ -323,15 +495,16 @@ describe('packTextureAtlas', () => {
       } as const,
     };
 
-    // The generated half-minimum mip is inert when the authored sampler is
-    // level-0-only, but must fail closed as soon as that mip is reachable.
+    // Omitted mipFilter follows the public linear-mip default, so the generated
+    // half-minimum level is reachable and must fail closed. Only an explicit
+    // level-0-only sampler makes it inert.
     expect(packTextureAtlas(
-      [matWithEmissiveMap(handle)],
+      [matWithEmissiveMap(handle, { mipFilter: 'none' })],
       { storageClass: 'hdr' },
     )).not.toBeNull();
     expect(() =>
       packTextureAtlas(
-        [matWithEmissiveMap(handle, { mipFilter: 'nearest' })],
+        [matWithEmissiveMap(handle)],
         { storageClass: 'hdr' },
       ),
     ).toThrow(/generated HDR mip 1 .* underflows to \+0/);
@@ -513,11 +686,11 @@ describe('packTextureAtlas', () => {
     expect(atlas!.mipLevels).toHaveLength(2);
     expect(atlas!.mipLevels[1]!.dim).toBe(1);
     expect(ldrSrgbLinear(atlas!.mipLevels[1]!.data as Uint8Array, 0))
-      .toBeCloseTo(srgbToLinear(0.5), 2);
+      .toBeCloseTo(0.5, 2);
     expect(ldrSrgbLinear(atlas!.mipLevels[1]!.data as Uint8Array, 1))
-      .toBeCloseTo(srgbToLinear(0.5), 2);
+      .toBeCloseTo(0.5, 2);
     expect(ldrSrgbLinear(atlas!.mipLevels[1]!.data as Uint8Array, 2))
-      .toBeCloseTo(srgbToLinear(0.5), 2);
+      .toBeCloseTo(0.5, 2);
     expect(ldrLinear(atlas!.mipLevels[1]!.data as Uint8Array, 3)).toBeCloseTo(0.5, 2);
     expect(Array.from(atlas!.mipLevels[1]!.data.slice(4, 8))).toEqual([0, 0, 0, 0]);
   });
@@ -917,6 +1090,207 @@ describe('TextureHandleHint: readHandlePixels uses explicit hints', () => {
     const atlas = packTextureAtlas([mat(handle)]);
     expect(atlas).not.toBeNull();
     expect(Array.from(atlas!.data)).toEqual([64, 192, 0, 255]);
+  });
+
+  it('snapshots getter-backed length and every authored element exactly once', () => {
+    let lengthReads = 0;
+    const elementReads = [0, 0, 0, 0];
+    const firstValues = [10, 20, 30, 255];
+    const data = {
+      get length() {
+        lengthReads += 1;
+        return lengthReads === 1 ? 4 : Number.POSITIVE_INFINITY;
+      },
+      get 0() {
+        elementReads[0]! += 1;
+        return elementReads[0] === 1 ? firstValues[0]! : Number.POSITIVE_INFINITY;
+      },
+      get 1() {
+        elementReads[1]! += 1;
+        return elementReads[1] === 1 ? firstValues[1]! : Number.POSITIVE_INFINITY;
+      },
+      get 2() {
+        elementReads[2]! += 1;
+        return elementReads[2] === 1 ? firstValues[2]! : Number.POSITIVE_INFINITY;
+      },
+      get 3() {
+        elementReads[3]! += 1;
+        return elementReads[3] === 1 ? firstValues[3]! : Number.POSITIVE_INFINITY;
+      },
+    };
+    const handle = hintedHandle(data, 1, 1, {
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: 'srgb',
+    });
+
+    const atlas = packTextureAtlas([mat(handle)])!;
+
+    expect(lengthReads).toBe(1);
+    expect(elementReads).toEqual([1, 1, 1, 1]);
+    expect(Array.from(atlas.data)).toEqual(firstValues);
+  });
+
+  it('rejects SharedArrayBuffer-backed raw handles before atlas staging', () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    const cases = [
+      ['uint8', new Uint8Array(new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT))],
+      ['uint16', new Uint16Array(new SharedArrayBuffer(Uint16Array.BYTES_PER_ELEMENT))],
+      ['float32', new Float32Array(new SharedArrayBuffer(Float32Array.BYTES_PER_ELEMENT))],
+    ] as const;
+
+    for (const [dataType, data] of cases) {
+      const handle = hintedHandle(data, 1, 1, {
+        channels: 1,
+        dataType,
+        colorSpace: 'linear',
+      });
+      expect(() => packTextureAtlas([{
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        roughnessMap: { handle },
+      }])).toThrow(/SharedArrayBuffer-backed material texels/);
+    }
+  });
+
+  it('rejects role/channel mismatches before the first indexed payload read', () => {
+    let elementReads = 0;
+    const data = new Proxy({ length: 2 } as unknown as ArrayLike<number>, {
+      get(target, property, receiver) {
+        if (property === '0' || property === '1') elementReads += 1;
+        return property === '0' || property === '1'
+          ? 128
+          : Reflect.get(target, property, receiver);
+      },
+    });
+    const handle = hintedHandle(data, 1, 1, {
+      channels: 2,
+      dataType: 'uint8',
+      colorSpace: 'linear',
+    });
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      normalMap: { handle },
+    };
+
+    expect(() => packTextureAtlas([material])).toThrow(
+      /normalMap requires source channels 3, 4 \(received 2\)/,
+    );
+    expect(elementReads).toBe(0);
+  });
+
+  it('enforces the earliest consumer-channel profile for mapped roles', () => {
+    const makeHandle = (channels: 1 | 2 | 3 | 4): unknown => hintedHandle(
+      new Uint8Array(channels).fill(128),
+      1,
+      1,
+      { channels, dataType: 'uint8', colorSpace: 'linear' },
+    );
+    const base: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+    };
+    const normal = (channels: 1 | 2 | 3 | 4): MaterialSpec => ({
+      ...base,
+      normalMap: { handle: makeHandle(channels) },
+    });
+    const anisotropy = (channels: 1 | 2 | 3 | 4): MaterialSpec => ({
+      ...base,
+      anisotropy: 1,
+      anisotropyMap: { handle: makeHandle(channels) },
+    });
+    const sheenRoughness = (channels: 1 | 2 | 3 | 4): MaterialSpec => ({
+      ...base,
+      sheen: 1,
+      sheenRoughness: 0.5,
+      sheenRoughnessMap: { handle: makeHandle(channels) },
+    });
+    const specularIntensity = (channels: 1 | 2 | 3 | 4): MaterialSpec => ({
+      ...base,
+      specularIntensity: 1,
+      specularIntensityMap: { handle: makeHandle(channels) },
+    });
+    const metallic = (channels: 1 | 2 | 3 | 4): MaterialSpec => ({
+      ...base,
+      metallicMap: { handle: makeHandle(channels) },
+    });
+
+    expect(() => packTextureAtlas([normal(2)])).toThrow(/normalMap requires source channels 3, 4/);
+    expect(packTextureAtlas([normal(3)])).not.toBeNull();
+    expect(() => packTextureAtlas([anisotropy(2)])).toThrow(/anisotropyMap requires source channels 3, 4/);
+    expect(packTextureAtlas([anisotropy(3)])).not.toBeNull();
+    expect(() => packTextureAtlas([sheenRoughness(3)])).toThrow(/sheenRoughnessMap requires source channels 4/);
+    expect(packTextureAtlas([sheenRoughness(4)])).not.toBeNull();
+    expect(() => packTextureAtlas([specularIntensity(3)])).toThrow(/specularIntensityMap requires source channels 4/);
+    expect(packTextureAtlas([specularIntensity(4)])).not.toBeNull();
+    expect(packTextureAtlas([metallic(1)])).not.toBeNull();
+    expect(() => packTextureAtlas([metallic(2)])).toThrow(/metallicMap requires source channels 1, 3, 4/);
+    expect(packTextureAtlas([metallic(3)])).not.toBeNull();
+    expect(packTextureAtlas([metallic(4)])).not.toBeNull();
+  });
+
+  it('unions reused-handle role requirements while retaining one placement', () => {
+    const handle3 = hintedHandle(new Uint8Array([128, 128, 255]), 1, 1, {
+      channels: 3,
+      dataType: 'uint8',
+      colorSpace: 'linear',
+    });
+    const compatible: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      roughnessMap: { handle: handle3 },
+      normalMap: { handle: handle3 },
+    };
+    const atlas = packTextureAtlas([compatible])!;
+    expect(atlas.layerCount).toBe(1);
+    expect(atlas.layerOfByColorSpace.linear.get(handle3)).toBe(0);
+
+    const alphaStrict: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      roughnessMap: { handle: handle3 },
+      sheen: 1,
+      sheenRoughness: 0.5,
+      sheenRoughnessMap: { handle: handle3 },
+    };
+    expect(() => packTextureAtlas([alphaStrict])).toThrow(
+      /roughnessMap \+ sheenRoughnessMap requires source channels 4/,
+    );
+
+    const handle4 = hintedHandle(new Uint8Array([128, 128, 255, 128]), 1, 1, {
+      channels: 4,
+      dataType: 'uint8',
+      colorSpace: 'linear',
+    });
+    const compatibleAlpha: MaterialSpec = {
+      ...alphaStrict,
+      roughnessMap: { handle: handle4 },
+      sheenRoughnessMap: { handle: handle4 },
+    };
+    expect(packTextureAtlas([compatibleAlpha])?.layerCount).toBe(1);
+  });
+
+  it('rejects nonzero generic float32 inputs that underflow during the raw snapshot', () => {
+    const handle = hintedHandle({ length: 1, 0: Number.MIN_VALUE }, 1, 1, {
+      channels: 1,
+      dataType: 'float32',
+      colorSpace: 'linear',
+    });
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      roughnessMap: { handle },
+    };
+    expect(() => packTextureAtlas([material])).toThrow(
+      /raw pixel value 0 is nonzero but underflows to zero in float32/,
+    );
   });
 
   it('explicit colorSpace:linear keeps Float32 baseColorMap values already in linear light', () => {

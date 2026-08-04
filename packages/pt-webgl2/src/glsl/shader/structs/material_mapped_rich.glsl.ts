@@ -3,6 +3,7 @@ import {
   MATERIAL_PIXELS,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
 } from './materialStride.js';
+import { MATERIAL_TEXTURE_SAMPLING_GLSL } from './material_texture_sampling.glsl.js';
 
 /**
  * Exact compact decoder for every public MaterialSpec field, including mixed
@@ -51,157 +52,7 @@ struct Material {
   float envMapIntensity;
 };
 
-int wrapMaterialTextureIndex( int coord, int size, float mode ) {
-  int packedMode = int( round( mode ) );
-  int m = packedMode - ( packedMode / 4 ) * 4;
-  if ( m == 1 ) return clamp( coord, 0, size - 1 );
-  if ( m == 2 ) {
-    int period = max( size * 2, 1 );
-    int c = coord - period * int( floor( float( coord ) / float( period ) ) );
-    return c < size ? c : period - 1 - c;
-  }
-  return coord - size * int( floor( float( coord ) / float( size ) ) );
-}
-
-ivec2 materialTextureSourceSize( sampler2DArray tex, vec4 policy, int level ) {
-  ivec2 storageSize = textureSize( tex, 0 ).xy;
-  int packedS = int( round( policy.x ) );
-  int packedT = int( round( policy.y ) );
-  ivec2 baseSize = ivec2(
-    packedS / 4 > 0 ? packedS / 4 : storageSize.x,
-    packedT / 4 > 0 ? packedT / 4 : storageSize.y
-  );
-  return max( ivec2( 1 ), baseSize / ( 1 << level ) );
-}
-
-ivec2 materialTextureSourceOffset( vec4 policy, int level ) {
-  ivec2 baseOffset = ivec2(
-    int( round( policy.z ) ) / 4,
-    int( round( policy.w ) ) / 4
-  );
-  return baseOffset / ( 1 << level );
-}
-
-bool materialTextureUsesLinearFilter( vec4 policy, bool minifying ) {
-  int packed = int( round( policy.w ) );
-  int filterPair = packed - ( packed / 4 ) * 4;
-  int magFilter = filterPair - ( filterPair / 2 ) * 2;
-  int minFilter = filterPair / 2;
-  return ( minifying ? minFilter : magFilter ) == 1;
-}
-
-float materialTextureRawLod( vec2 uv, vec2 baseSize ) {
-  vec2 dx = dFdx( uv * baseSize );
-  vec2 dy = dFdy( uv * baseSize );
-  return max( log2( max( max( length( dx ), length( dy ) ), 1e-8 ) ), 0.0 );
-}
-
-vec4 decodeMaterialTextureTexel( vec4 value, bool srgbRgb ) {
-  if ( ! srgbRgb ) return value;
-  bvec3 cutoff = lessThanEqual( value.rgb, vec3( 0.04045 ) );
-  vec3 low = value.rgb / 12.92;
-  vec3 high = pow( ( value.rgb + 0.055 ) / 1.055, vec3( 2.4 ) );
-  return vec4( mix( high, low, cutoff ), value.a );
-}
-
-vec4 sampleMaterialTextureNearestLevel(
-  sampler2DArray tex, vec2 uv, int layer, vec4 policy, int level,
-  bool srgbRgb
-) {
-  ivec2 size = materialTextureSourceSize( tex, policy, level );
-  ivec2 p = ivec2( floor( uv * vec2( size ) ) );
-  int x = wrapMaterialTextureIndex( p.x, size.x, policy.x );
-  int y = wrapMaterialTextureIndex( p.y, size.y, policy.y );
-  ivec2 sourceOffset = materialTextureSourceOffset( policy, level );
-  return decodeMaterialTextureTexel(
-    texelFetch( tex, ivec3( sourceOffset + ivec2( x, y ), layer ), level ),
-    srgbRgb
-  );
-}
-
-vec4 sampleMaterialTextureLinearLevel(
-  sampler2DArray tex, vec2 uv, int layer, vec4 policy, int level,
-  bool srgbRgb
-) {
-  ivec2 size = materialTextureSourceSize( tex, policy, level );
-  vec2 p = uv * vec2( size ) - vec2( 0.5 );
-  ivec2 p0 = ivec2( floor( p ) );
-  vec2 f = fract( p );
-  int x0 = wrapMaterialTextureIndex( p0.x, size.x, policy.x );
-  int y0 = wrapMaterialTextureIndex( p0.y, size.y, policy.y );
-  int x1 = wrapMaterialTextureIndex( p0.x + 1, size.x, policy.x );
-  int y1 = wrapMaterialTextureIndex( p0.y + 1, size.y, policy.y );
-  ivec2 sourceOffset = materialTextureSourceOffset( policy, level );
-  vec4 c00 = decodeMaterialTextureTexel(
-    texelFetch( tex, ivec3( sourceOffset + ivec2( x0, y0 ), layer ), level ),
-    srgbRgb
-  );
-  vec4 c10 = decodeMaterialTextureTexel(
-    texelFetch( tex, ivec3( sourceOffset + ivec2( x1, y0 ), layer ), level ),
-    srgbRgb
-  );
-  vec4 c01 = decodeMaterialTextureTexel(
-    texelFetch( tex, ivec3( sourceOffset + ivec2( x0, y1 ), layer ), level ),
-    srgbRgb
-  );
-  vec4 c11 = decodeMaterialTextureTexel(
-    texelFetch( tex, ivec3( sourceOffset + ivec2( x1, y1 ), layer ), level ),
-    srgbRgb
-  );
-  return mix( mix( c00, c10, f.x ), mix( c01, c11, f.x ), f.y );
-}
-
-vec4 sampleMaterialTextureLevel(
-  sampler2DArray tex, vec2 uv, int layer, vec4 policy,
-  int level, bool linearFilter, bool srgbRgb
-) {
-  return linearFilter
-    ? sampleMaterialTextureLinearLevel( tex, uv, layer, policy, level, srgbRgb )
-    : sampleMaterialTextureNearestLevel( tex, uv, layer, policy, level, srgbRgb );
-}
-
-vec4 sampleMaterialTexture(
-  sampler2DArray tex, vec2 uv, int layer, vec4 policy, bool srgbRgb
-) {
-  if ( layer < 0 ) return vec4( 1.0 );
-  ivec2 baseSizeI = materialTextureSourceSize( tex, policy, 0 );
-  vec2 baseSize = vec2( baseSizeI );
-  float rawLod = materialTextureRawLod( uv, baseSize );
-  bool linearFilter = materialTextureUsesLinearFilter( policy, rawLod > 0.0 );
-  int packedMipFilter = int( round( policy.z ) );
-  int mipFilter = packedMipFilter - ( packedMipFilter / 4 ) * 4;
-  int maxLevel = max(
-    0, int( floor( log2( float( max( baseSizeI.x, baseSizeI.y ) ) ) ) )
-  );
-  if ( mipFilter == 0 || maxLevel == 0 ) {
-    return sampleMaterialTextureLevel(
-      tex, uv, layer, policy, 0, linearFilter, srgbRgb
-    );
-  }
-  if ( mipFilter == 1 ) {
-    int level = clamp( int( floor( rawLod + 0.5 ) ), 0, maxLevel );
-    return sampleMaterialTextureLevel(
-      tex, uv, layer, policy, level, linearFilter, srgbRgb
-    );
-  }
-  float clampedLod = clamp( rawLod, 0.0, float( maxLevel ) );
-  int level0 = int( floor( clampedLod ) );
-  int level1 = min( level0 + 1, maxLevel );
-  float t = clampedLod - float( level0 );
-  vec4 a = sampleMaterialTextureLevel(
-    tex, uv, layer, policy, level0, linearFilter, srgbRgb
-  );
-  vec4 b = sampleMaterialTextureLevel(
-    tex, uv, layer, policy, level1, linearFilter, srgbRgb
-  );
-  return mix( a, b, t );
-}
-
-vec4 sampleMaterialTexture(
-  sampler2DArray tex, vec2 uv, int layer, vec4 policy
-) {
-  return sampleMaterialTexture( tex, uv, layer, policy, false );
-}
+${MATERIAL_TEXTURE_SAMPLING_GLSL}
 
 mat3 readTextureTransform( sampler2D tex, uint index ) {
   vec4 row1 = texelFetch1D( tex, index );
@@ -229,7 +80,7 @@ vec4 readMaterialMapPolicy(
   );
 }
 
-vec4 sampleMappedMaterialTextureDecoded(
+bool sampleMappedMaterialTextureDecoded(
   sampler2D materialTex,
   sampler2DArray textureTex,
   uint materialIndex,
@@ -237,36 +88,43 @@ vec4 sampleMappedMaterialTextureDecoded(
   uint transformTexel,
   uint policyTexel,
   vec2 uv,
-  bool srgbRgb
+  bool srgbRgb,
+  out vec4 value
 ) {
+  value = vec4( 0.0 );
   vec3 transformedUv = readMaterialMapTransform(
     materialTex, materialIndex, transformTexel
   ) * vec3( uv, 1.0 );
+  if (
+    ! materialTextureFiniteVec2( transformedUv.xy ) ||
+    ! materialTextureFiniteFloat( transformedUv.z ) ||
+    transformedUv.z != 1.0
+  ) return false;
   vec4 policy = readMaterialMapPolicy(
     materialTex, materialIndex, policyTexel
   );
   return sampleMaterialTexture(
-    textureTex, transformedUv.xy, layer, policy, srgbRgb
+    textureTex, transformedUv.xy, layer, policy, srgbRgb, value
   );
 }
 
-vec4 sampleMappedMaterialTexture(
+bool sampleMappedMaterialTexture(
   sampler2D materialTex, sampler2DArray textureTex, uint materialIndex,
-  int layer, uint transformTexel, uint policyTexel, vec2 uv
+  int layer, uint transformTexel, uint policyTexel, vec2 uv, out vec4 value
 ) {
   return sampleMappedMaterialTextureDecoded(
     materialTex, textureTex, materialIndex, layer,
-    transformTexel, policyTexel, uv, false
+    transformTexel, policyTexel, uv, false, value
   );
 }
 
-vec4 sampleMappedSrgbMaterialTexture(
+bool sampleMappedSrgbMaterialTexture(
   sampler2D materialTex, sampler2DArray textureTex, uint materialIndex,
-  int layer, uint transformTexel, uint policyTexel, vec2 uv
+  int layer, uint transformTexel, uint policyTexel, vec2 uv, out vec4 value
 ) {
   return sampleMappedMaterialTextureDecoded(
     materialTex, textureTex, materialIndex, layer,
-    transformTexel, policyTexel, uv, true
+    transformTexel, policyTexel, uv, true, value
   );
 }
 

@@ -25,10 +25,10 @@ export function samplerPolicySupport(
   policy: GltfTextureSamplerPolicyUse,
 ): BackendSupportMode {
   if (profileId === 'walkaround-hybrid') {
-    const magFilter = policy.magFilter ?? 'nearest';
-    const minFilter = policy.minFilter ?? 'nearest';
-    const mipFilter = policy.mipFilter ?? 'none';
-    return magFilter === minFilter && mipFilter === 'none' ? 'native' : 'approximate';
+    // The material atlas implements independent nearest/linear mag/min modes
+    // plus none/nearest/linear mip selection. Omitted mip policy resolves to
+    // the same library-wide linear default as the runtime packer.
+    return 'native';
   }
   if (profileId === 'pt-webgl2') return 'native';
   if (policy.materialField === 'bumpMap') {

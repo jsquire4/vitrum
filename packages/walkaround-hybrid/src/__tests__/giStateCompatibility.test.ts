@@ -75,6 +75,8 @@ function bvh(seed = 1): SceneBVHBuffers {
       byteLength: positionData.byteLength,
       count: Math.floor(positionData.byteLength / 16),
     },
+    opticalTriangleIdentity: storage([0, seed]),
+    opticalInstanceBoundaryIdBasePlusOne: storage([1]),
     triangleMaterialIds: storage([seed]),
     bvhBeerColors: storage([seed + 1]),
     bvhEmissiveLe: storage([seed + 2]),

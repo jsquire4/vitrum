@@ -13,10 +13,14 @@ import {
   CWBVH_CHILD_COUNT_INVALID,
   CWBVH_CHILD_NODE,
   buildCompressedWideBvhFromArrayBvh,
+  assertOpticalMediumTopology,
+  lowerTransmissiveAnalyticPrimitives,
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
   materialSpecScalarEmissiveLe,
   materialSpecSkipEmitter,
+  packMergedOpticalMediumBoundaryIds,
+  packOpticalMediumBoundaryIds,
   packCwbvhBuildBoundsForWgsl,
   packRadianceRgbScaleF32,
   packSceneFromCore,
@@ -36,7 +40,9 @@ import {
 import {
   applyMaterialTextureUvFitScales,
   collectMaterialTextures,
+  createMaterialInputSnapshotContext,
   type MaterialTextureLayerInfo,
+  type MaterialInputSnapshotContext,
   MATERIAL_TEX_FLOAT_STRIDE,
 } from './materialTextures.js';
 import { resolvePtWebgpuSceneRadius } from './sceneScalePolicy.js';
@@ -50,8 +56,8 @@ import {
   buildMneeFacetCandidateTable,
 } from './mneeFacetCandidates.js';
 import {
-  createMaterialTextureArray,
-  estimateMaterialTextureArrayPeakBytes,
+  createMaterialTextureArrayFromStaged,
+  stageMaterialTextureUploadPlan,
   MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES,
   type MaterialTextureArray,
   type MaterialTextureRadianceEnvelope,
@@ -66,6 +72,7 @@ import {
   type EnvSummaryForTree,
   type PackedEmitterArrays,
 } from './emitterPacking.js';
+import { applyDistantDirectProposalPmf } from './distantDirectProposal.js';
 import { assertLiteSceneSupported } from './liteSceneWarnings.js';
 import {
   PT_WEBGPU_FULL_SUPPORT,
@@ -141,6 +148,7 @@ export function sceneHasAnalyticRenderFallback(scene: Scene): boolean {
     primitive.kind === 'analytic' &&
     (
       analyticMaterialTextureFields(primitive).length > 0 ||
+      (primitive.material.transmission ?? 0) > 0 ||
       (
         !materialSpecSkipEmitter(primitive.material) &&
         materialSpecScalarEmissiveLe(primitive.material) != null
@@ -197,7 +205,9 @@ export function applyAnalyticRenderFallbacks(
     );
     return analyticPrimitiveToMesh(primitive);
   });
-  return changed ? { ...scene, primitives } : scene;
+  return lowerTransmissiveAnalyticPrimitives(
+    changed ? { ...scene, primitives } : scene,
+  );
 }
 
 // 8 dead re-exports of MAX_*_LIGHTS / *_FLOAT_STRIDE constants (originally
@@ -219,22 +229,22 @@ interface PackedSceneData {
   /** Per-material texture descriptor floats (MATERIAL_TEX_FLOAT_STRIDE each):
    *  texture indices + alpha-mode + KHR UV transform. Indexed by matId. */
   readonly materialTexDescriptors: Float32Array;
-  /** Dedup'd, upload-ordered sRGB texture handles (baseColor, emissive, and
-   *  extension color-tint maps; layer i = sources[i]); the GPU upload turns
+  /** Dedup'd, upload-ordered sRGB texture handles (baseColor and extension
+   *  color-tint maps; layer i = sources[i]); the GPU upload turns
    *  these into a texture_2d_array. */
   readonly materialTextureSources: readonly unknown[];
   /** Provenance for each sRGB material texture layer, for structured upload warnings. */
   readonly materialTextureSourceInfos: readonly MaterialTextureLayerInfo[];
   /** Dedup'd, upload-ordered LINEAR texture handles (normal, ORM, scalar maps,
-   *  height/coverage/radiance data) → a second texture_2d_array sampled without
+   *  height/coverage data) → a second texture_2d_array sampled without
    *  sRGB decode. */
   readonly materialTextureLinearSources: readonly unknown[];
   /** Provenance for each LINEAR material texture layer, for structured upload warnings. */
   readonly materialTextureLinearSourceInfos: readonly MaterialTextureLayerInfo[];
-  /** Dedup'd, upload-ordered EMISSIVE texture handles → a dedicated rgba16float
-   *  texture_2d_array so HDR emissive texture values survive packing (the sRGB
-   *  8-bit array clamped them to [0,1]). LDR sources are sRGB→linear decoded on
-   *  upload so they stay visually identical to the previous sRGB-array path. */
+  /** Dedup'd, upload-ordered outgoing-RADIANCE handles (emissiveMap + lightMap)
+   *  → a dedicated rgba16float texture_2d_array. The historical field name is
+   *  retained for ABI stability. Integer emissive layers are sRGB-decoded;
+   *  integer light-map layers and every Float32 layer are linear. */
   readonly materialTextureEmissiveSources: readonly unknown[];
   /** Provenance for each EMISSIVE material texture layer, for structured upload warnings. */
   readonly materialTextureEmissiveSourceInfos: readonly MaterialTextureLayerInfo[];
@@ -248,6 +258,12 @@ interface PackedSceneData {
    */
   readonly indices: Uint32Array; // vec4u packed (xyz = vertex indices, w = 0)
   readonly triMaterialIds: Uint32Array;
+  /** GPU binding-5 payload: vec2u(materialId, representedInstanceIdPlusOne). */
+  readonly triMaterialPayload: Uint32Array;
+  readonly triangleRepresentedPrimitiveInstanceIds: Uint32Array;
+  /** Source-triangle / source-primitive addresses parallel to the reordered stream. */
+  readonly triangleSourceIndices: Uint32Array;
+  readonly trianglePrimitiveIndices: Uint32Array;
   readonly materials: Float32Array; // MATERIAL_VEC4_STRIDE * vec4f per material
   readonly bvhNodes: Float32Array; // 8 floats (32 bytes) per node
   /** CWBVH forest: parent wide-node bounds, 6 f32 per node. */
@@ -272,6 +288,11 @@ interface PackedSceneData {
   readonly tlasInstanceWorldToLocal: Float32Array;
   /** Local-to-world matrices, 16 floats per instance. */
   readonly tlasInstanceLocalToWorld: Float32Array;
+  /** Source primitive/instance addresses parallel to canonical packed instance slots. */
+  readonly instancePrimitiveIndices: Uint32Array;
+  readonly instanceSourceIndices: Uint32Array;
+  /** Encoded optical boundary-id base for each full-tier packed instance. */
+  readonly opticalInstanceBoundaryIdBasePlusOne: Uint32Array;
   /** Stable primitive→TLAS binding metadata for transform-only fast paths. */
   readonly primitiveTlasBindings: readonly PrimitiveTlasBinding[];
   readonly analyticHeaders: Float32Array; // vec4f per analytic primitive: [shapeId, materialId, paramsOffset, 0]
@@ -302,6 +323,8 @@ interface PackedSceneData {
   /** CPU-only power proxy retained so emitter-only mutations rebuild the light
    * tree from the same environment integral without rebaking the map. */
   readonly environmentLightTreePower: number;
+  /** Exact represented PMF for the optional environment candidate in medium NEE. */
+  readonly environmentDistantProposalPmf: number;
   /**
    * H14-E: map-backed environment-radiance intensity multiplier.
    * Value = `scene.environment.intensity ?? 1` when a valid HDRI is present; 0 otherwise.
@@ -367,6 +390,7 @@ export interface UploadedSceneBuffers extends PackedSceneData {
   readonly tlasBlasRootsBuffer: GPUBuffer;
   readonly tlasInstanceWorldToLocalBuffer: GPUBuffer;
   readonly tlasInstanceLocalToWorldBuffer: GPUBuffer;
+  readonly opticalInstanceBoundaryIdBasePlusOneBuffer: GPUBuffer;
   /** WS2 — light-tree node storage buffer (group 3, full tier only). */
   readonly lightTreeBuffer: GPUBuffer;
   /** P2 — per-vertex UV storage buffer (group 3, full tier only). */
@@ -439,7 +463,7 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'positions',          bufferField: 'positionsBuffer',          label: 'vitrum.pt-webgpu.scene.positions' },
   { key: 'normals',            bufferField: 'normalsBuffer',            label: 'vitrum.pt-webgpu.scene.normals' },
   { key: 'indices',            bufferField: 'indicesBuffer',            label: 'vitrum.pt-webgpu.scene.indices' },
-  { key: 'triMaterialIds',     bufferField: 'triMaterialIdsBuffer',     label: 'vitrum.pt-webgpu.scene.triMaterialIds' },
+  { key: 'triMaterialPayload', bufferField: 'triMaterialIdsBuffer',     label: 'vitrum.pt-webgpu.scene.triMaterialIds' },
   { key: 'materials',          bufferField: 'materialsBuffer',          label: 'vitrum.pt-webgpu.scene.materials' },
   { key: 'bvhNodes',           bufferField: 'bvhNodesBuffer',           label: 'vitrum.pt-webgpu.scene.bvhNodes' },
   { key: 'cwbvhNodeBounds',         bufferField: 'cwbvhNodeBoundsBuffer',         label: 'vitrum.pt-webgpu.scene.cwbvhNodeBounds' },
@@ -468,12 +492,13 @@ export const SCENE_BUFFER_REGISTRY = [
   { key: 'tangents',               bufferField: 'tangentsBuffer',               label: 'vitrum.pt-webgpu.scene.tangents' },
   { key: 'colors',                 bufferField: 'colorsBuffer',                 label: 'vitrum.pt-webgpu.scene.colors' },
   { key: 'materialTexDescriptors', bufferField: 'materialTexDescriptorsBuffer', label: 'vitrum.pt-webgpu.scene.materialTexDescriptors' },
-  // ── TLAS (must be contiguous at the END; index 22 = TLAS_START_INDEX) ─────
+  // ── TLAS (must be contiguous at the END) ─────────────────────────────────
   { key: 'tlasNodes',                  bufferField: 'tlasNodesBuffer',                  label: 'vitrum.pt-webgpu.scene.tlasNodes' },
   { key: 'tlasInstanceIndices',        bufferField: 'tlasInstanceIndicesBuffer',        label: 'vitrum.pt-webgpu.scene.tlasInstanceIndices' },
   { key: 'tlasBlasRoots',             bufferField: 'tlasBlasRootsBuffer',             label: 'vitrum.pt-webgpu.scene.tlasBlasRoots' },
   { key: 'tlasInstanceWorldToLocal',   bufferField: 'tlasInstanceWorldToLocalBuffer',   label: 'vitrum.pt-webgpu.scene.tlasInstanceWorldToLocal' },
   { key: 'tlasInstanceLocalToWorld',   bufferField: 'tlasInstanceLocalToWorldBuffer',   label: 'vitrum.pt-webgpu.scene.tlasInstanceLocalToWorld' },
+  { key: 'opticalInstanceBoundaryIdBasePlusOne', bufferField: 'opticalInstanceBoundaryIdBasePlusOneBuffer', label: 'vitrum.pt-webgpu.scene.opticalInstanceBoundaryIdBasePlusOne' },
 ] as const;
 
 
@@ -663,6 +688,9 @@ export interface BuildPackedSceneOptions {
   readonly includeMneeFacetCandidates?: boolean;
   /** Device-derived byte ceiling for the shared analytic-params allocation. */
   readonly mneeFacetCandidateStorageLimitBytes?: number;
+  /** Operation-scoped immutable material/TextureRef observations shared by the
+   * MNEE gates, descriptor collection, and atlas-source metadata. */
+  readonly materialInputSnapshotContext?: MaterialInputSnapshotContext;
 
   readonly warningPhase?: EngineWarning['phase'];
   readonly warningMethod?: string;
@@ -889,6 +917,117 @@ function packMergedUvs(scene: Scene, merged: ReturnType<typeof mergeWorldSpaceFr
     out[i * 4 + 3] = uv1?.[i * 2 + 1] ?? out[i * 4 + 1]!;
   }
   return out;
+}
+
+interface MergedScenePackAddressing {
+  readonly triangleSourceIndices: Uint32Array;
+  readonly trianglePrimitiveIndices: Uint32Array;
+  readonly instancePrimitiveIndices: Uint32Array;
+  readonly instanceSourceIndices: Uint32Array;
+  /** Canonical merged-range instance slot for each BVH-reordered triangle. */
+  readonly packedInstanceIndexByTriangle: Uint32Array;
+}
+
+export function packTriangleMaterialPayload(
+  materialIds: Uint32Array,
+  representedPrimitiveInstanceIds: Uint32Array,
+): Uint32Array {
+  if (materialIds.length !== representedPrimitiveInstanceIds.length) {
+    throw new RangeError(
+      '@vitrum/pt-webgpu: triangle material and represented-instance payloads must be parallel.',
+    );
+  }
+  const payload = new Uint32Array(materialIds.length * 2);
+  for (let triangle = 0; triangle < materialIds.length; triangle += 1) {
+    const representedId = representedPrimitiveInstanceIds[triangle]!;
+    if (representedId === 0) {
+      throw new RangeError(
+        `@vitrum/pt-webgpu: triangle ${triangle} has no represented primitive-instance identity.`,
+      );
+    }
+    payload[triangle * 2] = materialIds[triangle]!;
+    payload[triangle * 2 + 1] = representedId;
+  }
+  return payload;
+}
+
+/**
+ * Reconstruct the exact source addresses that the shared optical-boundary
+ * packer expects from the merged world-space stream. A merged range is one
+ * represented primitive instance, while `bvhTriToMergedTri` supplies the
+ * inverse permutation needed to recover the source triangle ordinal.
+ */
+function mergedScenePackAddressing(
+  scene: Scene,
+  merged: ReturnType<typeof mergeWorldSpaceFromCore>,
+): MergedScenePackAddressing {
+  const invalid = 0xffff_ffff;
+  const primitiveIndexById = new Map(
+    scene.primitives.map((primitive, index) => [primitive.id, index] as const),
+  );
+  const rangeByMergedTriangle = new Uint32Array(merged.triangleCount);
+  rangeByMergedTriangle.fill(invalid);
+  const instancePrimitiveIndices = new Uint32Array(merged.meshVertexRanges.length);
+  const instanceSourceIndices = new Uint32Array(merged.meshVertexRanges.length);
+
+  for (let rangeIndex = 0; rangeIndex < merged.meshVertexRanges.length; rangeIndex += 1) {
+    const range = merged.meshVertexRanges[rangeIndex]!;
+    const primitiveId = range.sourcePrimitiveId ?? range.name;
+    const primitiveIndex = primitiveIndexById.get(primitiveId);
+    if (primitiveIndex === undefined) {
+      throw new RangeError(
+        `@vitrum/pt-webgpu: merged range ${rangeIndex} references missing primitive "${primitiveId}".`,
+      );
+    }
+    instancePrimitiveIndices[rangeIndex] = primitiveIndex;
+    instanceSourceIndices[rangeIndex] = range.sourceInstanceIndex ?? 0;
+    const end = range.triStart + range.triCount;
+    if (
+      !Number.isSafeInteger(range.triStart) || !Number.isSafeInteger(range.triCount) ||
+      range.triStart < 0 || range.triCount < 0 || end > merged.triangleCount
+    ) {
+      throw new RangeError(
+        `@vitrum/pt-webgpu: merged range ${rangeIndex} has an invalid triangle span.`,
+      );
+    }
+    for (let mergedTriangle = range.triStart; mergedTriangle < end; mergedTriangle += 1) {
+      if (rangeByMergedTriangle[mergedTriangle] !== invalid) {
+        throw new RangeError(
+          `@vitrum/pt-webgpu: merged triangle ${mergedTriangle} belongs to multiple source ranges.`,
+        );
+      }
+      rangeByMergedTriangle[mergedTriangle] = rangeIndex;
+    }
+  }
+
+  const triangleSourceIndices = new Uint32Array(merged.triangleCount);
+  const trianglePrimitiveIndices = new Uint32Array(merged.triangleCount);
+  const packedInstanceIndexByTriangle = new Uint32Array(merged.triangleCount);
+  if (merged.bvhTriToMergedTri.length !== merged.triangleCount) {
+    throw new RangeError(
+      '@vitrum/pt-webgpu: merged BVH source-triangle map does not match triangleCount.',
+    );
+  }
+  for (let triangle = 0; triangle < merged.triangleCount; triangle += 1) {
+    const mergedTriangle = merged.bvhTriToMergedTri[triangle]!;
+    const rangeIndex = rangeByMergedTriangle[mergedTriangle] ?? invalid;
+    const range = rangeIndex === invalid ? undefined : merged.meshVertexRanges[rangeIndex];
+    if (range == null) {
+      throw new RangeError(
+        `@vitrum/pt-webgpu: merged triangle ${mergedTriangle} has no source range.`,
+      );
+    }
+    triangleSourceIndices[triangle] = mergedTriangle - range.triStart;
+    trianglePrimitiveIndices[triangle] = instancePrimitiveIndices[rangeIndex]!;
+    packedInstanceIndexByTriangle[triangle] = rangeIndex;
+  }
+  return {
+    triangleSourceIndices,
+    trianglePrimitiveIndices,
+    instancePrimitiveIndices,
+    instanceSourceIndices,
+    packedInstanceIndexByTriangle,
+  };
 }
 
 function packMergedMaterial(
@@ -1373,6 +1512,8 @@ export function buildPackedScene(
   inputScene: Scene,
   options: BuildPackedSceneOptions = {},
 ): PackedSceneData {
+  const materialInputSnapshotContext =
+    options.materialInputSnapshotContext ?? createMaterialInputSnapshotContext();
   const geometryMode = options.geometryMode ?? 'tlas';
   const traceTier = geometryMode === 'merged' ? 'lite' : 'full';
   const supportManifest = ptWebgpuSupportManifest(traceTier);
@@ -1397,8 +1538,17 @@ export function buildPackedScene(
   // solved (deformed) positions instead of rest-pose. morphTargets are also
   // handled by solveSkin (blend applied before LBS).
   const scene = applySolveSkinToScene(renderFallbackScene);
+  const opticalTopology = assertOpticalMediumTopology(scene, {
+    maxNestedMedia: 8,
+    analyticGeometry: 'generated-triangle',
+    transformArithmetic: geometryMode === 'merged'
+      ? 'merged-world-f64-to-f32'
+      : 'tlas-shader-f32',
+    backend: '@vitrum/pt-webgpu',
+    method: options.warningMethod ?? 'setScene',
+  });
   if (options.includeMneeFacetCandidates) {
-    assertMneeInterfaceDomainSupported(scene);
+    assertMneeInterfaceDomainSupported(scene, materialInputSnapshotContext);
   }
 
   // Camera-visible emitters: delegate to the shared packFoldedMaterialEntry helper
@@ -1461,14 +1611,16 @@ export function buildPackedScene(
   }
 
   let gpuUvRanges: readonly GpuUvRange[] = [];
+  let mergedOpticalGeometry: ReturnType<typeof mergeWorldSpaceFromCore> | undefined;
   const emitterMaterialIds = new Map(meshMaterialIds);
-  const geo = geometryMode === 'merged'
+  const rawGeo = geometryMode === 'merged'
     ? (() => {
         const merged = mergeWorldSpaceFromCore(scene, {
           positionStride: 4,
           splitMaterialsByCastShadow: true,
           bakeConstantVertexColorIntoMaterial: true,
         });
+        mergedOpticalGeometry = merged;
         for (const range of merged.meshVertexRanges) {
           const primitiveId = range.sourcePrimitiveId ?? range.name;
           const materialId = merged.mergedTriMaterialId[range.triStart];
@@ -1482,6 +1634,7 @@ export function buildPackedScene(
           materialSpecs.push(withShadow);
         }
         gpuUvRanges = merged.meshVertexRanges;
+        const addressing = mergedScenePackAddressing(scene, merged);
         return {
           positions: merged.positions,
           normals: merged.normals,
@@ -1490,6 +1643,8 @@ export function buildPackedScene(
           colors: merged.colors,
           indices: padTriangleIndicesToVec4(merged.indices),
           triMaterialIds: merged.triMaterialId,
+          triangleSourceIndices: addressing.triangleSourceIndices,
+          trianglePrimitiveIndices: addressing.trianglePrimitiveIndices,
           bvhNodes: merged.bvhNodes,
           triangleCount: merged.triangleCount,
           tlasNodes: new Uint32Array(0),
@@ -1497,6 +1652,8 @@ export function buildPackedScene(
           tlasBlasRoots: new Uint32Array(0),
           tlasInstanceWorldToLocal: new Float32Array(0),
           tlasInstanceLocalToWorld: new Float32Array(0),
+          instancePrimitiveIndices: addressing.instancePrimitiveIndices,
+          instanceSourceIndices: addressing.instanceSourceIndices,
           tlasNodeCount: 0,
           primitiveTlasBindings: [] as readonly PrimitiveTlasBinding[],
           warnings: merged.warnings,
@@ -1510,6 +1667,29 @@ export function buildPackedScene(
         gpuUvRanges = packed.primitiveTlasBindings;
         return packed;
       })();
+  const opticalBoundaryIds = geometryMode === 'merged'
+    ? packMergedOpticalMediumBoundaryIds(
+        scene,
+        mergedOpticalGeometry!,
+        opticalTopology,
+      )
+    : packOpticalMediumBoundaryIds(scene, rawGeo, opticalTopology);
+  const opticalIndices = new Uint32Array(rawGeo.indices);
+  for (let triangle = 0; triangle < rawGeo.triangleCount; triangle += 1) {
+    const encodedBoundary =
+      opticalBoundaryIds.triangleComponentIndexPlusOne[triangle] ?? 0;
+    opticalIndices[triangle * 4 + 3] = encodedBoundary;
+  }
+  const geo: ScenePackResult = { ...rawGeo, indices: opticalIndices };
+  const triangleRepresentedPrimitiveInstanceIds =
+    opticalBoundaryIds.triangleRepresentedPrimitiveInstanceIds;
+  const triMaterialPayload = packTriangleMaterialPayload(
+    geo.triMaterialIds.subarray(0, geo.triangleCount),
+    triangleRepresentedPrimitiveInstanceIds,
+  );
+  const opticalInstanceBoundaryIdBasePlusOne = geometryMode === 'merged'
+    ? new Uint32Array(0)
+    : opticalBoundaryIds.instanceBoundaryIdBasePlusOne;
   let mneeFacetCandidateRecords: Float32Array | undefined;
   if (options.includeMneeFacetCandidates) {
     if (geometryMode !== 'tlas') {
@@ -1528,6 +1708,7 @@ export function buildPackedScene(
       geo.primitiveTlasBindings,
       storageLimit,
       analyticParams.length * Float32Array.BYTES_PER_ELEMENT,
+      materialInputSnapshotContext,
     );
     mneeFacetCandidateRecords = table.records;
   }
@@ -1560,7 +1741,10 @@ export function buildPackedScene(
       return true;
     }),
   );
-  const texCollection = collectMaterialTextures(materialSpecs);
+  const texCollection = collectMaterialTextures(
+    materialSpecs,
+    materialInputSnapshotContext,
+  );
   const gpuUvs = packGpuUvSets(
     scene,
     geo.uvs,
@@ -1571,6 +1755,12 @@ export function buildPackedScene(
     materialIdByPrimitive: emitterMaterialIds,
   });
   const environment = environmentParams(scene);
+  const environmentDistantProposalPmf = applyDistantDirectProposalPmf(
+    emitArrays.directionalLightsData,
+    emitArrays.directionalLightCount,
+    environment.lightTreePower,
+    environment.hasHdri,
+  );
   assertPtWebgpuEnvironmentMaterialEnvelopeF32(
     environment.hdriTexels,
     environment.hdriIntensity,
@@ -1655,6 +1845,10 @@ export function buildPackedScene(
     colors: geo.colors,
     indices: geo.indices,
     triMaterialIds: geo.triMaterialIds,
+    triMaterialPayload,
+    triangleRepresentedPrimitiveInstanceIds,
+    triangleSourceIndices: geo.triangleSourceIndices,
+    trianglePrimitiveIndices: geo.trianglePrimitiveIndices,
     materials: new Float32Array(materials),
     cwbvhNodeBounds: cwbvh.cwbvhNodeBounds,
     cwbvhChildBoundsPacked: cwbvh.cwbvhChildBoundsPacked,
@@ -1677,6 +1871,9 @@ export function buildPackedScene(
     tlasBlasRoots: geo.tlasBlasRoots,
     tlasInstanceWorldToLocal: geo.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: geo.tlasInstanceLocalToWorld,
+    instancePrimitiveIndices: geo.instancePrimitiveIndices,
+    instanceSourceIndices: geo.instanceSourceIndices,
+    opticalInstanceBoundaryIdBasePlusOne,
     primitiveTlasBindings: geo.primitiveTlasBindings,
     analyticHeaders: packedAnalyticHeaders,
     analyticParams: packedAnalyticParams,
@@ -1700,6 +1897,7 @@ export function buildPackedScene(
     meshAreaLightsData: emitArrays.meshAreaLightsData,
     environmentTint: environment.tint,
     environmentLightTreePower: environment.lightTreePower,
+    environmentDistantProposalPmf,
     environmentHdriIntensity: environment.hdriIntensity,
     environmentHdriRotationY: environment.hdriRotationY,
     environmentMapWidth: environment.hdriWidth,
@@ -1724,6 +1922,8 @@ export function scenePackResultFromPacked(packed: PackedSceneData): ScenePackRes
     colors: packed.colors,
     indices: packed.indices,
     triMaterialIds: packed.triMaterialIds,
+    triangleSourceIndices: packed.triangleSourceIndices,
+    trianglePrimitiveIndices: packed.trianglePrimitiveIndices,
     bvhNodes: packed.bvhNodes,
     triangleCount: packed.triangleCount,
     tlasNodes: packed.tlasNodes,
@@ -1731,6 +1931,8 @@ export function scenePackResultFromPacked(packed: PackedSceneData): ScenePackRes
     tlasBlasRoots: packed.tlasBlasRoots,
     tlasInstanceWorldToLocal: packed.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: packed.tlasInstanceLocalToWorld,
+    instancePrimitiveIndices: packed.instancePrimitiveIndices,
+    instanceSourceIndices: packed.instanceSourceIndices,
     tlasNodeCount: Math.floor(packed.tlasNodes.length / BVH_NODE_FLOATS),
     primitiveTlasBindings: packed.primitiveTlasBindings,
     warnings: packed.warnings,
@@ -1773,11 +1975,15 @@ interface MutableSceneBuffers {
   tlasBlasRootsBuffer: GPUBuffer;
   tlasInstanceWorldToLocalBuffer: GPUBuffer;
   tlasInstanceLocalToWorldBuffer: GPUBuffer;
+  opticalInstanceBoundaryIdBasePlusOneBuffer: GPUBuffer;
   tlasNodes: Uint32Array;
   tlasInstanceIndices: Uint32Array;
   tlasBlasRoots: Uint32Array;
   tlasInstanceWorldToLocal: Float32Array;
   tlasInstanceLocalToWorld: Float32Array;
+  opticalInstanceBoundaryIdBasePlusOne: Uint32Array;
+  instancePrimitiveIndices: Uint32Array;
+  instanceSourceIndices: Uint32Array;
 
   // ── BLAS GPU handles + CPU mirrors (realloc'd on vertex/index-count change)
   positionsBuffer: GPUBuffer;
@@ -1800,6 +2006,10 @@ interface MutableSceneBuffers {
   colors: Float32Array;
   indices: Uint32Array;
   triMaterialIds: Uint32Array;
+  triMaterialPayload: Uint32Array;
+  triangleRepresentedPrimitiveInstanceIds: Uint32Array;
+  triangleSourceIndices: Uint32Array;
+  trianglePrimitiveIndices: Uint32Array;
   bvhNodes: Float32Array;
   cwbvhNodeBounds: Float32Array;
   cwbvhChildBoundsPacked: Uint32Array;
@@ -1850,6 +2060,7 @@ interface MutableSceneBuffers {
   // ── Environment fields (incremental environment patches) ─────────────────
   environmentTint: readonly [number, number, number];
   environmentLightTreePower: number;
+  environmentDistantProposalPmf: number;
   environmentHdriIntensity: number;
   environmentHdriRotationY: number;
   environmentMapWidth: number;
@@ -2367,6 +2578,16 @@ export function scenePackGeometryMutationPatch(
   uvsOverride?: Float32Array,
 ): SceneBufferMutationPatch {
   const cwbvh = buildPackedCwbvhSceneData(pack);
+  const triangleRepresentedPrimitiveInstanceIds = new Uint32Array(pack.triangleCount);
+  for (let triangle = 0; triangle < pack.triangleCount; triangle += 1) {
+    const primitiveIndex = pack.trianglePrimitiveIndices[triangle]!;
+    if (primitiveIndex === 0xffff_ffff) {
+      throw new RangeError(
+        `[pt-webgpu] triangle ${triangle} has an unencodable represented primitive identity`,
+      );
+    }
+    triangleRepresentedPrimitiveInstanceIds[triangle] = primitiveIndex + 1;
+  }
   const bounds = sceneCenterRadiusFromPack({
     ...pack,
     analyticHeaders: sb.analyticHeaders,
@@ -2381,6 +2602,13 @@ export function scenePackGeometryMutationPatch(
     colors: pack.colors,
     indices: pack.indices,
     triMaterialIds: pack.triMaterialIds,
+    triMaterialPayload: packTriangleMaterialPayload(
+      pack.triMaterialIds.subarray(0, pack.triangleCount),
+      triangleRepresentedPrimitiveInstanceIds,
+    ),
+    triangleRepresentedPrimitiveInstanceIds,
+    triangleSourceIndices: pack.triangleSourceIndices,
+    trianglePrimitiveIndices: pack.trianglePrimitiveIndices,
     bvhNodes: pack.bvhNodes,
     cwbvhNodeBounds: cwbvh.cwbvhNodeBounds,
     cwbvhChildBoundsPacked: cwbvh.cwbvhChildBoundsPacked,
@@ -2403,6 +2631,8 @@ export function scenePackGeometryMutationPatch(
       tlasBlasRoots: pack.tlasBlasRoots,
       tlasInstanceWorldToLocal: pack.tlasInstanceWorldToLocal,
       tlasInstanceLocalToWorld: pack.tlasInstanceLocalToWorld,
+      instancePrimitiveIndices: pack.instancePrimitiveIndices,
+      instanceSourceIndices: pack.instanceSourceIndices,
       tlasNodeCount: pack.tlasNodeCount,
     } satisfies SceneBufferMutationPatch);
   }
@@ -2433,6 +2663,8 @@ export function scenePackTlasMutationPatch(
     | 'tlasBlasRoots'
     | 'tlasInstanceWorldToLocal'
     | 'tlasInstanceLocalToWorld'
+    | 'instancePrimitiveIndices'
+    | 'instanceSourceIndices'
     | 'tlasNodeCount'
     | 'primitiveTlasBindings'
   >,
@@ -2454,6 +2686,8 @@ export function scenePackTlasMutationPatch(
     tlasBlasRoots: pack.tlasBlasRoots,
     tlasInstanceWorldToLocal: pack.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: pack.tlasInstanceLocalToWorld,
+    instancePrimitiveIndices: pack.instancePrimitiveIndices,
+    instanceSourceIndices: pack.instanceSourceIndices,
     cwbvhTlasBlasRoots: roots,
     tlasNodeCount: pack.tlasNodeCount,
     primitiveTlasBindings: pack.primitiveTlasBindings,
@@ -2473,6 +2707,8 @@ export function prepareScenePackTlasMutation(
     | 'tlasBlasRoots'
     | 'tlasInstanceWorldToLocal'
     | 'tlasInstanceLocalToWorld'
+    | 'instancePrimitiveIndices'
+    | 'instanceSourceIndices'
     | 'tlasNodeCount'
     | 'primitiveTlasBindings'
   >,
@@ -2737,25 +2973,30 @@ function uploadPackedSceneInner(
   // Validate both array payloads and their combined resident/upload peak
   // before allocating the first texture. Per-array checks alone permit two
   // individually-valid arrays to exceed the process-level atlas budget.
-  const aggregateMaterialTexturePeakBytes =
-    estimateMaterialTextureArrayPeakBytes(
-      device,
-      packed.materialTextureSources,
-      'rgba8unorm-srgb',
-      forbiddenResources,
-    ) +
-    estimateMaterialTextureArrayPeakBytes(
-      device,
-      packed.materialTextureLinearSources,
-      'rgba8unorm',
-      forbiddenResources,
-    ) +
-    estimateMaterialTextureArrayPeakBytes(
-      device,
-      packed.materialTextureEmissiveSources,
-      'rgba16float',
-      forbiddenResources,
-    );
+  const radianceEnvelope = materialTextureRadianceEnvelope(packed);
+  const materialTextureUploadPlan = stageMaterialTextureUploadPlan(
+    device,
+    [
+      {
+        sources: packed.materialTextureSources,
+        format: 'rgba8unorm-srgb',
+        layerInfos: packed.materialTextureSourceInfos,
+      },
+      {
+        sources: packed.materialTextureLinearSources,
+        format: 'rgba8unorm',
+        layerInfos: packed.materialTextureLinearSourceInfos,
+      },
+      {
+        sources: packed.materialTextureEmissiveSources,
+        format: 'rgba16float',
+        layerInfos: packed.materialTextureEmissiveSourceInfos,
+        radianceEnvelope,
+      },
+    ],
+    forbiddenResources,
+  );
+  const aggregateMaterialTexturePeakBytes = materialTextureUploadPlan.estimatedPeakBytes;
   if (
     !Number.isSafeInteger(aggregateMaterialTexturePeakBytes) ||
     aggregateMaterialTexturePeakBytes > MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES
@@ -2765,33 +3006,20 @@ function uploadPackedSceneInner(
         `${MATERIAL_TEXTURE_ARRAY_PEAK_BUDGET_BYTES}-byte budget before GPU allocation.`,
     );
   }
-  const radianceEnvelope = materialTextureRadianceEnvelope(packed);
-
-  const materialTextureArray = trackMaterialArray(createMaterialTextureArray(
+  const materialTextureArray = trackMaterialArray(createMaterialTextureArrayFromStaged(
     device,
-    packed.materialTextureSources,
-    'rgba8unorm-srgb',
-    packed.materialTextureSourceInfos,
-    forbiddenResources,
+    materialTextureUploadPlan.arrays[0]!,
   ));
   // Linear array (normal + ORM) — rgba8unorm so the sampler does NOT sRGB-decode.
-  const materialLinearArray = trackMaterialArray(createMaterialTextureArray(
+  const materialLinearArray = trackMaterialArray(createMaterialTextureArrayFromStaged(
     device,
-    packed.materialTextureLinearSources,
-    'rgba8unorm',
-    packed.materialTextureLinearSourceInfos,
-    forbiddenResources,
-    radianceEnvelope,
+    materialTextureUploadPlan.arrays[1]!,
   ));
-  // Dedicated HDR emissive array. Integer/external sources are sRGB-decoded on
-  // upload while raw-float sources retain linear radiance above one.
-  const materialEmissiveArray = trackMaterialArray(createMaterialTextureArray(
+  // Dedicated HDR outgoing-radiance array. Per-layer provenance selects sRGB
+  // emissive versus linear light-map bytes; raw Float32 remains linear HDR.
+  const materialEmissiveArray = trackMaterialArray(createMaterialTextureArrayFromStaged(
     device,
-    packed.materialTextureEmissiveSources,
-    'rgba16float',
-    packed.materialTextureEmissiveSourceInfos,
-    forbiddenResources,
-    radianceEnvelope,
+    materialTextureUploadPlan.arrays[2]!,
   ));
   applyMaterialTextureUvFitScales(
     packed.materialTexDescriptors,

@@ -5,7 +5,7 @@
  * Atlas layout:
  *  irradianceAtlas: (dimsX * 5) × (dimsY * dimsZ * 5) rgba16float
  *    each probe cell = 3×3 (L2 SH, 9 RGB coefficients) + 2px border = 5×5
- *  visibilityAtlas: (dimsX * 18) × (dimsY * dimsZ * 18) rg16float
+ *  visibilityAtlas: (dimsX * 18) × (dimsY * dimsZ * 18) rgba16float
  *    each probe cell = 16×16 + 2px border = 18×18
  *
  * The irradiance cell migrated from octahedral 8×8 to L2 SH 3×3 (ddgiSH.wgsl.ts,
@@ -22,8 +22,20 @@
 // Atlas-layout constants imported from the canonical source so producer
 // and consumers (ddgiSampleWgsl.ts + shade.wgsl.ts) stay in lockstep.
 import { IRR_CELL, VIS_CELL, BORDER } from './ddgiAtlasLayout.js';
+import { RAYS_PER_PROBE } from './ddgiConstants.js';
+import { DDGI_PROBE_MAX_OFFSET_NORMALIZED } from './probeState.js';
 import {
+  DDGI_DIAGONAL_COMPONENT_F32,
+  DDGI_NORMAL_BIAS_FACTOR_F32,
+  DDGI_VISIBILITY_DISTANCE_MAX,
+} from './ddgiNumericLimits.js';
+import {
+  DDGI_F32_MAX,
+  assertDdgiU32,
   assertFiniteDdgiNumber,
+  packDdgiProbeSpacingFloat32,
+  packFiniteDdgiFloat32,
+  packPositiveDdgiFloat32,
   assertPositiveDdgiInteger,
 } from './inputValidation.js';
 
@@ -43,24 +55,68 @@ export interface ProbeGridVector3 {
 }
 
 export class ProbeGridVector3Value implements ProbeGridVector3 {
+  private _x: number;
+  private _y: number;
+  private _z: number;
+  private readonly _onChange?: () => void;
+  private readonly _validateCandidate?: (candidate: ProbeGridVector3) => void;
+
   constructor(
-    public x = 0,
-    public y = 0,
-    public z = 0,
-  ) {}
+    x = 0,
+    y = 0,
+    z = 0,
+    onChange?: () => void,
+    validateCandidate?: (candidate: ProbeGridVector3) => void,
+  ) {
+    Object.defineProperty(this, '_onChange', {
+      value: onChange,
+      enumerable: false,
+    });
+    Object.defineProperty(this, '_validateCandidate', {
+      value: validateCandidate,
+      enumerable: false,
+    });
+    this._x = packFiniteDdgiFloat32(x, 'DDGI probe vector x');
+    this._y = packFiniteDdgiFloat32(y, 'DDGI probe vector y');
+    this._z = packFiniteDdgiFloat32(z, 'DDGI probe vector z');
+  }
+
+  get x(): number { return this._x; }
+  set x(value: number) {
+    const nextX = packFiniteDdgiFloat32(value, 'DDGI probe vector x');
+    this._validateCandidate?.({ x: nextX, y: this._y, z: this._z });
+    this._x = nextX;
+    this._onChange?.();
+  }
+  get y(): number { return this._y; }
+  set y(value: number) {
+    const nextY = packFiniteDdgiFloat32(value, 'DDGI probe vector y');
+    this._validateCandidate?.({ x: this._x, y: nextY, z: this._z });
+    this._y = nextY;
+    this._onChange?.();
+  }
+  get z(): number { return this._z; }
+  set z(value: number) {
+    const nextZ = packFiniteDdgiFloat32(value, 'DDGI probe vector z');
+    this._validateCandidate?.({ x: this._x, y: this._y, z: nextZ });
+    this._z = nextZ;
+    this._onChange?.();
+  }
 
   set(x: number, y: number, z: number): this {
-    this.x = x;
-    this.y = y;
-    this.z = z;
+    const nextX = packFiniteDdgiFloat32(x, 'DDGI probe vector x');
+    const nextY = packFiniteDdgiFloat32(y, 'DDGI probe vector y');
+    const nextZ = packFiniteDdgiFloat32(z, 'DDGI probe vector z');
+    this._validateCandidate?.({ x: nextX, y: nextY, z: nextZ });
+    this._x = nextX;
+    this._y = nextY;
+    this._z = nextZ;
+    this._onChange?.();
     return this;
   }
 
   copy(v: ProbeGridVector3): this {
-    this.x = v.x;
-    this.y = v.y;
-    this.z = v.z;
-    return this;
+    return this.set(v.x, v.y, v.z);
   }
 
   equals(v: ProbeGridVector3): boolean {
@@ -103,19 +159,19 @@ function _normaliseBounds(b: ProbeGridBounds): ProbeGridBoxLike {
 }
 
 export interface ProbeGridDims {
-  x: number;
-  y: number;
-  z: number;
+  readonly x: number;
+  readonly y: number;
+  readonly z: number;
 }
 
 export interface ProbeGridParams {
-  origin: ProbeGridVector3;
-  spacing: number;
-  dims: ProbeGridDims;
-  irradianceAtlasW: number;
-  irradianceAtlasH: number;
-  visibilityAtlasW: number;
-  visibilityAtlasH: number;
+  readonly origin: ProbeGridVector3;
+  readonly spacing: number;
+  readonly dims: ProbeGridDims;
+  readonly irradianceAtlasW: number;
+  readonly irradianceAtlasH: number;
+  readonly visibilityAtlasW: number;
+  readonly visibilityAtlasH: number;
 }
 
 /**
@@ -128,10 +184,194 @@ export interface AtlasTextureSlot {
   readonly height: number;
 }
 
+const DDGI_MAX_EXACT_F32_INTEGER = 0x1_000000;
+
+export interface ValidatedGridPublication {
+  readonly origin: Readonly<ProbeGridVector3>;
+  readonly spacing: number;
+  readonly dims: Readonly<ProbeGridDims>;
+  readonly irradianceAtlasW: number;
+  readonly irradianceAtlasH: number;
+  readonly visibilityAtlasW: number;
+  readonly visibilityAtlasH: number;
+  readonly probeCount: number;
+}
+
+function nextPositiveFloat32(value: number, label: string): number {
+  let packed = packPositiveDdgiFloat32(value, label);
+  if (packed >= value) return packed;
+  const bytes = new ArrayBuffer(4);
+  const view = new DataView(bytes);
+  view.setFloat32(0, packed, true);
+  const bits = view.getUint32(0, true);
+  if (bits >= 0x7f7f_ffff) {
+    throw new RangeError(`${label} cannot be rounded upward to a finite float32.`);
+  }
+  view.setUint32(0, bits + 1, true);
+  packed = view.getFloat32(0, true);
+  return packPositiveDdgiFloat32(packed, label);
+}
+
+function assertExactPositiveF32Integer(value: number, label: string): void {
+  assertDdgiU32(value, label);
+  if (value < 1 || value > DDGI_MAX_EXACT_F32_INTEGER || Math.fround(value) !== value) {
+    throw new RangeError(`${label} must be a positive integer exactly representable as float32.`);
+  }
+}
+
+function finiteF32Product(a: number, b: number, label: string): number {
+  const product = a * b;
+  if (!Number.isFinite(product) || Math.abs(product) > DDGI_F32_MAX) {
+    throw new RangeError(`${label} exceeds the finite float32 range.`);
+  }
+  const packed = Math.fround(product);
+  if (!Number.isFinite(packed)) {
+    throw new RangeError(`${label} must remain finite when published as float32.`);
+  }
+  return packed;
+}
+
+function stableLength3(x: number, y: number, z: number): number {
+  const scale = Math.max(Math.abs(x), Math.abs(y), Math.abs(z));
+  if (scale === 0) return 0;
+  return scale * Math.hypot(x / scale, y / scale, z / scale);
+}
+
+export function validateGridPublication(
+  originInput: ProbeGridVector3,
+  spacingInput: number,
+  dimsInput: ProbeGridDims,
+): ValidatedGridPublication {
+  const origin = Object.freeze({
+    x: packFiniteDdgiFloat32(originInput.x, 'DDGI probe origin.x'),
+    y: packFiniteDdgiFloat32(originInput.y, 'DDGI probe origin.y'),
+    z: packFiniteDdgiFloat32(originInput.z, 'DDGI probe origin.z'),
+  });
+  const spacing = packDdgiProbeSpacingFloat32(spacingInput, 'DDGI probe spacing');
+  const dims = Object.freeze({ x: dimsInput.x, y: dimsInput.y, z: dimsInput.z });
+  for (const axis of ['x', 'y', 'z'] as const) {
+    assertExactPositiveF32Integer(dims[axis], `DDGI probe dims.${axis}`);
+  }
+
+  const probeCount = dims.x * dims.y * dims.z;
+  assertDdgiU32(probeCount, 'DDGI probe count');
+  assertDdgiU32(
+    probeCount * RAYS_PER_PROBE,
+    'DDGI probe-ray result count',
+  );
+  const yz = dims.y * dims.z;
+  assertDdgiU32(yz, 'DDGI probe YZ product');
+  const irradianceAtlasW = dims.x * (IRR_CELL + BORDER);
+  const irradianceAtlasH = yz * (IRR_CELL + BORDER);
+  const visibilityAtlasW = dims.x * (VIS_CELL + BORDER);
+  const visibilityAtlasH = yz * (VIS_CELL + BORDER);
+  assertExactPositiveF32Integer(irradianceAtlasW, 'DDGI irradiance atlas width');
+  assertExactPositiveF32Integer(irradianceAtlasH, 'DDGI irradiance atlas height');
+  assertExactPositiveF32Integer(visibilityAtlasW, 'DDGI visibility atlas width');
+  assertExactPositiveF32Integer(visibilityAtlasH, 'DDGI visibility atlas height');
+
+  const spacingTimes16 = finiteF32Product(spacing, 16, 'DDGI visibility open distance');
+  if (spacingTimes16 > DDGI_VISIBILITY_DISTANCE_MAX) {
+    throw new RangeError('DDGI probe spacing exceeds the finite visibility-moment distance envelope.');
+  }
+
+  const spans = {
+    x: finiteF32Product(dims.x - 1, spacing, 'DDGI lattice span.x'),
+    y: finiteF32Product(dims.y - 1, spacing, 'DDGI lattice span.y'),
+    z: finiteF32Product(dims.z - 1, spacing, 'DDGI lattice span.z'),
+  };
+  for (const axis of ['x', 'y', 'z'] as const) {
+    const endpoint = Math.fround(origin[axis] + spans[axis]);
+    if (!Number.isFinite(endpoint)) {
+      throw new RangeError(`DDGI lattice endpoint.${axis} must remain finite as float32.`);
+    }
+    if (dims[axis] > 1 && spans[axis] > 0) {
+      const first = Math.fround(origin[axis] + spacing);
+      const previous = Math.fround(
+        origin[axis] + Math.fround((dims[axis] - 2) * spacing),
+      );
+      if (first === origin[axis] || endpoint === previous) {
+        throw new RangeError(`DDGI lattice adjacency is not resolvable on axis ${axis} in float32.`);
+      }
+    }
+    // Mirror WGSL's two separately-rounded multiplications exactly. A single
+    // pre-combined JS factor can admit a lattice whose shader-side bias rounds
+    // back onto a large world-space endpoint.
+    const normalBias = Math.fround(spacing * DDGI_NORMAL_BIAS_FACTOR_F32);
+    const observableBias = Math.fround(
+      normalBias * DDGI_DIAGONAL_COMPONENT_F32,
+    );
+    for (const position of [origin[axis], endpoint]) {
+      const plus = Math.fround(position + observableBias);
+      const minus = Math.fround(position - observableBias);
+      if (
+        !Number.isFinite(plus) || !Number.isFinite(minus) ||
+        plus === position || minus === position
+      ) {
+        throw new RangeError(`DDGI world-space bias is not observable at the ${axis}-axis lattice boundary in float32.`);
+      }
+    }
+  }
+  const latticeDiagonal = stableLength3(spans.x, spans.y, spans.z);
+  const relocationReach = spacing * DDGI_PROBE_MAX_OFFSET_NORMALIZED;
+  if (
+    !Number.isFinite(latticeDiagonal) ||
+    !Number.isFinite(relocationReach) ||
+    latticeDiagonal + relocationReach > DDGI_VISIBILITY_DISTANCE_MAX
+  ) {
+    throw new RangeError('DDGI lattice diagonal exceeds the finite visibility-moment distance envelope.');
+  }
+
+  return Object.freeze({
+    origin,
+    spacing,
+    dims,
+    irradianceAtlasW,
+    irradianceAtlasH,
+    visibilityAtlasW,
+    visibilityAtlasH,
+    probeCount,
+  });
+}
+
 export class ProbeGrid {
-  dims: ProbeGridDims = { x: 2, y: 2, z: 2 };
-  worldOrigin: ProbeGridVector3Value = new ProbeGridVector3Value();
-  worldSpacing: number = 24;
+  private _dims: Readonly<ProbeGridDims> = Object.freeze({ x: 2, y: 2, z: 2 });
+  readonly worldOrigin = new ProbeGridVector3Value(0, 0, 0, () => {
+    this.dirty = true;
+  }, (candidate) => {
+    if (this._applyingPublication === null) {
+      validateGridPublication(candidate, this._worldSpacing, this._dims);
+    }
+  });
+  private _worldSpacing = 24;
+  /** Suppresses intermediate validation while an already-validated tuple is committed atomically. */
+  private _applyingPublication: ValidatedGridPublication | null = null;
+
+  get dims(): Readonly<ProbeGridDims> { return this._dims; }
+  set dims(value: ProbeGridDims) {
+    const next = Object.freeze({ x: value.x, y: value.y, z: value.z });
+    const publication = validateGridPublication(this.worldOrigin, this._worldSpacing, next);
+    this._dims = publication.dims;
+    this.dirty = true;
+  }
+
+  get worldSpacing(): number { return this._worldSpacing; }
+  set worldSpacing(value: number) {
+    const publication = validateGridPublication(this.worldOrigin, value, this._dims);
+    this._worldSpacing = publication.spacing;
+    this.dirty = true;
+  }
+
+  private _commitPublication(publication: ValidatedGridPublication): void {
+    this._applyingPublication = publication;
+    try {
+      this._dims = publication.dims;
+      this._worldSpacing = publication.spacing;
+      this.worldOrigin.copy(publication.origin);
+    } finally {
+      this._applyingPublication = null;
+    }
+  }
 
   /** Ping-pong irradiance atlases (A read / B write, swap each frame). */
   irradianceA: AtlasTextureSlot | null = null;
@@ -152,17 +392,17 @@ export class ProbeGrid {
     return this._params;
   }
 
-  get irradianceReadTex(): AtlasTextureSlot {
-    return (this.writeIsA ? this.irradianceB : this.irradianceA)!;
+  get irradianceReadTex(): AtlasTextureSlot | null {
+    return this.writeIsA ? this.irradianceB : this.irradianceA;
   }
-  get irradianceWriteTex(): AtlasTextureSlot {
-    return (this.writeIsA ? this.irradianceA : this.irradianceB)!;
+  get irradianceWriteTex(): AtlasTextureSlot | null {
+    return this.writeIsA ? this.irradianceA : this.irradianceB;
   }
-  get visibilityReadTex(): AtlasTextureSlot {
-    return (this.writeIsA ? this.visibilityB : this.visibilityA)!;
+  get visibilityReadTex(): AtlasTextureSlot | null {
+    return this.writeIsA ? this.visibilityB : this.visibilityA;
   }
-  get visibilityWriteTex(): AtlasTextureSlot {
-    return (this.writeIsA ? this.visibilityA : this.visibilityB)!;
+  get visibilityWriteTex(): AtlasTextureSlot | null {
+    return this.writeIsA ? this.visibilityA : this.visibilityB;
   }
 
   swap(): void {
@@ -187,30 +427,47 @@ export class ProbeGrid {
   ): boolean {
     const box = _normaliseBounds(boundingBox);
     const axes = ['x', 'y', 'z'] as const;
+    const rawMin = { x: box.min.x, y: box.min.y, z: box.min.z };
+    const rawMax = { x: box.max.x, y: box.max.y, z: box.max.z };
     for (const axis of axes) {
-      assertFiniteDdgiNumber(box.min[axis], `DDGI probe bounds min.${axis}`);
-      assertFiniteDdgiNumber(box.max[axis], `DDGI probe bounds max.${axis}`);
-      if (box.min[axis] > box.max[axis]) {
+      assertFiniteDdgiNumber(rawMin[axis], `DDGI probe bounds min.${axis}`);
+      assertFiniteDdgiNumber(rawMax[axis], `DDGI probe bounds max.${axis}`);
+      if (rawMin[axis] > rawMax[axis]) {
         throw new RangeError(
           `DDGI probe bounds min.${axis} must be <= max.${axis}.`,
         );
       }
     }
-    if (spacingInches !== undefined) {
-      assertFiniteDdgiNumber(spacingInches, 'DDGI probe spacing');
-      if (spacingInches <= 0) {
-        throw new RangeError('DDGI probe spacing must be > 0.');
+    const min = {
+      x: packFiniteDdgiFloat32(rawMin.x, 'DDGI probe bounds min.x'),
+      y: packFiniteDdgiFloat32(rawMin.y, 'DDGI probe bounds min.y'),
+      z: packFiniteDdgiFloat32(rawMin.z, 'DDGI probe bounds min.z'),
+    };
+    const max = {
+      x: packFiniteDdgiFloat32(rawMax.x, 'DDGI probe bounds max.x'),
+      y: packFiniteDdgiFloat32(rawMax.y, 'DDGI probe bounds max.y'),
+      z: packFiniteDdgiFloat32(rawMax.z, 'DDGI probe bounds max.z'),
+    };
+    const size = { x: 0, y: 0, z: 0 };
+    for (const axis of axes) {
+      const rawExtent = rawMax[axis] - rawMin[axis];
+      if (!Number.isFinite(rawExtent) || rawExtent > DDGI_F32_MAX) {
+        throw new RangeError(`DDGI probe bounds extent.${axis} exceeds the finite float32 range.`);
       }
+      const packedExtent = Math.fround(max[axis] - min[axis]);
+      if (!Number.isFinite(packedExtent) || (rawExtent > 0 && !(packedExtent > 0))) {
+        throw new RangeError(`DDGI probe bounds extent.${axis} is not positive and finite in float32.`);
+      }
+      size[axis] = packedExtent;
     }
+    const packedRequestedSpacing = spacingInches === undefined
+      ? undefined
+      : packDdgiProbeSpacingFloat32(spacingInches, 'DDGI probe spacing');
     assertPositiveDdgiInteger(maxProbesPerAxis, 'DDGI max probes per axis');
-    const size = new ProbeGridVector3Value();
-    const min = new ProbeGridVector3Value();
-    size.set(
-      box.max.x - box.min.x,
-      box.max.y - box.min.y,
-      box.max.z - box.min.z,
-    );
-    min.copy(box.min);
+    assertDdgiU32(maxProbesPerAxis, 'DDGI max probes per axis');
+    if (maxProbesPerAxis < 3) {
+      throw new RangeError('DDGI max probes per axis must be >= 3.');
+    }
     // Target ~13 probes along the longest axis (`/ 12`). The denser the
     // grid, the smaller the trilinear-interp blocks visible at shadow
     // boundaries. At 5×5×5 the 0.5-unit cells produce screen-visible
@@ -220,37 +477,52 @@ export class ProbeGrid {
     const maxExtent = Math.max(size.x, size.y, size.z);
     // A point/fully-degenerate AABB still needs a finite grid. One scene unit is
     // the least-surprising fallback when no positive extent exists to derive it.
-    const autoSpacing = maxExtent > 0 ? maxExtent / 12 : 1;
-    const requestedSpacing = spacingInches ?? autoSpacing;
-    const cap = Math.max(3, maxProbesPerAxis);
+    const autoSpacing = maxExtent > 0
+      ? nextPositiveFloat32(maxExtent / 12, 'DDGI auto probe spacing')
+      : 1;
+    const requestedSpacing = packedRequestedSpacing ?? autoSpacing;
+    const cap = maxProbesPerAxis;
     // A dimension cap must coarsen the physical lattice as well as truncate
     // its integer dimensions. Keeping the requested spacing while clipping
     // `dims` leaves the far side of a large scene outside the probe volume.
     // Use one isotropic spacing so the capped lattice still encloses every
     // axis: origin + (dims - 1) * spacing >= bounds.max.
-    const PROBE_SPACING = Math.max(
+    const probeSpacing = nextPositiveFloat32(Math.max(
       requestedSpacing,
       size.x / (cap - 1),
       size.y / (cap - 1),
       size.z / (cap - 1),
-    );
+    ), 'DDGI derived probe spacing');
 
-    const nx = Math.max(3, Math.ceil(size.x / PROBE_SPACING) + 1);
-    const ny = Math.max(3, Math.ceil(size.y / PROBE_SPACING) + 1);
-    const nz = Math.max(3, Math.ceil(size.z / PROBE_SPACING) + 1);
+    const nx = Math.max(3, Math.ceil(size.x / probeSpacing) + 1);
+    const ny = Math.max(3, Math.ceil(size.y / probeSpacing) + 1);
+    const nz = Math.max(3, Math.ceil(size.z / probeSpacing) + 1);
 
     const cx = Math.min(nx, cap);
     const cy = Math.min(ny, cap);
     const cz = Math.min(nz, cap);
 
-    const changed =
-      cx !== this.dims.x || cy !== this.dims.y || cz !== this.dims.z ||
-      !this.worldOrigin.equals(min) ||
-      this.worldSpacing !== PROBE_SPACING;
+    const publication = validateGridPublication(
+      min,
+      probeSpacing,
+      { x: cx, y: cy, z: cz },
+    );
+    for (const axis of axes) {
+      const span = Math.fround((publication.dims[axis] - 1) * publication.spacing);
+      const endpoint = Math.fround(publication.origin[axis] + span);
+      if (endpoint < max[axis]) {
+        throw new RangeError(`DDGI lattice endpoint.${axis} does not enclose the published scene bound.`);
+      }
+    }
 
-    this.dims = { x: cx, y: cy, z: cz };
-    this.worldOrigin.copy(min);
-    this.worldSpacing = PROBE_SPACING;
+    const changed =
+      publication.dims.x !== this.dims.x ||
+      publication.dims.y !== this.dims.y ||
+      publication.dims.z !== this.dims.z ||
+      !this.worldOrigin.equals(publication.origin) ||
+      this.worldSpacing !== publication.spacing;
+
+    this._commitPublication(publication);
     this.dirty = changed;
     return changed;
   }
@@ -260,32 +532,37 @@ export class ProbeGrid {
    * Must be called after computeFromBounds returns true.
    */
   allocateAtlases(): void {
+    const publication = validateGridPublication(
+      this.worldOrigin,
+      this.worldSpacing,
+      this.dims,
+    );
+    const makeSlot = (w: number, h: number): AtlasTextureSlot =>
+      Object.freeze({ width: w, height: h });
+    const irradianceA = makeSlot(publication.irradianceAtlasW, publication.irradianceAtlasH);
+    const irradianceB = makeSlot(publication.irradianceAtlasW, publication.irradianceAtlasH);
+    const visibilityA = makeSlot(publication.visibilityAtlasW, publication.visibilityAtlasH);
+    const visibilityB = makeSlot(publication.visibilityAtlasW, publication.visibilityAtlasH);
+    const params: ProbeGridParams = Object.freeze({
+      origin: publication.origin,
+      spacing: publication.spacing,
+      dims: publication.dims,
+      irradianceAtlasW: publication.irradianceAtlasW,
+      irradianceAtlasH: publication.irradianceAtlasH,
+      visibilityAtlasW: publication.visibilityAtlasW,
+      visibilityAtlasH: publication.visibilityAtlasH,
+    });
+
+    // Publish only after the complete CPU/f32/u32 candidate is proven valid.
     this._disposeAtlases();
-
-    const { x, y, z } = this.dims;
-    const irrW = x * (IRR_CELL + BORDER);
-    const irrH = y * z * (IRR_CELL + BORDER);
-    const visW = x * (VIS_CELL + BORDER);
-    const visH = y * z * (VIS_CELL + BORDER);
-
-    const makeSlot = (w: number, h: number): AtlasTextureSlot => ({ width: w, height: h });
-
-    this.irradianceA = makeSlot(irrW, irrH);
-    this.irradianceB = makeSlot(irrW, irrH);
+    this.irradianceA = irradianceA;
+    this.irradianceB = irradianceB;
     // We store (meanDist, meanDistSq) in .rg of the visibility atlas and
-    // leave .ba as zero padding — rgba16float is the writable storage format
+    // use .ba for range-preserving moment exponents — rgba16float is the writable storage format
     // required by WebGPU (rg16float is not in the required set).
-    this.visibilityA = makeSlot(visW, visH);
-    this.visibilityB = makeSlot(visW, visH);
-    this._params = {
-      origin:   this.worldOrigin.clone(),
-      spacing:  this.worldSpacing,
-      dims:     { ...this.dims },
-      irradianceAtlasW: irrW,
-      irradianceAtlasH: irrH,
-      visibilityAtlasW: visW,
-      visibilityAtlasH: visH,
-    };
+    this.visibilityA = visibilityA;
+    this.visibilityB = visibilityB;
+    this._params = params;
 
     this.dirty = false;
   }
@@ -296,7 +573,9 @@ export class ProbeGrid {
   // packDDGIGridParams directly from ddgiGridUbo.ts.
 
   get probeCount(): number {
-    return this.dims.x * this.dims.y * this.dims.z;
+    const count = this.dims.x * this.dims.y * this.dims.z;
+    assertDdgiU32(count, 'DDGI probe count');
+    return count;
   }
 
   private _disposeAtlases(): void {

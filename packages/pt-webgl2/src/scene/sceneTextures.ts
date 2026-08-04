@@ -28,6 +28,8 @@ export interface MaterialsTextureData extends TexelGrid {
 export interface LightsTextureData extends TexelGrid {
   readonly kind: 'rgba32f';
   readonly lightCount: number;
+  /** CPU-only f64 physical weights used to build represented local/global PMFs. */
+  readonly proposalWeights?: Float64Array;
 }
 
 /** Output of the equirect env-map forward-CDF importance build (plan 03 §6). */

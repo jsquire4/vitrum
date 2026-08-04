@@ -17,22 +17,10 @@ export const PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL = /* wgsl */ `
 
 // Exact bounded draws and full-support facet proposals for unified MNEE.
 
-fn mneeRandomU32(rng: ptr<function, PtRngState>) -> u32 {
-  let high24 = pcgNext(rng) & 0xffffff00u;
-  let low8 = pcgNext(rng) >> 24u;
-  return high24 | low8;
-}
-
 // Unbiased bounded u32 draw. Unlike floor(rand_f32 * f32(count)), this keeps
 // every identity reachable above 2^24 and removes modulo bias at all bounds.
 fn causticUniformEmitterIndex(rng: ptr<function, PtRngState>, count: u32) -> u32 {
-  if (count <= 1u) { return 0u; }
-  let threshold = ((0xffffffffu % count) + 1u) % count;
-  loop {
-    let word = mneeRandomU32(rng);
-    if (word >= threshold) { return word % count; }
-  }
-  return 0u;
+  return ptRandBoundedU32(rng, count);
 }
 
 // A proposal names one entry from the host-packed exact TLAS membership table.
@@ -125,12 +113,16 @@ fn mneeFacetCandidateAt(index: u32) -> MneeFacetProposal {
 
 struct MneeFacetOptics {
   matId: u32,
-  objectId: u32,
+  boundaryKind: u32,
+  boundaryIndex: u32,
+  boundaryComponent: u32,
   baseColor: vec3f,
   specularColor: vec3f,
   sigmaA: vec3f,
   sigmaT: vec3f,
   roughness: f32,
+  oppositeRoughness: f32,
+  oppositeLayerWeight: vec3f,
   metallic: f32,
   transmission: f32,
   ior: f32,
@@ -142,7 +134,8 @@ struct MneeFacetOptics {
   coverage: f32,
   volumeThickness: f32,
   hasVolumeThickness: bool,
-  isTranslucent: bool,
+  isBulkMedium: bool,
+  isThinSheet: bool,
   isUnlit: bool,
   thinFilmEnabled: bool,
   thinFilmLayerCount: u32,
@@ -212,19 +205,29 @@ fn mneeFacetCoverage(
   baryVW: vec2f,
   instanceIndex: u32,
 ) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let alphaMode = u32(materialTexDescriptors[base + 1u].x);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 4u)) { return 0.0; }
+  let alphaMode = materialTextureExactU32(
+    materialTexDescriptors[base + 1u].x,
+    3u,
+  );
+  if (alphaMode == 0xffffffffu) { return 0.0; }
   if (alphaMode == 0u) { return 1.0; }
   let alphaCutoff = materialTexDescriptors[base + 1u].y;
   let opacity = materialTexDescriptors[base + 1u].z;
-  let alpha = clamp(
+  if (
+    !materialTextureFiniteF32(alphaCutoff) ||
+    !materialTextureFiniteF32(opacity) ||
+    alphaCutoff < 0.0 || alphaCutoff > 1.0 ||
+    opacity < 0.0 || opacity > 1.0
+  ) { return 0.0; }
+  let alphaRaw =
     sampleBaseColorTexture(matId, triIndex, baryVW, instanceIndex).a *
       sampleVertexColor(triIndex, baryVW).a *
       sampleAlphaTexture(matId, triIndex, baryVW, instanceIndex) *
-      opacity,
-    0.0, 1.0,
-  );
+      opacity;
+  if (!materialTextureFiniteF32(alphaRaw)) { return 0.0; }
+  let alpha = clamp(alphaRaw, 0.0, 1.0);
   if (alphaMode == 1u) {
     return select(0.0, 1.0, alpha >= alphaCutoff);
   }
@@ -240,7 +243,7 @@ fn mneeFacetOpticsAt(
   incomingDir: vec3f,
   heroLambda: f32,
 ) -> MneeFacetOptics {
-  let matId = triMaterialIds[facet.triIndex];
+  let matId = triMaterialIds[facet.triIndex].x;
   let mat = decodeMaterial(matId);
   let baryVW = mneeFacetBaryVW(facet, worldPoint);
   let frontFace = dot(facet.n, incomingDir) < 0.0;
@@ -297,11 +300,22 @@ fn mneeFacetOpticsAt(
     select(mat.backLayerTx, mat.frontLayerTx, frontFace),
     vec3f(0.0), vec3f(1.0),
   );
+  let oppositeLayerTx = clamp(
+    select(mat.frontLayerTx, mat.backLayerTx, frontFace),
+    vec3f(0.0), vec3f(1.0),
+  );
   let layerRoughness = select(
     mat.backLayerRoughness, mat.frontLayerRoughness, frontFace,
   );
+  let oppositeLayerRoughness = select(
+    mat.frontLayerRoughness, mat.backLayerRoughness, frontFace,
+  );
+  var oppositeRoughness = roughness;
   if (layerRoughness >= 0.0) {
     roughness = clamp(layerRoughness, 0.0, 1.0);
+  }
+  if (oppositeLayerRoughness >= 0.0) {
+    oppositeRoughness = clamp(oppositeLayerRoughness, 0.0, 1.0);
   }
   baseColor = baseColor * select(
     layerTx,
@@ -323,18 +337,28 @@ fn mneeFacetOpticsAt(
   let thicknessSample = sampleVolumeThicknessTexture(
     matId, facet.triIndex, baryVW, facet.instanceIndex,
   );
-  if (thicknessSample >= 0.0) {
+  if (thicknessSample >= 0.0 && hasVolumeThickness) {
     volumeThickness = max(volumeThickness * thicknessSample, 0.0);
-    hasVolumeThickness = true;
   }
   var out: MneeFacetOptics;
   out.matId = matId;
-  out.objectId = facet.instanceIndex;
+  let boundary = mediumBoundaryIdentity(
+    facet.triIndex, facet.instanceIndex,
+  );
+  out.boundaryKind = boundary.x;
+  out.boundaryIndex = boundary.y;
+  out.boundaryComponent = boundary.z;
   out.baseColor = baseColor;
   out.specularColor = specularColor;
   out.sigmaA = mneeMaterialSigmaA(matId, mat, heroLambda);
   out.sigmaT = mneeMaterialSigmaT(matId, mat, heroLambda);
   out.roughness = roughness;
+  out.oppositeRoughness = oppositeRoughness;
+  out.oppositeLayerWeight = select(
+    oppositeLayerTx,
+    activeLayerWeightRgb(oppositeLayerTx, heroLambda, true),
+    params.spectralEnabled != 0u && luminance(oppositeLayerTx) < 0.999,
+  );
   out.metallic = metallic;
   out.transmission = transmission;
   out.ior = ior;
@@ -348,7 +372,8 @@ fn mneeFacetOpticsAt(
   );
   out.volumeThickness = volumeThickness;
   out.hasVolumeThickness = hasVolumeThickness;
-  out.isTranslucent = mat.isTranslucent;
+  out.isBulkMedium = mat.isBulkMedium;
+  out.isThinSheet = mat.isThinSheet;
   out.isUnlit = mat.isUnlit;
   out.thinFilmEnabled = mat.thinFilmEnabled;
   out.thinFilmLayerCount = mat.thinFilmLayerCountU;
@@ -373,7 +398,9 @@ fn mneeFacetHasDeltaTransmission(optics: MneeFacetOptics) -> bool {
   if (optics.isUnlit || optics.coverage <= 0.0) { return false; }
   return optics.metallic == 0.0 &&
     optics.transmission > 0.0 &&
-    bsdfDielectricIsSmooth(optics.roughness);
+    bsdfDielectricIsSmooth(optics.roughness) &&
+    (!optics.isThinSheet ||
+      bsdfDielectricIsSmooth(optics.oppositeRoughness));
 }
 
 const MNEE_CHAIN_EVENT_REFLECTION = 0u;
@@ -387,6 +414,57 @@ fn mneeFacetIdentityEqual(a: MneeFacetProposal, b: MneeFacetProposal) -> bool {
     a.triIndex == b.triIndex && a.instanceIndex == b.instanceIndex;
 }
 
+// The manifold solver constrains geometric facet planes. A normal, layer-
+// normal, clearcoat-normal, or bump map changes the ordinary estimator's
+// interface frame without changing that plane, so MNEE must not claim the
+// event until its constraint/Jacobian is mapped-normal aware.
+fn mneeFacetHasMappedInterface(facet: MneeFacetProposal) -> bool {
+  if (
+    facet.valid == 0u ||
+    facet.triIndex >= arrayLength(&triMaterialIds)
+  ) {
+    return true;
+  }
+  let matId = triMaterialIds[facet.triIndex].x;
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) {
+    return true;
+  }
+  let layerCount = textureNumLayers(materialTexturesLinear);
+  let normalIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base].y,
+    layerCount,
+  );
+  let bumpIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 3u].w,
+    layerCount,
+  );
+  let clearcoatNormalIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].x,
+    layerCount,
+  );
+  let layerNormals = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL];
+  let frontLayerNormalIdx = materialTextureLayerIndex(layerNormals.x, layerCount);
+  let backLayerNormalIdx = materialTextureLayerIndex(layerNormals.z, layerCount);
+  return normalIdx >= 0 || bumpIdx >= 0 || clearcoatNormalIdx >= 0 ||
+    frontLayerNormalIdx >= 0 || backLayerNormalIdx >= 0;
+}
+
+// Intermediate MNEE throughput/Jacobians currently model the base dielectric
+// interface only. Active clearcoat and sheen are outer layers that attenuate
+// the production lower-layer response directionally, so fail closed until the
+// manifold estimator carries that exact layered response.
+fn mneeFacetHasUnsupportedOuterLayer(facet: MneeFacetProposal) -> bool {
+  if (
+    facet.valid == 0u ||
+    facet.triIndex >= arrayLength(&triMaterialIds)
+  ) {
+    return true;
+  }
+  let mat = decodeMaterial(triMaterialIds[facet.triIndex].x);
+  return mat.clearcoat > 0.0 || mat.sheen > 0.0;
+}
+
 fn mneeFacetSupportsEvent(
   facet: MneeFacetProposal,
   point: vec3f,
@@ -394,6 +472,10 @@ fn mneeFacetSupportsEvent(
   eventMode: u32,
   heroLambda: f32,
 ) -> bool {
+  if (
+    mneeFacetHasMappedInterface(facet) ||
+    mneeFacetHasUnsupportedOuterLayer(facet)
+  ) { return false; }
   let optics = mneeFacetOpticsAt(facet, point, incomingTravel, heroLambda);
   return select(
     mneeFacetHasDeltaReflection(optics),
@@ -506,6 +588,9 @@ fn mneeProposeConditionalFacet(
   if (!guidedAvailable || rand_f32(rng) >= MNEE_GUIDED_MIX_PROBABILITY) {
     selected = mneeFacetCandidateAt(causticUniformEmitterIndex(rng, count));
   }
+  if (mneeFacetHasMappedInterface(selected)) {
+    return mneeFacetFromIdentity(0xffffffffu, INVALID_TLAS_INSTANCE_INDEX);
+  }
   if (!guidedAvailable) {
     selected.pdf = 1.0 / f32(count);
     return selected;
@@ -543,6 +628,7 @@ fn mneeFacetTransmissionFactorWithEta(
   microfacetCos: f32,
   heroLambda: f32,
   etaTOverI: f32,
+  incidentIor: f32,
 ) -> vec3f {
   let film = ThinFilmInterface(
     optics.thinFilmEnabled, optics.matId, optics.thinFilmLayerCount,
@@ -556,8 +642,36 @@ fn mneeFacetTransmissionFactorWithEta(
     optics.iridescenceThicknessMin, optics.iridescenceThicknessMax,
     optics.specularColor, optics.specularIntensity, film,
   );
+  if (!optics.isThinSheet) {
+    return optics.coverage * optics.baseColor * optics.transmission *
+      interfaceResponse.baseTransmittance;
+  }
+  // A represented thin sheet is an augmented two-interface delta event. The
+  // manifold geometry sees no persistent eta transition, but its physical
+  // entry still refracts into the authored dielectric and its reciprocal
+  // virtual exit refracts back to the incident medium. Evaluate the coherent
+  // coating only on entry, the bare exit once, and both authored face layers.
+  let entryEta = optics.ior / max(incidentIor, 1e-4);
+  let sin2Incident = max(1.0 - microfacetCos * microfacetCos, 0.0);
+  let sin2Internal = sin2Incident /
+    max(entryEta * entryEta, 1e-8);
+  if (!(sin2Internal < 1.0)) { return vec3f(0.0); }
+  let internalCos = sqrt(max(1.0 - sin2Internal, 0.0));
+  let entryResponse = materialDielectricLayeredInterface(
+    microfacetCos, entryEta,
+    optics.iridescence, optics.iridescenceIor,
+    optics.iridescenceThicknessMin, optics.iridescenceThicknessMax,
+    optics.specularColor, optics.specularIntensity, film,
+  );
+  let exitResponse = materialDielectricLayeredInterface(
+    internalCos, 1.0 / max(entryEta, 1e-4),
+    optics.iridescence, optics.iridescenceIor,
+    optics.iridescenceThicknessMin, optics.iridescenceThicknessMax,
+    optics.specularColor, optics.specularIntensity, bsdfNoThinFilm(),
+  );
   return optics.coverage * optics.baseColor * optics.transmission *
-    interfaceResponse.baseTransmittance;
+    entryResponse.baseTransmittance * exitResponse.baseTransmittance *
+    max(optics.oppositeLayerWeight, vec3f(0.0));
 }
 
 
@@ -686,9 +800,11 @@ struct MneeChainMediumStack {
   depth: u32,
   valid: u32,
   matIds: array<u32, ${MNEE_CHAIN_MAX_VERTICES}>,
-  objectIds: array<u32, ${MNEE_CHAIN_MAX_VERTICES}>,
+  boundaryKinds: array<u32, ${MNEE_CHAIN_MAX_VERTICES}>,
+  boundaryIndices: array<u32, ${MNEE_CHAIN_MAX_VERTICES}>,
+  boundaryComponents: array<u32, ${MNEE_CHAIN_MAX_VERTICES}>,
   iors: array<f32, ${MNEE_CHAIN_MAX_VERTICES}>,
-  optics: array<MneeFacetOptics, ${MNEE_CHAIN_MAX_VERTICES}>,
+  sigmaT: array<vec3f, ${MNEE_CHAIN_MAX_VERTICES}>,
   remainingDistance: array<f32, ${MNEE_CHAIN_MAX_VERTICES}>,
 }
 
@@ -708,15 +824,24 @@ fn mneeChainPushMedium(
   optics: MneeFacetOptics,
 ) -> MneeChainMediumStack {
   var stack = stackIn;
-  if (stack.depth >= ${MNEE_CHAIN_MAX_VERTICES}u) {
+  if (
+    stack.depth >= ${MNEE_CHAIN_MAX_VERTICES}u ||
+    !mediumBoundaryIsValid(vec3u(
+      optics.boundaryKind,
+      optics.boundaryIndex,
+      optics.boundaryComponent,
+    ))
+  ) {
     stack.valid = 0u;
     return stack;
   }
   let index = stack.depth;
   stack.matIds[index] = optics.matId;
-  stack.objectIds[index] = optics.objectId;
+  stack.boundaryKinds[index] = optics.boundaryKind;
+  stack.boundaryIndices[index] = optics.boundaryIndex;
+  stack.boundaryComponents[index] = optics.boundaryComponent;
   stack.iors[index] = max(optics.ior, 1e-4);
-  stack.optics[index] = optics;
+  stack.sigmaT[index] = optics.sigmaT;
   stack.remainingDistance[index] = select(
     3.402823e38,
     max(optics.volumeThickness, 0.0),
@@ -726,37 +851,88 @@ fn mneeChainPushMedium(
   return stack;
 }
 
-// Match the eye walk's nested-medium eta lookup, including the first-hit
-// back-face inference used when an endpoint starts inside an authored volume.
+fn mneeChainStackAtLaunch(
+  origin: vec3f,
+  direction: vec3f,
+  heroLambda: f32,
+) -> MneeChainMediumStack {
+  var stack: MneeChainMediumStack;
+  stack.depth = 0u;
+  stack.valid = 1u;
+  let containment = opticalContainmentAlongRay(origin, direction);
+  if (!containment.valid || containment.depth > ${MNEE_CHAIN_MAX_VERTICES}u) {
+    stack.valid = 0u;
+    return stack;
+  }
+  stack.depth = containment.depth;
+  for (var index = 0u; index < stack.depth; index = index + 1u) {
+    let matId = containment.matIds[index];
+    let mat = materialAtOpticalBoundary(
+      matId,
+      containment.triIndices[index],
+      containment.baryVWs[index],
+      containment.instanceIndices[index],
+    );
+    if (!mat.isBulkMedium) {
+      stack.valid = 0u;
+      return stack;
+    }
+    var mediumIor = mat.ior;
+    if (params.spectralEnabled != 0u && mat.dispersionAbbe > 0.0) {
+      mediumIor = cauchyIorAtLambda(
+        heroLambda, mat.ior, mat.dispersionAbbe,
+      );
+    }
+    let boundary = containment.boundaries[index];
+    stack.matIds[index] = matId;
+    stack.boundaryKinds[index] = boundary.x;
+    stack.boundaryIndices[index] = boundary.y;
+    stack.boundaryComponents[index] = boundary.z;
+    stack.iors[index] = max(mediumIor, 1e-4);
+    stack.sigmaT[index] = mneeMaterialSigmaT(matId, mat, heroLambda);
+    stack.remainingDistance[index] =
+      materialAttenuationDistance(INFINITY, mat);
+  }
+  return stack;
+}
+
+// Match the eye walk's nested-medium eta lookup. Launch points are reconstructed
+// before the chain is evaluated; a first back face is never inferred locally.
 fn mneeChainPrepareBoundary(
   stackIn: MneeChainMediumStack,
   optics: MneeFacetOptics,
 ) -> MneeChainBoundaryState {
   var stack = stackIn;
-  if (stack.depth == 0u && !optics.frontFace && optics.isTranslucent) {
-    stack = mneeChainPushMedium(stack, optics);
-  }
   var etaI = 1.0;
   if (stack.depth > 0u) {
     etaI = stack.iors[stack.depth - 1u];
-  } else if (!optics.frontFace) {
+  } else if (!optics.frontFace && optics.isBulkMedium) {
     etaI = max(optics.ior, 1e-4);
   }
   var etaT = max(optics.ior, 1e-4);
-  if (!optics.frontFace) {
+  if (!optics.isBulkMedium) {
+    // A compound sheet returns to its incident medium after its virtual second
+    // interface, so it introduces no persistent eta transition in the chain.
+    etaT = etaI;
+  } else if (!optics.frontFace) {
     etaT = 1.0;
-    var matchIndex = ${MNEE_CHAIN_MAX_VERTICES}u;
-    var scan = stack.depth;
-    loop {
-      if (scan == 0u) { break; }
-      scan = scan - 1u;
-      if (stack.objectIds[scan] == optics.objectId) {
-        matchIndex = scan;
-        break;
-      }
-    }
-    if (matchIndex > 0u && matchIndex < stack.depth) {
-      etaT = stack.iors[matchIndex - 1u];
+    if (
+      stack.depth == 0u ||
+      stack.matIds[stack.depth - 1u] != optics.matId ||
+      !mediumBoundaryMatches(
+        stack.boundaryKinds[stack.depth - 1u],
+        stack.boundaryIndices[stack.depth - 1u],
+        stack.boundaryComponents[stack.depth - 1u],
+        vec3u(
+          optics.boundaryKind,
+          optics.boundaryIndex,
+          optics.boundaryComponent,
+        ),
+      )
+    ) {
+      stack.valid = 0u;
+    } else if (stack.depth > 1u) {
+      etaT = stack.iors[stack.depth - 2u];
     }
   }
   var out: MneeChainBoundaryState;
@@ -771,34 +947,28 @@ fn mneeChainCommitTransmission(
   optics: MneeFacetOptics,
 ) -> MneeChainMediumStack {
   var stack = stackIn;
-  if (!optics.isTranslucent) { return stack; }
+  if (!optics.isBulkMedium) { return stack; }
   if (optics.frontFace) {
     return mneeChainPushMedium(stack, optics);
   }
-  var removeIndex = ${MNEE_CHAIN_MAX_VERTICES}u;
-  var scan = stack.depth;
-  loop {
-    if (scan == 0u) { break; }
-    scan = scan - 1u;
-      if (stack.objectIds[scan] == optics.objectId) {
-      removeIndex = scan;
-      break;
-    }
+  if (
+    stack.depth == 0u ||
+    stack.matIds[stack.depth - 1u] != optics.matId ||
+    !mediumBoundaryMatches(
+      stack.boundaryKinds[stack.depth - 1u],
+      stack.boundaryIndices[stack.depth - 1u],
+      stack.boundaryComponents[stack.depth - 1u],
+      vec3u(
+        optics.boundaryKind,
+        optics.boundaryIndex,
+        optics.boundaryComponent,
+      ),
+    )
+  ) {
+    stack.valid = 0u;
+    return stack;
   }
-  if (removeIndex < stack.depth) {
-    for (
-      var shift = removeIndex;
-      shift + 1u < stack.depth;
-      shift = shift + 1u
-    ) {
-      stack.matIds[shift] = stack.matIds[shift + 1u];
-      stack.objectIds[shift] = stack.objectIds[shift + 1u];
-      stack.iors[shift] = stack.iors[shift + 1u];
-      stack.optics[shift] = stack.optics[shift + 1u];
-      stack.remainingDistance[shift] = stack.remainingDistance[shift + 1u];
-    }
-    stack.depth = stack.depth - 1u;
-  }
+  stack.depth = stack.depth - 1u;
   return stack;
 }
 
@@ -811,12 +981,9 @@ fn mneeChainAttenuateSegment(
   out.transmittance = vec3f(1.0);
   if (out.stack.depth == 0u) { return out; }
   let top = out.stack.depth - 1u;
-  let distanceInMedium = min(
-    max(segmentDistance, 0.0),
-    max(out.stack.remainingDistance[top], 0.0),
-  );
-  out.transmittance = exp(
-    -max(out.stack.optics[top].sigmaT, vec3f(0.0)) * distanceInMedium,
+  let distanceInMedium = min(segmentDistance, out.stack.remainingDistance[top]);
+  out.transmittance = materialBeer(
+    out.stack.sigmaT[top], distanceInMedium,
   );
   out.stack.remainingDistance[top] = max(
     out.stack.remainingDistance[top] - distanceInMedium, 0.0,
@@ -1079,10 +1246,7 @@ fn boundedManifoldCaustic(
   var contribution = vec3f(0.0);
 
   for (var attempt = 0u; attempt < MNEE_GENERAL_PROPOSAL_COUNT; attempt = attempt + 1u) {
-    let chainLength = 1u + min(
-      u32(floor(rand_f32(rng) * f32(maximumLength))),
-      maximumLength - 1u,
-    );
+    let chainLength = 1u + ptRandBoundedU32(rng, maximumLength);
     var geometry: MneeBoundedChainGeometry;
     geometry.count = chainLength;
     geometry.sourceMode = emitter.sourceMode;
@@ -1149,6 +1313,14 @@ fn boundedManifoldCaustic(
       var seedIncoming = safe_normalize(facet.p - previousSeed);
       if (ci == 0u && emitter.sourceMode == MNEE_SOURCE_DIRECTIONAL) {
         seedIncoming = -emitter.towardLight;
+      } else if (ci == 0u) {
+        seedStack = mneeChainStackAtLaunch(
+          emitter.position, seedIncoming, heroLambda,
+        );
+        if (seedStack.valid == 0u) {
+          proposalValid = false;
+          break;
+        }
       }
       let seedOptics = mneeFacetOpticsAt(
         facet, facet.p, seedIncoming, heroLambda,
@@ -1228,6 +1400,15 @@ fn boundedManifoldCaustic(
     var solvedStack: MneeChainMediumStack;
     solvedStack.depth = 0u;
     solvedStack.valid = 1u;
+    if (emitter.sourceMode != MNEE_SOURCE_DIRECTIONAL) {
+      let solvedLaunchDirection = safe_normalize(
+        solved.vertices[0] - emitter.position,
+      );
+      solvedStack = mneeChainStackAtLaunch(
+        emitter.position, solvedLaunchDirection, heroLambda,
+      );
+      if (solvedStack.valid == 0u) { continue; }
+    }
     var logInterfaceNumerator = vec3f(0.0);
     var interfacePositive = vec3<bool>(true);
     var volumeTransmittance = vec3f(1.0);
@@ -1243,6 +1424,10 @@ fn boundedManifoldCaustic(
       if (pi == 0u && emitter.sourceMode == MNEE_SOURCE_DIRECTIONAL) {
         incomingTravel = -emitter.towardLight;
         segmentDistance = 0.0;
+      }
+      if (mneeFacetHasMappedInterface(facets[pi])) {
+        physicsValid = false;
+        break;
       }
       let optics = mneeFacetOpticsAt(
         facets[pi], vertex, incomingTravel, heroLambda,
@@ -1277,7 +1462,7 @@ fn boundedManifoldCaustic(
           break;
         }
         eventFactor = mneeFacetTransmissionFactorWithEta(
-          optics, microfacetCos, heroLambda, etaRatio,
+          optics, microfacetCos, heroLambda, etaRatio, boundary.etaI,
         );
         solvedStack = mneeChainCommitTransmission(solvedStack, optics);
         if (solvedStack.valid == 0u) {

@@ -140,6 +140,7 @@ export const camera_util_functions = /* glsl */`
 		#endif
 
 		ray.direction = vitrumNormalizeVec3( ray.direction, baseDirection );
+		setOrdinaryRayRange( ray );
 
 		return ray;
 

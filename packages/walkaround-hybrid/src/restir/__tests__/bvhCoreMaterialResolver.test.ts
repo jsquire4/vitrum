@@ -55,7 +55,7 @@ function expectOnlyMaterialSlotEmissive(
       expect(row[0]).toBeCloseTo(expected[0], 6);
       expect(row[1]).toBeCloseTo(expected[1], 6);
       expect(row[2]).toBeCloseTo(expected[2], 6);
-      expect(row[3]).toBe(0);
+      expect(row[3]).toBe(1);
     } else {
       expect(row).toEqual([0, 0, 0, 0]);
     }
@@ -95,6 +95,7 @@ describe('ReSTIR bvhCore material resolver', () => {
           __vitrum_hint__: { channels: 4 as const, dataType: 'uint8' as const },
         },
         texCoord: 7,
+        mipFilter: 'none' as const,
       };
       const primitive: MeshPrimitive = {
         ...triangle('uv7-emitter', 0, {
@@ -189,13 +190,10 @@ describe('ReSTIR bvhCore material resolver', () => {
         ],
       } satisfies MeshPrimitive;
 
-      const expectedError = bvhMode === 'merged'
-        ? /references TEXCOORD_7.*does not provide that UV stream/
-        : /packMaterialTextureAtlas: triangle 0 material references texCoord 7, but that primitive does not supply the UV stream/;
       expect(() => buildReSTIRSceneBVHForCoreScene(
         scene([missing, suppliesElsewhere]),
         { bvhMode },
-      )).toThrow(expectedError);
+      )).toThrow(/baseColorMap\.texCoord references TEXCOORD_7.*does not provide that UV stream/);
     },
   );
 
@@ -237,11 +235,39 @@ describe('ReSTIR bvhCore material resolver', () => {
         row[0] > 0 || row[1] > 0 || row[2] > 0
       );
       expect(emittingRows).toHaveLength(1);
-      expect(emittingRows[0]!.slice(0, 3)).toEqual([4, 2, 1]);
+      expect(emittingRows[0]).toEqual([4, 2, 1, 1]);
       expect(buffers.emitterCount).toBe(1);
       expect(new Set(new Uint32Array(
         buffers.triangleMaterialIds.cpuData,
       )).size).toBe(2);
+    },
+  );
+
+  it.each<ReSTIRBvhMode>(['merged', 'tlas'])(
+    'keeps explicit mesh-area NEE ownership authoritative over skipEmitter in %s mode',
+    (bvhMode) => {
+      const skippedImplicit: MaterialSpec = {
+        ...material([0.5, 0.5, 0.5]),
+        emissive: [5, 4, 3],
+        extensions: { skipEmitter: true },
+      };
+      const sourceScene: Scene = {
+        primitives: [triangle('panel', 0, skippedImplicit)],
+        emitters: [{
+          kind: 'mesh-area',
+          id: 'explicit-panel-light',
+          meshId: 'panel',
+          color: [0.25, 0.5, 1],
+          intensity: 4,
+        }],
+        environment: { kind: 'none' },
+      };
+
+      const buffers = buildReSTIRSceneBVHForCoreScene(sourceScene, { bvhMode });
+      expect(emissiveRows(buffers.bvhEmissiveLe.cpuData)).toEqual([
+        [1, 2, 4, 1],
+      ]);
+      expect(buffers.emitterCount).toBe(1);
     },
   );
 
@@ -281,13 +307,26 @@ describe('ReSTIR bvhCore material resolver', () => {
       ];
       const rebuilt = rebuildBvhEmissiveLeFromCoreScene(movedScene, buffers);
       const rebuiltRows = emissiveRows(rebuilt.cpuData);
+      const removed = rebuildBvhEmissiveLeFromCoreScene(
+        { ...movedScene, emitters: [] },
+        buffers,
+      );
+      const addedBack = rebuildBvhEmissiveLeFromCoreScene(initialScene, buffers);
 
       expect(new Set(originalMaterialIds).size).toBe(2);
       expect([
         ...new Uint32Array(buffers.triangleMaterialIds.cpuData),
       ]).toEqual(originalMaterialIds);
       expect(rebuiltRows[0]).toEqual([0, 0, 0, 0]);
-      expect(rebuiltRows[1]).toEqual([4, 2, 1, 0]);
+      expect(rebuiltRows[1]).toEqual([4, 2, 1, 1]);
+      expect(emissiveRows(removed.cpuData)).toEqual([
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+      ]);
+      expect(emissiveRows(addedBack.cpuData)).toEqual([
+        [4, 2, 1, 1],
+        [0, 0, 0, 0],
+      ]);
     },
   );
 
@@ -298,7 +337,7 @@ describe('ReSTIR bvhCore material resolver', () => {
     ]);
 
     expect(() => buildReSTIRSceneBVHForCoreScene(duplicateScene, { bvhMode: 'tlas' }))
-      .toThrow(/duplicate mesh-like primitive id\(s\): panel/);
+      .toThrow(/scene\.primitives\[1\]\.id duplicates scene node id "panel"/);
   });
 
   it('packs TLAS bvhIndex.xyz from stride-4 scene indices, not tri*3 offsets', () => {
@@ -363,7 +402,7 @@ describe('ReSTIR bvhCore material resolver', () => {
       const sourceScene = scene([
         triangle('panel', 0, {
           ...material([1, 1, 1]),
-          displacementMap: { handle: { id: 'height' } },
+          displacementMap: { handle: { id: 'height' }, mipFilter: 'none' },
           displacementScale: 0.25,
           displacementBias: -0.05,
         }),
@@ -394,6 +433,7 @@ describe('ReSTIR bvhCore material resolver', () => {
           displacementMap: withTextureSourcePath({
             handle: { id: 'height' },
             texCoord: 2,
+            mipFilter: 'none',
           }, 'materials[0].extensions.VITRUM_displacement.displacementTexture'),
           displacementScale: 0.25,
         }),
@@ -432,21 +472,19 @@ describe('ReSTIR bvhCore material resolver', () => {
               __vitrum_hint__: { channels: 1, dataType: 'uint8' },
             },
             texCoord: 2,
+            mipFilter: 'none',
           },
           displacementScale: 0.25,
           displacementSubdivisions: 1,
         }),
       ]);
 
-      const expectedError = bvhMode === 'merged'
-        ? /displacementMap\.texCoord references TEXCOORD_2.*does not provide that UV stream/
-        : /Primitive "panel-micro-high-uv" displacementMap requests TEXCOORD_2, but that exact UV channel is absent/;
       expect(() => buildReSTIRSceneBVHForCoreScene(sourceScene, {
         bvhMode,
         onWarning: (warning) => warnings.push(warning),
         warningPhase: 'setScene',
         warningMethod: 'setScene',
-      })).toThrow(expectedError);
+      })).toThrow(/displacementMap\.texCoord references TEXCOORD_2.*does not provide that UV stream/);
 
       expect(warnings).toEqual([]);
       expect(warnSpy).not.toHaveBeenCalled();

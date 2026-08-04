@@ -71,11 +71,14 @@ describe('tiled material-atlas policy', () => {
     ['mapped PBR', MATERIAL_MAPPED_PBR_GLSL],
     ['mapped rich', MATERIAL_MAPPED_RICH_GLSL],
   ])('%s shader decodes offset and sampler policy lanes independently', (_name, glsl) => {
-    expect(glsl).toContain('ivec2 materialTextureSourceOffset');
-    expect(glsl).toContain('sourceOffset + ivec2( x, y )');
-    expect(glsl).toContain('int filterPair = packed - ( packed / 4 ) * 4;');
+    expect(glsl).toContain('bool decodeMaterialTexturePolicy(');
+    expect(glsl).toContain('baseOffset = ivec2( packedMip / 4, packedFilter / 4 );');
+    expect(glsl).toContain('sourceOffset = baseOffset / divisor;');
     expect(glsl).toContain(
-      'int mipFilter = packedMipFilter - ( packedMipFilter / 4 ) * 4;',
+      'filterPair = packedFilter - ( packedFilter / 4 ) * 4;',
+    );
+    expect(glsl).toContain(
+      'mipFilter = packedMip - ( packedMip / 4 ) * 4;',
     );
   });
 });

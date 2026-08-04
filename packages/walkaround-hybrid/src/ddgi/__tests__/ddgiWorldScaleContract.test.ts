@@ -65,18 +65,18 @@ describe('DDGI world-scale contract', () => {
     expect(result.validRayCount).toBe(1);
   });
 
-  it('derives blend validity, classification clearance, and traversal progress from spacing', () => {
+  it('derives blend validity, classification clearance, and only the initial ray minimum from spacing', () => {
     const irr = makeProbeUpdateBlendIrrWGSL();
     const vis = makeProbeUpdateBlendVisWGSL();
     const rays = makeProbeUpdateRaysWGSL(4);
 
     for (const blend of [irr, vis]) {
-      expect(blend).toContain(
-        'gridParams.spacing * DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED',
+      expect(blend).toMatch(
+        /ddgiAtlasSaturatingMul\(\s*gridParams\.spacing,\s*DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED,?\s*\)/,
       );
       expect(blend).not.toMatch(/ray\.hitDistance < 0\.05/);
     }
-    expect(vis).toContain('gridParams.spacing * 16.0');
+    expect(vis).toContain('ddgiAtlasSaturatingMul(gridParams.spacing, 16.0)');
     expect(vis).not.toContain('max(1.0, gridParams.spacing * 16.0)');
 
     expect(PROBE_CLASSIFY_RELOCATE_WGSL).toContain(
@@ -91,12 +91,11 @@ describe('DDGI world-scale contract', () => {
     expect(rays).toContain(
       'ddgiProbeDistance(DDGI_TRACE_T_MIN_NORMALIZED)',
     );
-    expect(rays).toContain(
-      'ddgiProbeDistance(DDGI_SURFACE_STEP_NORMALIZED)',
-    );
-    expect(rays).toContain(
-      'ddgiProbeDistance(DDGI_GLASS_BOUNDARY_STEP_NORMALIZED)',
-    );
+    expect(rays).not.toContain('DDGI_SURFACE_STEP_NORMALIZED');
+    expect(rays).not.toContain('DDGI_GLASS_BOUNDARY_STEP_NORMALIZED');
+    expect(rays).toContain('var exclusiveMinT = 0.0;');
+    expect(rays).toContain('exclusiveMinT = acceptedT;');
+    expect(rays).toContain('let nextRay = Ray(currentPos, rayDirection);');
     expect(rays).not.toContain('const DDGI_TRI_EPSILON');
     expect(rays).not.toMatch(/max\(1e-4,\s*DDGI_/);
     expect(rays).not.toContain(

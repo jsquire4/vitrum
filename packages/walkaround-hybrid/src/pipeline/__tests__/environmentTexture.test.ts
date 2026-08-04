@@ -16,6 +16,11 @@ interface WriteBufferCall { offset: number; data: ArrayBuffer; }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyMockFn = ReturnType<typeof vi.fn<any, any>>;
 interface MockTexture { format: string; width: number; height: number; destroy: AnyMockFn; createView: AnyMockFn; }
+type TextureWriteCall = [
+  { texture: MockTexture },
+  Float32Array,
+  { bytesPerRow: number },
+];
 function mockDevice(texDims?: { width: number; height: number }) {
   const writeBufferCalls: WriteBufferCall[] = [];
   const writeTextureCalls: unknown[] = [];
@@ -221,20 +226,44 @@ describe('environmentTexture — B3 directional IBL host', () => {
     })!;
     data.pdf[0] = 1_000_000;
     uploadEnvironment(device, env, data, 0, 1);
-    const mapWrite = writeTextureCalls[0] as [
-      { texture: MockTexture },
-      ArrayBuffer,
-      { bytesPerRow: number },
-    ];
-    const pdfWrite = writeTextureCalls[1] as [
-      { texture: MockTexture },
-      ArrayBuffer,
-      { bytesPerRow: number },
-    ];
+    const mapWrite = writeTextureCalls[0] as TextureWriteCall;
+    const pdfWrite = writeTextureCalls[1] as TextureWriteCall;
     expect(mapWrite[0].texture.format).toBe('rgba32float');
     expect(mapWrite[2].bytesPerRow).toBe(2 * 4 * 4);
-    expect(new Float32Array(mapWrite[1])[0]).toBe(1_000_000);
+    expect(mapWrite[1][0]).toBe(1_000_000);
     expect(pdfWrite[0].texture.format).toBe('r32float');
-    expect(new Float32Array(pdfWrite[1])[0]).toBe(1_000_000);
+    expect(pdfWrite[1][0]).toBe(1_000_000);
+  });
+
+  it('uploads only the addressed bytes of radiance and PDF subarray views', () => {
+    const { device, writeTextureCalls } = mockDevice();
+    const env = createPlaceholderEnvironment(device);
+    const data = buildDirectionalEnv({
+      width: 2,
+      height: 1,
+      stride: 3,
+      data: new Float32Array([3, 4, 5, 6, 7, 8]),
+    })!;
+    const mapBacking = new Float32Array(data.map.length + 4).fill(-1);
+    const mapView = mapBacking.subarray(2, 2 + data.map.length);
+    mapView.set(data.map);
+    const pdfBacking = new Float32Array(data.pdf.length + 4).fill(-1);
+    const pdfView = pdfBacking.subarray(2, 2 + data.pdf.length);
+    pdfView.set(data.pdf);
+
+    uploadEnvironment(
+      device,
+      env,
+      { ...data, map: mapView, pdf: pdfView },
+      0,
+      1,
+    );
+
+    const mapWrite = writeTextureCalls[0] as TextureWriteCall;
+    const pdfWrite = writeTextureCalls[1] as TextureWriteCall;
+    expect(mapWrite[1]).toBe(mapView);
+    expect(pdfWrite[1]).toBe(pdfView);
+    expect(Array.from(mapWrite[1])).toEqual(Array.from(data.map));
+    expect(Array.from(pdfWrite[1])).toEqual(Array.from(data.pdf));
   });
 });

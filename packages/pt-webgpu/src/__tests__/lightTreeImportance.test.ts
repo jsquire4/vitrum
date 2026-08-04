@@ -197,14 +197,20 @@ describe('WS2 — light-tree build over a multi-light scene', () => {
   it('power-field packing round-trips through packLightTreeForGPU', () => {
     const { nodes } = buildLightTree(input);
     const packed = packLightTreeForGPU(nodes);
+    const maximumNodePower = Math.max(...nodes.map((node) => node.totalPower));
     expect(packed.length).toBe(nodes.length * LIGHT_TREE_FLOATS_PER_NODE);
     for (let i = 0; i < nodes.length; i++) {
       const base = i * LIGHT_TREE_FLOATS_PER_NODE;
-      // [0] emitterIndex, [1] totalPower, [2] leftChild, [3] rightChild
+      // [0] emitterIndex, [1] common-normalized proposal power,
+      // [2] leftChild, [3] rightChild, [15] subtree leafCount.
       expect(packed[base + 0]).toBe(nodes[i]!.emitterIndex);
-      expect(packed[base + 1]).toBeCloseTo(nodes[i]!.totalPower, 5);
+      expect(packed[base + 1]).toBeCloseTo(
+        nodes[i]!.totalPower / maximumNodePower,
+        5,
+      );
       expect(packed[base + 2]).toBe(nodes[i]!.leftChild);
       expect(packed[base + 3]).toBe(nodes[i]!.rightChild);
+      expect(packed[base + 15]).toBeGreaterThanOrEqual(1);
     }
   });
 });

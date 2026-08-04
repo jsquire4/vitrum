@@ -74,7 +74,7 @@ fn decodeRoughMetal(packed: u32) -> vec2f {
 // Fresnel remain numerically defined while transmission tends to zero.
 fn decodeIor(packed: u32) -> f32 {
   let byte = (packed >> 8u) & 0xFFu;
-  if (byte == 0u) { return 1e6; }
+  if (byte == 0u) { return 1e8; }
   return 1.0 + f32(byte - 1u) / 254.0 * 2.0;
 }
 

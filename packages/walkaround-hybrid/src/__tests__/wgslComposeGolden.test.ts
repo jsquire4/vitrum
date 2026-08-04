@@ -178,15 +178,25 @@ function digest(code: string): { sha256: string; length: number } {
 // now fail dark when an opaque GPU source yields negative or non-finite
 // radiance. The semantic atlas preflight suite and the 78/78 WGSL compile gate
 // passed before these six material-atlas-bearing roots were re-pinned.
+// Native-transmission closure (2026-08-03): the reusable GI paths now carry
+// RGB recast tint and continuous material shares, while full-resolution camera
+// glass owns bounded refractive suffix/direct/volume transport. Stable medium
+// identity, unlit parity, and stochastic alpha-blend metadata are included in
+// these source-frozen roots; semantic tests and the 78/78 shader gate passed.
+// Numeric/material-sample closure (2026-08-03): atlas reads now carry explicit
+// validity, metadata and address arithmetic fail closed before integer casts,
+// tangent/normal/bump construction is scale safe, and DDGI/world-distance
+// medium walks use exact represented state. Focused semantic suites and the
+// safe shader gate accompany this intentional source-freeze refresh.
 const GOLDENS: Record<string, { sha256: string; length: number }> = {
-  risGi: { sha256: '2f70a979fda64ca5e611174a2cc092ee80ba6ed5bd97bfa70f2a55080a64a717', length: 282999 },
-  risGiNrc: { sha256: 'a7117df00a9ccecb55003d4008e2fa1a2d510c95a8e7138f5bc3c432dea46050', length: 338910 },
-  temporalGi: { sha256: '38b792ebb6f744cec29ac9b310906c2b7e1533dccf20fc658a5cf8bba479581a', length: 248467 },
-  spatialGi: { sha256: '87a525b3bcbac9423d55c0d2fc8941eba54013f6d681c64105ed5788eef674a3', length: 248968 },
-  shade: { sha256: '0a7f744eeef5a80046fdc25903f226cc85671d972e993dcb47db6b39145b1f6d', length: 425891 },
-  transparentOit: { sha256: '033600739dce899e06600b218ab3af93f2815dee46b2f78a55e4cfd7ba452220', length: 271612 },
-  regir: { sha256: 'f81c6ceaba92b25776f45bca294a7de4cddcc2932dc5adbf7ec872dde33f07a5', length: 146928 },
-  regirBuild: { sha256: '0089a9a02a2a76d70a4fced94fb68c6489559fe6bac6175153082cf628b858de', length: 145451 },
+  risGi: { sha256: '7f10a8e8af925e16524f7ffe085d89105f684b5e940639938bbe00aee63ee937', length: 440872 },
+  risGiNrc: { sha256: 'f05e7f22be4df9fe8fd186f85511376a741fd82c01f7bd245a4f3e957974e584', length: 540334 },
+  temporalGi: { sha256: '5548e03a32536c9249e514a8bdf670240a4ecd9b6093c755cf338e42399fdf31', length: 367551 },
+  spatialGi: { sha256: '37e11063e9ca4a8f520a7ffb5edf6b1f32b31789e8a9c7699bd9c662ce9d54bb', length: 367515 },
+  shade: { sha256: '7b9501e410a837bbf2772150f92d0220b4440a4fdf6a886c55d0b3b08906690d', length: 683389 },
+  transparentOit: { sha256: 'edef8f29c73f7dcbc3dbc1c575213732e3b5751b5f3e1f4748b7dfa6e2373a6f', length: 401878 },
+  regir: { sha256: '12fdcadb9309737fac33ca843a000ff356c1321a788d2165ca44a6c8134c6303', length: 217434 },
+  regirBuild: { sha256: '053dbc2f613bd4de2784aa5e81d87d37d2a055a6f22a7ad6c1a4a0e8f420261b', length: 219081 },
 };
 
 interface Case { name: string; code: () => string; }

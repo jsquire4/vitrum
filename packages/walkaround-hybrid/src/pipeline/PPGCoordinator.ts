@@ -16,6 +16,7 @@
  */
 
 import { deriveSceneAABBFromBvhPositions } from '@vitrum/shared-bvh';
+import { quantizeOpenUnitProbabilityF32 } from '@vitrum/shared-samplers';
 import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
 import { buildSTree, splitOverflowLeaves } from '../ppg/sTree.js';
 import { recomputeDTreeInteriorFlux, refineDTree } from '../ppg/dTree.js';
@@ -47,6 +48,7 @@ import {
   buildPpgQueryArenaHeader,
   nextPpgQueryArenaEpoch,
 } from '../ppg/ppgQueryArena.js';
+import { buildPpgRepresentedQueryView } from '../ppg/ppgRepresentedProposal.js';
 import { f32SnapshotMetadataMatches } from '../giStateSnapshot.js';
 
 export type PPGTrainingEpochStatus =
@@ -558,7 +560,9 @@ export class PPGCoordinator implements PipelineSubsystem {
       initialDTreeDepthForNodeCap(this._maxDTreeNodesPerCell),
     );
     const cap = this._deriveMaxDTreeNodesPerCell(frameResources);
-    const serialised = serialiseSTree(nextTree, cap);
+    const serialised = buildPpgRepresentedQueryView(
+      serialiseSTree(nextTree, cap),
+    );
     assertPpgQueryArenaPayloadFits(ppg.queryArenaLayout, serialised);
     const nextArenaEpoch = nextPpgQueryArenaEpoch(ppg.queryArenaEpoch);
     const arenaHeader = buildPpgQueryArenaHeader(
@@ -1316,9 +1320,10 @@ export class PPGCoordinator implements PipelineSubsystem {
     ppg: PPGFrameResources,
     serialised: OwnedSerialisedSTree,
   ): void {
-    assertPpgQueryArenaPayloadFits(ppg.queryArenaLayout, serialised);
+    const queryView = buildPpgRepresentedQueryView(serialised);
+    assertPpgQueryArenaPayloadFits(ppg.queryArenaLayout, queryView);
     const nextEpoch = nextPpgQueryArenaEpoch(ppg.queryArenaEpoch);
-    const header = buildPpgQueryArenaHeader(ppg.queryArenaLayout, serialised, nextEpoch);
+    const header = buildPpgQueryArenaHeader(ppg.queryArenaLayout, queryView, nextEpoch);
     const write = (
       offset: number,
       data: ArrayBufferView<ArrayBuffer>,
@@ -1331,9 +1336,9 @@ export class PPGCoordinator implements PipelineSubsystem {
         data.byteLength,
       );
     };
-    write(ppg.queryArenaLayout.sTreeByteOffset, serialised.sTreeBuf);
-    write(ppg.queryArenaLayout.dTreeByteOffset, serialised.dTreeBuf);
-    write(ppg.queryArenaLayout.dTreeOffsetsByteOffset, serialised.dTreeOffsets);
+    write(ppg.queryArenaLayout.sTreeByteOffset, queryView.sTreeBuf);
+    write(ppg.queryArenaLayout.dTreeByteOffset, queryView.dTreeBuf);
+    write(ppg.queryArenaLayout.dTreeOffsetsByteOffset, queryView.dTreeOffsets);
     // Publish only after every segment write is queued.
     write(0, header);
     ppg.queryArenaEpoch = nextEpoch;
@@ -1416,7 +1421,9 @@ export class PPGCoordinator implements PipelineSubsystem {
     clearCellCountBytes: number,
   ): void {
     const cap = this._deriveMaxDTreeNodesPerCellFromResources(ppg);
-    const serialised = serialiseSTree(tree, cap);
+    const serialised = buildPpgRepresentedQueryView(
+      serialiseSTree(tree, cap),
+    );
     assertPpgQueryArenaPayloadFits(ppg.queryArenaLayout, serialised);
     const nextEpoch = nextPpgQueryArenaEpoch(ppg.queryArenaEpoch);
     const header = buildPpgQueryArenaHeader(
@@ -1639,9 +1646,8 @@ export class PPGCoordinator implements PipelineSubsystem {
 }
 
 function resolvePpgMixAlpha(value: number | undefined): number {
-  if (value === undefined) return PPG_MIS_ALPHA;
-  if (!Number.isFinite(value) || value <= 0 || value >= 1) {
-    throw new RangeError('PPG mix alpha must be finite and strictly between 0 and 1.');
-  }
-  return value;
+  return quantizeOpenUnitProbabilityF32(
+    value ?? PPG_MIS_ALPHA,
+    'PPG mix alpha',
+  );
 }

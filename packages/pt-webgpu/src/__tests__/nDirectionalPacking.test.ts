@@ -47,7 +47,9 @@ function directionalScene(count: number): Scene {
     emitters.push({
       kind: 'directional',
       id: `dir${i}`,
-      direction: [i === 0 ? 0 : 1, -1, 0], // toward-below-left
+      direction: i === 0
+        ? [0, -1, 0]
+        : [Math.SQRT1_2, -Math.SQRT1_2, 0], // toward-below-left
       color: [(i + 1) * 0.2, 0.5, 0.8],
       intensity: 2 + i,
     });

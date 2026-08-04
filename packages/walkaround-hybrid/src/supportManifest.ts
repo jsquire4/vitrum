@@ -210,12 +210,15 @@ export interface WalkaroundSupportProfile {
   readonly tier: WalkaroundSupportTier;
   readonly neuralCertification: WalkaroundNeuralCertification;
   readonly oidnModelAvailable: boolean;
+  /** Instance-resolved end-to-end bulk-medium nesting capacity. */
+  readonly maxNestedMedia?: 4 | 8;
 }
 
 function createWalkaroundSupportManifest(
   profile: WalkaroundSupportProfile,
 ): BackendSupportManifest {
   const neuralAvailable = profile.tier === 'full' && profile.neuralCertification === 'certified';
+  const maxNestedMedia = profile.maxNestedMedia ?? 8;
   const denoisers = {
     ...WALKAROUND_BASE_DENOISERS,
     bmfr: profile.tier === 'lite' ? 'unsupported' : 'native',
@@ -249,6 +252,11 @@ function createWalkaroundSupportManifest(
       multiBounceEquilibriumValue: 2,
       inactiveWhenLayerDisabled: 'ddgi',
     },
+    opticalMedia: {
+      maxNestedMedia,
+      topology: 'closed-oriented-disjoint-or-nested',
+      overflowPolicy: 'reject-scene',
+    },
   });
 }
 
@@ -263,7 +271,8 @@ export function walkaroundSupportManifest(
 ): BackendSupportManifest {
   const key =
     `${profile.tier}:${profile.neuralCertification}:` +
-    `${profile.oidnModelAvailable ? 'oidn' : 'no-oidn'}`;
+    `${profile.oidnModelAvailable ? 'oidn' : 'no-oidn'}:` +
+    `media-${profile.maxNestedMedia ?? 8}`;
   const cached = SUPPORT_MANIFEST_CACHE.get(key);
   if (cached != null) return cached;
   const manifest = createWalkaroundSupportManifest(profile);
@@ -283,4 +292,6 @@ export const WALKAROUND_FULL_CERTIFIED_SUPPORT_MANIFEST = walkaroundSupportManif
   tier: 'full',
   neuralCertification: 'certified',
   oidnModelAvailable: true,
+  // Static full-feature ledger includes the four-deep NRC/refractive suffix.
+  maxNestedMedia: 4,
 });

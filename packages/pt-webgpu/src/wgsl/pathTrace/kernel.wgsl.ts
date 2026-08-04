@@ -79,16 +79,9 @@ export function composePathTraceKernelWgsl(opts: {
     let surfaceMediumBoundary = mediumBoundaryIdentity(
       hit.triIndex, hit.instanceIndex,
     );
-    let surfaceCrossesMedium =
-      !mat.isUnlit && mat.isTranslucent && transmission > 0.0;
+    let surfaceCrossesMedium = !mat.isUnlit && mat.isBulkMedium;
     if (surfaceCrossesMedium && !mediumBoundaryIsValid(surfaceMediumBoundary)) {
       break;
-    }
-    if (bdptMediumDepth == 0u && !isFrontFace && surfaceCrossesMedium) {
-      bdptMediumStack[0] = bdptMediumLayer(
-        matId, mat, heroLambda, surfaceMediumBoundary,
-      );
-      bdptMediumDepth = 1u;
     }
     var incidentIor = 1.0;
     if (bdptMediumDepth > 0u) {
@@ -128,29 +121,41 @@ export function composePathTraceKernelWgsl(opts: {
       let eyeMedium = bdptMediumStack[topIndex];
       bdptEyeActiveMedium = eyeMedium.matId;
       let walkSigmaT = max(eyeMedium.sigmaT, vec3f(0.0));
-      // Hero-channel σ_t drives the free-flight distance in spectral mode so a
-      // single wavelength is tracked per path; otherwise use the max channel
-      // (conservative — the densest channel sets the collision rate, the rest
-      // ride along via the per-channel transmittance below).
-      let heroSigmaT = select(
-        max(walkSigmaT.x, max(walkSigmaT.y, walkSigmaT.z)),
-        walkSigmaT.x,
-        params.spectralEnabled != 0u,
-      );
-      if (heroSigmaT > 0.0) {
+      // RGB transport samples an equal-weight mixture of the three extinction
+      // exponentials. Its marginal endpoint/collision weights are bounded by 3;
+      // spectral transport samples its scalar hero extinction directly.
+      var flightRate = walkSigmaT.x;
+      if (params.spectralEnabled == 0u) {
+        let flightChannel = ptRandBoundedU32(&rng, 3u);
+        if (flightChannel == 1u) { flightRate = walkSigmaT.y; }
+        if (flightChannel == 2u) { flightRate = walkSigmaT.z; }
+      }
+      let attenuationDist = min(hit.dist, eyeMedium.remainingDistance);
+      if (attenuationDist > 0.0 && flightRate > PT_F32_MAX) {
+        // An infinite-rate mixture component is an immediate absorbing/null
+        // event. Other channels remain represented by the two finite mixture
+        // components on their samples.
+        throughput = vec3f(0.0);
+        break;
+      }
+      if (flightRate > 0.0) {
         let xiFlight = rand_f32(&rng);
-        let freeFlightDist = -log(max(1.0 - xiFlight, 1e-9)) / heroSigmaT;
-        let attenuationDist = min(hit.dist, eyeMedium.remainingDistance);
+        let freeFlightDist = -log(max(1.0 - xiFlight, 1e-9)) / flightRate;
         if (freeFlightDist < attenuationDist) {
           // Real collision inside the medium BEFORE the surface: scatter.
           let scatterPos = ray.origin + ray.direction * freeFlightDist;
           // Per-channel single-scattering albedo σ_s/σ_t at the chosen flight
           // distance, re-weighted by the ratio of the per-channel pdf to the
           // hero-channel pdf so non-hero channels stay unbiased (spectral MIS).
-          let pdfHero = heroSigmaT * exp(-heroSigmaT * freeFlightDist);
-          let transmittance = exp(-walkSigmaT * freeFlightDist);
-          throughput =
-            throughput * eyeMedium.sigmaS * transmittance / max(pdfHero, 1e-9);
+          let trueTransmittance = materialBeer(walkSigmaT, freeFlightDist);
+          let collisionPdf = select(
+            materialRgbCollisionPdf(walkSigmaT, freeFlightDist),
+            materialExtinctionDensityLane(flightRate, freeFlightDist),
+            params.spectralEnabled != 0u,
+          );
+          if (!(collisionPdf > 0.0)) { break; }
+          throughput = throughput * eyeMedium.sigmaS * trueTransmittance /
+            collisionPdf;
           let throughputInMedium = throughput;
           var mediumLayerAtScatter = eyeMedium;
           mediumLayerAtScatter.remainingDistance = max(
@@ -221,7 +226,7 @@ export function composePathTraceKernelWgsl(opts: {
                   throughputInMedium, heroLambda,
                   bdptOwnsFiniteLightFamily,
                   bounce,
-                  bdptPrevScatterPdf * pdfHero,
+                  bdptPrevScatterPdf * collisionPdf,
                   &rng,
                 );
               }
@@ -241,7 +246,7 @@ export function composePathTraceKernelWgsl(opts: {
             throughputInMedium, heroLambda, !bdptOwnsFiniteLightFamily,
             bdptOwnsFiniteLightFamily,
             bounce,
-            bdptPrevScatterPdf * pdfHero,
+          bdptPrevScatterPdf * collisionPdf,
             &rng,
           );
           prevEventKind = 2u;
@@ -258,15 +263,18 @@ export function composePathTraceKernelWgsl(opts: {
               scatterPos,
               vec3f(0.0),
               0.0,
-              bdptPrevScatterPdf * pdfHero,
+            bdptPrevScatterPdf * collisionPdf,
               false,
               true,
               eyeMedium.g,
               eyeMedium.matId,
+              mediumLayerAtScatter.initialDistance,
               mediumRemainingAtVertex,
               eyeMedium.matId,
+              mediumLayerAtScatter.initialDistance,
               mediumRemainingAtVertex,
               eyeMedium.matId,
+              mediumLayerAtScatter.initialDistance,
               mediumRemainingAtVertex,
             );
             let maxMediumLv = min(params.bdptMaxLightBounces, 8u);
@@ -288,18 +296,26 @@ export function composePathTraceKernelWgsl(opts: {
               let toPrevEye = safe_normalize(prevEye.pos - scatterPos);
               let currentPrefixMedium = bdptSelectEndpointMedium(
                 currentEye.medium, currentEye.nrm, toPrevEye,
-                currentEye.mediumMatId, currentEye.mediumRemainingDistance,
+                currentEye.mediumMatId,
+                currentEye.mediumInitialDistance,
+                currentEye.mediumRemainingDistance,
                 currentEye.incidentMediumMatId,
+                currentEye.incidentMediumInitialDistance,
                 currentEye.incidentMediumRemainingDistance,
                 currentEye.transmittedMediumMatId,
+                currentEye.transmittedMediumInitialDistance,
                 currentEye.transmittedMediumRemainingDistance,
               );
               let previousPrefixMedium = bdptSelectEndpointMedium(
                 prevEye.medium, prevEye.nrm, -toPrevEye,
-                prevEye.mediumMatId, prevEye.mediumRemainingDistance,
+                prevEye.mediumMatId,
+                prevEye.mediumInitialDistance,
+                prevEye.mediumRemainingDistance,
                 prevEye.incidentMediumMatId,
+                prevEye.incidentMediumInitialDistance,
                 prevEye.incidentMediumRemainingDistance,
                 prevEye.transmittedMediumMatId,
+                prevEye.transmittedMediumInitialDistance,
                 prevEye.transmittedMediumRemainingDistance,
               );
               let reverseDistancePdf = bdptEndpointEdgeDistanceDensity(
@@ -348,9 +364,26 @@ export function composePathTraceKernelWgsl(opts: {
           // >1 correction (they absorb less). Multiplying by the FULL exp(-σ_t·d)
           // here (the prior code) DOUBLE-counted the transmittance → exp(-2σ_t·d),
           // over-darkening every medium by the square of its transmittance. V23.
-          throughput = throughput * exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist);
-          bdptEyeSegmentForwardDensity = exp(-heroSigmaT * attenuationDist);
+          let trueTransmittance = materialBeer(walkSigmaT, attenuationDist);
+          let survivalPdf = select(
+            materialRgbSurvivalPdf(walkSigmaT, attenuationDist),
+            materialBeerLane(flightRate, attenuationDist),
+            params.spectralEnabled != 0u,
+          );
+          if (!(survivalPdf > 0.0)) { break; }
+          throughput = throughput * trueTransmittance / survivalPdf;
+          bdptEyeSegmentForwardDensity = survivalPdf;
         }
+      } else {
+        let trueTransmittance = materialBeer(walkSigmaT, attenuationDist);
+        let survivalPdf = select(
+          materialRgbSurvivalPdf(walkSigmaT, attenuationDist),
+          1.0,
+          params.spectralEnabled != 0u,
+        );
+        if (!(survivalPdf > 0.0)) { break; }
+        throughput = throughput * trueTransmittance / survivalPdf;
+        bdptEyeSegmentForwardDensity = survivalPdf;
       }
       bdptMediumStack[topIndex].remainingDistance = max(
         eyeMedium.remainingDistance - min(hit.dist, eyeMedium.remainingDistance),
@@ -361,16 +394,9 @@ export function composePathTraceKernelWgsl(opts: {
     let surfaceMediumBoundary = mediumBoundaryIdentity(
       hit.triIndex, hit.instanceIndex,
     );
-    let surfaceCrossesMedium =
-      !mat.isUnlit && mat.isTranslucent && transmission > 0.0;
+    let surfaceCrossesMedium = !mat.isUnlit && mat.isBulkMedium;
     if (surfaceCrossesMedium && !mediumBoundaryIsValid(surfaceMediumBoundary)) {
       break;
-    }
-    if (bdptMediumDepth == 0u && !isFrontFace && surfaceCrossesMedium) {
-      bdptMediumStack[0] = bdptMediumLayer(
-        matId, mat, heroLambda, surfaceMediumBoundary,
-      );
-      bdptMediumDepth = 1u;
     }
     var incidentIor = 1.0;
     if (bdptMediumDepth > 0u) {
@@ -411,7 +437,9 @@ export function composePathTraceKernelWgsl(opts: {
     if (bdptMediumDepth > 0u) {
       let incidentLayer = bdptMediumStack[bdptMediumDepth - 1u];
       bdptEyeIncidentMedium = BdptEndpointMedium(
-        incidentLayer.matId, incidentLayer.remainingDistance,
+        incidentLayer.matId,
+        incidentLayer.initialDistance,
+        incidentLayer.remainingDistance,
       );
     }
     var bdptEyeTransmittedMedium = bdptNoEndpointMedium();
@@ -421,20 +449,45 @@ export function composePathTraceKernelWgsl(opts: {
           matId, mat, heroLambda, surfaceMediumBoundary,
         );
         bdptEyeTransmittedMedium = BdptEndpointMedium(
-          enteredLayer.matId, enteredLayer.remainingDistance,
+          enteredLayer.matId,
+          enteredLayer.initialDistance,
+          enteredLayer.remainingDistance,
         );
       } else {
         if (bdptMediumDepth > 1u) {
           let belowLayer = bdptMediumStack[bdptMediumDepth - 2u];
           bdptEyeTransmittedMedium = BdptEndpointMedium(
-            belowLayer.matId, belowLayer.remainingDistance,
+            belowLayer.matId,
+            belowLayer.initialDistance,
+            belowLayer.remainingDistance,
           );
         }
       }
     }`;
   const mediumStateDecls = /* wgsl */ `
   var bdptMediumStack: array<BdptMediumLayer, BDPT_MEDIUM_STACK_LIMIT>;
-  var bdptMediumDepth = 0u;`;
+  var bdptMediumDepth = 0u;
+  let cameraContainment = opticalContainmentAlongRay(
+    ray.origin, ray.direction,
+  );
+  var bdptMediumStateValid = cameraContainment.valid;
+  if (bdptMediumStateValid) {
+    bdptMediumDepth = cameraContainment.depth;
+    for (var mediumIndex = 0u; mediumIndex < bdptMediumDepth; mediumIndex = mediumIndex + 1u) {
+      let initialMatId = cameraContainment.matIds[mediumIndex];
+      bdptMediumStack[mediumIndex] = bdptMediumLayer(
+        initialMatId,
+        materialAtOpticalBoundary(
+          initialMatId,
+          cameraContainment.triIndices[mediumIndex],
+          cameraContainment.baryVWs[mediumIndex],
+          cameraContainment.instanceIndices[mediumIndex],
+        ),
+        heroLambda,
+        cameraContainment.boundaries[mediumIndex],
+      );
+    }
+  }`;
 
   // Medium-state update after the bounce sample (only when the walk is in).
   const mediumStateUpdate = /* wgsl */ `
@@ -465,22 +518,12 @@ export function composePathTraceKernelWgsl(opts: {
       let distanceInMedium = min(
         hit.dist, bdptMediumStack[topIndex].remainingDistance,
       );
-      throughput = throughput * exp(
-        -bdptMediumStack[topIndex].sigmaA * max(distanceInMedium, 0.0),
+      throughput = throughput * materialBeer(
+        bdptMediumStack[topIndex].sigmaA, distanceInMedium,
       );
       bdptMediumStack[topIndex].remainingDistance = max(
         bdptMediumStack[topIndex].remainingDistance - distanceInMedium, 0.0,
       );
-    } else {
-      let preMatId = hitMaterialId(hit);
-      let preMat = decodeMaterial(preMatId);
-      let preFrontFace = hit.frontFace;
-      if (!preFrontFace && preMat.isTranslucent) {
-        let inferredDistance = materialAttenuationDistance(hit.dist, preMat);
-        throughput = throughput * exp(
-          -bdptMaterialSigmaA(preMatId, preMat, heroLambda) * inferredDistance,
-        );
-      }
     }`;
 
   const shadePrologue = composeShadeProloguePartsWgsl(
@@ -994,10 +1037,10 @@ ${mneeActiveDecl}  let sppmActive = caustic == 2u${sppmActiveSuffix};
 ${mediumStateDecls}
 
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
+    if (!bdptMediumStateValid) { break; }
     let sppmOwnsCurrentEmission = sppmActive && sppmReceiverPrefixActive && sppmOwnedDeltaDepth > 0u;
-    let alphaTraceOrigin = ray.origin;
-    var alphaAdvance = 0.0;
-    var hit = traceClosest(ray, ptRayTMin(), INFINITY);
+    var alphaCursor = ptRayTMin();
+    var hit = traceClosest(ray, alphaCursor, INFINITY);
     // P2 alpha-test pass-through: a baseColor-texture alpha mask/blend hit is
     // "not there" — advance the ray past it and re-trace, WITHOUT consuming a
     // scatter bounce. Opaque materials return false on the first test. The
@@ -1018,14 +1061,15 @@ ${mediumStateDecls}
       if (!alphaTestPassThrough(
         hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
       )) { break; }
-      let alphaStep = hit.dist + ptRayTMin();
-      alphaAdvance = alphaAdvance + alphaStep;
-      ray.origin = ray.origin + ray.direction * alphaStep;
-      hit = traceClosest(ray, ptRayTMin(), INFINITY);
+      let nextAlphaCursor = hit.dist;
+      if (!(nextAlphaCursor > alphaCursor)) {
+        alphaTraversalValid = false;
+        break;
+      }
+      alphaCursor = nextAlphaCursor;
+      hit = traceClosest(ray, alphaCursor, INFINITY);
     }
-    ray.origin = alphaTraceOrigin;
     if (!alphaTraversalValid) { break; }
-    if (hit.didHit) { hit.dist = hit.dist + alphaAdvance; }
     let mneeOwnsCurrentEmission = ${mneeOwnershipExpr} &&
       mneeReceiverPrefixActive && mneeOwnedDeltaDepth > 0u &&
       mneeOwnedDeltaDepth <= min(params.mneeMaxChainLength, 8u) &&
@@ -1141,14 +1185,14 @@ ${shadePrologue.surface}
       var directLi = vec3f(0.0);
       // N-directional loop: each record in directionalLights[] is 2 vec4f:
       //   [di*2+0]: towardLight.xyz, angularDiameter
-      //   [di*2+1]: irradiance.rgb,  mean_irradiance
+      //   [di*2+1]: irradiance.rgb,  distant-direct represented PMF
       // The packed directional array is authoritative for both this surface
       // loop and the in-medium NEE loop above.
       for (var di = 0u; di < params.directionalLightCount; di = di + 1u) {
         if (sumDirectLighting || current == picked) {
           let dBase = di * 2u;
           let dDirAD = directionalLights[dBase];        // .xyz = toward-light dir, .w = angularDiameter
-          let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance,        .w = mean irradiance
+          let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance, .w = represented PMF
           var sampleDir = safe_normalize(dDirAD.xyz);
           // SHADOW-01 — emitter castShadow:false is sign-encoded into the
           // angularDiameter lane (packed = -1 - ad; see emitterPacking.ts).
@@ -1165,10 +1209,14 @@ ${shadePrologue.surface}
             hitPos + directOffsetNormal * ptRayOriginBias(),
             sampleDir,
           );
-          if (
-            dirShadowDisabled ||
-            !traceAny(shadowRay, ptRayTMin(), INFINITY, &rng)
-          ) {
+          var visibility = SurfaceVisibility(vec3f(1.0), true);
+          if (!dirShadowDisabled) {
+            visibility = traceSurfaceVisibility(
+              shadowRay, ptRayTMin(), INFINITY,
+              heroLambda, incidentIor, &rng,
+            );
+          }
+          if (visibility.visible) {
             let nDotL = abs(dot(normal, sampleDir));
             // H52: evaluateBrdfFull adds clearcoat/sheen/iridescence lobes;
             // zero-default → identical to evaluateBrdf when all scalars are 0.
@@ -1217,7 +1265,7 @@ ${shadePrologue.surface}
               );
             }
             directLi = directLi + throughput * brdf * nDotL * dIrrOut *
-              directLightingScale * distantMisWeight;
+              visibility.transmittance * directLightingScale * distantMisWeight;
           }
         }
         current = current + 1u;
@@ -1245,15 +1293,18 @@ ${shadePrologue.surface}
             wi,
           );
           // SHADOW-01 — ptExtra.z carries the emitter castShadowDisabled flag.
-          if (
-            ptExtra.z > 0.5 ||
-            !traceAny(
+          var visibility = SurfaceVisibility(vec3f(1.0), true);
+          if (!(ptExtra.z > 0.5)) {
+            visibility = traceSurfaceVisibility(
               pointShadowRay,
               ptRayTMin(),
               ptFiniteSegmentTMax(dist),
+              heroLambda,
+              incidentIor,
               &rng,
-            )
-          ) {
+            );
+          }
+          if (visibility.visible) {
             let nDotL = abs(dot(normal, wi));
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
@@ -1266,7 +1317,8 @@ ${shadePrologue.surface}
             // Delta light (no MIS): compensate the one-of-N selection by /p_select.
             // A3 — spectralise the light radiance at the hero λ (RGB unchanged).
             let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
-            directLi = directLi + throughput * brdf * nDotL * radOut * attenuation * directLightingScale;
+            directLi = directLi + throughput * brdf * nDotL * radOut *
+              attenuation * visibility.transmittance * directLightingScale;
           }
         }
         current = current + 1u;
@@ -1301,15 +1353,18 @@ ${shadePrologue.surface}
               wi,
             );
             // SHADOW-01 — spExtra.z carries the emitter castShadowDisabled flag.
-            if (
-              spExtra.z > 0.5 ||
-              !traceAny(
+            var visibility = SurfaceVisibility(vec3f(1.0), true);
+            if (!(spExtra.z > 0.5)) {
+              visibility = traceSurfaceVisibility(
                 spotShadowRay,
                 ptRayTMin(),
                 ptFiniteSegmentTMax(dist),
+                heroLambda,
+                incidentIor,
                 &rng,
-              )
-            ) {
+              );
+            }
+            if (visibility.visible) {
               let nDotL = abs(dot(normal, wi));
               // Smooth penumbra: smoothstep from cosOuter to cosInner (hard edge when equal).
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
@@ -1322,7 +1377,9 @@ ${shadePrologue.surface}
               // Delta light (no MIS): compensate the one-of-N selection by /p_select.
               // A3 — spectralise the spot radiance at the hero λ (RGB unchanged).
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
-              directLi = directLi + throughput * brdf * nDotL * softness * sradOut * attenuation * directLightingScale;
+              directLi = directLi + throughput * brdf * nDotL * softness *
+                sradOut * attenuation * visibility.transmittance *
+                directLightingScale;
             }
           }
         }
@@ -1403,18 +1460,23 @@ ${shadePrologue.surface}
                 wi,
               );
               // SHADOW-01 — rectAreaLights[rb].w carries castShadowDisabled.
-              if (
-                rectAreaLights[rb].w > 0.5 ||
-                !traceAny(
+              var visibility = SurfaceVisibility(vec3f(1.0), true);
+              if (!(rectAreaLights[rb].w > 0.5)) {
+                visibility = traceSurfaceVisibility(
                   shadowRay,
                   ptRayTMin(),
                   ptFiniteSegmentTMax(dist),
+                  heroLambda,
+                  incidentIor,
                   &rng,
-                )
-              ) {
+                );
+              }
+              if (visibility.visible) {
                 // A3 — spectralise the rect/disc-area radiance at the hero λ.
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
-                directLi = directLi + throughput * brdf * nDotL * rrOut * misWeight / lightPdf * directLightingScale;
+                directLi = directLi + throughput * brdf * nDotL * rrOut *
+                  visibility.transmittance * misWeight / lightPdf *
+                  directLightingScale;
               }
             }
           }
@@ -1477,18 +1539,23 @@ ${shadePrologue.surface}
                 wi,
               );
               // SHADOW-01 — row 3.w carries castShadowDisabled.
-              if (
-                meshAreaLights[mb + 3u].w > 0.5 ||
-                !traceAny(
+              var visibility = SurfaceVisibility(vec3f(1.0), true);
+              if (!(meshAreaLights[mb + 3u].w > 0.5)) {
+                visibility = traceSurfaceVisibility(
                   shadowRay,
                   ptRayTMin(),
                   ptFiniteSegmentTMax(dist),
+                  heroLambda,
+                  incidentIor,
                   &rng,
-                )
-              ) {
+                );
+              }
+              if (visibility.visible) {
                 // A3 — spectralise the mesh-area radiance at the hero λ.
                 let mrOut = select(mr, spectralEmissionAtHero(mr, heroLambda), params.spectralEnabled != 0u);
-                directLi = directLi + throughput * brdf * nDotL * mrOut * misWeight / lightPdf * directLightingScale;
+                directLi = directLi + throughput * brdf * nDotL * mrOut *
+                  visibility.transmittance * misWeight / lightPdf *
+                  directLightingScale;
               }
             }
           }
@@ -1518,7 +1585,11 @@ ${shadePrologue.surface}
             hitPos + envOffsetNormal * ptRayOriginBias(),
             envDir,
           );
-          if (!traceAny(shadowRay, ptRayTMin(), INFINITY, &rng)) {
+          let visibility = traceSurfaceVisibility(
+            shadowRay, ptRayTMin(), INFINITY,
+            heroLambda, incidentIor, &rng,
+          );
+          if (visibility.visible) {
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, clearcoatNormal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
@@ -1583,7 +1654,9 @@ ${shadePrologue.surface}
                 bounce,
               );
             }
-            directLi = directLi + throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8) * directLightingScale;
+            directLi = directLi + throughput * brdf * nDotL * envColorOut *
+              visibility.transmittance * misWeight / max(envPdf, 1e-8) *
+              directLightingScale;
           }
         }
       }
@@ -1607,10 +1680,13 @@ ${bdptEyeStackPrimaryPdfComment}
         false,
         0.0,
         bdptEyeActiveMedium,
+        bdptEyeIncidentMedium.initialDistance,
         bdptEyeIncidentMedium.remainingDistance,
         bdptEyeIncidentMedium.matId,
+        bdptEyeIncidentMedium.initialDistance,
         bdptEyeIncidentMedium.remainingDistance,
         bdptEyeTransmittedMedium.matId,
+        bdptEyeTransmittedMedium.initialDistance,
         bdptEyeTransmittedMedium.remainingDistance,
       );
       let maxLv = min(params.bdptMaxLightBounces, 8u);
@@ -1755,6 +1831,10 @@ ${bdptEyeStackPrimaryPdfComment}
       mat.specularColor,
       mat.specularIntensity,
       thinFilm,
+      mat.isThinSheet,
+      oppositeNormal,
+      oppositeRoughness,
+      oppositeLayerW,
       isTranslucent,
       mat.clearcoat,
       mat.clearcoatRoughness,
@@ -1764,7 +1844,10 @@ ${bdptEyeStackPrimaryPdfComment}
       anisoStrength,
       anisoRotation,
     );
-    ray.origin = bs.newRayOrigin;
+    let crossedTransmissiveInterface =
+      bs.sampledLobe == BSDF_LOBE_DELTA_TRANSMISSION ||
+      bs.sampledLobe == BSDF_LOBE_ROUGH_TRANSMISSION ||
+      bs.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION;
     ray.direction = bs.newRayDir;
     throughput = throughput * bs.throughputMul;
     let sampledDir = bs.sampledDir;
@@ -1811,7 +1894,11 @@ ${mediumStateUpdate}
       // Delta is a property of the sampled event, not of the material class.
       // bdptMergedVertex temporarily treats an explicit connection endpoint as
       // non-delta while it recomputes the connection-straddling densities.
-      bdptEyeStackSetSpec(bounce, bs.sampledIsDelta);
+      bdptEyeStackSetSpec(
+        bounce,
+        bs.sampledIsDelta ||
+          bs.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION,
+      );
       // The forward scatter pdf of the chosen next direction at E_bounce — fed
       // to the next iteration as E_{bounce+1}'s reverse density. (eyePdfFwd is
       // now this real value, not the old hardcoded 1.0.)
@@ -1827,19 +1914,25 @@ ${mediumStateUpdate}
         let currentPrefixMedium = bdptSelectEndpointMedium(
           currentEyeForReverse.medium, currentEyeForReverse.nrm, toPrev,
           currentEyeForReverse.mediumMatId,
+          currentEyeForReverse.mediumInitialDistance,
           currentEyeForReverse.mediumRemainingDistance,
           currentEyeForReverse.incidentMediumMatId,
+          currentEyeForReverse.incidentMediumInitialDistance,
           currentEyeForReverse.incidentMediumRemainingDistance,
           currentEyeForReverse.transmittedMediumMatId,
+          currentEyeForReverse.transmittedMediumInitialDistance,
           currentEyeForReverse.transmittedMediumRemainingDistance,
         );
         let previousPrefixMedium = bdptSelectEndpointMedium(
           prevEyeForReverse.medium, prevEyeForReverse.nrm, -toPrev,
           prevEyeForReverse.mediumMatId,
+          prevEyeForReverse.mediumInitialDistance,
           prevEyeForReverse.mediumRemainingDistance,
           prevEyeForReverse.incidentMediumMatId,
+          prevEyeForReverse.incidentMediumInitialDistance,
           prevEyeForReverse.incidentMediumRemainingDistance,
           prevEyeForReverse.transmittedMediumMatId,
+          prevEyeForReverse.transmittedMediumInitialDistance,
           prevEyeForReverse.transmittedMediumRemainingDistance,
         );
         let reverseDistancePdf = bdptEndpointEdgeDistanceDensity(
@@ -1849,7 +1942,11 @@ ${mediumStateUpdate}
           heroLambda,
         );
         var swappedRev = 0.0;
-        if (!bs.sampledIsDelta) {
+        if (
+          bs.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION
+        ) {
+          swappedRev = bs.sampledReverseEventPdf;
+        } else if (!bs.sampledIsDelta) {
           swappedRev = bdptMarginalSurfacePdf(
             baseColor,
             roughness,
@@ -1884,6 +1981,16 @@ ${mediumStateUpdate}
     }
 
 ${bsdfAreaConnect}${compositeEarlyOut}
+    // Arm exact source-feature suppression only after all connection/shadow
+    // queries at this vertex. The token belongs to exactly the next outgoing
+    // path query and must never leak into an unrelated visibility query.
+    if (crossedTransmissiveInterface) {
+      if (!opticalSetContinuationSourceFromHit(hit)) { break; }
+      ray.origin = hitPos;
+    } else {
+      opticalClearContinuationSource();
+      ray.origin = bs.newRayOrigin;
+    }
     // Both BDPT subpaths use fixed bounded depths. Keeping q=1 on the eye path
     // avoids asymmetric, camera-throughput-dependent RR factors that cannot be
     // reconstructed for the reverse strategies in bdptMISWeightFull.

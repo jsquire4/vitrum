@@ -197,14 +197,19 @@ describe('packLightsTexture — float32 area-geometry boundary', () => {
     );
   });
 
-  it('rejects selection powers and cumulative selection mass that do not survive float32', () => {
-    expect(() => packLightsTexture([{
+  it('retains support for derived powers beyond float32 and adversarial ratios', () => {
+    const derivedOverflow = packLightsTexture([{
       ...rectBase,
       id: 'power-overflow',
       intensity: 2e38,
       uAxis: [1, 0, 0],
       vAxis: [0, 1, 0],
-    }])).toThrow(/selection power must survive finite positive RGBA32F storage/);
+    }]);
+    expect(derivedOverflow.proposalWeights?.[0]).toBeGreaterThan(3.402823466e38);
+    expect(texel(derivedOverflow.data, 0, 4, 0)).toBe(1);
+    expect(texel(derivedOverflow.data, 0, 2, 3)).toBe(
+      Math.fround(3.402823466e38),
+    );
 
     const directional = (id: string) => ({
       kind: 'directional' as const,
@@ -213,23 +218,33 @@ describe('packLightsTexture — float32 area-geometry boundary', () => {
       intensity: 2e38,
       direction: [0, 1, 0] as [number, number, number],
     });
-    expect(() =>
-      packLightsTexture([directional('sum-a'), directional('sum-b')]),
-    ).toThrow(/selection-power sum overflows float32/);
+    const equalHdr = packLightsTexture([
+      directional('sum-a'),
+      directional('sum-b'),
+    ]);
+    expect(texel(equalHdr.data, 0, 4, 0)).toBe(0.5);
+    expect(texel(equalHdr.data, 1, 4, 0)).toBe(0.5);
 
-    expect(() =>
-      packLightsTexture([
+    for (const emitters of [
+      [
         { ...directional('dominant'), intensity: 1e30 },
-        { ...directional('flattened'), intensity: 1e-30 },
-      ]),
-    ).toThrow(/loses proposal support in the cumulative float32 distribution/);
-
-    expect(() =>
-      packLightsTexture([
-        { ...directional('pdf-collapse'), intensity: 1e-30 },
+        { ...directional('retained'), intensity: 1e-30 },
+      ],
+      [
+        { ...directional('retained-first'), intensity: 1e-30 },
         { ...directional('dominant-last'), intensity: 1e30 },
-      ]),
-    ).toThrow(/selection probability collapses to zero in float32/);
+      ],
+    ]) {
+      const packed = packLightsTexture(emitters);
+      const pmf0 = texel(packed.data, 0, 4, 0);
+      const pmf1 = texel(packed.data, 1, 4, 0);
+      expect(pmf0).toBeGreaterThan(0);
+      expect(pmf1).toBeGreaterThan(0);
+      expect(Math.fround(pmf0 + pmf1)).toBe(1);
+      // Directional-only sampling publishes the same represented proposal.
+      expect(texel(packed.data, 0, 4, 3)).toBe(pmf0);
+      expect(texel(packed.data, 1, 4, 3)).toBe(pmf1);
+    }
   });
 
   it('rejects every analytic-light operand that would become non-finite RGBA32F', () => {
@@ -429,7 +444,7 @@ describe('packLightsTexture — punctual spot orientation', () => {
     // SpotEmitter is a delta-position contract; inherited area/radius lanes
     // remain reserved zero rather than implying a soft source.
     expect(texel(packed.data, 0, 3, 3)).toBe(0);
-    expect(texel(packed.data, 0, 4, 0)).toBe(0);
+    expect(texel(packed.data, 0, 4, 0)).toBe(1);
   });
 
   it('preserves intentional hard edges and rejects positive f32-collapsed cone support', () => {

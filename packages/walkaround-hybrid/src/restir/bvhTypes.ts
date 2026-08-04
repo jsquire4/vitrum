@@ -27,6 +27,13 @@ export interface SceneBVHBuffers {
   bvhNodes: StorageBufferHandle;
   bvhIndex: StorageBufferHandle;
   bvhPositions: StorageBufferHandle;
+  /** Per-BVH-triangle optical identity. x is the component/final encoded
+   * boundary lane and y is the encoded represented primitive-instance/range
+   * identity. Both lanes reserve zero as invalid. */
+  opticalTriangleIdentity: StorageBufferHandle;
+  /** Per-TLAS-instance encoded boundary base. Merged traversal carries one
+   * implicit base entry whose value is one; zero is always invalid. */
+  opticalInstanceBoundaryIdBasePlusOne: StorageBufferHandle;
   triangleMaterialIds: StorageBufferHandle;
   bvhBeerColors: StorageBufferHandle;
   bvhEmissiveLe: StorageBufferHandle;

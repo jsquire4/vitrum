@@ -10,7 +10,7 @@ const surfaceRecordSource = (
 describe('mapped bump derivatives', () => {
   it('derives independent UV steps from the map source dimensions', () => {
     expect(surfaceRecordSource).toContain(
-      'materialTextureSourceSize( textures, bumpMapPolicy, 0 )',
+      'textures, bumpMapPolicy, 0, bumpSize',
     );
     expect(surfaceRecordSource).toContain(
       'uvPrime.xy + vec2( bumpTexel.x, 0.0 )',
@@ -18,12 +18,9 @@ describe('mapped bump derivatives', () => {
     expect(surfaceRecordSource).toContain(
       'uvPrime.xy + vec2( 0.0, bumpTexel.y )',
     );
-    expect(surfaceRecordSource).toContain(
-      'float dhdu = ( hU - hC ) / bumpTexel.x;',
-    );
-    expect(surfaceRecordSource).toContain(
-      'float dhdv = ( hV - hC ) / bumpTexel.y;',
-    );
+    expect(surfaceRecordSource).toContain('float gradientU = dU * float( sourceSize.x );');
+    expect(surfaceRecordSource).toContain('float gradientV = dV * float( sourceSize.y );');
+    expect(surfaceRecordSource).toContain('centerValid && uValid && vValid');
     expect(surfaceRecordSource).not.toMatch(/\b512(?:\.0)?\b/);
   });
 
@@ -35,7 +32,7 @@ describe('mapped bump derivatives', () => {
     });
 
     expect(source).toContain(
-      'materialTextureSourceSize( textures, material.bumpMapWrap, 0 )',
+      'textures, material.bumpMapWrap, 0, bumpSize',
     );
     expect(source).toContain(
       'uvPrime.xy + vec2( bumpTexel.x, 0.0 )',
@@ -43,6 +40,7 @@ describe('mapped bump derivatives', () => {
     expect(source).toContain(
       'uvPrime.xy + vec2( 0.0, bumpTexel.y )',
     );
+    expect(source).toContain('centerValid && uValid && vValid');
     expect(source).not.toMatch(/\b512(?:\.0)?\b/);
   });
 });

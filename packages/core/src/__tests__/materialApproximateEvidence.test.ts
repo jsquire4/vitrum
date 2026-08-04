@@ -229,7 +229,7 @@ const PT_WEBGL2_UNLIT = evidence(
     {
       path: 'packages/pt-webgl2/src/glsl/composeTraceGlsl.test.ts',
       includes: [
-        'bool activeMaterialUnlit = materialControl.unlit;',
+        'activeMaterialUnlit = materialControl.unlit;',
         'if ( activeMaterialUnlit )',
       ],
     },
@@ -276,7 +276,7 @@ const PT_WEBGL2_SCATTER_RGB = evidence(
       path: 'packages/pt-webgl2/src/scene/materialsTexture.test.ts',
       includes: [
         'scatteringCoefficientRGB packs per-channel sigmaS override and majorant sigmaT',
-        'scatteringCoefficientRGB alone activates translucent SSS and packs sigmaS',
+        'scatteringCoefficientRGB packs medium coefficients without a dormant surface flag',
       ],
     },
   ],

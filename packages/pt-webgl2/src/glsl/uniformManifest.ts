@@ -77,6 +77,7 @@ export const UNIFORM_MANIFEST = [
   { glslName: 'materials',             glslType: 'sampler2D',        frameKey: 'samplerOrStruct' },
   { glslName: 'textures',              glslType: 'sampler2DArray',   frameKey: 'samplerOrStruct' },
   { glslName: 'bvh',                   glslType: 'BVH',              frameKey: 'samplerOrStruct' },
+  { glslName: 'uSceneTriangleCount',   glslType: 'uint',             frameKey: 'samplerOrStruct' },
   // ── path tracer ───────────────────────────────────────────────────────────
   { glslName: 'bounces',               glslType: 'int',              frameKey: 'bounces' },
   { glslName: 'transmissiveBounces',   glslType: 'int',              frameKey: 'transmissiveBounces' },
@@ -204,6 +205,7 @@ const UNIFORM_DECLS = /* glsl */ `
 						uniform sampler2DArray textures;
 						uniform sampler2DArray materialRadianceTextures;
 						uniform BVH bvh;
+						uniform uint uSceneTriangleCount;
 
 					// path tracer
 					uniform int bounces;
@@ -233,7 +235,7 @@ const UNIFORM_DECLS = /* glsl */ `
 export function bdptUniformDecls(): string {
   return /* glsl */ `
 					// Sprint 10c — BDPT uniforms.
-					// uBdptLightPathTex: RGBA32F ping-pong texture (width=8, height=6).
+					// uBdptLightPathTex: RGBA32F ping-pong texture (width=8, height=14).
 					//   Rows: 0=position+kind, 1=normal+pdfFwd, 2=throughput+pdfRev,
 					//   3=BSDF/endpoint metadata, 4=material/endpoint payload, 5=medium context.
 					//   Columns: 0..uBdptMaxLightBounces-1 (one per light subpath bounce).

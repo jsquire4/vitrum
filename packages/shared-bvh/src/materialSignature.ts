@@ -106,7 +106,10 @@ function textureRefSig(value: unknown): string {
     `scale=${vecSig(transform?.scale, [1, 1], 2)}`,
     `rot=${numberSig(transform?.rotation, 0)}`,
     `wrap=${ref.wrapS ?? 'repeat'},${ref.wrapT ?? 'repeat'}`,
-    `filter=${ref.magFilter ?? ''},${ref.minFilter ?? ''},${ref.mipFilter ?? ''}`,
+    // TextureRef omission has the library-wide linear mip default. Keep the
+    // structural signature semantic: omission and an explicit `linear` request
+    // must deduplicate to the same material record.
+    `filter=${ref.magFilter ?? ''},${ref.minFilter ?? ''},${ref.mipFilter ?? 'linear'}`,
   ].join(';');
 }
 

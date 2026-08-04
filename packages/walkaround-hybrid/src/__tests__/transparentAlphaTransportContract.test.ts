@@ -37,7 +37,9 @@ describe('transparent alpha transport contract', () => {
       ['ris-gi', RIS_GI_WGSL],
       ['ris-gi-nrc', nrcGiModule.source],
     ] as const) {
-      expect(shader, name).toContain('traceSceneFirstHitAlphaMaskTextured(');
+      expect(shader, name).toMatch(
+        /traceSceneFirstHitAlphaMaskTextured(?:WithMetadata)?\(/,
+      );
       expect(shader, name).toContain('ubo.frameSeed');
     }
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAlphaBlendCoverageHash(');
@@ -46,7 +48,13 @@ describe('transparent alpha transport contract', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('let directionBits = bitcast<vec3u>(ray.direction);');
     expect(MATERIAL_ATLAS_WGSL).toContain('(layer * 0x9e3779b9u)');
     expect(MATERIAL_ATLAS_WGSL).toContain(
-      'materialAlphaBlendCoverageHash(hit, ray, layer, sampleSeed) >= alpha.coverage',
+      'materialAlphaBlendCoverageHash(hit, ray, layer, sampleSeed) >= representedCoverage',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'fn materialRepresentedAlphaBlendCoverage(coverage: f32)',
+    );
+    expect(SURFACE_TEXTURES_WGSL).toContain(
+      'return materialRepresentedAlphaBlendCoverage(alpha.coverage);',
     );
     expect(MATERIAL_ATLAS_WGSL).toContain(
       'Conservative overflow: after the bounded transparent-layer budget',
@@ -55,15 +63,52 @@ describe('transparent alpha transport contract', () => {
   });
 
   it('keeps shade-side direct-light visibility on alpha-aware transmittance predicates', () => {
-    expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
+    expect(SHADING_TERMS_WGSL).toContain(
+      'traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(',
+    );
+    expect(SHADE_WGSL).toContain(
+      'let directShadowContainingMedia = materialShadowClassifyContainingMedia(',
+    );
     expect(SHADING_TERMS_WGSL).toContain('var shadowT = vec3f(1.0);');
     expect(SHADING_TERMS_WGSL).toContain('var sunShadowT = vec3f(1.0);');
-    expect(SHADING_TERMS_WGSL).toContain('shadowColorCorrection');
+    expect(SHADING_TERMS_WGSL).toContain(
+      'r.logW, envColor, layeredBrdfE, shadowTint',
+    );
+    expect(SHADING_TERMS_WGSL).toContain(
+      'geometryLogW, Le, layeredBrdf, shadowTint,',
+    );
+    expect(SHADING_TERMS_WGSL).toContain('restirShadeDirectionalVolumeLog(');
+    expect(SHADING_TERMS_WGSL).not.toContain('shadowColorCorrection');
     expect(SHADING_TERMS_WGSL).not.toContain('sunShadowT = traceSceneAlphaTransmittanceTextured(');
   });
 
   it('preserves explicit transmission ownership through the complete ordered walk', () => {
-    const ownershipWalker = SURFACE_TEXTURES_WGSL.slice(
+    const statefulWalker = SURFACE_TEXTURES_WGSL.slice(
+      SURFACE_TEXTURES_WGSL.indexOf(
+        'fn traceSceneAlphaTintTransmittanceTexturedWithState(',
+      ),
+      SURFACE_TEXTURES_WGSL.indexOf(
+        'fn traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(',
+      ),
+    );
+    expect(statefulWalker).toContain(
+      'let surfaceBudget = materialShadowWorldSurfaceBudget(',
+    );
+    expect(statefulWalker).toContain(
+      'for (var i = 0u; i < surfaceBudget; i = i + 1u)',
+    );
+    expect(statefulWalker).toContain(
+      'tau = tau * vec3f(1.0 - coverage);',
+    );
+    expect(statefulWalker).toContain(
+      'mediumState.materialId[mediumState.depth - 1u] == boundaryId',
+    );
+    expect(statefulWalker).toContain(
+      'mediumState.instance[mediumState.depth - 1u] == representedId',
+    );
+    expect(statefulWalker).toContain('return vec3f(0.0);');
+    expect(statefulWalker).not.toContain('traceSceneAny');
+    const ownershipWrapper = SURFACE_TEXTURES_WGSL.slice(
       SURFACE_TEXTURES_WGSL.indexOf(
         'fn traceSceneAlphaTintTransmittanceTexturedWithOwnership(',
       ),
@@ -71,20 +116,12 @@ describe('transparent alpha transport contract', () => {
         'fn traceSceneAlphaTintTransmittanceTextured(',
       ),
     );
-    expect(ownershipWalker).toContain(
-      'let surfaceBudget = materialShadowWorldSurfaceBudget(',
+    expect(ownershipWrapper).toContain(
+      'let containingMedia = materialShadowClassifyContainingMedia(',
     );
-    expect(ownershipWalker).toContain(
-      'for (var i = 0u; i < surfaceBudget; i = i + 1u)',
+    expect(ownershipWrapper).toContain(
+      'return traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(',
     );
-    expect(ownershipWalker).toContain(
-      'tau = tau * vec3f(1.0 - coverage);',
-    );
-    expect(ownershipWalker).toContain(
-      'mediumMaterialId[mediumDepth - 1u] == materialId',
-    );
-    expect(ownershipWalker).toContain('return vec3f(0.0);');
-    expect(ownershipWalker).not.toContain('traceSceneAny');
     expect(SURFACE_TEXTURES_WGSL).toContain(
       'return traceSceneAlphaTintTransmittanceTextured(',
     );
@@ -116,18 +153,51 @@ describe('transparent alpha transport contract', () => {
     expect(TRANSPARENT_OIT_WGSL).not.toContain('risFinal');
   });
 
+  it('treats an unlit blend layer as authored outgoing radiance before coverage compositing', () => {
+    expect(TRANSPARENT_OIT_WGSL).toContain(
+      'if (decodeIsUnlitMaterial(materialWord))',
+    );
+    expect(TRANSPARENT_OIT_WGSL).toContain(
+      'return payload.albedo * payload.layerTransmission;',
+    );
+    expect(TRANSPARENT_OIT_WGSL).toContain(
+      'accum = accum + layerRadiance * coverage * transmittance;',
+    );
+  });
+
   it('treats lightMap as receiver-local diffuse irradiance exactly once', () => {
     expect(SHADE_WGSL).toContain('let lightMapIrradiance = sampleLightMap(');
-    expect(SHADE_WGSL).toContain('let Lo_lightMap = albedo * INV_PI * lightMapIrradiance;');
+    expect(SHADE_WGSL).toContain(
+      'let Lo_lightMap = albedo * INV_PI * lightMapIrradiance *',
+    );
+    expect(SHADE_WGSL).toContain(
+      '(1.0 - clamp(matColor.a, 0.0, 1.0));',
+    );
     expect(TRANSPARENT_OIT_WGSL).toContain('let bakedIrradiance = sampleLightMap(');
     expect(TRANSPARENT_OIT_WGSL).toContain('let baked = payload.albedo * INV_PI * bakedIrradiance;');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('let bakedLo = albedo * INV_PI * sampleLightMap(hit);');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('let diffuseLo = incomingIrradiance * payload.albedo * INV_PI;');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'let bakedDiffuse = payload.albedo * INV_PI * sampleLightMap(hit);',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'let diffuseLo = (bakedDiffuse +',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'incomingIrradiance * payload.albedo * INV_PI) *',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      '(1.0 - clamp(transmission, 0.0, 1.0));',
+    );
     expect(RESTIR_GI_MATERIAL_WGSL).not.toContain('incomingIrradiance * brdf');
     const ddgi = makeProbeUpdateRaysWGSL(8);
     expect(ddgi).toContain('let bakedOutgoing = probeMat.albedo * (1.0 / PI) *');
     expect(ddgi).toContain('ddgiSampleLightMapIrradiance(hit);');
-    expect(NRC_INDEPENDENT_SUFFIX_WGSL).not.toContain('sampleLightMap(');
+    expect(NRC_INDEPENDENT_SUFFIX_WGSL).toContain(
+      'let bakedDiffuse = payload.albedo * INV_PI * sampleLightMap(hit) *',
+    );
+    expect(NRC_INDEPENDENT_SUFFIX_WGSL).toContain(
+      'radiance = radiance + throughput * nrcTeacherLocalSourceForHit(',
+    );
 
     const whiteLambertian = [2, 4, 6].map((irradiance) => irradiance / Math.PI);
     expect(whiteLambertian[0]).toBeCloseTo(2 / Math.PI, 12);

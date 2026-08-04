@@ -1,8 +1,5 @@
 import {
-  X_CMF_INTEGRAL,
-  Y_CMF_INTEGRAL,
-  Z_CMF_INTEGRAL,
-  sampleCMF,
+  heroWavelengthMisMixturePdf,
   sampleHeroWavelengthMIS,
 } from '@vitrum/shared-samplers';
 
@@ -61,9 +58,10 @@ export function sharedBdptWavelengthForSeed(
   const uLambda = (radicalInverseBase3(index) + wavelengthRotation) % 1;
   const sampled = sampleHeroWavelengthMIS(uStrategy, uLambda);
   const wavelengthNm = Math.fround(sampled.lambdaNm);
-  const [x, y, z] = sampleCMF(wavelengthNm);
-  const pdf = Math.fround(
-    (x / X_CMF_INTEGRAL + y / Y_CMF_INTEGRAL + z / Z_CMF_INTEGRAL) / 3,
-  );
+  // The shared wavelength is quantized to f32 before entering the light-path
+  // uniforms. Re-evaluate the same represented X/Y/Z mixture at that published
+  // wavelength; ideal thirds would disagree with the 24-bit selector used by
+  // both PCG and Sobol.
+  const pdf = Math.fround(heroWavelengthMisMixturePdf(wavelengthNm));
   return { wavelengthNm, pdf };
 }

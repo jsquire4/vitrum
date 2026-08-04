@@ -171,7 +171,11 @@ function generatedGeometryCounts(
         indices: 12n * s,
       };
     case 'h-channel-came':
-      return { vertices: 72n, indices: 108n };
+      // 12 profile vertices and 10 conforming cap triangles per end, plus
+      // the 12 independently-normaled side quads.  The former three-rectangle
+      // caps used fewer indices but left T-junctions where the web met each
+      // rail, so they were not a closed triangle manifold.
+      return { vertices: 72n, indices: 132n };
   }
 }
 
@@ -490,13 +494,6 @@ function buildHChannelCame(params: readonly [number, number, number, number]): G
   const t = rawWebThickness * 0.5;
   const builder = createBuilder();
 
-  appendXCapRect(builder, hx, 1, hy - t, hy, -hz, hz);
-  appendXCapRect(builder, hx, 1, -hy, -hy + t, -hz, hz);
-  appendXCapRect(builder, hx, 1, -hy + t, hy - t, -t, t);
-  appendXCapRect(builder, -hx, -1, hy - t, hy, -hz, hz);
-  appendXCapRect(builder, -hx, -1, -hy, -hy + t, -hz, hz);
-  appendXCapRect(builder, -hx, -1, -hy + t, hy - t, -t, t);
-
   const profile: ReadonlyArray<readonly [z: number, y: number]> = [
     [-hz, -hy],
     [hz, -hy],
@@ -511,6 +508,9 @@ function buildHChannelCame(params: readonly [number, number, number, number]): G
     [-t, -hy + t],
     [-hz, -hy + t],
   ];
+
+  appendXCapProfile(builder, hx, 1, profile);
+  appendXCapProfile(builder, -hx, -1, profile);
 
   for (let i = 0; i < profile.length; i++) {
     const a = profile[i]!;
@@ -641,19 +641,38 @@ function buildSurfaceRows(
   return finish(builder);
 }
 
-function appendXCapRect(
+function appendXCapProfile(
   builder: GeometryBuilder,
   x: number,
   normalX: -1 | 1,
-  y0: number,
-  y1: number,
-  z0: number,
-  z1: number,
+  profile: ReadonlyArray<readonly [z: number, y: number]>,
 ): void {
-  if (normalX > 0) {
-    addQuad(builder, [x, y0, z0], [x, y1, z0], [x, y0, z1], [x, y1, z1], [1, 0, 0]);
-  } else {
-    addQuad(builder, [x, y0, z0], [x, y0, z1], [x, y1, z0], [x, y1, z1], [-1, 0, 0]);
+  const zMin = Math.min(...profile.map(([z]) => z));
+  const zMax = Math.max(...profile.map(([z]) => z));
+  const yMin = Math.min(...profile.map(([, y]) => y));
+  const yMax = Math.max(...profile.map(([, y]) => y));
+  const vertices = profile.map(([z, y]) => pushVertex(
+    builder,
+    [x, y, z],
+    [normalX, 0, 0],
+    [(z - zMin) / (zMax - zMin), (y - yMin) / (yMax - yMin)],
+  ));
+
+  // Conforming triangulation of the fixed 12-edge H outline.  In (z,y)
+  // profile order these wind toward -X; reverse each triangle for the +X cap.
+  // Keeping all boundary breakpoints in the caps is what makes each cap edge
+  // pair exactly with its corresponding extruded side edge.
+  const triangles = [
+    [0, 1, 2], [0, 2, 3], [0, 3, 10], [0, 10, 11],
+    [10, 3, 4], [10, 4, 9],
+    [6, 7, 8], [6, 8, 9], [6, 9, 4], [6, 4, 5],
+  ] as const;
+  for (const [a, b, c] of triangles) {
+    if (normalX > 0) {
+      pushTriangle(builder, vertices[c]!, vertices[b]!, vertices[a]!);
+    } else {
+      pushTriangle(builder, vertices[a]!, vertices[b]!, vertices[c]!);
+    }
   }
 }
 
@@ -677,14 +696,23 @@ function appendExtrudedProfileEdge(
 }
 
 function circleDirection(u: V3, v: V3, i: number, segments: number): V3 {
-  const phi = (i * TAU) / segments;
+  // UV-seam endpoints are distinct vertices but must be bit-identical in
+  // position. Evaluating sin(2π) leaves a small non-zero residue, which turns
+  // an otherwise closed generated optical surface into an actual geometric
+  // crack after position welding. Reuse azimuth zero exactly at the duplicate
+  // endpoint; UVs remain independently authored as 0 and 1.
+  const phi = ((i === segments ? 0 : i) * TAU) / segments;
   return add(scale(u, Math.cos(phi)), scale(v, Math.sin(phi)));
 }
 
 function makeBasis(axis: V3): { readonly u: V3; readonly v: V3 } {
   const helper: V3 = Math.abs(axis[1]) < 0.999 ? [0, 1, 0] : [1, 0, 0];
   const u = normalize(cross(helper, axis));
-  return { u, v: normalize(cross(axis, u)) };
+  // buildSurfaceRows' lower-to-upper triangle order expects the azimuth basis
+  // to satisfy cross(u, v) = -axis.  The former cross(axis, u) basis inverted
+  // every non-degenerate capsule while sphere/cylinder happened to use the
+  // correct explicit basis.
+  return { u, v: normalize(cross(u, axis)) };
 }
 
 function add(a: V3, b: V3): V3 {

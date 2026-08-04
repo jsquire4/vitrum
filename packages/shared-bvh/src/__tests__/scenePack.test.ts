@@ -67,6 +67,7 @@ function displacedTriScene(): Scene {
               data: new Float32Array([1]),
               __vitrum_hint__: { channels: 1, dataType: 'float32', colorSpace: 'linear' },
             },
+            mipFilter: 'none',
           },
           displacementScale: 0.25,
           displacementBias: -0.1,
@@ -101,6 +102,7 @@ function microDisplacedTriScene(subdivisions = 1): Scene {
             },
             wrapS: 'clamp-to-edge',
             wrapT: 'clamp-to-edge',
+            mipFilter: 'none',
           },
           displacementScale: 1,
           displacementBias: 0,
@@ -208,7 +210,7 @@ describe('packSceneFromCore (SP-*)', () => {
   it('carries glTF source paths into unreadable displacement errors', () => {
     const source = displacedTriScene();
     const primitive = source.primitives[0]!;
-    const displacementMap = { handle: { id: 'height' } };
+    const displacementMap = { handle: { id: 'height' }, mipFilter: 'none' as const };
     Object.defineProperty(displacementMap, Symbol('vitrum.gltf.textureRefSource'), {
       value: {
         path: 'materials[0].extensions.VITRUM_displacement.displacementTexture',
@@ -250,6 +252,7 @@ describe('packSceneFromCore (SP-*)', () => {
                 data: new Uint16Array([65535]),
                 __vitrum_hint__: { channels: 1, colorSpace: 'linear' },
               },
+              mipFilter: 'none',
             },
             displacementScale: 0.25,
             displacementBias: -0.1,
@@ -280,6 +283,7 @@ describe('packSceneFromCore (SP-*)', () => {
                 data: new Uint16Array([0x3c00]),
                 __vitrum_hint__: { channels: 1, dataType: 'float16', colorSpace: 'linear' },
               },
+              mipFilter: 'none',
             },
             displacementScale: 0.25,
             displacementBias: -0.1,
@@ -947,6 +951,10 @@ describe('packSceneFromCore (SP-*)', () => {
     const bindingA = rebuilt.pack.primitiveTlasBindings.find((b) => b.primitiveId === 'box-a');
     expect(bindingA?.vertexStart).toBe(0);
     expect(rebuilt.pack.positions[0]).toBe(packed.positions[0]);
+    expect(rebuilt.pack.triangleSourceIndices).toHaveLength(rebuilt.pack.triangleCount);
+    expect(new Set(rebuilt.pack.trianglePrimitiveIndices)).toEqual(new Set([0, 1]));
+    expect(rebuilt.pack.instancePrimitiveIndices).toEqual(new Uint32Array([0, 1]));
+    expect(rebuilt.pack.instanceSourceIndices).toEqual(new Uint32Array([0, 0]));
     if (rebuilt.ok) expect(rebuilt.strategy).toBe('splice');
   });
 
@@ -1137,6 +1145,12 @@ describe('packSceneFromCore (SP-*)', () => {
     expect(rebuilt.pack.indices.length).toBe(full.indices.length);
     expect(Array.from(rebuilt.pack.indices)).toEqual(Array.from(full.indices));
     expect(Array.from(rebuilt.pack.triMaterialIds)).toEqual(Array.from(full.triMaterialIds));
+    expect(Array.from(rebuilt.pack.triangleSourceIndices)).toEqual(
+      Array.from(full.triangleSourceIndices),
+    );
+    expect(Array.from(rebuilt.pack.trianglePrimitiveIndices)).toEqual(
+      Array.from(full.trianglePrimitiveIndices),
+    );
   });
 
   it('slice-2 resize that SHRINKS a primitive rebases downstream back', () => {
@@ -1336,6 +1350,85 @@ describe('rebuildTlasReuseBlas (slice-1 instanced-mesh count change)', () => {
     expect(rebuilt.pack.bvhNodes).toBe(packed.bvhNodes);
     expect(rebuilt.pack.primitiveTlasBindings[0]?.instanceCount).toBe(1);
     expect(rebuilt.pack.tlasBlasRoots.length).toBe(1);
+  });
+
+  it('rejects BLAS reuse when every live placement becomes singular', () => {
+    const initial: Scene = {
+      primitives: [instancedMesh('inst', [translate(0)])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(initial, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    const singular = asMat4(new Float32Array([
+      0, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 0, 0, 1,
+    ]));
+    const next: Scene = {
+      primitives: [instancedMesh('inst', [singular, singular])],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+
+    const rebuilt = rebuildTlasReuseBlas(next, packed);
+    expect(rebuilt).toEqual({
+      ok: false,
+      reason: 'no invertible TLAS instances remain; full rebuild required',
+    });
+
+    // The required fallback has one unambiguous empty representation: no
+    // TLAS and no direct root-zero BLAS that a consumer could resurrect.
+    const fullyPacked = packSceneFromCore(next, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    expect(fullyPacked.tlasNodeCount).toBe(0);
+    expect(fullyPacked.bvhNodes).toHaveLength(0);
+    expect(fullyPacked.triangleCount).toBe(0);
+    expect(fullyPacked.primitiveTlasBindings).toEqual([]);
+  });
+
+  it('recomputes primitive-instance identity when scene order changes during membership rebuild', () => {
+    const original: Scene = {
+      primitives: [
+        instancedMesh('a', [translate(0), translate(2)]),
+        instancedMesh('b', [translate(10)]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const packed = packSceneFromCore(original, {
+      tlas: true,
+      resolveMaterialId: () => 0,
+    });
+    const reordered: Scene = {
+      primitives: [
+        original.primitives[1]!,
+        instancedMesh('a', [translate(0), translate(2), translate(4)]),
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const rebuilt = rebuildTlasReuseBlas(reordered, packed);
+    expect(rebuilt.ok).toBe(true);
+    if (!rebuilt.ok) return;
+
+    const bindingA = rebuilt.pack.primitiveTlasBindings.find((binding) => binding.primitiveId === 'a')!;
+    const bindingB = rebuilt.pack.primitiveTlasBindings.find((binding) => binding.primitiveId === 'b')!;
+    expect(new Set(rebuilt.pack.trianglePrimitiveIndices.slice(
+      bindingA.triStart,
+      bindingA.triStart + bindingA.triCount,
+    ))).toEqual(new Set([1]));
+    expect(new Set(rebuilt.pack.trianglePrimitiveIndices.slice(
+      bindingB.triStart,
+      bindingB.triStart + bindingB.triCount,
+    ))).toEqual(new Set([0]));
+    expect(rebuilt.pack.instancePrimitiveIndices).toEqual(new Uint32Array([1, 1, 1, 0]));
+    expect(rebuilt.pack.instanceSourceIndices).toEqual(new Uint32Array([0, 1, 2, 0]));
   });
 
   it('rejects when no TLAS membership changed (caller should use refit path)', () => {

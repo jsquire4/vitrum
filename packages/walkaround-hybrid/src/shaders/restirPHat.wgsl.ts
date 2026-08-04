@@ -53,7 +53,7 @@ fn restir_di_coarse_proposal_phat(lid: u32, xi: vec2f) -> f32 {
 // ============================================================
 
 fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
-  var brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
+  let mixedBrdf = evalGGXReflectionWithTransmissionMix(
     surf.albedo,
     surf.rough,
     surf.metal,
@@ -73,12 +73,10 @@ fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
     surf.clearcoatNormal,
     surf.wo,
     wi,
+    surf.transmission,
   );
-  // A transmissive dielectric still reflects its Fresnel/GGX lobe. Its base
-  // color is absorption/transmission tint, not an opaque Lambertian lobe, so
-  // direct-light target evaluation must retain only the specular family.
-  if (surf.isGlass) {
-    brdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
+  let reflectionBrdf =
+    evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
       surf.albedo,
       surf.rough,
       surf.metal,
@@ -99,10 +97,27 @@ fn restir_di_eval_surface_brdf(surf: PrimarySurface, wi: vec3f) -> vec3f {
       surf.wo,
       wi,
     );
-  }
-  brdf = surf.layerTransmission * brdf;
+  return applyMaterialLayerTransmissionToBrdf(
+    mixedBrdf,
+    reflectionBrdf,
+    surf.layerTransmission,
+    surf.reflectionLayerTransmission,
+  );
+}
+
+// Homogeneous single scatter is a linear RGB operator, but not a diagonal
+// one: its source term is driven by Rec.709 luminance. Feed the complete
+// colored incident contribution through it rather than volume-filtering the
+// BRDF and multiplying source radiance afterward.
+fn restir_di_eval_surface_response(
+  surf: PrimarySurface,
+  wi: vec3f,
+  incidentRadiance: vec3f,
+) -> vec3f {
+  let brdf = restir_di_eval_surface_brdf(surf, wi);
   return applyHomogeneousVolumeSingleScatterDirectional(
-    brdf, surf.albedo, surf.volumeScattering, surf.bulkThickness,
+    incidentRadiance * brdf,
+    surf.albedo, surf.volumeScattering, surf.bulkThickness,
     surf.normal, surf.wo, wi,
   );
 }
@@ -123,8 +138,7 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
       envRadiance(wi),
       surf.envMapIntensity,
     );
-    let brdf  = restir_di_eval_surface_brdf(surf, wi);
-    return luminance(color * brdf);
+    return luminance(restir_di_eval_surface_response(surf, wi, color));
   }
   let e = sceneLoadEmitter(lid);
   let ls = sampleEmitterPoint(e, xi);
@@ -140,9 +154,8 @@ fn restir_di_compute_phat_xi(lid: u32, xi: vec2f, surf: PrimarySurface) -> f32 {
   // geometry term only: cos(emitter) / dist² with the emitterDist2Floor
   // clamp applied consistently with shade.wgsl (sweep finding Bug 3).
   let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-  let brdf = restir_di_eval_surface_brdf(surf, wi);
   let Le = sampleEmitterLeAtXi(e, xi);
-  return luminance(Le * brdf * G);
+  return luminance(restir_di_eval_surface_response(surf, wi, Le * G));
 }
 
 `;

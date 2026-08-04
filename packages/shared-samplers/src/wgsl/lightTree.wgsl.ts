@@ -1,89 +1,166 @@
 /**
  * lightTree.wgsl.ts — binding-agnostic GPU light-tree importance traversal.
  *
- * The canonical WGSL port of `sampleLightTreeCPU` (shared-samplers/lightTree.ts),
- * byte-for-byte in branch logic. Hoisted here so EVERY backend that imports the
- * CPU `buildLightTree` / `packLightTreeForGPU` consumes the SAME traversal — no
- * per-package copies (walkaround-hybrid ReSTIR-DI and pt-webgpu NEE both build
- * their light-tree WGSL from this one source).
+ * This is the canonical WGSL port of the represented 24-bit bucket proposal in
+ * `shared-samplers/lightTree.ts`. Both path tracers and ReGIR instantiate this
+ * generator, so distance, cone, saturation, support, and PDF semantics cannot
+ * drift between backends.
  *
- * The `@group/@binding` of the flat node storage buffer differs per backend
- * (walkaround puts it at a RIS-only group(3); pt-webgpu also at group(3) but in a
- * different pipeline layout), so the binding declaration is PARAMETERISED via
- * `lightTreeWgsl({ group, binding, rngStateType })`. The default RNG state is
- * `u32`, matching the shared PCG module. Backends with an explicit state struct
- * pass its WGSL identifier through `rngStateType`; the matching `rand_f32`
- * implementation must already be in scope.
+ * Packed node layout (16 f32 lanes):
+ *   [0] emitter index                [1] represented proposal power
+ *   [2] left child                   [3] right child
+ *   [4..6] AABB min                  [7..9] AABB max
+ *   [10..12] cone axis               [13] cos(thetaO)
+ *   [14] cos(thetaO + thetaE)        [15] exact subtree leaf count
  *
- * Layout per node (flat f32, stride `LIGHT_TREE_FLOATS_PER_NODE` = 16, B8 grew
- * this from 12 to carry the orientation cone), identical to `packLightTreeForGPU`:
- *   [0] emitterIndex (-1 internal)  [1] totalPower
- *   [2] leftChild (-1 leaf)         [3] rightChild (-1 leaf)
- *   [4..6] aabbMin.xyz              [7..9] aabbMax.xyz
- *   [10..12] cone.axis.xyz          [13] cos(thetaO)   [14] cos(thetaO+thetaE)
- *   [15] padding
- *
- * The cone slots let `lt_importance` cull a node whose emitters point away from
- * the shading point (Conty-Estévez 2018 orientation term). A full-sphere node
- * (axis 0, both cosines = −1) reads as "no culling" ⇒ cone factor 1, recovering
- * the pre-B8 spatial-only descent byte-for-byte.
- *
- * References:
- *   - Conty Estévez & Kulla 2018 — distance-weighted importance descent + cone.
- *   - Shirley, Smits, Wang, Zimmerman 1996 — power-weighted light-list partition.
+ * Positive raw powers are normalized by a common maximum and floored to the
+ * smallest normal f32 before lane 1 is published. Lane 15 lets traversal
+ * reserve one of the 2^24 root buckets for every leaf. The returned PMF is the
+ * leaf's exact bucket count / 2^24, rather than a deep product that can round to
+ * zero.
  */
 
-import { LIGHT_TREE_FLOATS_PER_NODE } from '../lightTree.js';
+import {
+  LIGHT_TREE_BUCKET_COUNT,
+  LIGHT_TREE_FLOATS_PER_NODE,
+} from '../lightTree.js';
 import { requireInteger } from '../numericGuards.js';
 
 /** Module name for include-graph consumers (walkaround's `WgslModule`). */
 export const LIGHT_TREE_MODULE_NAME = 'lightTree';
 
-/**
- * The binding-INDEPENDENT body: the `LightTreeSample` struct + the
- * `lt_dist2ToAabb` / `lt_importance` / `sampleLightTree` traversal. Assumes a
- * module-scope `lightTree: array<f32>` storage buffer is already declared (by
- * `lightTreeBindingWgsl`) and `rand_f32` is in scope.
- */
-export const LIGHT_TREE_TRAVERSAL_WGSL = /* wgsl */ `
-const LIGHT_TREE_STRIDE: u32 = 16u;
-
-struct LightTreeSample {
-  emitterIndex: i32,
-  pdf:          f32,   // selection pmf of the chosen emitter (root→leaf product)
-};
-
-// Squared distance from point p to the AABB [bmin, bmax]; 0 inside.
-fn lt_dist2ToAabb(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
-  let d = max(max(bmin - p, vec3f(0.0)), p - bmax);
-  return dot(d, d);
+export interface LightTreeTraversalWgslOptions {
+  /** Flat `array<f32>` storage variable containing the packed tree. */
+  readonly storageVariable?: string;
+  /** Prefix for private helper functions/constants. */
+  readonly helperPrefix?: string;
+  readonly strideConstantName?: string;
+  readonly sampleStructName?: string;
+  readonly sampleFunctionName?: string;
+  readonly rngStateType?: string;
 }
 
-// Orientation-cone factor including the node AABB's conservative angular
-// radius. Mirrors the CPU coneImportanceFactor branch-for-branch.
-fn lt_coneFactor(
+function wgslIdentifier(value: string, label: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new TypeError(`${label} must be a WGSL identifier`);
+  }
+  return value;
+}
+
+/**
+ * Generate the binding-independent traversal body. The selected storage
+ * variable and `rand_f32(ptr<function, rngStateType>)` must already be in scope.
+ * `nodeIndex` is returned with the leaf so ReGIR can evaluate qHat through the
+ * exact same canonical importance helper.
+ */
+export function lightTreeTraversalWgsl(
+  opts: LightTreeTraversalWgslOptions = {},
+): string {
+  const storage = wgslIdentifier(
+    opts.storageVariable ?? 'lightTree',
+    'lightTreeTraversalWgsl.storageVariable',
+  );
+  const prefix = wgslIdentifier(
+    opts.helperPrefix ?? 'lt',
+    'lightTreeTraversalWgsl.helperPrefix',
+  );
+  const stride = wgslIdentifier(
+    opts.strideConstantName ?? 'LIGHT_TREE_STRIDE',
+    'lightTreeTraversalWgsl.strideConstantName',
+  );
+  const sampleStruct = wgslIdentifier(
+    opts.sampleStructName ?? 'LightTreeSample',
+    'lightTreeTraversalWgsl.sampleStructName',
+  );
+  const sampleFunction = wgslIdentifier(
+    opts.sampleFunctionName ?? 'sampleLightTree',
+    'lightTreeTraversalWgsl.sampleFunctionName',
+  );
+  const rngStateType = wgslIdentifier(
+    opts.rngStateType ?? 'u32',
+    'lightTreeTraversalWgsl.rngStateType',
+  );
+  const dist2ToAabb = `${prefix}_dist2ToAabb`;
+  const coneFactor = `${prefix}_coneFactor`;
+  const importance = `${prefix}_importance`;
+  const pairFirst = `${prefix}_pairFirst`;
+  const leftBucketCount = `${prefix}_leftBucketCount`;
+  const f32Max = `${prefix}_F32_MAX`;
+  const f32MinNormal = `${prefix}_F32_MIN_NORMAL`;
+  const rootBuckets = `${prefix}_ROOT_BUCKETS`;
+
+  return /* wgsl */ `
+const ${stride}: u32 = ${LIGHT_TREE_FLOATS_PER_NODE}u;
+const ${rootBuckets}: u32 = ${LIGHT_TREE_BUCKET_COUNT}u;
+const ${f32Max}: f32 = 3.402823466e38;
+const ${f32MinNormal}: f32 = 1.175494351e-38;
+
+struct ${sampleStruct} {
+  emitterIndex: i32,
+  pdf:          f32,
+  nodeIndex:    u32,
+};
+
+// Squared point/AABB distance, saturated before any f32 intermediate can
+// overflow. Half-coordinate differences remain finite for opposite extrema.
+fn ${dist2ToAabb}(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
+  let halfD = max(
+    max(0.5 * bmin - 0.5 * p, vec3f(0.0)),
+    0.5 * p - 0.5 * bmax,
+  );
+  let halfScale = max(abs(halfD.x), max(abs(halfD.y), abs(halfD.z)));
+  if (!(halfScale >= ${f32MinNormal})) { return 0.0; }
+  if (halfScale > 1.701411733e38) { return ${f32Max}; }
+  let scaled = halfD / halfScale;
+  let scaledSquared = dot(scaled, scaled);
+  let actualScale = 2.0 * halfScale;
+  if (actualScale >= sqrt(${f32Max} / scaledSquared)) { return ${f32Max}; }
+  return min((actualScale * actualScale) * scaledSquared, ${f32Max});
+}
+
+// Conty-Estévez orientation factor including the AABB's conservative angular
+// radius. All geometry uses scaled vectors; no raw length or centre subtraction
+// can overflow.
+fn ${coneFactor}(
   axis: vec3f,
   cosThetaO: f32,
   cosThetaOE: f32,
   p: vec3f,
-  c: vec3f,
-  radius: f32,
+  bmin: vec3f,
+  bmax: vec3f,
 ) -> f32 {
   let axisScale = max(abs(axis.x), max(abs(axis.y), abs(axis.z)));
-  if (!(axisScale > 0.0) || axisScale > 3.402823e38) {
-    return 1.0; // unoriented / full sphere, or invalid input
+  if (!(axisScale > 0.0) || axisScale > ${f32Max}) {
+    return 1.0;
   }
   let scaledAxis = axis / axisScale;
   let axisLength = length(scaledAxis);
-  let dv = p - c;
-  let distanceScale = max(abs(dv.x), max(abs(dv.y), abs(dv.z)));
-  if (!(distanceScale > 0.0) || distanceScale > 3.402823e38) {
+
+  // dvHalf points from the AABB centre to p, scaled by one half. radiusHalf
+  // has the same scale, so their ratio and direction are unchanged.
+  let dvHalf = 0.5 * p - 0.25 * bmin - 0.25 * bmax;
+  let radiusVectorHalf = 0.25 * bmax - 0.25 * bmin;
+  let distanceScale = max(abs(dvHalf.x), max(abs(dvHalf.y), abs(dvHalf.z)));
+  if (!(distanceScale >= ${f32MinNormal}) || distanceScale > ${f32Max}) {
     return 1.0;
   }
-  let scaledDistance = dv / distanceScale;
+  let scaledDistance = dvHalf / distanceScale;
   let scaledDistanceLength = length(scaledDistance);
-  let radiusOverDistance = (radius / distanceScale) / scaledDistanceLength;
-  if (radiusOverDistance >= 1.0) { return 1.0; } // inside bounding sphere
+
+  let radiusScale = max(
+    abs(radiusVectorHalf.x),
+    max(abs(radiusVectorHalf.y), abs(radiusVectorHalf.z)),
+  );
+  var radiusOverDistance = 0.0;
+  if (radiusScale >= ${f32MinNormal}) {
+    let scaledRadiusLength = length(radiusVectorHalf / radiusScale);
+    let logRatio =
+      log2(radiusScale) + log2(scaledRadiusLength) -
+      log2(distanceScale) - log2(scaledDistanceLength);
+    if (logRatio >= 0.0) { return 1.0; }
+    radiusOverDistance = exp2(max(logRatio, -126.0));
+  }
+
   let d = scaledDistance / scaledDistanceLength;
   let a = scaledAxis / axisLength;
   let cosTheta = clamp(dot(a, d), -1.0, 1.0);
@@ -100,106 +177,153 @@ fn lt_coneFactor(
   }
   if (cosAdjusted < cosThetaOE) { return 0.0; }
   if (cosAdjusted >= cosThetaO) { return 1.0; }
-  let sinAdjusted = sqrt(max(0.0, 1.0 - cosAdjusted * cosAdjusted));
-  let sinThetaO = sqrt(max(0.0, 1.0 - cosThetaO * cosThetaO));
-  return max(0.0, cosAdjusted * cosThetaO + sinAdjusted * sinThetaO);
+  let cosineSpan = cosThetaO - cosThetaOE;
+  if (!(cosineSpan > 0.0)) { return 1.0; }
+  return clamp(
+    (cosAdjusted - cosThetaOE) / cosineSpan,
+    ${f32MinNormal},
+    1.0,
+  );
 }
 
-// Node importance for shading point p: (power / max(dist², floor)) * coneFactor.
-// dist2Floor is the SAME floor the RIS / NEE geometry term uses so near-light
-// selection and evaluation stay consistent (no divide-by-zero inside an AABB).
-fn lt_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
-  let power = lightTree[base + 1u];
-  if (power <= 0.0) { return 0.0; }
-  let bmin = vec3f(lightTree[base + 4u], lightTree[base + 5u], lightTree[base + 6u]);
-  let bmax = vec3f(lightTree[base + 7u], lightTree[base + 8u], lightTree[base + 9u]);
-  let d2 = max(lt_dist2ToAabb(p, bmin, bmax), dist2Floor);
-  let axis = vec3f(lightTree[base + 10u], lightTree[base + 11u], lightTree[base + 12u]);
-  let cosThetaO  = lightTree[base + 13u];
-  let cosThetaOE = lightTree[base + 14u];
-  let center = 0.5 * (bmin + bmax);
-  let radius = length(0.5 * (bmax - bmin));
-  let coneFactor = lt_coneFactor(axis, cosThetaO, cosThetaOE, p, center, radius);
-  let importance = (power / d2) * coneFactor;
-  return min(importance, 3.402823466e38);
+// Overflow-safe, FTZ-safe represented importance. A positive power with a
+// positive cone factor returns a normal positive f32; only true zero support is
+// encoded as zero.
+fn ${importance}(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
+  let power = ${storage}[base + 1u];
+  if (!(power > 0.0)) { return 0.0; }
+  let bmin = vec3f(${storage}[base + 4u], ${storage}[base + 5u], ${storage}[base + 6u]);
+  let bmax = vec3f(${storage}[base + 7u], ${storage}[base + 8u], ${storage}[base + 9u]);
+  let d2 = max(max(${dist2ToAabb}(p, bmin, bmax), dist2Floor), ${f32MinNormal});
+  let axis = vec3f(${storage}[base + 10u], ${storage}[base + 11u], ${storage}[base + 12u]);
+  let cone = ${coneFactor}(
+    axis,
+    ${storage}[base + 13u],
+    ${storage}[base + 14u],
+    p,
+    bmin,
+    bmax,
+  );
+  if (!(cone > 0.0)) { return 0.0; }
+  let logImportance =
+    log2(power) - log2(d2) + log2(max(cone, ${f32MinNormal}));
+  if (logImportance >= 127.99999) { return ${f32Max}; }
+  if (logImportance <= -126.0) { return ${f32MinNormal}; }
+  return clamp(exp2(logImportance), ${f32MinNormal}, ${f32Max});
 }
 
-// Importance-sample one emitter (leaf) from the tree for shading point p.
-// Returns the chosen emitterIndex + the selection pdf (root→leaf branch-product).
-// Mirrors sampleLightTreeCPU in shared-samplers byte-for-byte.
-fn sampleLightTree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function, u32>) -> LightTreeSample {
-  var nodeIdx: u32 = 0u;
-  var pdf: f32 = 1.0;
-  // Bounded descent: a binary tree over N leaves has depth ≤ N. The +1 guard
-  // matches the CPU reference loop bound (WGSL forbids unbounded while).
-  for (var guard: u32 = 0u; guard < nodeCount + 1u; guard = guard + 1u) {
-    let base = nodeIdx * LIGHT_TREE_STRIDE;
-    let leftChild  = i32(lightTree[base + 2u]);
-    let rightChild = i32(lightTree[base + 3u]);
+fn ${pairFirst}(left: f32, right: f32) -> f32 {
+  let scale = max(left, right);
+  if (!(scale > 0.0)) { return 0.5; }
+  let l = left / scale;
+  let r = right / scale;
+  return l / (l + r);
+}
+
+// Reserve one bucket for every descendant leaf, then assign all spare buckets
+// to the represented importance target. The child counts sum exactly to the
+// parent's interval and neither positive subtree can disappear.
+fn ${leftBucketCount}(
+  currentBuckets: u32,
+  leftLeaves: u32,
+  rightLeaves: u32,
+  leftImportance: f32,
+  rightImportance: f32,
+) -> u32 {
+  let leafCount = leftLeaves + rightLeaves;
+  let remaining = currentBuckets - leafCount;
+  let pLeft = ${pairFirst}(leftImportance, rightImportance);
+  let roundedExtra = floor(f32(remaining) * pLeft + 0.5);
+  let leftExtra = min(remaining, u32(max(0.0, roundedExtra)));
+  return leftLeaves + leftExtra;
+}
+
+fn ${sampleFunction}(
+  p: vec3f,
+  dist2Floor: f32,
+  nodeCount: u32,
+  rng: ptr<function, ${rngStateType}>,
+) -> ${sampleStruct} {
+  var nodeIdx = 0u;
+  var currentBuckets = ${rootBuckets};
+  if (nodeCount == 0u) {
+    var invalid: ${sampleStruct};
+    invalid.emitterIndex = -1;
+    invalid.pdf = 0.0;
+    invalid.nodeIndex = 0u;
+    return invalid;
+  }
+  // Both supported RNG adapters map their high 24 bits to [0,1), so this is an
+  // exact root-bucket draw and consumes only one RNG value for the whole tree.
+  // A one-leaf tree consumes no RNG value, matching the CPU oracle and the old
+  // totality contract.
+  var localBucket = 0u;
+  let rootLeft = i32(${storage}[2u]);
+  let rootRight = i32(${storage}[3u]);
+  if (rootLeft >= 0 && rootRight >= 0) {
+    localBucket = min(
+      ${rootBuckets} - 1u,
+      u32(floor(rand_f32(rng) * f32(${rootBuckets}))),
+    );
+  }
+  // packLightTreeForGPU caps nodeCount below 2^24, so nodeCount + 1u cannot
+  // overflow the u32 loop bound.
+  for (var guard = 0u; guard < nodeCount + 1u; guard = guard + 1u) {
+    let base = nodeIdx * ${stride};
+    let leftChild = i32(${storage}[base + 2u]);
+    let rightChild = i32(${storage}[base + 3u]);
     if (leftChild < 0 || rightChild < 0) {
-      // Leaf.
-      var s: LightTreeSample;
-      s.emitterIndex = i32(lightTree[base + 0u]);
-      s.pdf = pdf;
-      return s;
+      var result: ${sampleStruct};
+      result.emitterIndex = i32(${storage}[base + 0u]);
+      result.pdf = f32(currentBuckets) / f32(${rootBuckets});
+      result.nodeIndex = nodeIdx;
+      return result;
     }
-    let lBase = u32(leftChild) * LIGHT_TREE_STRIDE;
-    let rBase = u32(rightChild) * LIGHT_TREE_STRIDE;
-    let impL = lt_importance(lBase, p, dist2Floor);
-    let impR = lt_importance(rBase, p, dist2Floor);
-    let scale = max(impL, impR);
-    // Degenerate (both children zero importance): uniform 50/50 so the descent
-    // terminates with a strictly-positive pdf (never an infinite RIS weight).
-    var pL = 0.5;
-    if (scale > 0.0) {
-      pL = (impL / scale) / ((impL / scale) + (impR / scale));
-    }
-    if (rand_f32(rng) < pL) {
-      pdf = pdf * pL;
+    let leftBase = u32(leftChild) * ${stride};
+    let rightBase = u32(rightChild) * ${stride};
+    let leftBuckets = ${leftBucketCount}(
+      currentBuckets,
+      u32(${storage}[leftBase + 15u]),
+      u32(${storage}[rightBase + 15u]),
+      ${importance}(leftBase, p, dist2Floor),
+      ${importance}(rightBase, p, dist2Floor),
+    );
+    if (localBucket < leftBuckets) {
+      currentBuckets = leftBuckets;
       nodeIdx = u32(leftChild);
     } else {
-      pdf = pdf * (1.0 - pL);
+      localBucket = localBucket - leftBuckets;
+      currentBuckets = currentBuckets - leftBuckets;
       nodeIdx = u32(rightChild);
     }
   }
-  // Unreachable for a well-formed tree.
-  let base = nodeIdx * LIGHT_TREE_STRIDE;
-  var s: LightTreeSample;
-  s.emitterIndex = i32(lightTree[base + 0u]);
-  s.pdf = pdf;
-  return s;
+  let base = nodeIdx * ${stride};
+  var result: ${sampleStruct};
+  result.emitterIndex = i32(${storage}[base + 0u]);
+  result.pdf = f32(currentBuckets) / f32(${rootBuckets});
+  result.nodeIndex = nodeIdx;
+  return result;
 }
 `;
+}
 
-/**
- * The `@group(group) @binding(binding) var<storage, read> lightTree` declaration.
- * Separate from the traversal body so a backend can place the buffer wherever its
- * pipeline layout has room.
- */
+/** Default traversal used by pt-webgpu and walkaround ReSTIR-DI. */
+export const LIGHT_TREE_TRAVERSAL_WGSL = lightTreeTraversalWgsl();
+
+/** Storage binding declaration, kept separate for include-graph consumers. */
 export function lightTreeBindingWgsl(group: number, binding: number): string {
   requireInteger(group, 'lightTreeBindingWgsl.group', 0, 65535);
   requireInteger(binding, 'lightTreeBindingWgsl.binding', 0, 65535);
   return `\n// Flat f32 node array, ${LIGHT_TREE_FLOATS_PER_NODE} floats per node (see packLightTreeForGPU).\n@group(${group}) @binding(${binding}) var<storage, read> lightTree: array<f32>;\n`;
 }
 
-/**
- * Full light-tree WGSL fragment: the binding declaration + the traversal body.
- * The matching `rand_f32` implementation must already be in scope. The optional `rngStateType` defaults to `u32`.
- */
+/** Full binding + canonical traversal fragment. */
 export function lightTreeWgsl(opts: {
   readonly group: number;
   readonly binding: number;
   readonly rngStateType?: string;
 }): string {
-  const rngStateType = opts.rngStateType ?? 'u32';
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(rngStateType)) {
-    throw new TypeError('lightTreeWgsl.rngStateType must be a WGSL identifier');
-  }
-  const traversal = rngStateType === 'u32'
-    ? LIGHT_TREE_TRAVERSAL_WGSL
-    : LIGHT_TREE_TRAVERSAL_WGSL.replace(
-      'rng: ptr<function, u32>',
-      `rng: ptr<function, ${rngStateType}>`,
-    );
-  return lightTreeBindingWgsl(opts.group, opts.binding) + traversal;
+  return lightTreeBindingWgsl(opts.group, opts.binding) + lightTreeTraversalWgsl(
+    opts.rngStateType == null ? {} : { rngStateType: opts.rngStateType },
+  );
 }

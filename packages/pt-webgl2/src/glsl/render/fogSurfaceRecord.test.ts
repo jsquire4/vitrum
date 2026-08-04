@@ -25,13 +25,16 @@ function blockBetween(source: string, start: string, end: string): string {
 describe('setFogSurfaceRecord', () => {
   it('initializes miss distance before BVH traversal and fog free-flight comparison', () => {
     const missDistance = traceScene.indexOf('surfaceHit.dist = INFINITY;');
-    const traversal = traceScene.indexOf('bool hit = bvhIntersectFirstHit(');
+    const traversal = traceScene.indexOf(
+      'bool hit = ray.minimumDistanceExclusive >= 0.0',
+    );
     const fogComparison = traceScene.indexOf(
-      'particleDist + RAY_OFFSET < surfaceHit.dist',
+      'particleDist < segmentLimit',
     );
     expect(missDistance).toBeGreaterThanOrEqual(0);
     expect(traversal).toBeGreaterThan(missDistance);
     expect(fogComparison).toBeGreaterThan(traversal);
+    expect(traceScene).not.toContain('particleDist + RAY_OFFSET');
   });
 
   it('initializes every SurfaceRecord field before publishing the medium vertex', () => {
@@ -61,8 +64,9 @@ describe('setFogSurfaceRecord', () => {
     expect(renderStructs).toContain('fogSurface.frontFace = true;');
     expect(renderStructs).toContain('fogSurface.sssSigmaT = 0.0;');
     expect(renderStructs).toContain('fogSurface.envMapIntensity = 1.0;');
-    expect(RENDER_MAIN).toContain('surf.sssSigmaT > 0.0');
+    expect(RENDER_MAIN).toContain('surf.volumeParticle');
     expect(RENDER_MAIN).toContain('state.envMapIntensity = surf.envMapIntensity;');
-    expect(RENDER_MAIN).toContain('if ( ! surf.frontFace )');
+    expect(RENDER_MAIN).toContain('if ( surf.volumeParticle ) neeFlags |= 2u;');
+    expect(RENDER_MAIN).not.toContain('surf.sssSigmaT > 0.0');
   });
 });

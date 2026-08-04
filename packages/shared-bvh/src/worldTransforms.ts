@@ -32,6 +32,226 @@ export function applyMatrix4(m: ArrayLike<number>, x: number, y: number, z: numb
   ];
 }
 
+export interface ShaderF32TransformedPoint {
+  readonly point: readonly [number, number, number];
+  /**
+   * Conservative absolute world-coordinate uncertainty for legal shader
+   * contraction/rounding differences around the represented point.
+   */
+  readonly uncertainty: number;
+}
+
+/**
+ * Exact point arithmetic used by `mergeWorldSpaceFromCore`: evaluate the
+ * THREE-compatible transform in JavaScript f64, then store each coordinate in
+ * the merged Float32Array once. Unlike TLAS shader arithmetic this represented
+ * stream has no contraction uncertainty after packing.
+ */
+export function applyMatrix4MergedWorldF32(
+  m: ArrayLike<number>,
+  x: number,
+  y: number,
+  z: number,
+): ShaderF32TransformedPoint {
+  const transformed = applyMatrix4(m, x, y, z);
+  return {
+    point: [
+      Math.fround(transformed[0]),
+      Math.fround(transformed[1]),
+      Math.fround(transformed[2]),
+    ],
+    uncertainty: 0,
+  };
+}
+
+const F32_UNIT_ROUNDOFF = 2 ** -24;
+const F32_MIN_SUBNORMAL = 2 ** -149;
+
+function shaderF32Multiply(a: number, b: number): number {
+  return Math.fround(Math.fround(a) * Math.fround(b));
+}
+
+function shaderF32Add(a: number, b: number): number {
+  return Math.fround(Math.fround(a) + Math.fround(b));
+}
+
+function shaderF32Subtract(a: number, b: number): number {
+  return Math.fround(Math.fround(a) - Math.fround(b));
+}
+
+function shaderF32Cross(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): readonly [number, number, number] {
+  return [
+    shaderF32Subtract(shaderF32Multiply(a[1], b[2]), shaderF32Multiply(a[2], b[1])),
+    shaderF32Subtract(shaderF32Multiply(a[2], b[0]), shaderF32Multiply(a[0], b[2])),
+    shaderF32Subtract(shaderF32Multiply(a[0], b[1]), shaderF32Multiply(a[1], b[0])),
+  ];
+}
+
+function shaderF32Dot(
+  a: readonly [number, number, number],
+  b: readonly [number, number, number],
+): number {
+  return shaderF32Add(
+    shaderF32Add(shaderF32Multiply(a[0], b[0]), shaderF32Multiply(a[1], b[1])),
+    shaderF32Multiply(a[2], b[2]),
+  );
+}
+
+function shaderF32NormalizedColumn(
+  x: number,
+  y: number,
+  z: number,
+): readonly [number, number, number] | null {
+  const column = [Math.fround(x), Math.fround(y), Math.fround(z)] as const;
+  const scale = Math.max(Math.abs(column[0]), Math.abs(column[1]), Math.abs(column[2]));
+  if (!(scale > 0) || !Number.isFinite(scale)) return null;
+  return [
+    Math.fround(column[0] / scale),
+    Math.fround(column[1] / scale),
+    Math.fround(column[2] / scale),
+  ];
+}
+
+export interface ShaderF32LinearOrientation {
+  readonly sign: -1 | 1;
+  /** `c0 dot cross(c1,c2)`, used by shared TLAS traversal. */
+  readonly sharedDeterminant: number;
+  /** `dot(cross(c0,c1),c2)`, used by pt-webgpu full traversal. */
+  readonly ptDeterminant: number;
+  /** False when either legal evaluation is too close to zero or they disagree. */
+  readonly reliable: boolean;
+}
+
+/**
+ * Emulate both live TLAS orientation kernels. Their mathematically-equivalent
+ * scalar triple products have different f32 evaluation orders; an
+ * ill-conditioned affine transform can therefore make them disagree even
+ * though a JavaScript-f64 determinant remains nonzero. Optical topology may
+ * use the returned sign only when `reliable` is true.
+ */
+export function analyzeShaderF32LinearOrientation(
+  m: ArrayLike<number>,
+): ShaderF32LinearOrientation {
+  const c0 = shaderF32NormalizedColumn(m[0] ?? 0, m[1] ?? 0, m[2] ?? 0);
+  const c1 = shaderF32NormalizedColumn(m[4] ?? 0, m[5] ?? 0, m[6] ?? 0);
+  const c2 = shaderF32NormalizedColumn(m[8] ?? 0, m[9] ?? 0, m[10] ?? 0);
+  if (c0 == null || c1 == null || c2 == null) {
+    return {
+      sign: 1,
+      sharedDeterminant: 0,
+      ptDeterminant: 0,
+      reliable: false,
+    };
+  }
+  const sharedDeterminant = shaderF32Dot(c0, shaderF32Cross(c1, c2));
+  const ptDeterminant = shaderF32Dot(shaderF32Cross(c0, c1), c2);
+  const productMagnitude =
+    Math.abs(c0[0] * c1[1] * c2[2]) +
+    Math.abs(c0[0] * c1[2] * c2[1]) +
+    Math.abs(c0[1] * c1[0] * c2[2]) +
+    Math.abs(c0[1] * c1[2] * c2[0]) +
+    Math.abs(c0[2] * c1[0] * c2[1]) +
+    Math.abs(c0[2] * c1[1] * c2[0]);
+  const signUncertainty = Math.max(
+    32 * F32_UNIT_ROUNDOFF * productMagnitude,
+    32 * F32_MIN_SUBNORMAL,
+  );
+  const sharedPositive = sharedDeterminant >= 0;
+  const ptPositive = ptDeterminant >= 0;
+  const reliable =
+    Number.isFinite(sharedDeterminant) &&
+    Number.isFinite(ptDeterminant) &&
+    sharedPositive === ptPositive &&
+    Math.abs(sharedDeterminant) > signUncertainty &&
+    Math.abs(ptDeterminant) > signUncertainty;
+  return {
+    sign: sharedPositive ? 1 : -1,
+    sharedDeterminant,
+    ptDeterminant,
+    reliable,
+  };
+}
+
+function shaderF32AffineCoordinate(
+  c0: number,
+  c1: number,
+  c2: number,
+  c3: number,
+  x: number,
+  y: number,
+  z: number,
+): number {
+  return shaderF32Add(
+    shaderF32Add(
+      shaderF32Add(shaderF32Multiply(c0, x), shaderF32Multiply(c1, y)),
+      shaderF32Multiply(c2, z),
+    ),
+    c3,
+  );
+}
+
+/**
+ * Mirrors `tlasTransformPointCols`'s f32 vector arithmetic, including its
+ * overflow-safe homogeneous scale/divide. Optical topology must analyze these
+ * represented coordinates rather than a JavaScript-f64 transform followed by
+ * one final cast: those two computations can differ by multiple ULPs under a
+ * nonuniform transform or cancellation.
+ *
+ * Scene validation guarantees an affine bottom row, but the homogeneous path
+ * is retained verbatim so this remains byte-semantics-compatible with WGSL.
+ */
+export function applyMatrix4ShaderF32(
+  m: ArrayLike<number>,
+  xInput: number,
+  yInput: number,
+  zInput: number,
+): ShaderF32TransformedPoint {
+  const x = Math.fround(xInput);
+  const y = Math.fround(yInput);
+  const z = Math.fround(zInput);
+  const raw = [
+    shaderF32AffineCoordinate(m[0] ?? 0, m[4] ?? 0, m[8] ?? 0, m[12] ?? 0, x, y, z),
+    shaderF32AffineCoordinate(m[1] ?? 0, m[5] ?? 0, m[9] ?? 0, m[13] ?? 0, x, y, z),
+    shaderF32AffineCoordinate(m[2] ?? 0, m[6] ?? 0, m[10] ?? 0, m[14] ?? 0, x, y, z),
+    shaderF32AffineCoordinate(m[3] ?? 0, m[7] ?? 0, m[11] ?? 0, m[15] ?? 0, x, y, z),
+  ] as const;
+  const scale = Math.max(Math.abs(raw[0]), Math.abs(raw[1]), Math.abs(raw[2]), Math.abs(raw[3]));
+  const r = raw.map((value) => Math.fround(value / scale));
+  const point = [
+    Math.fround(r[0]! / r[3]!),
+    Math.fround(r[1]! / r[3]!),
+    Math.fround(r[2]! / r[3]!),
+  ] as const;
+
+  // Three products, three additions, the scale division, and homogeneous
+  // division each contribute at most a small number of f32 roundings. The
+  // 8u*sumAbs envelope also covers a multiply-add contraction choosing the
+  // neighboring legal f32 result. Topology uses this as a contact margin; it
+  // is intentionally a rejection bound, never a proof of extra separation.
+  let arithmeticMagnitude = F32_MIN_SUBNORMAL;
+  for (const row of [
+    [m[0] ?? 0, m[4] ?? 0, m[8] ?? 0, m[12] ?? 0],
+    [m[1] ?? 0, m[5] ?? 0, m[9] ?? 0, m[13] ?? 0],
+    [m[2] ?? 0, m[6] ?? 0, m[10] ?? 0, m[14] ?? 0],
+  ]) {
+    arithmeticMagnitude = Math.max(
+      arithmeticMagnitude,
+      Math.abs(Math.fround(row[0]!) * x) +
+        Math.abs(Math.fround(row[1]!) * y) +
+        Math.abs(Math.fround(row[2]!) * z) +
+        Math.abs(Math.fround(row[3]!)),
+    );
+  }
+  const uncertainty = Math.max(
+    8 * F32_UNIT_ROUNDOFF * arithmeticMagnitude,
+    8 * F32_MIN_SUBNORMAL,
+  );
+  return { point, uncertainty };
+}
+
 export function finiteVec3(v: readonly [number, number, number]): boolean {
   return Number.isFinite(v[0]) && Number.isFinite(v[1]) && Number.isFinite(v[2]);
 }

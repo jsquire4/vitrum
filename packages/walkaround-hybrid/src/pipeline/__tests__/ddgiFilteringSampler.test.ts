@@ -30,29 +30,22 @@ function makeBuffer(desc: GPUBufferDescriptor): GPUBuffer {
   } as unknown as GPUBuffer;
 }
 
-describe('DDGI receiver filtering sampler', () => {
-  it('allocates a dedicated clamped linear sampler with the DDGI resources', () => {
-    const sampler = {} as GPUSampler;
+describe('DDGI receiver exact-load atlas ABI', () => {
+  it('does not allocate a sampler with the DDGI resources', () => {
     const device = {
       createTexture: vi.fn(() => makeTexture()),
-      createSampler: vi.fn(() => sampler),
+      createSampler: vi.fn(),
       createBuffer: vi.fn((desc: GPUBufferDescriptor) => makeBuffer(desc)),
       queue: { writeBuffer: vi.fn() },
     } as unknown as GPUDevice;
 
     const resources = createDdgiFrameResources(device);
 
-    expect(resources.ddgiSampler).toBe(sampler);
-    expect(device.createSampler).toHaveBeenCalledWith({
-      label: 'ddgi-linear-sampler',
-      magFilter: 'linear',
-      minFilter: 'linear',
-      addressModeU: 'clamp-to-edge',
-      addressModeV: 'clamp-to-edge',
-    });
+    expect(resources).not.toHaveProperty('ddgiSampler');
+    expect(device.createSampler).not.toHaveBeenCalled();
   });
 
-  it('declares filterable DDGI textures and a filtering sampler in every receiver layout', () => {
+  it('declares the two DDGI textures with no sampler slot in every receiver layout', () => {
     const layouts: GPUBindGroupLayoutDescriptor[] = [];
     const device = {
       createBindGroupLayout: vi.fn((descriptor: GPUBindGroupLayoutDescriptor) => {
@@ -73,14 +66,12 @@ describe('DDGI receiver filtering sampler', () => {
         .toBe('float');
       expect(entries.find((entry) => entry.binding === 1)?.texture?.sampleType)
         .toBe('float');
-      expect(entries.find((entry) => entry.binding === 2)?.sampler?.type)
-        .toBe('filtering');
+      expect(entries.some((entry) => entry.binding === 2)).toBe(false);
     }
   });
 
-  it('binds the DDGI sampler without changing the common nearest sampler', () => {
+  it('builds receiver groups without routing the common nearest sampler into DDGI', () => {
     const nearestSampler = { label: 'common-nearest' } as GPUSampler;
-    const ddgiSampler = { label: 'ddgi-linear' } as GPUSampler;
     const bindGroups: GPUBindGroupDescriptor[] = [];
     const device = {
       createBuffer: vi.fn((desc: GPUBufferDescriptor) => makeBuffer(desc)),
@@ -96,7 +87,6 @@ describe('DDGI receiver filtering sampler', () => {
       ddgi: {
         ddgiPlaceholderRgba16f: makeTexture(),
         ddgiPlaceholderVisRgba16f: makeTexture(),
-        ddgiSampler,
         ddgiUboBuffer: makeBuffer({
           size: 64,
           usage: GPUBufferUsage.UNIFORM,
@@ -123,10 +113,8 @@ describe('DDGI receiver filtering sampler', () => {
     );
     expect(receiverGroups).toHaveLength(3);
     for (const group of receiverGroups) {
-      const samplerResource = [...group.entries]
-        .find((entry) => entry.binding === 2)?.resource;
-      expect(samplerResource).toBe(ddgiSampler);
-      expect(samplerResource).not.toBe(nearestSampler);
+      expect([...group.entries].some((entry) => entry.binding === 2)).toBe(false);
+      expect([...group.entries].some((entry) => entry.resource === nearestSampler)).toBe(false);
     }
     expect(frameResources.common.nearestSampler).toBe(nearestSampler);
   });

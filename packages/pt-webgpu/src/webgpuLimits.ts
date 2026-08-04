@@ -8,10 +8,12 @@
  * N-directional (2026-06-10): +1 for group-1 directionalLights (binding 10).
  * D10/H53 (2026-06-14): group 3 is 8, not 5: lightTree, meshUvs,
  * materialTexDescriptors, sppmPhotonCells, sppmCellCounters, sppmPixelStats,
- * meshTangents, meshVertexColors. Total: g0(8) + g1(11) + g2(5) + g3(8) = 32.
+ * meshTangents, meshVertexColors. Optical instance-boundary identity adds the
+ * twelfth group-1 storage binding, so the total is
+ * g0(8) + g1(12) + g2(5) + g3(8) = 33.
  * @public — public device-limit constant; consumed by host device-acquisition code and tests.
  */
-export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 32;
+export const PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 33;
 
 /** Full tier plus the BDPT t=1 atomic RGB camera-splat buffer. */
 export const PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE =

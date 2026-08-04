@@ -100,8 +100,8 @@ function reconstructExpected(
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
   f[FrameParamsSlot.rayOriginBias] =
     ptWebgpuRayOriginBias(sceneRadius, sb.sceneCenter);
-  f[FrameParamsSlot.environmentDistantPower] =
-    sb.environmentLightTreePower;
+  f[FrameParamsSlot.environmentDistantProposalPmf] =
+    sb.environmentDistantProposalPmf;
   // H14-E: map-backed environment intensity occupies its own stable slot 31.
   f[FrameParamsSlot.environmentHdriIntensity] = sb.environmentHdriIntensity;
   const cameraPosition = resolveFrameCameraPosition(input);
@@ -143,7 +143,7 @@ function makeSceneInputs(over: Partial<FrameParamsSceneInputs> = {}): FrameParam
     sceneRadius: 7,
     environmentTint: [0.95, 0.97, 1.0],
     environmentHdriIntensity: 1.0,
-    environmentLightTreePower: 2.5,
+    environmentDistantProposalPmf: 0.25,
     environmentHdriRotationY: 0,
     ...over,
   };
@@ -374,7 +374,7 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
     ));
     expect(FrameParamsSlot.directLightingMode).toBe(89);
     expect(FrameParamsSlot.rayOriginBias).toBe(90);
-    expect(FrameParamsSlot.environmentDistantPower).toBe(91);
+    expect(FrameParamsSlot.environmentDistantProposalPmf).toBe(91);
     expect(sampled[FrameParamsSlot.directLightingMode]).toBe(0);
     expect(summed[FrameParamsSlot.directLightingMode]).toBe(1);
   });
@@ -440,7 +440,7 @@ describe('FrameParamsPacker — byte-identity golden (pt-webgpu Task 4.3)', () =
       ptWebgpuRayOriginBias(7, [4, 5, 6]),
       9,
     );
-    expect(f[FrameParamsSlot.environmentDistantPower]).toBe(2.5);
+    expect(f[FrameParamsSlot.environmentDistantProposalPmf]).toBe(0.25);
     expect(f[FrameParamsSlot.cameraPos]).toBe(2);
     expect(f[FrameParamsSlot.cameraPos + 1]).toBe(3);
     expect(f[FrameParamsSlot.cameraPos + 2]).toBe(8);

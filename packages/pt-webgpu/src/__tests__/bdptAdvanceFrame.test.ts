@@ -22,13 +22,17 @@ describe('BDPT path state has no frame-global advance or shared path-storage sea
 
   it('keeps both bounded path prefixes in invocation-private WGSL memory', () => {
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
-      'var<private> bdptLightPath: array<vec4f, 56>;',
+      'var<private> bdptLightPath: array<vec4f, 64>;',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
       'var<private> bdptEyeStackPrivate: array<BdptEyeVtx, 8>;',
     );
-    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain('@group(2) @binding(5)');
-    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain('@group(2) @binding(6)');
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain(
+      'var<storage, read_write> bdptLightPath',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).not.toContain(
+      'var<storage, read_write> bdptEyeStack',
+    );
   });
 
   it('builds the light prefix as an ordinary function, not a separate compute pass', () => {

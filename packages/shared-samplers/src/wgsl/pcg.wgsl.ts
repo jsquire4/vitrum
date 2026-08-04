@@ -21,6 +21,37 @@ fn rand_f32(state: ptr<function, u32>) -> f32 {
   return f32(pcgNext(state) >> 8u) / 16777216.0;
 }
 
+// Realized probability for a weighted Bernoulli driven by rand_f32. The RNG
+// has exactly 2^24 equiprobable values, so an arbitrary f32 threshold is not
+// generally its own realized probability. Keep exact endpoints; for every
+// interior physical branch preserve at least one bucket on both sides and
+// round to the nearest representable k/2^24. Callers must use this returned
+// value for both the rand_f32(state) < p comparison and its matching
+// PDF/throughput factor.
+fn represented_bernoulli_probability_f32(probability: f32) -> f32 {
+  if (!(probability > 0.0)) { return 0.0; }
+  if (probability >= 1.0) { return 1.0; }
+  let bucket = clamp(
+    floor(probability * 16777216.0 + 0.5),
+    1.0,
+    16777215.0,
+  );
+  return bucket / 16777216.0;
+}
+
+// Exact uniform integer in [0, bound). Multiplication of rand_f32 by an
+// arbitrary bound is biased because rand_f32 has only 2^24 equiprobable values.
+// Rejection removes the incomplete residue prefix from the full PCG32 domain.
+fn rand_bounded_u32(state: ptr<function, u32>, bound: u32) -> u32 {
+  if (bound <= 1u) { return 0u; }
+  let threshold = (0u - bound) % bound;
+  loop {
+    let value = pcgNext(state);
+    if (value >= threshold) { return value % bound; }
+  }
+  return 0u; // syntactic totality for validators; the loop returns on acceptance
+}
+
 fn rand2(state: ptr<function, u32>) -> vec2f {
   return vec2f(rand_f32(state), rand_f32(state));
 }

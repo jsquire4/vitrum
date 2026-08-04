@@ -650,10 +650,10 @@ describe('Theme-C — temporalGiCommon canonical helper set', () => {
 //      the TOP of the composed string, reordering bytes — the exact failure
 //      mode common.wgsl.ts documents for honest inter-sibling `requires`.
 //
-//  (b) The block is NOT identical across consumers: shade adds `bvh_beer`
-//      (binding 5) + `bvh_emissive` (binding 12); ris adds `bvh_beer` for
-//      RGB transparent-shadow finalization; risGi omits
-//      `emitters`/`emitterCdf` (bindings 3/4). `bvh_normal` (binding 11) is now
+//  (b) The block is NOT identical across consumers: shade and risGi add
+//      `bvh_beer` (binding 5), while ris does not need it. The canonical
+//      emissive texture at binding 12 is dependency-owned by
+//      restirGiMaterial.wgsl. `bvh_normal` (binding 11) is likewise
 //      dependency-owned by materialAtlas.wgsl because alpha-map traversal and
 //      smooth-normal shading both need the same UV1/normal stream.
 //
@@ -671,14 +671,20 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     }
   });
 
-  it('shade, ris, and risGi carry bvh_beer (binding 5), while shade alone carries bvh_emissive (binding 12)', () => {
+  it('shade and risGi carry bvh_beer, while emissive binding 12 is dependency-owned', () => {
     expect(SHADE_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
-    expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(RIS_WGSL).not.toContain('bvh_beer');
     expect(RIS_GI_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
-    expect(SHADE_WGSL).toContain('@group(1) @binding(12) var bvh_emissive: texture_2d<f32>;');
     expect(TEMPORAL_WGSL).not.toContain('bvh_beer');
     expect(SPATIAL_WGSL).not.toContain('bvh_beer');
-    expect(RIS_WGSL).not.toContain('bvh_emissive');
+    for (const mod of [SHADE_MODULE, RIS_GI_MODULE]) {
+      const composed = composeWgsl(mod, WGSL_MODULES);
+      expect(
+        composed.match(
+          /@group\(1\) @binding\(12\) var restir_gi_bvh_emissive: texture_2d<f32>;/g,
+        ),
+      ).toHaveLength(1);
+    }
   });
 
   it('emitter/CDF access is loader-backed with no legacy raw bindings', () => {
@@ -691,7 +697,7 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     }
   });
 
-  it('the pass-local sampled-texture subsets retain three deliberate shapes', () => {
+  it('the pass-local sampled-texture subsets retain four deliberate shapes', () => {
     const group1TextureLines = (src: string): string =>
       src
         .split('\n')
@@ -705,8 +711,10 @@ describe('Theme-D — scene @group(1) binding block stays inlined (not hoistable
     expect(ris).not.toBe(shade);
     expect(ris).not.toBe(temporal);
     expect(shade).not.toBe(temporal);
-    expect(risGi).toBe(ris);
+    expect(risGi).not.toBe(ris);
+    expect(risGi).not.toBe(shade);
+    expect(risGi).not.toBe(temporal);
     expect(spatial).toBe(temporal);
-    expect(new Set([ris, shade, temporal]).size).toBe(3);
+    expect(new Set([ris, risGi, shade, temporal]).size).toBe(4);
   });
 });

@@ -3,7 +3,9 @@ import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import { sampleBdptBounce0Cpu } from '../bdpt/bdptEmitterPickCpu.js';
 import {
   bdptLightPathColumnIndex,
+  readBdptMediumCapRow,
   readBdptMediumSideRow,
+  writeBdptMediumCapRow,
   writeBdptMediumSideRow,
   packBdptLightPathColumns,
 } from '../bdpt/fillBdptLightPathCpu.js';
@@ -76,7 +78,7 @@ describe('bdptLightSubpathOracle', () => {
   it('packBdptLightPathColumns marks unused columns invalid', () => {
     const width = 3;
     const data = packBdptLightPathColumns(width, null);
-    // Flat buffer layout: col*5+row vec4f. Each column's row-0 .w holds the kind.
+    // Flat buffer layout: col*8+row vec4f. Each column's row-0 .w holds the kind.
     expect(data[bdptLightPathColumnIndex(0, 0) + 3]).toBe(3);
     expect(data[bdptLightPathColumnIndex(1, 0) + 3]).toBe(3);
     expect(data[bdptLightPathColumnIndex(2, 0) + 3]).toBe(3);
@@ -106,17 +108,33 @@ describe('bdptLightSubpathOracle', () => {
     ];
     writeBdptMediumSideRow(data, 0, sentinels[0]);
     writeBdptMediumSideRow(data, 1, sentinels[1]);
+    writeBdptMediumCapRow(data, 0, {
+      incidentInitialDistance: 1.25,
+      transmittedInitialDistance: 2.5,
+    });
+    writeBdptMediumCapRow(data, 1, {
+      incidentInitialDistance: 4.75,
+      transmittedInitialDistance: 9.5,
+    });
 
-    expect(data.length).toBe(2 * 7 * 4);
-    expect(bdptLightPathColumnIndex(1, 0) - bdptLightPathColumnIndex(0, 0)).toBe(7 * 4);
+    expect(data.length).toBe(2 * 8 * 4);
+    expect(bdptLightPathColumnIndex(1, 0) - bdptLightPathColumnIndex(0, 0)).toBe(8 * 4);
     expect(readBdptMediumSideRow(data, 0)).toEqual(sentinels[0]);
     expect(readBdptMediumSideRow(data, 1)).toEqual(sentinels[1]);
+    expect(readBdptMediumCapRow(data, 0)).toEqual({
+      incidentInitialDistance: 1.25,
+      transmittedInitialDistance: 2.5,
+    });
+    expect(readBdptMediumCapRow(data, 1)).toEqual({
+      incidentInitialDistance: 4.75,
+      transmittedInitialDistance: 9.5,
+    });
     expect([
       ...data.slice(bdptLightPathColumnIndex(0, 5), bdptLightPathColumnIndex(0, 5) + 4),
       ...data.slice(bdptLightPathColumnIndex(1, 5), bdptLightPathColumnIndex(1, 5) + 4),
     ]).toEqual(row5Before);
 
-    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 7u;');
+    expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 8u;');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'bitcast<f32>(incidentMedium.matId), incidentMedium.remainingDistance,',
     );
@@ -126,6 +144,8 @@ describe('bdptLightSubpathOracle', () => {
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lightIncidentMediumMatId = bitcast<u32>(lv6.x);');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lightTransmittedMediumMatId = bitcast<u32>(lv6.z);');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lightTransmittedMediumRemainingDistance = lv6.w;');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lightIncidentMediumInitialDistance = lv7.x;');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lightTransmittedMediumInitialDistance = lv7.y;');
   });
   it('packBdptLightPathColumns matches sampleBdptBounce0Cpu for point emitter', () => {
     const sb = stubScene({
@@ -154,6 +174,10 @@ describe('bdptLightSubpathOracle', () => {
       incidentRemainingDistance: Math.fround(3.402823e38),
       transmittedMatId: 0xffffffff,
       transmittedRemainingDistance: Math.fround(3.402823e38),
+    });
+    expect(readBdptMediumCapRow(data, 0)).toEqual({
+      incidentInitialDistance: Math.fround(3.402823e38),
+      transmittedInitialDistance: Math.fround(3.402823e38),
     });
 
     const endpointStart = PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL.indexOf(

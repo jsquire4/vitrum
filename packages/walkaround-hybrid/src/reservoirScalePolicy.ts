@@ -1,39 +1,18 @@
 import type { Scene } from '@vitrum/core';
 
 /**
- * Camera-side dielectric throughput in the bounded GI reservoir cannot be
- * reconnection-shifted without storing the full refractive prefix. Such scenes
- * therefore require reservoir scale 1; auto mode may still reduce the whole
- * internal shading resolution.
+ * Camera-side dielectric throughput is evaluated natively in shadeMain. A
+ * checkerboard gap pixel has no exact primary refractive prefix to reproject,
+ * so material transmission forces full-rate internal shading while remaining
+ * independent of the DI/GI reservoir-grid scale.
  */
-export function sceneRequiresExactGiCameraPrefixes(scene: Scene): boolean {
+export function sceneRequiresFullRateGlassShading(scene: Scene): boolean {
   return scene.primitives.some((primitive) => {
     if (!('material' in primitive)) return false;
     const material = primitive.material;
-    return (material.transmission ?? 0) > 0
-      || material.transmissionMap !== undefined;
+    // The map modulates the scalar factor; it cannot create transmission from
+    // the contract's opaque default. Match sampleTransmissionMapForHit rather
+    // than disabling checkerboard for an inert map attached to factor zero.
+    return (material.transmission ?? 0) > 0;
   });
-}
-
-/**
- * Decide whether an incremental scene transition must join a transactional
- * frame-resource replan so the planner can select a new reservoir scale and,
- * when necessary, a new whole-graph internal resolution.
- */
-export function sceneTransitionRequiresGiScaleReplan(
-  previousScene: Scene,
-  nextScene: Scene,
-  currentReservoirScale: number,
-  configuredReservoirScale: number | undefined,
-): boolean {
-  const previousRequiresExact =
-    sceneRequiresExactGiCameraPrefixes(previousScene);
-  const nextRequiresExact = sceneRequiresExactGiCameraPrefixes(nextScene);
-
-  if (nextRequiresExact && currentReservoirScale !== 1) {
-    return true;
-  }
-  return previousRequiresExact
-    && !nextRequiresExact
-    && configuredReservoirScale === undefined;
 }

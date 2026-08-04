@@ -290,6 +290,8 @@ describe('rebuildProbeBvhFromScene — DDGI probe-update TLAS dummy buffers', ()
       tlasBlasRootsBuf: mkBuf(),
       tlasW2lBuf: mkBuf(),
       tlasL2wBuf: mkBuf(),
+      opticalTriangleIdentityBuf: mkBuf(),
+      opticalInstanceBoundaryIdBasePlusOneBuf: mkBuf(),
     };
   }
 
@@ -303,6 +305,8 @@ describe('rebuildProbeBvhFromScene — DDGI probe-update TLAS dummy buffers', ()
       indices: new Uint32Array(3),              // 12 bytes — 1 triangle
       normals: new Float32Array(3 * 4),         // 48 bytes — normals (padded to vec4f stride)
       triMaterialId: new Uint32Array(1),        // 4 bytes — 1 triangle
+      opticalTriangleIdentity: new Uint32Array([0, 0]),
+      opticalInstanceBoundaryIdBasePlusOne: new Uint32Array([0]),
     };
   }
 

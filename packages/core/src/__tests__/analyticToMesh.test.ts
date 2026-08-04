@@ -172,7 +172,7 @@ describe('analyticPrimitiveToMesh', () => {
     const mesh = meshFor('h-channel-came', [10, 2, 4, 0.5]);
 
     expect(mesh.positions.length / 3).toBe(72);
-    expect(mesh.indices).toHaveLength(108);
+    expect(mesh.indices).toHaveLength(132);
     expectBounds(mesh, [-5, -2, -1], [5, 2, 1]);
     expectUnitNormals(mesh);
     expectUVsInRange(mesh);

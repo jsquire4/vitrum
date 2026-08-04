@@ -42,7 +42,7 @@ describe('webgpuLimits', () => {
     expect(countDistinctStorageBufferBindings(PT_WEBGPU_TRACE_WGSL)).toBe(
       PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );
-    expect(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(32);
+    expect(PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE).toBe(33);
   });
 
   it('BDPT requests and composes its additional camera-splat buffer', () => {
@@ -55,7 +55,7 @@ describe('webgpuLimits', () => {
   });
 
   it('CWBVH closest-hit opt-in has a separate storage-buffer floor', () => {
-    expect(countDistinctStorageBufferBindings(PT_WEBGPU_TRACE_WGSL)).toBe(32);
+    expect(countDistinctStorageBufferBindings(PT_WEBGPU_TRACE_WGSL)).toBe(33);
     expect(countDistinctStorageBufferBindings(composePtWebgpuTraceWgsl(false, { cwbvhClosest: true }))).toBe(
       PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
     );

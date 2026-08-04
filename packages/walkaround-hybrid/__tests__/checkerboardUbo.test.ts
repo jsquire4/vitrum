@@ -37,6 +37,7 @@ import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { SHADE_WGSL } from '../src/shaders/shade.wgsl.js';
 import { SPATIAL_WGSL } from '../src/shaders/spatial.wgsl.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
+import { TEMPORAL_WGSL } from '../src/shaders/temporal.wgsl.js';
 import { RESOLVE_WGSL } from '../src/shaders/resolve.wgsl.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
@@ -207,6 +208,14 @@ describe('shade + resolve consume the SAME parity source', () => {
     // share the same kernel.
     expect(RIS_WGSL).toContain('var reservoirCoord = gid.xy;');
     expect(RIS_WGSL).toContain('let pix = restirDiFullPixel(reservoirCoord);');
+  });
+
+  it('temporal reuse does not count a checkerboard gap reservoir twice', () => {
+    expect(TEMPORAL_WGSL).toContain('let checkerboardGap =');
+    expect(TEMPORAL_WGSL).toContain('((gid.x + gid.y) & 1u) != ubo.frameParity');
+    expect(TEMPORAL_WGSL).toMatch(
+      /if \(checkerboardGap\) \{\s*current = emptyReservoirDI\(\);\s*\}/,
+    );
   });
 
   it('resolve.wgsl gap-fills the COMPLEMENT — (px+py)&1 == frameParity is the SHADED half', () => {

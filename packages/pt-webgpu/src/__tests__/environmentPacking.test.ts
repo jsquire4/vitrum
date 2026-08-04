@@ -221,16 +221,21 @@ describe('environmentPacking — light-tree environment power', () => {
     expect(params.lightTreePower).toBeGreaterThan(0);
   });
 
-  it('reports the distribution implemented by the quantized Float32 CDF', () => {
+  it('preserves tiny positive HDRI support in the represented 24-bit CDF', () => {
     const params = environmentParams(
       makeHdriScene(new Float32Array([1, 1, 1, 1e-8, 1e-8, 1e-8]), 2, 1, 1),
     );
 
-    // The tiny second PMF is below the precision available after the first
-    // cumulative value.  Binary search can therefore only select texel 0.
-    expect(params.hdriCdf).toEqual(new Float32Array([0, 1, 1]));
-    expect(params.hdriTexels[7]).toBe(0);
-    expect(params.hdriTexels[3]! * (2 * Math.PI)).toBeCloseTo(1, 7);
+    const oneBucket = 2 ** -24;
+    expect(params.hdriCdf).toEqual(new Float32Array([0, 1 - oneBucket, 1]));
+    expect(params.hdriTexels[7]).toBeGreaterThan(0);
+    // Density is stored in f32 after dividing the exact represented interval by
+    // solid angle. Pin that publication rounding, then recover each PMF within
+    // the one f32 division's error rather than demanding a JS-exact product.
+    expect(params.hdriTexels[7]).toBe(Math.fround(oneBucket / (2 * Math.PI)));
+    expect(params.hdriTexels[3]).toBe(Math.fround((1 - oneBucket) / (2 * Math.PI)));
+    expect(params.hdriTexels[7]! * (2 * Math.PI)).toBeCloseTo(oneBucket, 14);
+    expect(params.hdriTexels[3]! * (2 * Math.PI)).toBeCloseTo(1 - oneBucket, 7);
   });
 
   it('uses the effective Float32 intensity for both shading and tree power', () => {
@@ -293,7 +298,8 @@ describe('environmentPacking — light-tree environment power', () => {
 
     expect(input.powers[environmentEmitterIndex]).toBe(params.lightTreePower);
     expect(packed.environmentLightTreePower).toBe(params.lightTreePower);
-    expect(packedLeafPower).toBe(Math.fround(params.lightTreePower));
+    const rootPower = input.powers.reduce((sum, power) => sum + power, 0);
+    expect(packedLeafPower).toBe(Math.fround(params.lightTreePower / rootPower));
   });
 });
 

@@ -61,7 +61,9 @@ describe('transparent OIT estimator and ownership', () => {
     expect(sky).toContain('let wi = oitCosineHemisphereDir(normal, xi);');
     expect(sky).toContain('let pdf = max(dot(normal, wi), 0.0) * INV_PI;');
     expect(sky).toContain('oitBoundedCosineImportanceDivide(');
-    expect(sky).toContain('oitLayerEnvSampleRadiance(payload, normal, wo, wi),');
+    expect(sky).toContain(
+      'oitLayerEnvSampleRadiance(payload, normal, wo, wi, transmission),',
+    );
   });
 
   it('uses the configured DDGI/RC mixture for every layer and ULP ray offsets', () => {
@@ -79,8 +81,33 @@ describe('transparent OIT estimator and ownership', () => {
   it('retains mapped emission and receiver-local baked irradiance in primary shading', () => {
     expect(SHADE_WGSL).toContain('sampleEmissiveMap(');
     expect(SHADE_WGSL).toContain('let lightMapIrradiance = sampleLightMap(');
-    expect(SHADE_WGSL).toContain('let Lo_lightMap = albedo * INV_PI * lightMapIrradiance;');
+    expect(SHADE_WGSL).toContain(
+      'let Lo_lightMap = albedo * INV_PI * lightMapIrradiance *',
+    );
+    expect(SHADE_WGSL).toContain(
+      '(1.0 - clamp(matColor.a, 0.0, 1.0));',
+    );
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('materialAtlas');
     expect(TRANSPARENT_OIT_MODULE.requires).toContain('surfaceTextures');
+  });
+
+  it('layers absolute thin-film reflection separately from base/source transmission', () => {
+    const brdf = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerSurfaceBrdf');
+    const layer = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerRadiance');
+    expect(brdf).toContain(
+      'evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(',
+    );
+    expect(brdf).toContain('evalGGXReflectionWithTransmissionMix(');
+    expect(brdf).toContain('applyMaterialLayerTransmissionToBrdf(');
+    expect(brdf).toContain('payload.reflectionLayerTransmission,');
+    expect(layer).toContain(
+      '(emissive + (indirect + baked) * diffuseWeight) *',
+    );
+    expect(layer).toContain(
+      'let transmission = sampleTransmissionMapForHit(hit, scalarMaterial.a);',
+    );
+    expect(layer).not.toMatch(
+      /\(skyAmbient[^;]+\)\s*\*\s*payload\.layerTransmission/s,
+    );
   });
 });

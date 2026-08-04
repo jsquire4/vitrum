@@ -32,7 +32,6 @@ import {
 } from '../materialTextureSource.js';
 import {
   planMaterialTextureAtlasLayout,
-  type MaterialTextureAtlasLayoutPlan,
   type MaterialTextureAtlasMipPlacement,
 } from './materialTextureAtlasLayout.js';
 

@@ -35,6 +35,7 @@ function oneMeshSceneWithBumpSamplerPolicy(): Scene {
         id: 'mesh-a',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.5,
@@ -63,6 +64,12 @@ function oneMeshSceneWithHighUvBaseColorTexture(): Scene {
         id: 'mesh-a',
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        uvSets: [
+          undefined,
+          undefined,
+          undefined,
+          new Float32Array([0, 0, 1, 0, 0, 1]),
+        ],
         material: {
           baseColor: [1, 1, 1],
           roughness: 0.5,
@@ -201,33 +208,19 @@ describe('uploadPackedScene warning propagation', () => {
     expect(halfToFloat(half[2]!)).toBeCloseTo(0.5, 2);
   });
 
-  it('routes material texture upload warnings through UploadedSceneBuffers warnings', () => {
+  it('rejects unreadable authored material textures before GPU allocation', () => {
     installGpuConstStubs();
     const device = makeDevice();
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const uploaded = uploadPackedScene(device, buildPackedScene(oneMeshSceneWithBadBaseColorTexture()));
-      expect(uploaded.warnings).toContain(
-        'material texture array (sRGB): [materialTextureArray] source 0 has no usable image; layer left black.',
-      );
-      expect(uploaded.structuredWarnings).toEqual([
-        expect.objectContaining({
-          code: 'pt-webgpu.material-texture-unreadable',
-          backend: 'pt-webgpu',
-          phase: 'setScene',
-          method: 'setScene',
-          details: expect.objectContaining({
-            warning:
-              'material texture array (sRGB): [materialTextureArray] source 0 has no usable image; layer left black.',
-            colorSpace: 'sRGB',
-            layer: 0,
-            fields: ['baseColorMap'],
-            materialIndices: [0],
-            fallback: 'black-layer',
-            uses: [{ materialIndex: 0, field: 'baseColorMap', colorSpace: 'srgb', texCoord: 0 }],
-          }),
-        }),
-      ]);
+      const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+      const texturesBefore = vi.mocked(device.createTexture).mock.calls.length;
+      expect(() => uploadPackedScene(
+        device,
+        buildPackedScene(oneMeshSceneWithBadBaseColorTexture()),
+      )).toThrow(/authored source 0 has no usable image/);
+      expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+      expect(vi.mocked(device.createTexture).mock.calls.length).toBe(texturesBefore);
       expect(consoleWarn).not.toHaveBeenCalled();
     } finally {
       consoleWarn.mockRestore();
@@ -242,33 +235,26 @@ describe('uploadPackedScene warning propagation', () => {
     expect(uploaded.structuredWarnings).toEqual([]);
   });
 
-  it('emits upload-time material texture failures through Engine.onWarning', async () => {
+  it('rejects unreadable material textures without publishing a fallback warning', async () => {
     installGpuConstStubs();
     const consoleWarn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
+      const device = makeDevice();
       const engine = await createPTEngine_WebGPU({
-        device: makeDevice(),
+        device,
         onWarning: (warning) => structured.push(warning),
       });
-      engine.setScene(oneMeshSceneWithBadBaseColorTexture());
-
-      const warning = structured.find((w) => w.code === 'pt-webgpu.material-texture-unreadable');
-      expect(warning).toEqual(expect.objectContaining({
-        phase: 'setScene',
-        method: 'setScene',
-        details: expect.objectContaining({
-          fields: ['baseColorMap'],
-          materialIndices: [0],
-          fallback: 'black-layer',
-        }),
-      }));
-      expect(structured.some((w) =>
-        w.code === 'pt-webgpu.scene-pack-warning' &&
-        w.details?.warning ===
-          'material texture array (sRGB): [materialTextureArray] source 0 has no usable image; layer left black.',
-      )).toBe(false);
-      engine.dispose();
+      try {
+        const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
+        expect(() => engine.setScene(oneMeshSceneWithBadBaseColorTexture())).toThrow(
+          /authored source 0 has no usable image/,
+        );
+        expect(structured).toEqual([]);
+        expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+      } finally {
+        engine.dispose();
+      }
     } finally {
       consoleWarn.mockRestore();
     }

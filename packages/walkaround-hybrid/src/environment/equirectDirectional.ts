@@ -26,6 +26,12 @@
  * directional density matching the uniform-solid-angle residual sampler.
  */
 
+import { packNonNegativeRadianceRgbF32 } from '@vitrum/shared-bvh';
+import {
+  buildRepresentedDistributionF32,
+  luminance,
+} from '@vitrum/shared-samplers';
+
 export interface DirectionalEnvData {
   /** Equirect width in texels. */
   readonly width: number;
@@ -41,8 +47,8 @@ export interface DirectionalEnvData {
   /**
    * Per-texel solid-angle density p(ω), packed R32F (width × height). This is
    * the density returned by the WGSL importance sampler. It is derived from the
-   * uploaded Float32 CDF intervals and is zero for bins flattened by CDF
-   * quantization (an all-black map is rejected by the builder).
+   * exact represented Float32 CDF intervals. Every positive published texel
+   * retains at least one 24-bit random bucket (an all-black map is rejected).
    */
   readonly pdf: Float32Array;
   /**
@@ -66,11 +72,6 @@ interface RawEquirectPayload {
   readonly stride: 3 | 4;
 }
 
-function colorToLuminance(r: number, g: number, b: number): number {
-  // Rec.709 relative luminance (matches resolveHybridEnvironment + pt-webgpu).
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-}
-
 /**
  * Build the directional env payload from a raw equirect payload, or return null
  * for an all-black / degenerate map (the caller keeps the scalar-tint fallback).
@@ -84,69 +85,79 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
   const pdf = new Float32Array(pixelCount);
   const cdfConditional = new Float32Array(pixelCount);
   const cdfMarginal = new Float32Array(height);
+  const rowWeights = new Float64Array(height);
 
   // The exact solid angle of every cell in a row differs only by the constant
   // azimuth width. That constant cancels during normalization, so use the exact
   // spherical-band factor cos(theta0) - cos(theta1) as the row weight.
   let totalWeight = 0;
-  let cumulativeMarginal = 0;
   for (let y = 0; y < height; y += 1) {
     const theta0 = (y / height) * Math.PI;
     const theta1 = ((y + 1) / height) * Math.PI;
     const rowSolidAngleFactor = Math.max(Math.cos(theta0) - Math.cos(theta1), 0);
-    let cumulativeRow = 0;
+    const conditionalWeights = new Float64Array(width);
+    let rowWeight = 0;
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
       const off = i * stride;
       const r = Number(data[off] ?? 0);
       const g = Number(data[off + 1] ?? 0);
       const b = Number(data[off + 2] ?? 0);
-      const rr = Number.isFinite(r) && r > 0 ? r : 0;
-      const gg = Number.isFinite(g) && g > 0 ? g : 0;
-      const bb = Number.isFinite(b) && b > 0 ? b : 0;
+      const authored: [number, number, number] = [
+        Number.isFinite(r) && r > 0 ? r : 0,
+        Number.isFinite(g) && g > 0 ? g : 0,
+        Number.isFinite(b) && b > 0 ? b : 0,
+      ];
+      // The map and its proposal must describe the same radiance. Snapshot to
+      // f32 before computing weights so a source value cannot influence the
+      // CDF and then silently overflow/underflow to a different uploaded texel.
+      const [rr, gg, bb] = packNonNegativeRadianceRgbF32(
+        authored,
+        `directional environment texel ${i}`,
+      );
       map[i * 4] = rr;
       map[i * 4 + 1] = gg;
       map[i * 4 + 2] = bb;
       map[i * 4 + 3] = 1;
-      const weight = colorToLuminance(rr, gg, bb) * rowSolidAngleFactor;
-      cumulativeRow += weight;
+      const weight = luminance(rr, gg, bb) * rowSolidAngleFactor;
+      if (!Number.isFinite(weight) || weight < 0) {
+        throw new RangeError(
+          `directional environment texel ${i} importance weight must be finite and non-negative.`,
+        );
+      }
+      conditionalWeights[x] = weight;
+      rowWeight += weight;
       totalWeight += weight;
-      cdfConditional[i] = cumulativeRow;
     }
-    if (cumulativeRow !== 0) {
-      const base = y * width;
-      for (let x = 0; x < width; x += 1) {
-        cdfConditional[base + x] = cdfConditional[base + x]! / cumulativeRow;
-      }
-      cdfConditional[base + width - 1] = 1;
-    } else {
-      // A zero-weight row has zero marginal probability, but keeping its
-      // conditional CDF valid makes the GPU lookup total even at exact
-      // floating-point boundaries and under future marginal quantization.
-      const base = y * width;
-      for (let x = 0; x < width; x += 1) {
-        cdfConditional[base + x] = (x + 1) / width;
-      }
+    if (!Number.isFinite(rowWeight) || !Number.isFinite(totalWeight)) {
+      throw new RangeError('directional environment importance weight exceeds the finite Number domain.');
     }
-    cumulativeMarginal += cumulativeRow;
-    cdfMarginal[y] = cumulativeMarginal;
+    rowWeights[y] = rowWeight;
+    const representedRow = buildRepresentedDistributionF32(
+      conditionalWeights,
+      { zeroWeightFallback: 'uniform' },
+    );
+    const base = y * width;
+    for (let x = 0; x < width; x += 1) {
+      cdfConditional[base + x] = representedRow.cdf[x + 1]!;
+    }
   }
 
   if (!(totalWeight > 0) || !Number.isFinite(totalWeight)) return null;
 
+  const representedMarginal = buildRepresentedDistributionF32(rowWeights);
   for (let y = 0; y < height; y += 1) {
-    cdfMarginal[y] = cdfMarginal[y]! / cumulativeMarginal;
+    cdfMarginal[y] = representedMarginal.cdf[y + 1]!;
   }
-  cdfMarginal[height - 1] = 1;
 
   // Per-texel solid-angle pdf p(ω) = pmf_texel / dω_texel, where
   //   pmf_texel is the product of the adjacent uploaded Float32 marginal and
   //   conditional CDF deltas
   //   dω_texel  = (2π/width)·(cos(theta0) - cos(theta1))
   // This single-sources the reported density from the exact distribution the
-  // shader's binary searches implement. Tiny bins flattened by Float32
-  // quantization are unsampleable and therefore report zero rather than an
-  // idealized positive MIS density.
+  // shader's binary searches implement. The represented allocator reserves a
+  // bucket for every positive source, so positive published texels remain
+  // sampleable even beside much brighter rows or columns.
   const dPhi = (2 * Math.PI) / width;
   for (let y = 0; y < height; y += 1) {
     const theta0 = (y / height) * Math.PI;
@@ -160,7 +171,18 @@ export function buildDirectionalEnv(payload: RawEquirectPayload): DirectionalEnv
       const priorConditional = x === 0 ? 0 : cdfConditional[i - 1]!;
       const columnPmf = cdfConditional[i]! - priorConditional;
       const pmf = rowPmf * columnPmf;
-      pdf[i] = cellSolidAngle > 0 ? pmf / cellSolidAngle : 0;
+      const density = cellSolidAngle > 0 ? pmf / cellSolidAngle : 0;
+      const publishedDensity = Math.fround(density);
+      if (
+        !Number.isFinite(publishedDensity) ||
+        publishedDensity < 0 ||
+        (pmf > 0 && publishedDensity === 0)
+      ) {
+        throw new RangeError(
+          `directional environment texel ${i} pdf must retain finite positive Float32 support.`,
+        );
+      }
+      pdf[i] = publishedDensity;
     }
   }
 

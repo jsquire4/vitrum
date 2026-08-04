@@ -35,13 +35,13 @@ describe('D8.7 SceneBufferRegistry', () => {
    *      (sanity check on the registry itself).
    *   2. Confirm every registry bufferField would be a distinct field name
    *      (no duplicate bufferField entries — that would silently shadow one).
-   *   3. Confirm the count of registry entries equals 32 (the canonical buffer
+   *   3. Confirm the count of registry entries equals 33 (the canonical buffer
    *      count after removing the unbound mesh-area source-factor buffer). If a buffer is
    *      added to UploadedSceneBuffers without a registry entry this assertion
    *      will fail with a clear message.
    */
-  it('has 32 entries, each with a unique bufferField ending in "Buffer"', () => {
-    expect(SCENE_BUFFER_REGISTRY.length).toBe(32);
+  it('has 33 entries, each with a unique bufferField ending in "Buffer"', () => {
+    expect(SCENE_BUFFER_REGISTRY.length).toBe(33);
 
     const seen = new Set<string>();
     for (const entry of SCENE_BUFFER_REGISTRY) {
@@ -76,6 +76,7 @@ describe('D8.7 SceneBufferRegistry', () => {
       'tlasBlasRootsBuffer',
       'tlasInstanceWorldToLocalBuffer',
       'tlasInstanceLocalToWorldBuffer',
+      'opticalInstanceBoundaryIdBasePlusOneBuffer',
     ];
     // TLAS buffers must be contiguous at the END of the registry (the loop
     // uses findIndex('tlasNodesBuffer') as a split point).
@@ -91,8 +92,8 @@ describe('D8.7 SceneBufferRegistry', () => {
     // + env + emitters + light-tree + P2
     // UVs/tangents/colors/descriptors).
     expect(idx).toBe(27);
-    // Remaining 5 entries are the TLAS buffers.
-    expect(SCENE_BUFFER_REGISTRY.length - idx).toBe(5);
+    // Remaining 6 entries are the TLAS and represented-boundary buffers.
+    expect(SCENE_BUFFER_REGISTRY.length - idx).toBe(6);
   });
 });
 
@@ -140,7 +141,7 @@ function makeUploadDevice(): { device: GPUDevice; buffers: StubBuffer[] } {
       return buf as unknown as GPUBuffer;
     }),
     ...textureStubMethods(),
-    limits: { maxTextureDimension2D: 8192 },
+    limits: { maxTextureDimension2D: 8192, maxTextureArrayLayers: 256 },
   } as unknown as GPUDevice;
   return { device, buffers };
 }

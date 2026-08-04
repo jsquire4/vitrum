@@ -225,7 +225,10 @@ describe('validateHybridEngineOptions — throws (parse split, pure)', () => {
   it('rejects ReGIR values and cross-field products outside the WGSL u32 domain', () => {
     expect(() => validateHybridEngineOptions(baseOpts({
       regir: { enabled: true, candidatesPerCell: 0x1_0000_0000 },
-    }))).toThrow(/candidatesPerCell.*4294967295/);
+    }))).toThrow(/candidatesPerCell.*4096/);
+    expect(() => validateHybridEngineOptions(baseOpts({
+      regir: { enabled: true, candidatesPerCell: 4097 },
+    }))).toThrow(/candidatesPerCell.*4096/);
     expect(() => validateHybridEngineOptions(baseOpts({
       regir: { enabled: true, cellsPerAxis: 1_024, survivorsPerCell: 4 },
     }))).toThrow(/invocation domain/);

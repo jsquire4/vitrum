@@ -39,6 +39,7 @@ import type { BGLCache } from '../bglTypes.js';
 import type { PipelineSubsystem } from './PipelineSubsystem.js';
 import type { GpuMemoryExternalSections } from './gpuMemoryEstimate.js';
 import { cachedBindGroup, type PipelineResourceCache } from './PipelineResourceCache.js';
+import { DDGI_GRID_UBO_BYTES } from '../ddgi/ddgiGridUbo.js';
 
 interface DDGISetInputs {
   irradianceTex: GPUTexture;
@@ -103,22 +104,35 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
    */
   setInputs(inputs: DDGISetInputs | null, frameResources: FrameResources): void {
     if (inputs === null) {
-      this._irrTex = null;
-      this._visTex = null;
       // Restore placeholder UBO (dims=1×1×1) so shade.wgsl's
       // isDDGIWired() check returns false and Lo_ddgi drops to zero.
       // Cache the placeholder to avoid allocating Float32Array(16) every
       // frame when DDGI is disabled (HOT-1 fix).
-      if (this._placeholderUBO === null) {
-        this._placeholderUBO = buildDDGIPlaceholderUBO();
-      }
-      this._device.queue.writeBuffer(frameResources.ddgi.ddgiUboBuffer, 0, this._placeholderUBO.buffer);
+      const placeholder = this._placeholderUBO ?? buildDDGIPlaceholderUBO();
+      this._device.queue.writeBuffer(
+        frameResources.ddgi.ddgiUboBuffer,
+        0,
+        placeholder.buffer,
+      );
+      this._placeholderUBO = placeholder;
+      this._irrTex = null;
+      this._visTex = null;
     } else {
+      if (
+        !(inputs.gridParams instanceof ArrayBuffer) ||
+        inputs.gridParams.byteLength !== DDGI_GRID_UBO_BYTES
+      ) {
+        throw new RangeError(
+          `DDGI gridParams must be exactly ${DDGI_GRID_UBO_BYTES} bytes.`,
+        );
+      }
+      this._device.queue.writeBuffer(
+        frameResources.ddgi.ddgiUboBuffer,
+        0,
+        inputs.gridParams,
+      );
       this._irrTex = inputs.irradianceTex;
       this._visTex = inputs.visibilityTex;
-      if (inputs.gridParams.byteLength > 0) {
-        this._device.queue.writeBuffer(frameResources.ddgi.ddgiUboBuffer, 0, inputs.gridParams);
-      }
     }
   }
 
@@ -227,7 +241,6 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ddgiVisTex:             this._visTex,
       ddgiPlaceholderRgba16f: frameResources.ddgi.ddgiPlaceholderRgba16f,
       ddgiPlaceholderVisRgba16f: frameResources.ddgi.ddgiPlaceholderVisRgba16f,
-      ddgiSampler:            frameResources.ddgi.ddgiSampler,
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
@@ -237,7 +250,6 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
     return cachedBindGroup(resourceCache, 'per-frame:hybrid-layers', [
       irrTex,
       visTex,
-      frameResources.ddgi.ddgiSampler,
       frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
@@ -267,7 +279,6 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       ddgiVisTex:             this._visTex,
       ddgiPlaceholderRgba16f: frameResources.ddgi.ddgiPlaceholderRgba16f,
       ddgiPlaceholderVisRgba16f: frameResources.ddgi.ddgiPlaceholderVisRgba16f,
-      ddgiSampler:            frameResources.ddgi.ddgiSampler,
       ddgiUboBuffer:          frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
@@ -275,7 +286,6 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
     return cachedBindGroup(resourceCache, 'per-frame:shade-hybrid-layers', [
       irrTex,
       visTex,
-      frameResources.ddgi.ddgiSampler,
       frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
@@ -300,7 +310,6 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
       bglCache,
       resourceCache?.textureView(irrTex) ?? irrTex.createView(),
       resourceCache?.textureView(visTex) ?? visTex.createView(),
-      frameResources.ddgi.ddgiSampler,
       frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,
@@ -310,7 +319,6 @@ export class OptionalSubsystemBindingState implements PipelineSubsystem {
     return cachedBindGroup(resourceCache, 'pass:transparent-oit', [
       irrTex,
       visTex,
-      frameResources.ddgi.ddgiSampler,
       frameResources.ddgi.ddgiUboBuffer,
       rcCascade0Buffer,
       rcParamsBuffer,

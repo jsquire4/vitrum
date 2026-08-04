@@ -2,8 +2,8 @@
  * RIS (Resampled Importance Sampling) compute pass.
  *
  * Samples M_LIGHT=64 direct-light candidates per pixel,
- * selects the best via weighted reservoir sampling (RIS), then applies a visibility
- * test to finalize the W weight.
+ * selects the best via weighted reservoir sampling (RIS), then finalizes an
+ * unoccluded source proposal. Target-receiver visibility is deferred to shade.
  *
  * This pass does primary ray casting to find the hit surface (no separate G-buffer
  * raster pass needed) — primary-ray-cast mode using manual device.createShaderModule()
@@ -36,11 +36,9 @@ ${reservoirDiAccessorsWgsl({ storeReadWriteBinding: 'currentReservoir' })}
 
 // Group 1: static scene BVH + emitters
 // bvh_index is array<vec4u>: .xyz=vertex indices, .w=packed RGBA8 material color+transmission
-@group(1) @binding(5) var bvh_beer: texture_2d<u32>;
 // WS1 (2026-05-29) — per-vertex world-space normals for the smooth shading
 // normal. ris uses it for the BRDF / candidate p̂; the geometric normal is
-// kept for the shadow-ray offset. Beer binding 5 feeds RGB transparent-shadow
-// visibility; the scalar reservoir stores luminance(visibility).
+// retained for robust surface reconstruction.
 // B1 — per-triangle roughness+metalness (r32uint texture). Decoded into the
 // real GGX roughness/metal that feed evalGGX in the candidate p̂ (was hardcoded
 // rough=0.85/0.05, metal=0).
@@ -85,10 +83,6 @@ const M_LIGHT = 64u;
 // emitter-only scenes — byte-identical with the pre-Wave-4 kernel.
 const M_ENV   = 1u;
 
-fn restirDirectVisibilityScalar(tint: vec3f) -> f32 {
-  return clamp(luminance(tint), 0.0, 1.0);
-}
-
 // At reservoirScale > 1 one reservoir is intentionally shared by several
 // full-resolution receivers. Its selection target therefore cannot depend on
 // any representative receiver's normal, material, depth, or visibility.
@@ -97,14 +91,17 @@ fn restirDirectVisibilityScalar(tint: vec3f) -> f32 {
 // Shade re-evaluates the complete receiver integrand and visibility per pixel.
 fn buildReceiverIndependentDI(rng: ptr<function, u32>) -> ReservoirDI {
   var r = emptyReservoirDI();
+  var wrs = representedWrsInit();
   var mAreaSupport = 0u;
   var mEnvSupport = 0u;
   let envStrategyActive = envHasMap();
   let scheduledAreaM = M_LIGHT;
   let scheduledEnvM = select(0u, M_ENV, envStrategyActive);
   let scheduledTotalM = scheduledAreaM + scheduledEnvM;
-  let areaRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledAreaM));
-  let envRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledEnvM));
+  let logAreaRisScale =
+    log2(f32(scheduledTotalM)) - log2(f32(max(1u, scheduledAreaM)));
+  let logEnvRisScale =
+    log2(f32(scheduledTotalM)) - log2(f32(max(1u, scheduledEnvM)));
   let emCount = max(ubo.emitterCount, 1u);
 
   // Flat power-CDF selection is receiver independent. ReGIR and the light tree
@@ -117,12 +114,14 @@ fn buildReceiverIndependentDI(rng: ptr<function, u32>) -> ReservoirDI {
     let e = sceneLoadEmitter(lid);
     let xi = rand2(rng);
     let ls = sampleEmitterPoint(e, xi);
-    let pX = emitterSelPmf * ls.pdfArea;
     let pHat = restir_di_coarse_proposal_phat(lid, xi);
-    var w = 0.0;
-    if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }
-    if (!reservoirDiFinite(w)) { w = 0.0; }
-    updateReservoirDI(&r, lid, xi, w * areaRisScale, rng);
+    let logWeight = reservoirDiInitialCandidateLogWeight(
+      pHat,
+      reservoirDiPositiveLog2(emitterSelPmf),
+      ls.pdfArea,
+      logAreaRisScale,
+    );
+    updateReservoirDI(&r, &wrs, lid, xi, logWeight, rng);
   }
 
   for (var i = 0u; i < M_ENV; i = i + 1u) {
@@ -130,16 +129,18 @@ fn buildReceiverIndependentDI(rng: ptr<function, u32>) -> ReservoirDI {
     if (!envStrategyActive) { continue; }
     mEnvSupport = mEnvSupport + 1u;
     let pHat = max(0.0, luminance(envSample.color));
-    var w = 0.0;
-    if (pHat > 0.0 && envSample.pdf > 0.0) {
-      w = pHat / envSample.pdf;
-    }
-    if (!reservoirDiFinite(w)) { w = 0.0; }
+    let logWeight = reservoirDiInitialCandidateLogWeight(
+      pHat,
+      0.0,
+      envSample.pdf,
+      logEnvRisScale,
+    );
     updateReservoirDI(
       &r,
+      &wrs,
       ENV_SAMPLE_SENTINEL,
       envDirToXi(envSample.dir),
-      w * envRisScale,
+      logWeight,
       rng,
     );
   }
@@ -147,9 +148,9 @@ fn buildReceiverIndependentDI(rng: ptr<function, u32>) -> ReservoirDI {
   r.areaM = mAreaSupport;
   r.envM = mEnvSupport;
   r.M = mAreaSupport + mEnvSupport;
-  if (r.M > 0u && r.w_sum > 0.0) {
+  if (wrs.hasSelection) {
     let pHat = restir_di_coarse_proposal_phat(r.lightId, r.xi);
-    r.W = select(0.0, r.w_sum / (f32(r.M) * pHat), pHat > 0.0);
+    finaliseReservoirDIFromNativeWrs(&r, wrs, pHat);
   }
   return r;
 }
@@ -170,11 +171,11 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // SpatialReservoirPass refines this frame (all three read the SAME
   // frameParity/checkerboardOn from the UBO), so RIS re-seeds precisely the
   // reservoirs shade consumes this frame. The complementary GAP-parity reservoir
-  // slots are NOT written here — they retain the carried-forward reservoir RIS
-  // wrote when they were last active-parity (the parity flips each frame), which
-  // the FULL-RATE temporal pass then reads as its cur reservoir and keeps refining against
-  // the reprojected history. So gap pixels keep a VALID reservoir for
-  // temporal/spatial; they just miss ONE fresh candidate that frame
+  // slots are NOT written here. Their bytes still match the terminal reservoir
+  // copied to previous at the end of the preceding frame, so the FULL-RATE
+  // temporal pass explicitly treats the stale current slot as an empty current
+  // technique and carries valid reprojected history exactly once. Gap pixels
+  // therefore miss ONE fresh candidate that frame
   // (effectively a half-rate candidate cadence reconstructed by temporal + the
   // denoiser). The compacted X grid (ceil(W/2) columns) can overshoot the row's
   // last active pixel on odd widths; that overshoot lands at px >= W and is
@@ -263,11 +264,13 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   surf.hit    = true;
   surf.pos    = pos;
   surf.normal = normal;
+  surf.geoNormal = geoNormal;
   surf.clearcoatNormal = payload.clearcoatNormal;
   surf.wo     = wo;
   surf.albedo = albedo;
   surf.rough  = roughness;
   surf.metal  = metalness;
+  surf.transmission = matColor.a;
   surf.isGlass = isGlass;
   surf.specular = payload.specular;
   surf.anisotropy = payload.anisotropy;
@@ -277,6 +280,7 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   surf.clearcoat = payload.clearcoat;
   surf.sheen = payload.sheen;
   surf.sheenRoughness = payload.sheenRoughness;
+  surf.reflectionLayerTransmission = payload.reflectionLayerTransmission;
   surf.layerTransmission = payload.layerTransmission;
   surf.volumeScattering = payload.volumeScattering;
   surf.bulkThickness = payload.bulkThickness;
@@ -290,41 +294,43 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     (hit.indices.w * 0x85ebca6bu);
 
   var r = emptyReservoirDI();
+  var wrs = representedWrsInit();
   // Support-aware sample counts for mixed-measure reservoirs. Area emitters
   // use finite-emitter support; the HDRI sentinel
-  // lives on a disjoint directional domain. A selected candidate's W denominator
-  // must count only candidates from its support, otherwise a single env sample is
+  // lives on a disjoint directional domain. A selected candidate's MIS support
+  // must count only candidates from its measure, otherwise a single env sample is
   // averaged down by all finite-emitter candidates in the pool.
   var mAreaSupport = 0u;
   var mEnvSupport = 0u;
   // Generalized stratified RIS over the tagged union of finite-emitter and
   // directional-environment domains. Each domain's candidates estimate that
   // domain's integral as a mean; multiplying source weights by Mtotal/nDomain
-  // lets the canonical W = w_sum/(Mtotal*pHat) represent their SUM rather than
+  // lets the canonical H normalization represent their SUM rather than
   // a candidate-count-weighted average. Null draws remain in nDomain.
   let envStrategyActive = envHasMap();
   let scheduledAreaM = M_LIGHT;
   let scheduledEnvM = select(0u, M_ENV, envStrategyActive);
   let scheduledTotalM = scheduledAreaM + scheduledEnvM;
-  let areaRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledAreaM));
-  let envRisScale = f32(scheduledTotalM) / f32(max(1u, scheduledEnvM));
+  let logAreaRisScale =
+    log2(f32(scheduledTotalM)) - log2(f32(max(1u, scheduledAreaM)));
+  let logEnvRisScale =
+    log2(f32(scheduledTotalM)) - log2(f32(max(1u, scheduledEnvM)));
   let emCount = max(ubo.emitterCount, 1u);
 
   // --- M_LIGHT candidates from emitter distribution ---
   // Light selection mode is data-driven via two UBO gates (priority order):
   //   regirEnabled == 1 ⇒ ReGIR grid (regir_sample_cell) — draws a survivor
-  //       from the containing cell's pre-resampled reservoir; the survivor's
-  //       stored per-cell pmf (q̂_c(e)/Ŝ) is the EXACT source pmf. O(1) per
-  //       pixel regardless of light count. The grid itself was seeded by the
-  //       light tree at grid-build time (see regir.wgsl).
+  //       from the containing cell's pre-resampled reservoir. Its stored
+  //       log2(M * represented occurrence probability * selected tree PMF)
+  //       flows directly into log-domain WRS. O(1) per pixel regardless of
+  //       light count; the grid is seeded by the light tree (see regir.wgsl).
   //   else lightTreeEnabled == 1 ⇒ spatially-aware light tree (sampleLightTree)
   //       — importance-samples emitters by power/dist², returning the exact
   //       per-pixel selection pmf;
   //   else ⇒ flat power CDF (sampleEmitterIdx) — the historical path.
-  // In ALL modes the WRS source pmf used in the weight w = p̂ / p_source is
-  // the EXACT pmf the selection drew from, so the estimator is unbiased in
-  // every mode. When regirEnabled == 0 this reduces to the light-tree path
-  // bit-identically (the regir branch is never taken).
+  // In every mode the exact represented source log PMF feeds
+  // logWeight = log2(p̂) - log2(p_source) - log2(pdfArea), preserving proposal
+  // support without an intermediate linear-density endpoint.
   let useRegir = ubo.regirEnabled == 1u;
   let useLightTree = ubo.lightTreeEnabled == 1u;
   for (var i = 0u; i < M_LIGHT; i++) {
@@ -335,23 +341,23 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     mAreaSupport = mAreaSupport + 1u;
     // Select an emitter + record the EXACT selection pmf that produced it.
     var lid: u32;
-    var emitterSelPmf: f32;
+    var emitterLogSelectionPmf: f32;
     if (useRegir) {
       let rs = regir_sample_cell(pos, &rng);
-      // Empty survivor (cell had no positive-target emitter) or non-positive
-      // pmf cannot contribute — skip rather than emit an infinite weight.
-      if (rs.emitterIndex < 0 || rs.pSel <= 0.0) { continue; }
+      // Empty survivors are rejected by emitterIndex. The producer separately
+      // validates log2PSel, and every finite signed log density remains support.
+      if (rs.emitterIndex < 0) { continue; }
       lid = u32(rs.emitterIndex);
-      // pSel = q̂_c(lid)/Ŝ is the EXACT per-cell selection pmf the grid stored;
-      // dividing p̂ by it (× pdfArea below) keeps RIS unbiased.
-      emitterSelPmf = rs.pSel;
+      // log2PSel already includes the represented survivor occurrence and the
+      // selected tree PMF, so consume it directly without an exp2 endpoint.
+      emitterLogSelectionPmf = rs.log2PSel;
     } else if (useLightTree) {
       let lt = sampleLightTree(pos, ubo.emitterDist2Floor, ubo.lightTreeNodeCount, &rng);
       // Degenerate guard: a malformed leaf (emitterIndex < 0) or non-positive
       // pdf cannot contribute — skip rather than emit an infinite weight.
       if (lt.emitterIndex < 0 || lt.pdf <= 0.0) { continue; }
       lid = u32(lt.emitterIndex);
-      emitterSelPmf = lt.pdf;
+      emitterLogSelectionPmf = reservoirDiPositiveLog2(lt.pdf);
     } else {
       let xiEm = rand_f32(&rng);
       lid = sampleEmitterIdx(emCount, xiEm);
@@ -359,7 +365,9 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
       // for UV-varying emissive maps: the CPU CDF can use map-aware selection
       // power while EmitterTri.Le stays scalar so sampleEmitterLeAtXi can apply
       // the exact hit texel at candidate time.
-      emitterSelPmf = emitterCdfPmf(emCount, lid);
+      emitterLogSelectionPmf = reservoirDiPositiveLog2(
+        emitterCdfPmf(emCount, lid),
+      );
     }
     let e   = sceneLoadEmitter(lid);
     let xiTri = rand2(&rng);
@@ -380,20 +388,23 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     // per-candidate p̂ in the M_LIGHT loop matches the reservoir's
     // selection p̂ matches shade's evaluation p̂ (sweep finding Bug 3).
     let G    = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-    let brdf = restir_di_eval_surface_brdf(surf, wi);
     let Le = sampleEmitterLeAtXi(e, xiTri);
-    let pHat = luminance(Le * brdf * G);
+    let pHat = luminance(restir_di_eval_surface_response(
+      surf, wi, Le * G,
+    ));
 
     // p(x) = emitter-selection pmf × per-triangle uniform-area pdf. The first
     // factor is the EXACT pmf the chosen sampler drew from (tree or flat CDF);
     // the area pdf factor is identical for both modes. This is the source pdf
     // the WRS weight divides p̂ by — getting it exactly right is what keeps
     // ReSTIR unbiased.
-    let pX = emitterSelPmf * ls.pdfArea;
-    var w = 0.0;
-    if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }
-    if (!reservoirDiFinite(w)) { w = 0.0; }
-    updateReservoirDI(&r, lid, xiTri, w * areaRisScale, &rng);
+    let logWeight = reservoirDiInitialCandidateLogWeight(
+      pHat,
+      emitterLogSelectionPmf,
+      ls.pdfArea,
+      logAreaRisScale,
+    );
+    updateReservoirDI(&r, &wrs, lid, xiTri, logWeight, &rng);
   }
 
   // --- M_ENV candidate(s): HDRI importance-sampled directional candidates (Wave 4) ──
@@ -415,8 +426,8 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
   // returns the SA-measure env p̂ (no G term) for sentinel lids, consistent
   // with the SA source pdf used here.
   //
-  // VISIBILITY: shadow ray toward the sampled direction with finite-f32 tmax.
-  // skipGlass=true (same as emitter shadow rays — glass is translucent to env light).
+  // Visibility is deliberately absent from this source proposal and is traced
+  // once at the target receiver after temporal/spatial reuse.
   for (var ei = 0u; ei < M_ENV; ei++) {
     let envS = envImportanceSample(&rng);
     // The environment strategy is inactive when no map exists.  Once active,
@@ -426,96 +437,47 @@ fn risMain(@builtin(global_invocation_id) gid: vec3u) {
     if (!(envS.pdf > 0.0)) { continue; }
     let nDotL = max(0.0, dot(normal, envS.dir));
     if (nDotL <= 0.0) { continue; }
-    let brdfE = restir_di_eval_surface_brdf(surf, envS.dir);
     // p̂ = luminance(envColor * brdf) — no G term (env is at infinity).
     let receiverEnvironment = walkaroundScaleEnvironmentRadiance(
       envS.color,
       envMapIntensity,
     );
-    let pHatE = luminance(receiverEnvironment * brdfE);
+    let pHatE = luminance(restir_di_eval_surface_response(
+      surf, envS.dir, receiverEnvironment,
+    ));
     // Source pdf: solid-angle pdf from the CDF importance sample (same measure as p̂).
-    var wE = select(0.0, pHatE / envS.pdf, pHatE > 0.0);
-    if (!reservoirDiFinite(wE)) { wE = 0.0; }
+    let logWeight = reservoirDiInitialCandidateLogWeight(
+      pHatE,
+      0.0,
+      envS.pdf,
+      logEnvRisScale,
+    );
     // Encode direction into xi: xi.x = theta/PI, xi.y = phi/(2PI)+0.5.
     let envXi = envDirToXi(envS.dir);
-    updateReservoirDI(&r, ENV_SAMPLE_SENTINEL, envXi, wE * envRisScale, &rng);
+    updateReservoirDI(
+      &r,
+      &wrs,
+      ENV_SAMPLE_SENTINEL,
+      envXi,
+      logWeight,
+      &rng,
+    );
   }
 
-  // Persist attempted multiplicities before visibility. All-null and occluded
-  // frames are real zero-valued estimates and must retain their M so temporal
-  // and spatial reuse do not condition on proposal acceptance.
+  // Persist attempted multiplicities before finalization. All-null frames are
+  // real zero-valued estimates and must retain their M so temporal and spatial
+  // reuse do not condition on proposal acceptance.
   r.areaM = mAreaSupport;
   r.envM = mEnvSupport;
   r.M = mAreaSupport + mEnvSupport;
 
-  // --- Visibility test on chosen candidate ---
-  if (r.M > 0u && r.w_sum > 0.0) {
-    let lid = r.lightId;
-    // WS1 — offset along the GEOMETRIC normal (smooth normal can self-hit).
-    let shadowOrig = pos + geoNormal * walkaroundRayOriginBias();
-
-    // Wave 4 — ENV_SAMPLE_SENTINEL: shadow ray to infinity along the stored dir.
-    if (lid == ENV_SAMPLE_SENTINEL) {
-      let envDir = envDirFromXi(r.xi);
-      // SHADOW-01 / ALPHA-03 — DI shadow rays honor primitive castShadow:false
-      // and attenuate through readable alpha-blend coverage plus glass Beer tint.
-      // Reservoir weights are scalar, so RGB visibility is scalarized by
-      // luminance; shade recomputes the same tint for the final RGB contribution.
-      let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
-        ubo.bvhMode, ubo.tlasNodeCount,
-
-        shadowOrig, envDir, INFINITY, ubo.triIntersectEpsilon,
-        bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-        ubo.sunAngular.z >= 1.5);
-      let shadowT = restirDirectVisibilityScalar(shadowTint);
-      if (shadowT <= 0.0) {
-        r.w_sum = 0.0;
-        r.W     = 0.0;
-      } else {
-        let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
-        r.w_sum = r.w_sum * shadowT;
-        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
-      }
-    } else {
-      let e   = sceneLoadEmitter(lid);
-      // 2026-05-18 sweep finding #3 fix — sample the EXACT point that was
-      // chosen by the WRS (r.xi), not the centroid. The centroid bias was
-      // a real correctness gap: visibility at the centroid disagrees with
-      // visibility at the sample for any emitter whose extent is comparable
-      // to the occluder's.
-      let ls  = sampleEmitterPoint(e, r.xi);
-      let toL = ls.pos - pos;
-      let dist = safe_length(toL);
-      let wi  = safe_normalize(toL);
-      // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
-      // (light passes through glass; per-channel tinted-visibility handles tint).
-      // SHADOW-01 / ALPHA-03 — castShadow:false geometry is skipped and readable
-      // alpha-blend coverage and glass Beer tint attenuate visibility via the
-      // material atlas. Reservoir weights store luminance(visibility); shade
-      // recomputes and re-colors the selected sample.
-      // Emitter castShadow:false disables the emitter's own NEE shadow ray.
-      var shadowT = 1.0;
-      if (!emitterTriCastShadowDisabled(e)) {
-        let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
-          ubo.bvhMode, ubo.tlasNodeCount,
-
-          shadowOrig, wi, max(0.0, dist - walkaroundRayEndMargin()), ubo.triIntersectEpsilon,
-          bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-          ubo.sunAngular.z >= 1.5);
-        shadowT = restirDirectVisibilityScalar(shadowTint);
-      }
-      if (shadowT <= 0.0) {
-        r.w_sum = 0.0;
-        r.W     = 0.0;
-      } else {
-        // Build a PrimarySurface from the inline-cast values so the canonical
-        // p̂ helper (Bitterli 2020 §4.3 — identical across RIS/temporal/spatial)
-        // sees the same struct shape as the reuse passes.
-        let pHatZ = restir_di_compute_phat_xi(lid, r.xi, surf);
-        r.w_sum = r.w_sum * shadowT;
-        r.W = select(0.0, r.w_sum / (f32(r.M) * pHatZ), pHatZ > 0.0);
-      }
-    }
+  // Finalize the unoccluded source proposal. Visibility belongs to the target
+  // receiver and is evaluated exactly once by lo_direct after all reuse shifts.
+  // Baking source visibility here would make an occluded neighbor ineligible
+  // even when the same selected light is visible from the target receiver.
+  if (wrs.hasSelection) {
+    let pHatZ = restir_di_compute_phat_xi(r.lightId, r.xi, surf);
+    finaliseReservoirDIFromNativeWrs(&r, wrs, pHatZ);
   }
 
   storeReservoirDI_rw(pixelIdx, r);
@@ -541,6 +503,6 @@ export const RIS_MODULE: WgslModule = {
   // B3 — environmentSample adds the scene-group env bindings (15-19) + the
   // directional lookup/importance helpers; ordered after restirPHat→common so
   // WalkaroundUBO/safe_normalize/rand_f32 are in scope. surfaceTextures supplies
-  // RGB transparent-shadow visibility for DI finalization.
+  // the alpha-aware primary-hit traversal used by the source proposal.
   requires: ['restirPHat', 'materialAtlas', 'surfaceTextures', 'regir', 'environmentSample'],
 };

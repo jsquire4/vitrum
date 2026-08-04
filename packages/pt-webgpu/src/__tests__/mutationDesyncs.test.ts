@@ -476,6 +476,99 @@ function makeHostWithEmissiveScene(scene: Scene): {
   };
 }
 
+const OPTICAL_TETRA_POSITIONS = new Float32Array([
+  1, 1, 1,
+  -1, -1, 1,
+  -1, 1, -1,
+  1, -1, -1,
+]);
+const OPTICAL_TETRA_NORMALS = new Float32Array([
+  0, 0, 1,
+  0, 0, 1,
+  0, 0, 1,
+  0, 0, 1,
+]);
+const OPTICAL_TETRA_INDICES = new Uint32Array([
+  0, 2, 1,
+  0, 1, 3,
+  0, 3, 2,
+  1, 2, 3,
+]);
+
+type OpticalMaterialRole = 'opaque' | 'thin' | 'bulk';
+
+function opticalTopologyMutationScene(role: OpticalMaterialRole): Scene {
+  return {
+    primitives: [{
+      kind: 'mesh',
+      id: 'optical-shell',
+      positions: OPTICAL_TETRA_POSITIONS,
+      normals: OPTICAL_TETRA_NORMALS,
+      indices: OPTICAL_TETRA_INDICES,
+      material: {
+        baseColor: [1, 1, 1],
+        roughness: 0,
+        metallic: 0,
+        ...(role === 'opaque' ? {} : { transmission: 1 }),
+        ...(role === 'bulk' ? { thickness: 1 } : {}),
+      },
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+describe('SceneMutationRouter optical-role identity repacks', () => {
+  const transitions = [
+    { from: 'opaque', to: 'bulk', patch: { transmission: 1, thickness: 1 } },
+    { from: 'bulk', to: 'opaque', patch: { transmission: 0, thickness: 0 } },
+    { from: 'thin', to: 'bulk', patch: { thickness: 1 } },
+    { from: 'bulk', to: 'thin', patch: { thickness: 0 } },
+  ] as const;
+
+  for (const tier of ['full', 'lite'] as const) {
+    it(`routes every material-only optical role transition through the ${tier} identity pack`, () => {
+      const geometryMode = tier === 'full' ? 'tlas' : 'merged';
+      for (const transition of transitions) {
+        const { host } = makeHostWithEmissiveScene(
+          opticalTopologyMutationScene(transition.from),
+        );
+        host.isLiteTier = () => tier === 'lite';
+        const router = new SceneMutationRouter(host);
+
+        router.updatePrimitive('optical-shell', { material: transition.patch });
+
+        const repackScene = vi.mocked(host.repackScene);
+        expect(repackScene, `${transition.from}->${transition.to}`).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(host.setSceneState)).not.toHaveBeenCalled();
+        const repackedScene = repackScene.mock.calls[0]![0];
+        const packed = buildPackedScene(repackedScene, { geometryMode });
+        const encodedTriangleBoundaries = Array.from(
+          { length: packed.triangleCount },
+          (_, triangle) => packed.indices[triangle * 4 + 3]!,
+        );
+        const representedTriangleInstances = Array.from(
+          { length: packed.triangleCount },
+          (_, triangle) => packed.triMaterialPayload[triangle * 2 + 1]!,
+        );
+
+        if (transition.to === 'bulk') {
+          expect(encodedTriangleBoundaries.every((value) => value > 0)).toBe(true);
+          if (geometryMode === 'tlas') {
+            expect(packed.opticalInstanceBoundaryIdBasePlusOne[0]).toBeGreaterThan(0);
+          }
+        } else {
+          expect(encodedTriangleBoundaries.every((value) => value === 0)).toBe(true);
+          if (geometryMode === 'tlas') {
+            expect(packed.opticalInstanceBoundaryIdBasePlusOne[0]).toBe(0);
+          }
+        }
+        expect(representedTriangleInstances.every((value) => value > 0)).toBe(true);
+      }
+    });
+  }
+});
+
 describe('SceneMutationRouter — Item 2c: emissive-field material patch triggers emitter re-pack', () => {
   it('emissive patch on implicit-emitter mesh → meshAreaLightsBuffer is re-uploaded', () => {
     // Start with a non-emissive mesh (luminance = 0 → no implicit emitter yet).
@@ -1091,5 +1184,57 @@ describe('SceneMutationRouter — cached bind-group invalidation for reallocatin
     expect(host.setSceneState).toHaveBeenCalledTimes(1);
     expect(host.reset).toHaveBeenCalledTimes(1);
     expect(host.setScene).not.toHaveBeenCalled();
+  });
+
+  it('falls back to a canonical full pack when a count patch leaves zero invertible placements', () => {
+    installGpuConstStubs();
+    const scene: Scene = {
+      primitives: [
+        {
+          kind: 'instanced-mesh',
+          id: 'vanishing-instances',
+          positions: new Float32Array([0, 0, 0, 0.35, 0, 0, 0, 0.35, 0]),
+          normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+          material: { baseColor: [1, 0, 0], roughness: 0.5, metallic: 0 },
+          instances: [
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, -0.5, 0, 0, 1])),
+            asMat4(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0.5, 0, 0, 1])),
+          ],
+        },
+      ],
+      emitters: [],
+      environment: { kind: 'none' },
+    };
+    const { host } = makeHostWithEmissiveScene(scene);
+    let canonicalReplacement: ReturnType<typeof buildPackedScene> | null = null;
+    vi.mocked(host.setScene).mockImplementation((nextScene: Scene) => {
+      canonicalReplacement = buildPackedScene(nextScene, {});
+    });
+    const router = new SceneMutationRouter(host);
+
+    router.updatePrimitive('vanishing-instances', {
+      // No authored placement remains. Reusing the previous BLAS here would
+      // make an empty TLAS look like direct root-zero geometry at identity.
+      instances: [],
+    });
+
+    expect(host.setScene).toHaveBeenCalledTimes(1);
+    expect(host.setSceneState).not.toHaveBeenCalled();
+    expect(host.invalidateBindGroups).not.toHaveBeenCalled();
+    expect(canonicalReplacement).not.toBeNull();
+    if (canonicalReplacement == null) throw new Error('canonical replacement was not built');
+    const canonicalGeoPack = scenePackResultFromPacked(canonicalReplacement);
+    expect(canonicalGeoPack.triangleCount).toBe(0);
+    expect(canonicalGeoPack.positions).toHaveLength(0);
+    expect(canonicalGeoPack.indices).toHaveLength(0);
+    expect(canonicalGeoPack.bvhNodes).toHaveLength(0);
+    expect(canonicalGeoPack.tlasNodes).toHaveLength(0);
+    expect(canonicalGeoPack.tlasNodeCount).toBe(0);
+    expect(canonicalGeoPack.primitiveTlasBindings).toHaveLength(0);
+    expect(canonicalGeoPack.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('zero instances'),
+      ]),
+    );
   });
 });

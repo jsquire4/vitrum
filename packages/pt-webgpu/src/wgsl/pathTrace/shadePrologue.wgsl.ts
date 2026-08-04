@@ -47,6 +47,12 @@ export function composeShadeProloguePartsWgsl(
   emissiveOwnershipGuard = '',
 ): ShadePrologueWgslParts {
   const materialDecl = 'var';
+  const oppositeNormalMapApply = normalMapApply === ''
+    ? ''
+    : `\n    oppositeNormal = applyNormalMap(matId, hit.triIndex, hit.baryVW, oppositeNormal, hit.instanceIndex, !isFrontFace);`;
+  const oppositeBumpMapApply = bumpMapApply === ''
+    ? ''
+    : `\n    oppositeNormal = applyBumpMap(matId, hit.triIndex, hit.baryVW, oppositeNormal, hit.instanceIndex);`;
   const material = /* wgsl */ `    let matId = hitMaterialId(hit);
     ${materialDecl} mat = decodeMaterial(matId);
     var baseColor = mat.baseColor;${baseColorTexApply}${aoApply}
@@ -78,10 +84,19 @@ export function composeShadeProloguePartsWgsl(
     let spectralSampleCount = mat.spectralSampleCount;
     let isTranslucent = mat.isTranslucent;
 
-    let hitPos = ray.origin + ray.direction * hit.dist;
+    let hitPos = hit.position;
     let isFrontFace = hit.frontFace;
-    var normal = select(-hit.normal, hit.normal, isFrontFace);${normalMapApply}${bumpMapApply}
-    var clearcoatNormal = normal;${clearcoatNormalMapApply}`;
+    let interfaceBaseNormal = select(-hit.normal, hit.normal, isFrontFace);
+    var normal = interfaceBaseNormal;${normalMapApply}${bumpMapApply}
+    // A virtual thin sheet owns two physical dielectric interfaces at this one
+    // represented surface. Resolve its independently authored front/back
+    // layer normal and bump frame from the opposite geometric orientation; it
+    // is not generally the negation of the entry interface's mapped normal.
+    var oppositeNormal = -interfaceBaseNormal;${oppositeNormalMapApply}${oppositeBumpMapApply}
+    // KHR_materials_clearcoat owns its own outer-interface normal frame. Its
+    // normal map starts from the independently oriented smooth interface, not
+    // from the already normal/bump-mapped base layer.
+    var clearcoatNormal = interfaceBaseNormal;${clearcoatNormalMapApply}`;
   const surface = /* wgsl */ `
 
 ${emissiveComment}
@@ -134,14 +149,25 @@ ${emissiveComment}
       break;
     }
     let layerTx = clamp(select(backLayerTx, frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
+    let oppositeLayerTx = clamp(select(frontLayerTx, backLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
     let layerRoughness = select(backLayerRoughness, frontLayerRoughness, isFrontFace);
+    let oppositeLayerRoughness = select(frontLayerRoughness, backLayerRoughness, isFrontFace);
+    var oppositeRoughness = roughness;
     if (layerRoughness >= 0.0) {
       roughness = clamp(layerRoughness, 0.0, 1.0);
+    }
+    if (oppositeLayerRoughness >= 0.0) {
+      oppositeRoughness = clamp(oppositeLayerRoughness, 0.0, 1.0);
     }
     let layerW = select(
       layerTx,
       activeLayerWeightRgb(layerTx, heroLambda, true),
       params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
+    );
+    let oppositeLayerW = select(
+      oppositeLayerTx,
+      activeLayerWeightRgb(oppositeLayerTx, heroLambda, true),
+      params.spectralEnabled != 0u && luminance(oppositeLayerTx) < 0.999,
     );
     baseColor = baseColor * layerW;
     if (!firstHitValid) {
@@ -291,10 +317,9 @@ export const SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL =
  *  approximate closed-surface Beer-Lambert distance clamp. */
 export const SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL =
   `\n    let volumeThicknessSample = sampleVolumeThicknessTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);` +
-  `\n    if (volumeThicknessSample >= 0.0) {` +
-  `\n      mat.volumeThickness = max(mat.volumeThickness * volumeThicknessSample, 0.0);` +
-  `\n      mat.hasVolumeThickness = true;` +
-  `\n    }`;
+`\n    if (volumeThicknessSample >= 0.0 && mat.hasVolumeThickness) {` +
+`\n      mat.volumeThickness = max(mat.volumeThickness * volumeThicknessSample, 0.0);` +
+`\n    }`;
 
 /** Extension-lobe texture maps: full-tier only. These mutate the decoded material
  *  local so every existing downstream BSDF/PDF/NEE call observes the same lobe

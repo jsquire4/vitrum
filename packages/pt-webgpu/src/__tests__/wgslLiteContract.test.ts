@@ -162,8 +162,14 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // physically floored at one, and accepts every finite-positive Abbe value.
     // Re-pinned 2026-07-30: lite environment radiance now crosses the same
     // finite-f32 scaling helper as the full-tier transport paths.
-    expect(digest).toBe('fc2a163b14365a13d9d88f34b675842032de570a59a923e0cffb56698c1d48e2');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(233204);
+    // Re-pinned after represented finite-branch probabilities, compound
+    // thin-sheet transport, and transmissive visibility were closed in lite.
+    // Re-pinned 2026-08-04: the shared checked material decoder and independent
+    // clearcoat frame now guard lite transport, including exact thin-sheet and
+    // opposite-interface attenuation. MNEE remains gated out of lite; strict
+    // authored-source staging is host-side and is covered by admission tests.
+    expect(digest).toBe('b29453f5d029149bae6709390abe5e50832f058903036f1062fd2fc5583e81fb');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(308669);
   });
 });
 
@@ -245,9 +251,12 @@ describe('pt-webgpu lite WGSL contract', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('let dirShadowDisabled = angDiamRaw < 0.0;');
     const code = PT_WEBGPU_TRACE_LITE_WGSL.replace(/\s+/g, ' ');
     expect(code).toContain(
-      'dirShadowDisabled || !traceAny(shadowRay, ptRayTMin(), INFINITY)',
+      'if (!dirShadowDisabled) { visibility = traceSurfaceVisibility(',
     );
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('directLi = directLi + throughput * brdf * nDotL * dirIrrOut;');
+    expect(code).toContain('dirIrrOut * visibility.transmittance');
+    expect(code).toContain(
+      'directLi = directLi + throughput * brdf * nDotL * dirIrrOut * visibility.transmittance;',
+    );
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('fn sampleSky');
   });
 

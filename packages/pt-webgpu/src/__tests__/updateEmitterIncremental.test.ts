@@ -56,7 +56,12 @@ function makeStubDevice() {
     createBuffer,
     ...textureStubMethods(),
     createCommandEncoder,
-    limits: { maxStorageBuffersPerShaderStage: 64, maxStorageTexturesPerShaderStage: 8, maxTextureDimension2D: 8192 },
+    limits: {
+      maxStorageBuffersPerShaderStage: 64,
+      maxStorageTexturesPerShaderStage: 8,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
+    },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
     lost: new Promise<never>(() => {}),
@@ -116,26 +121,25 @@ describe('pt-webgpu incremental emitter updates', () => {
     expect(created).toHaveLength(1);
     const staging = created[0]!;
     expect(staging.label).toBe('vitrum.pt-webgpu.scene.incremental-staging');
-    expect(staging.size).toBe(28);
+    expect(staging.size).toBe(24);
     expect(staging.destroy).toHaveBeenCalledTimes(1);
 
     const writes = writeBuffer.mock.calls.slice(writesBefore);
     expect(writes).toHaveLength(1);
     expect(writes[0]?.[0]).toBe(staging);
     expect(writes[0]?.[1]).toBe(0);
-    expect(writes[0]?.[4]).toBe(28);
+    expect(writes[0]?.[4]).toBe(24);
 
     const copies = copyBufferToBuffer.mock.calls.slice(copiesBefore);
     expect(copies.map((call) =>
       `${(call[2] as { label: string }).label}@${call[3]}+${call[4]}`,
     )).toEqual([
       'vitrum.pt-webgpu.scene.pointLights@20+8',
-      'vitrum.pt-webgpu.scene.lightTree@4+4',
       'vitrum.pt-webgpu.scene.lightTree@64+8',
       'vitrum.pt-webgpu.scene.lightTree@128+8',
     ]);
-    expect(copies.map((call) => call[1])).toEqual([0, 8, 12, 20]);
-    expect(copies.reduce((sum, call) => sum + Number(call[4]), 0)).toBe(28);
+    expect(copies.map((call) => call[1])).toEqual([0, 8, 16]);
+    expect(copies.reduce((sum, call) => sum + Number(call[4]), 0)).toBe(24);
     const liveBuffers = new Set(createBuffer.mock.results.slice(0, buffersBefore)
       .filter((result) => result.type === 'return')
       .map((result) => result.value));

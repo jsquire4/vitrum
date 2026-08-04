@@ -25,6 +25,75 @@ import { PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL } from './connectCore.wgsl.js';
 export const PT_WEBGPU_PATH_TRACE_CONNECT_WGSL = /* wgsl */ `
 ${PT_WEBGPU_PATH_TRACE_CONNECT_CORE_WGSL}
 
+struct SurfaceVisibility {
+  transmittance: vec3f,
+  visible: bool,
+};
+
+// Alpha/sidedness-aware straight visibility with exact smooth thin-sheet
+// transport. Rough compound sheets have no arbitrary-direction connection
+// measure and therefore remain blockers. The fixed-origin exact cursor keeps
+// adjacent f32 surfaces distinct without an epsilon hop.
+fn traceSurfaceVisibility(
+  ray: Ray,
+  tMin: f32,
+  tMax: f32,
+  heroLambda: f32,
+  incidentIor: f32,
+  rng: ptr<function, PtRngState>,
+) -> SurfaceVisibility {
+  var result = SurfaceVisibility(vec3f(1.0), false);
+  var cursor = select(tMin, 0.0, opticalContinuationSourceIsActive());
+  let surfaceHitLimit = sceneSurfaceHitLimit();
+  var surfaceHitCount = 0u;
+  loop {
+    let hit = traceClosestRaw(ray, cursor, tMax);
+    if (!hit.didHit) {
+      opticalClearContinuationSource();
+      result.visible = true;
+      return result;
+    }
+    if (surfaceHitCount >= surfaceHitLimit) {
+      opticalClearContinuationSource();
+      return result;
+    }
+    surfaceHitCount = surfaceHitCount + 1u;
+    let matId = hitMaterialId(hit);
+    if (
+      !materialAcceptsSidedHit(matId, hit.frontFace) ||
+      materialShadowCastDisabled(matId) ||
+      alphaTestPassThrough(
+        matId, hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
+      )
+    ) {
+      if (!(hit.dist > cursor)) {
+        opticalClearContinuationSource();
+        return result;
+      }
+      cursor = hit.dist;
+      continue;
+    }
+    let sheetAttenuation = thinSheetExactVisibilityTransmission(
+      hit, ray.direction, heroLambda, incidentIor,
+    );
+    if (max(
+      sheetAttenuation.x,
+      max(sheetAttenuation.y, sheetAttenuation.z),
+    ) > 0.0) {
+      result.transmittance = result.transmittance * sheetAttenuation;
+      if (!(hit.dist > cursor)) {
+        opticalClearContinuationSource();
+        return SurfaceVisibility(vec3f(0.0), false);
+      }
+      cursor = hit.dist;
+      continue;
+    }
+    opticalClearContinuationSource();
+    return SurfaceVisibility(vec3f(0.0), false);
+  }
+  return result;
+}
+
 // HDRI environment presence + dimensions are now dedicated u32 fields in
 // FrameParams (hasEnvironmentMap / environmentMapWidth / environmentMapHeight).
 // Previously these lived in the .w lanes of meshAreaTri{B,C} / environmentTint —
@@ -208,18 +277,32 @@ fn sampleMeshAreaLightRadiance(
   weights: vec3f,
   worldPosition: vec3f,
 ) -> vec3f {
+  if (index > 0xffffffffu / MESH_AREA_LIGHT_VEC4_STRIDE) {
+    return vec3f(0.0);
+  }
   let base = meshAreaLightBase(index);
+  let meshLightCount = arrayLength(&meshAreaLights);
+  if (base > meshLightCount || 7u > meshLightCount - base) {
+    return vec3f(0.0);
+  }
   let averageAndShadow = meshAreaLights[base + 3u];
   let uvAB = meshAreaLights[base + 4u];
   let uvCAndMaterial = meshAreaLights[base + 5u];
   let materialIdPlusOne = uvCAndMaterial.z;
+  if (!materialTextureFiniteF32(materialIdPlusOne)) { return vec3f(0.0); }
+  if (!materialTextureFiniteVec4(averageAndShadow)) { return vec3f(0.0); }
   if (materialIdPlusOne < 0.5) { return averageAndShadow.rgb; }
-  let matId = u32(materialIdPlusOne - 1.0);
-  let descriptorBase = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (descriptorBase + 13u >= arrayLength(&materialTexDescriptors)) {
+  let materialCount = arrayLength(&materialTexDescriptors) / MATERIAL_TEX_VEC4_STRIDE;
+  let matId = materialTextureExactU32(materialIdPlusOne - 1.0, materialCount);
+  if (matId == 0xffffffffu) { return vec3f(0.0); }
+  let descriptorBase = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(descriptorBase, 0u, MATERIAL_TEX_VEC4_STRIDE)) {
     return vec3f(0.0);
   }
-  let layerIdx = i32(materialTexDescriptors[descriptorBase].w);
+  let layerIdx = materialTextureLayerIndex(
+    materialTexDescriptors[descriptorBase].w,
+    textureNumLayers(materialTexturesEmissive),
+  );
   if (layerIdx < 0) { return vec3f(0.0); }
   let rawA = uvAB.xy;
   let rawB = uvAB.zw;
@@ -231,6 +314,21 @@ fn sampleMeshAreaLightRadiance(
   let uvScale = materialTexDescriptors[
     descriptorBase + MATERIAL_TEX_UV_EMISSIVE + 1u
   ];
+  let wrapMode = materialTexDescriptors[descriptorBase + 13u].zw;
+  let uvFitScale = materialTexDescriptors[descriptorBase + 7u].zw;
+  if (
+    !materialTextureFiniteVec4(averageAndShadow) ||
+    !materialTextureFiniteVec4(uvAB) ||
+    !materialTextureFiniteVec4(uvCAndMaterial) ||
+    !materialTextureFiniteVec3(weights) ||
+    !materialTextureFiniteVec3(worldPosition) ||
+    !materialTextureFiniteVec4(uvMeta) ||
+    !materialTextureFiniteVec4(uvScale) ||
+    !materialTextureWrapModesValid(wrapMode) ||
+    !materialTextureFiniteVec2(uvFitScale) ||
+    any(uvFitScale <= vec2f(0.0)) ||
+    any(uvFitScale > vec2f(1.0))
+  ) { return vec3f(0.0); }
   let c = cos(uvMeta.w);
   let s = sin(uvMeta.w);
   let transformUv = mat2x2f(
@@ -242,8 +340,6 @@ fn sampleMeshAreaLightRadiance(
   let uvB = transformUv * rawB + offset;
   let uvC = transformUv * rawC + offset;
   let uv = transformUv * rawUv + offset;
-  let wrapMode = materialTexDescriptors[descriptorBase + 13u].zw;
-  let uvFitScale = materialTexDescriptors[descriptorBase + 7u].zw;
   let sourceBaseSize = materialTextureSourceBaseSize(
     vec2u(textureDimensions(materialTexturesEmissive, i32(0))), uvFitScale,
   );
@@ -255,7 +351,11 @@ fn sampleMeshAreaLightRadiance(
     1.0,
   );
   let worldArea = uvCAndMaterial.w;
-  if (worldArea <= 0.0) { return vec3f(0.0); }
+  if (
+    !materialTextureFiniteF32(texelArea) ||
+    !materialTextureFiniteF32(worldArea) ||
+    worldArea <= 0.0
+  ) { return vec3f(0.0); }
   let cameraDistance = max(
     safe_length(worldPosition - params.cameraPos.xyz), ptRayTMin(),
   );
@@ -267,6 +367,7 @@ fn sampleMeshAreaLightRadiance(
     0.0,
     max(sourceMipCount - 1.0, 0.0),
   );
+  if (!materialTextureFiniteF32(lod)) { return vec3f(0.0); }
   let mipPolicy = materialTextureMipPolicy(
     descriptorBase, MATERIAL_TEX_MIP_EMISSIVE,
   );
@@ -279,9 +380,10 @@ fn sampleMeshAreaLightRadiance(
     layerIdx, uv, sourceBaseSize, wrapMode,
     policyLod, filterMode, mipPolicy,
   );
+  if (!texel.valid) { return vec3f(0.0); }
   return ptFiniteNonNegativeRadianceProduct(
     meshAreaLights[base + 6u].rgb,
-    texel.rgb,
+    texel.value.rgb,
   );
 }
 
@@ -432,6 +534,7 @@ fn bsdfAreaLightConnectionContribution(
   var bestDist = INFINITY;
   var bestLightPdf = 0.0;
   var bestEmission = vec3f(0.0);
+  var bestVisibility = vec3f(1.0);
   for (var li = 0u; li < params.rectAreaLightCount; li = li + 1u) {
     var rectDist = INFINITY;
     var rectPdf = 0.0;
@@ -441,12 +544,18 @@ fn bsdfAreaLightConnectionContribution(
       // flag; skip the visibility test for that light (matches the NEE half so
       // both MIS strategies see the same lighting).
       let rectShadowDisabled = rectAreaLights[li * 4u].w > 0.5;
-      if ((rectShadowDisabled || !traceAny(
-        shadowRay, ptRayTMin(), ptFiniteSegmentTMax(rectDist), rng,
-      )) && rectDist < bestDist) {
+      var visibility = SurfaceVisibility(vec3f(1.0), true);
+      if (!rectShadowDisabled) {
+        visibility = traceSurfaceVisibility(
+          shadowRay, ptRayTMin(), ptFiniteSegmentTMax(rectDist),
+          heroLambda, 1.0, rng,
+        );
+      }
+      if (visibility.visible && rectDist < bestDist) {
         bestDist = rectDist;
         bestLightPdf = rectPdf;
         bestEmission = rectAreaLights[li * 4u + 3u].rgb;
+        bestVisibility = visibility.transmittance;
       }
     }
   }
@@ -459,15 +568,21 @@ fn bsdfAreaLightConnectionContribution(
         // SHADOW-01 — row 3.w carries castShadowDisabled (NEE parity).
         let meshBase = meshAreaLightBase(mi);
         let meshShadowDisabled = meshAreaLights[meshBase + 3u].w > 0.5;
-        if ((meshShadowDisabled || !traceAny(
-          shadowRay, ptRayTMin(), ptFiniteSegmentTMax(meshDist), rng,
-        )) && meshDist < bestDist) {
+        var visibility = SurfaceVisibility(vec3f(1.0), true);
+        if (!meshShadowDisabled) {
+          visibility = traceSurfaceVisibility(
+            shadowRay, ptRayTMin(), ptFiniteSegmentTMax(meshDist),
+            heroLambda, 1.0, rng,
+          );
+        }
+        if (visibility.visible && meshDist < bestDist) {
           bestDist = meshDist;
           bestLightPdf = meshPdf;
           let lightPoint = offsetOrigin + wi * meshDist;
           bestEmission = sampleMeshAreaLightRadiance(
             mi, meshAreaLightWeightsAtPoint(mi, lightPoint), lightPoint,
           );
+          bestVisibility = visibility.transmittance;
         }
       }
     }
@@ -488,7 +603,8 @@ fn bsdfAreaLightConnectionContribution(
     anisotropy, anisotropyRotation, thinFilm, false,
   );
   let misWeight = powerHeuristic(bsdfPdf, bestLightPdf);
-  return throughputAtVertex * brdf * nDotL * emitOut * misWeight / bsdfPdf;
+  return throughputAtVertex * brdf * nDotL * emitOut * bestVisibility *
+    misWeight / bsdfPdf;
 }
 
 fn bsdfEnvironmentConnectionContribution(
@@ -538,7 +654,10 @@ fn bsdfEnvironmentConnectionContribution(
     hitPos + offsetNormal * ptRayOriginBias(),
     wi,
   );
-  if (traceAny(shadowRay, ptRayTMin(), INFINITY, rng)) {
+  let visibility = traceSurfaceVisibility(
+    shadowRay, ptRayTMin(), INFINITY, heroLambda, 1.0, rng,
+  );
+  if (!visibility.visible) {
     return vec3f(0.0);
   }
   let env = environmentLookup(wi);
@@ -570,6 +689,7 @@ fn bsdfEnvironmentConnectionContribution(
     ),
     envScale,
   );
-  return throughputAtVertex * brdf * nDotL * envColorOut * misWeight / bsdfPdf;
+  return throughputAtVertex * brdf * nDotL * envColorOut *
+    visibility.transmittance * misWeight / bsdfPdf;
 }
 `;

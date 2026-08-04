@@ -37,20 +37,27 @@ import {
 } from './probeUpdatePass.js';
 import { snapshotDdgiLights, type DDGILight } from './types.js';
 import {
-  isRestirTlasOnlyRefit,
-  makeRestirBvhSnapshot,
+  isRestirTlasOnlySnapshotChange,
+  refreshRestirBvhSnapshot,
+  restirBvhSnapshotStateEqual,
   type RestirBvhSnapshot,
 } from '../restir/restirBvhSnapshot.js';
-import type { PreparedSceneMutation } from '../SceneMutationTransaction.js';
+import {
+  rethrowWithSceneMutationCleanup,
+  type PreparedSceneMutation,
+} from '../SceneMutationTransaction.js';
 import type { SceneBVHBuffers } from '../restir/bvhCore.js';
 import {
   assertDdgiBoolean,
+  assertDdgiU32,
   assertDdgiUnitInterval,
   assertFiniteDdgiNumber,
   assertFiniteDdgiVec3,
   assertNonNegativeDdgiNumber,
   assertPositiveDdgiInteger,
   assertValidDdgiLights,
+  packDdgiProbeSpacingFloat32,
+  validateDdgiProbeUpdateDivisor,
 } from './inputValidation.js';
 import {
   assertWalkaroundEnvironmentScaleF32,
@@ -178,22 +185,23 @@ export class DDGI {
 
   constructor(opts: DDGIOptions = {}) {
     if (opts.debug !== undefined) assertDdgiBoolean(opts.debug, 'DDGI debug');
-    if (opts.probeSpacing !== undefined) {
-      assertFiniteDdgiNumber(opts.probeSpacing, 'DDGI probe spacing');
-      if (opts.probeSpacing <= 0) {
-        throw new RangeError('DDGI probe spacing must be > 0.');
-      }
-    }
+    const packedProbeSpacing = opts.probeSpacing === undefined
+      ? undefined
+      : packDdgiProbeSpacingFloat32(opts.probeSpacing, 'DDGI probe spacing');
     if (opts.maxProbesPerAxis !== undefined) {
       assertPositiveDdgiInteger(
         opts.maxProbesPerAxis,
         'DDGI max probes per axis',
       );
+      assertDdgiU32(opts.maxProbesPerAxis, 'DDGI max probes per axis');
+      if (opts.maxProbesPerAxis < 3) {
+        throw new RangeError('DDGI max probes per axis must be >= 3.');
+      }
     }
     this._debug = opts.debug ?? false;
     this._onError = opts.onError;
     this._onWarning = opts.onWarning;
-    this._probeSpacing     = opts.probeSpacing;
+    this._probeSpacing     = packedProbeSpacing;
     this._maxProbesPerAxis = opts.maxProbesPerAxis ?? 16;
     this._bvh   = new SceneBvh({
       onWarning: (warning) => this._warn({
@@ -250,23 +258,66 @@ export class DDGI {
     if (this._contentEpoch === 0) this._contentEpoch = 1;
   }
 
-  private _invalidateLightingContent(): void {
-    this._frame = 0;
-    this._ready = false;
-    this._pass.requestFullBlend(this._stride);
-    this._advanceContentEpoch();
+  private _mutateWithLightingContentInvalidation(mutate: () => void): void {
+    const invalidation = this._pass.prepareFullBlendInvalidation(this._stride);
+    try {
+      mutate();
+      // All fallible candidate work is complete. The remaining operations are
+      // scalar/reference swaps and wrapping u32 arithmetic only.
+      invalidation.commit();
+      this._frame = 0;
+      this._ready = false;
+      this._advanceContentEpoch();
+    } catch (error) {
+      invalidation.rollback();
+      throw error;
+    }
+    invalidation.finalize();
+  }
+
+  /**
+   * Publish a fresh atlas cohort together with the temporal state that makes
+   * every stratum replace, rather than blend against, its zero-initialized
+   * history. Preparing the bounded pending-strata Set happens before the old
+   * atlas cohort is displaced; after reallocation succeeds, commit is only a
+   * reference/scalar publication and cannot strand fresh atlases behind stale
+   * readiness state.
+   */
+  private _reallocateGridAtlasesWithWarmupReset(): void {
+    const invalidation = this._pass.prepareFullBlendInvalidation(this._stride);
+    try {
+      this._pass.reallocateGridAtlases();
+      invalidation.commit();
+      this._frame = 0;
+      this._ready = false;
+    } catch (error) {
+      invalidation.rollback();
+      throw error;
+    }
+    invalidation.finalize();
+  }
+
+  /** Advance the long-running cadence counter with explicit u32 wrap. */
+  private _advanceFrameIndex(): void {
+    this._frame = (this._frame + 1) >>> 0;
+  }
+
+  private _commitPreparedLightingMutation(mutation: PreparedSceneMutation): void {
+    try {
+      mutation.commit();
+    } catch (error) {
+      rethrowWithSceneMutationCleanup(
+        error,
+        [() => mutation.rollback()],
+        'DDGI lighting publication failed and rollback also failed',
+      );
+    }
+    mutation.finalize();
   }
 
   // ── Read-only accessors matching the old DDGIHandle shape ─────────────────
 
   get bvh():        SceneBvh    { return this._bvh; }
-  /**
-   * @internal — direct ProbeGrid access for tests and legacy adapters.
-   *   Production callers should prefer {@link gridParams} (returns a snapshot
-   *   ProbeGridParams with named origin/spacing/dims fields) instead of
-   *   reaching through to the mutable grid object.
-   */
-  get probeGrid():  ProbeGrid   { return this._grid; }
   /**
    * @internal — direct ProbeUpdatePass access for tests and legacy adapters.
    *   Production callers should prefer the facade methods
@@ -319,9 +370,12 @@ export class DDGI {
     assertValidDdgiLights(lights);
     const nextLights = snapshotDdgiLights(lights);
     if (sameDdgiLights(this._configuredLights, nextLights)) return;
-    this._pass.setLights(nextLights);
-    this._configuredLights = nextLights;
-    this._invalidateLightingContent();
+    this._commitPreparedLightingMutation(this.prepareLightingMutation({
+      lights: nextLights,
+      sunIntensityMultiplier: this._configuredSunIntensityMultiplier,
+      emitterTris: this._configuredEmitterTris,
+      emitterCount: this._configuredEmitterCount,
+    }));
   }
 
   /**
@@ -335,10 +389,12 @@ export class DDGI {
       tris,
       count,
     )) return;
-    this._pass.setEmitterTris(tris, count);
-    this._configuredEmitterCount = count;
-    this._configuredEmitterTris = tris.slice(0, count * 20);
-    this._invalidateLightingContent();
+    this._commitPreparedLightingMutation(this.prepareLightingMutation({
+      lights: this._configuredLights,
+      sunIntensityMultiplier: this._configuredSunIntensityMultiplier,
+      emitterTris: tris,
+      emitterCount: count,
+    }));
   }
 
   /**
@@ -394,16 +450,24 @@ export class DDGI {
     const previousFrame = this._frame;
     const previousReady = this._ready;
     const previousContentEpoch = this._contentEpoch;
-    const previousFullBlend = this._pass.captureFullBlendState();
-    const passMutation = this._pass.prepareLightingMutation(
-      nextLights,
-      packedSunIntensityMultiplier,
-      inputs.emitterTris,
-      inputs.emitterCount,
-      packedSky == null
-        ? undefined
-        : { tint: packedSky.value, irradiance: packedSky.scale },
+    const invalidationMutation = this._pass.prepareFullBlendInvalidation(
+      this._stride,
     );
+    let passMutation: PreparedSceneMutation;
+    try {
+      passMutation = this._pass.prepareLightingMutation(
+        nextLights,
+        packedSunIntensityMultiplier,
+        inputs.emitterTris,
+        inputs.emitterCount,
+        packedSky == null
+          ? undefined
+          : { tint: packedSky.value, irradiance: packedSky.scale },
+      );
+    } catch (error) {
+      invalidationMutation.rollback();
+      throw error;
+    }
     let committed = false;
     let closed = false;
     return {
@@ -421,7 +485,7 @@ export class DDGI {
         committed = true;
         this._frame = 0;
         this._ready = false;
-        this._pass.requestFullBlend(this._stride);
+        invalidationMutation.commit();
         this._advanceContentEpoch();
       },
       rollback: () => {
@@ -441,8 +505,8 @@ export class DDGI {
             this._configuredSkyTint = previousConfiguredSkyTint;
             this._configuredSkyIrradiance =
               previousConfiguredSkyIrradiance;
-            this._pass.restoreFullBlendState(previousFullBlend);
           }
+          invalidationMutation.rollback();
           closed = true;
         }
       },
@@ -451,6 +515,7 @@ export class DDGI {
         try {
           passMutation.finalize();
         } finally {
+          invalidationMutation.finalize();
           closed = true;
         }
       },
@@ -537,21 +602,23 @@ export class DDGI {
       );
       return;
     }
-    this._pass.setEnvironment(
-      view,
-      sampler,
-      packedRotationY,
-      packedIntensity,
-      hasEnv,
-    );
-    this._configuredEnvironment = {
+    const nextEnvironment = {
       view,
       sampler,
       rotationY: packedRotationY,
       intensity: packedIntensity,
       hasEnv,
     };
-    this._invalidateLightingContent();
+    this._mutateWithLightingContentInvalidation(() => {
+      this._pass.setEnvironment(
+        view,
+        sampler,
+        packedRotationY,
+        packedIntensity,
+        hasEnv,
+      );
+      this._configuredEnvironment = nextEnvironment;
+    });
   }
 
   // ── Forwarding façade — callers go through DDGI, not DDGI.pass/probeGrid ──
@@ -568,9 +635,12 @@ export class DDGI {
       'DDGI sun intensity multiplier',
     );
     if (Object.is(this._configuredSunIntensityMultiplier, packed)) return;
-    this._pass.setSunIntensityMultiplier(packed);
-    this._configuredSunIntensityMultiplier = packed;
-    this._invalidateLightingContent();
+    this._commitPreparedLightingMutation(this.prepareLightingMutation({
+      lights: this._configuredLights,
+      sunIntensityMultiplier: packed,
+      emitterTris: this._configuredEmitterTris,
+      emitterCount: this._configuredEmitterCount,
+    }));
   }
 
   setSkyParams(tint: [number, number, number], irradiance: number): void {
@@ -590,10 +660,14 @@ export class DDGI {
       sameNumber(this._configuredSkyTint[2], packed.value[2]) &&
       sameNumber(this._configuredSkyIrradiance, packed.scale)
     ) return;
-    this._pass.setSkyParams(packed.value, packed.scale);
-    this._configuredSkyTint = packed.value;
-    this._configuredSkyIrradiance = packed.scale;
-    this._invalidateLightingContent();
+    this._commitPreparedLightingMutation(this.prepareLightingMutation({
+      lights: this._configuredLights,
+      sunIntensityMultiplier: this._configuredSunIntensityMultiplier,
+      emitterTris: this._configuredEmitterTris,
+      emitterCount: this._configuredEmitterCount,
+      skyTint: packed.value,
+      skyIrradiance: packed.scale,
+    }));
   }
 
   /**
@@ -604,9 +678,10 @@ export class DDGI {
   setGlassMixScale(s: number): void {
     assertDdgiUnitInterval(s, 'DDGI glass mix scale');
     if (Object.is(this._configuredGlassMixScale, s)) return;
-    this._pass.setGlassMixScale(s);
-    this._configuredGlassMixScale = s;
-    this._invalidateLightingContent();
+    this._mutateWithLightingContentInvalidation(() => {
+      this._pass.setGlassMixScale(s);
+      this._configuredGlassMixScale = s;
+    });
   }
 
   /**
@@ -619,9 +694,10 @@ export class DDGI {
   setIndirectFeedback(enabled: boolean): void {
     assertDdgiBoolean(enabled, 'DDGI indirect feedback');
     if (this._configuredIndirectFeedback === enabled) return;
-    this._pass.setIndirectFeedback(enabled);
-    this._configuredIndirectFeedback = enabled;
-    this._invalidateLightingContent();
+    this._mutateWithLightingContentInvalidation(() => {
+      this._pass.setIndirectFeedback(enabled);
+      this._configuredIndirectFeedback = enabled;
+    });
   }
 
   /**
@@ -671,8 +747,7 @@ export class DDGI {
 
   /**
    * Probe-grid parameters (origin, spacing, dims, atlas sizes).
-   * Forwarded from `HybridEngineFrameOrchestrator` so it doesn't reach
-   * through to `DDGI.probeGrid` directly.
+   * The returned cached object and its nested origin/dims are deeply frozen.
    */
   get gridParams(): ProbeGridParams {
     return this._grid.params;
@@ -692,11 +767,16 @@ export class DDGI {
    *  this knob is load-bearing, those preset values directly set how many probes
    *  update per frame. See HybridEngineQualityPreset.ts. */
   setProbeUpdateDivisor(divisor: number): void {
-    assertPositiveDdgiInteger(divisor, 'DDGI probe update divisor');
-    const normalized = divisor;
+    const normalized = validateDdgiProbeUpdateDivisor(divisor);
     if (normalized === this._stride) return;
-    this._stride = normalized;
     this._pass.setProbeUpdateDivisor(normalized);
+    // Warmup readiness proves one complete cycle of the cadence that produced
+    // `_frame`. Reinterpreting a partial old cycle modulo a new divisor can
+    // otherwise mark untouched strata ready (for example frame=4 at stride=8
+    // changed to stride=2). A ready atlas already has complete coverage, so it
+    // remains valid across a cadence-only change.
+    if (!this._ready) this._frame = 0;
+    this._stride = normalized;
     this._advanceContentEpoch();
   }
 
@@ -743,20 +823,16 @@ export class DDGI {
    * Call each frame from HybridEngine when `_bvhBuffers` is ready.
    */
   syncRestirBvhBuffers(buffers: SceneBVHBuffers | null, scene?: Scene): void {
-    const next = buffers == null ? null : makeRestirBvhSnapshot(buffers, scene);
     const previous = this._restirSnapshot;
+    const next = buffers == null
+      ? null
+      : refreshRestirBvhSnapshot(previous, buffers, scene);
     if (sameRestirSnapshotVersion(previous, next)) return;
 
     this._pass.setRestirBvhSnapshot(next);
     this._restirSnapshot = next;
-    const tlasOnly = previous != null && next != null && isRestirTlasOnlyRefit(
-      next,
-      {
-        blasContentVersion: previous.blasContentVersion,
-        tlasContentVersion: previous.tlasContentVersion,
-        materialContentVersion: previous.materialContentVersion,
-      },
-    );
+    const tlasOnly = next != null &&
+      isRestirTlasOnlySnapshotChange(previous, next);
     if (tlasOnly) {
       this._frame = Math.max(0, this._frame - Math.floor(this._stride / 2));
     } else {
@@ -773,8 +849,10 @@ export class DDGI {
     scene: Scene | undefined,
     options: { readonly invalidate: boolean; readonly instancesDirty: boolean },
   ): PreparedSceneMutation {
-    const nextSnapshot = buffers == null ? null : makeRestirBvhSnapshot(buffers, scene);
     const previousSnapshot = this._restirSnapshot;
+    const nextSnapshot = buffers == null
+      ? null
+      : refreshRestirBvhSnapshot(previousSnapshot, buffers, scene);
     const previousFrame = this._frame;
     const previousReady = this._ready;
     const previousContentEpoch = this._contentEpoch;
@@ -979,7 +1057,7 @@ export class DDGI {
     if (boundsBox) {
       this._grid.computeFromBounds(boundsBox, this._probeSpacing, this._maxProbesPerAxis);
       if (this._grid.dirty || !this._grid.irradianceA) {
-        this._pass.reallocateGridAtlases();
+        this._reallocateGridAtlasesWithWarmupReset();
       }
     }
 
@@ -993,7 +1071,7 @@ export class DDGI {
         const submitted = await this._pass.runFrame(rendererAdapter, offset, stride);
         if (!this._isLifecycleCurrent(generation)) return;
         if (submitted && contentEpoch === this._contentEpoch) {
-          this._frame++;
+          this._advanceFrameIndex();
           probeFrameOk = true;
         }
       } catch (e) {
@@ -1048,15 +1126,7 @@ function sameRestirSnapshotVersion(
   a: RestirBvhSnapshot | null,
   b: RestirBvhSnapshot | null,
 ): boolean {
-  return a === null
-    ? b === null
-    : b !== null &&
-      a.bvhMode === b.bvhMode &&
-      a.tlasNodeCount === b.tlasNodeCount &&
-      a.contentVersion === b.contentVersion &&
-      a.blasContentVersion === b.blasContentVersion &&
-      a.tlasContentVersion === b.tlasContentVersion &&
-      a.materialContentVersion === b.materialContentVersion;
+  return restirBvhSnapshotStateEqual(a, b);
 }
 
 function sameVec3(

@@ -267,8 +267,9 @@ export function packRCLights(lights: readonly DDGILight[]): ArrayBuffer {
       intensity,
       `packRCLights lights[${i}]`,
     ).scaled;
-    const emittedLuminance = packNonNegativeLightingFloat32(
+    const emittedLuminance = rcAliasProposalWeight(
       luminance(emitted[0], emitted[1], emitted[2]),
+      1,
       `packRCLights lights[${i}] emitted luminance`,
     );
     const solidAngle = isSun

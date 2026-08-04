@@ -17,6 +17,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { gltfToScene } from './gltfToScene.js';
+import { resolveTextureRef } from './textures.js';
 import { loadGltfAsset, type GltfTextureSourceExtension } from './index.js';
 import type { GltfJson, GltfTextureInfo } from './gltfTypes.js';
 import { gltfTextureColorSpaceForField, type GltfMaterialTextureField } from './texturePipeline.js';
@@ -361,6 +362,23 @@ function makeTextureSourceExtensionGltf(extension: GltfTextureSourceExtension): 
 // ── The sweep ────────────────────────────────────────────────────────────────
 
 describe('KHR extension texture sweep (GLTF-06)', () => {
+  it('preserves omitted glTF filtering while retaining explicit no-mip intent', () => {
+    const handle = {};
+    const resolve = (sampler: number | undefined, minFilter?: number) => resolveTextureRef(
+      { index: 0 },
+      new Map([[0, handle]]),
+      {
+        textures: [{ source: 0, ...(sampler !== undefined ? { sampler } : {}) }],
+        samplers: sampler !== undefined ? [{ ...(minFilter !== undefined ? { minFilter } : {}) }] : [],
+        images: [],
+      },
+    );
+    expect(resolve(undefined)).not.toHaveProperty('mipFilter');
+    expect(resolve(0)).not.toHaveProperty('mipFilter');
+    expect(resolve(0, 9729)).toMatchObject({ minFilter: 'linear', mipFilter: 'none' });
+    expect(resolve(0, 9987)).toMatchObject({ minFilter: 'linear', mipFilter: 'linear' });
+  });
+
   async function importSweepMaterial(): Promise<{ mat: MaterialSpec; handle: object }> {
     const handle = { kind: 'decoded-texture' };
     const { gltf, buffers } = makeSweepGltf();

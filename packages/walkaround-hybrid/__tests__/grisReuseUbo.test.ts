@@ -130,7 +130,7 @@ describe('WalkaroundUBO generalized-reuse ABI tail', () => {
 describe('canonical generalized-reuse shaders', () => {
   it('keeps generalized reuse unconditional in both reuse passes', () => {
     for (const source of [SPATIAL_GI_WGSL, TEMPORAL_GI_WGSL]) {
-      expect(source).toContain('grisDomainToCanonicalJacobian(');
+      expect(source).toContain('grisLogDomainToCanonicalJacobian(');
       expect(source).toContain('grisLogWeightedTransformedDensity(');
       expect(source).not.toContain('ubo.grisReuse == 1u');
       expect(source).not.toContain('jacobianReconnectionShift(');
@@ -140,11 +140,12 @@ describe('canonical generalized-reuse shaders', () => {
   it('spatial reuse evaluates a log-scaled all-candidate/all-technique matrix', () => {
     expect(SPATIAL_GI_WGSL).toContain('var domains: array<ReservoirPT, 6>;');
     expect(SPATIAL_GI_WGSL).toContain('j < domainCount');
-    expect(SPATIAL_GI_WGSL).toContain('grisDomainToCanonicalJacobian(');
+    expect(SPATIAL_GI_WGSL).toContain('grisLogDomainToCanonicalJacobian(');
     expect(SPATIAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity(');
     expect(SPATIAL_GI_WGSL).toContain('grisLogCanonicalResamplingWeight(');
-    expect(SPATIAL_GI_WGSL).toContain('candidate.W,');
-    expect(SPATIAL_GI_WGSL).not.toContain('candidate.W * f32(domainM[i])');
+    expect(SPATIAL_GI_WGSL).toContain('candidate.H,');
+    expect(SPATIAL_GI_WGSL).toContain('candidate.nativeLogPHat,');
+    expect(SPATIAL_GI_WGSL).not.toMatch(/candidate\.W\b/);
     expect(SPATIAL_GI_WGSL).toContain('totalAttempts = reservoirGiSaturatingAddU32(');
     expect(SPATIAL_GI_WGSL).toContain('candidateVisibility[i]');
   });
@@ -156,8 +157,9 @@ describe('canonical generalized-reuse shaders', () => {
     expect(TEMPORAL_GI_WGSL).toContain('j < 2u');
     expect(TEMPORAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity(');
     expect(TEMPORAL_GI_WGSL).toContain('grisLogCanonicalResamplingWeight(');
-    expect(TEMPORAL_GI_WGSL).toContain('candidate.W,');
-    expect(TEMPORAL_GI_WGSL).not.toContain('candidate.W * f32(domainM[i])');
+    expect(TEMPORAL_GI_WGSL).toContain('candidate.H,');
+    expect(TEMPORAL_GI_WGSL).toContain('candidate.nativeLogPHat,');
+    expect(TEMPORAL_GI_WGSL).not.toMatch(/candidate\.W\b/);
     expect(TEMPORAL_GI_WGSL).toContain(
       'totalAttempts = reservoirGiSaturatingAddU32(totalAttempts, domainM[i]);',
     );
@@ -166,24 +168,34 @@ describe('canonical generalized-reuse shaders', () => {
   it('rejects stale or invisible reservoir metadata in both reuse passes', () => {
     for (const source of [SPATIAL_GI_WGSL, TEMPORAL_GI_WGSL]) {
       expect(source).toContain('historyEpoch != epoch');
-      expect(source).toContain('!reservoirGiFinite(');
-      expect(source).toContain('nativePHat > 0.0');
-      expect(source).toContain('sampleVisibility > 0.0');
-      expect(source).toContain('grisProxyVisibilityAt(');
+      expect(source).toContain('!reservoirGiFiniteReceiver(');
+      expect(source).toContain('!reservoirGiHasShiftableCandidate(candidate)');
+      expect(source).toContain('!reservoirGiValidLog(');
+      expect(source).toContain('grisProxyTintAt(');
       expect(source).not.toContain('grisShiftJacobian(');
       expect(source).not.toContain('grisPairwiseDenom');
     }
+    expect(RESERVOIR_GI_WGSL).toContain('reservoirGiHasEstimatorNumerator(r)');
+    expect(RESERVOIR_GI_WGSL).toContain(
+      'reservoirGiFinite(r.sampleVisibility) && r.sampleVisibility > 0.0',
+    );
+    expect(RESERVOIR_GI_WGSL).toContain(
+      'r.sampleKind == GI_SAMPLE_SURFACE ||',
+    );
+    expect(RESERVOIR_GI_WGSL).toContain(
+      'r.sampleKind == GI_SAMPLE_ENVIRONMENT',
+    );
   });
 
   it('pins inverse-J densities and the environment identity map', () => {
-    expect(GRIS_REUSE_WGSL).toContain('fn grisDomainToCanonicalJacobian(');
-    expect(GRIS_REUSE_WGSL).toContain('if (sampleKind == GI_SAMPLE_ENVIRONMENT) { return 1.0; }');
+    expect(GRIS_REUSE_WGSL).toContain('fn grisLogDomainToCanonicalJacobian(');
+    expect(GRIS_REUSE_WGSL).toContain('if (sampleKind == GI_SAMPLE_ENVIRONMENT) { return 0.0; }');
     expect(GRIS_REUSE_WGSL).toContain('fn grisLogWeightedTransformedDensity(');
     expect(GRIS_REUSE_WGSL).toContain(
-      '+ log2(pHatDomain)',
+      '+ logPHatDomain',
     );
     expect(GRIS_REUSE_WGSL).toContain(
-      '- log2(domainToCanonicalJacobian)',
+      '- logDomainToCanonicalJacobian',
     );
     expect(GRIS_REUSE_WGSL).not.toContain('fn grisTransformedDensity(');
   });
@@ -203,7 +215,7 @@ describe('GRIS reservoir physical layout', () => {
       ['sampleVisibility', 23],
       ['prefixVertexCount', 24],
       ['sampleKind', 25],
-      ['nativePHat', 26],
+      ['nativeLogPHat', 26],
       ['historyEpoch', 27],
     ] as const;
     for (const [field, index] of fields) {
@@ -212,34 +224,58 @@ describe('GRIS reservoir physical layout', () => {
     }
     expect(RESERVOIR_GI_WGSL.match(/r\.historyEpoch\s*=\s*words\[27u\]/g)).toHaveLength(1);
     expect(RESERVOIR_GI_WGSL).toContain('words[27u] = r.historyEpoch;');
-    expect(RESERVOIR_GI_WGSL).toContain('words[26u] = bitcast<u32>(r.nativePHat);');
+    expect(RESERVOIR_GI_WGSL).toContain('words[26u] = bitcast<u32>(r.nativeLogPHat);');
     expect(RESERVOIR_GI_WGSL).toContain('words[23u] = bitcast<u32>(r.sampleVisibility);');
   });
 
   it('pins metadata-aware replacement and exact invalid-attempt folding', () => {
     expect(RESERVOIR_GI_WGSL).toContain('fn updateReservoirGIWithMetadata(');
-    expect(RESERVOIR_GI_WGSL).toContain('(*r).nativePHat = nativePHat;');
+    expect(RESERVOIR_GI_WGSL).toContain('(*r).nativeLogPHat = nativeLogPHat;');
     expect(RESERVOIR_GI_WGSL).toContain('(*r).sampleVisibility = sampleVisibility;');
     expect(RESERVOIR_GI_WGSL).toContain('(*r).historyEpoch = historyEpoch;');
     expect(RESERVOIR_GI_WGSL).toContain(
       '(*r).M = reservoirGiSaturatingAddU32((*r).M, attemptCount);',
     );
-    expect(RESERVOIR_GI_WGSL).toContain('(*r).nativePHat = 0.0;');
+    expect(RESERVOIR_GI_WGSL).toContain(
+      '(*r).nativeLogPHat = RESERVOIR_GI_LOG_ZERO;',
+    );
     expect(RESERVOIR_GI_WGSL).toContain('(*r).sampleVisibility = 0.0;');
+  });
+
+  it('keeps the native target in exact log2 form from producers through reuse', () => {
+    expect(RESERVOIR_GI_WGSL).toContain('nativeLogPHat:        f32');
+    expect(RESERVOIR_GI_WGSL).toContain('let result = r.H - r.nativeLogPHat;');
+    expect(RESERVOIR_GI_WGSL).not.toContain('log2(r.nativeLogPHat)');
+
+    for (const producer of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+      expect(producer).toContain(
+        'logPHat, candidateVisibility, currentGrisEpoch, logWeight, &rng,',
+      );
+    }
+    for (const reuse of [TEMPORAL_GI_WGSL, SPATIAL_GI_WGSL]) {
+      expect(reuse).toContain('candidateLogPHat[i] = logCanonicalPHat;');
+      expect(reuse).toContain('candidateLogPHat[i],');
+      expect(reuse).not.toContain(
+        'reservoirGiRepresentPositiveLog(logCanonicalPHat)',
+      );
+    }
   });
 
   it('guards every GRIS density/weight boundary and saturates represented M', () => {
     expect(GRIS_REUSE_WGSL).toContain('fn grisSafeDirection(value: vec3f)');
     expect(GRIS_REUSE_WGSL).toContain('fn grisLogWeightedTransformedDensity(');
     expect(GRIS_REUSE_WGSL).toContain('fn grisScaledMass(');
-    expect(GRIS_REUSE_WGSL).toContain('fn grisFinaliseLogScaledReservoir(');
-    expect(GRIS_REUSE_WGSL).toContain('!reservoirGiFinite(pHatDomain)');
+    expect(GRIS_REUSE_WGSL).toContain('fn grisFinaliseRepresentedReservoir(');
+    expect(GRIS_REUSE_WGSL).toContain('!reservoirGiValidLog(logPHatDomain)');
+    expect(GRIS_REUSE_WGSL).toContain('representedWrsSelectedLogCorrectionParts(wrs)');
     expect(RESERVOIR_GI_WGSL).toContain('fn reservoirGiSaturatingAddU32');
     for (const source of [TEMPORAL_GI_WGSL, SPATIAL_GI_WGSL]) {
       expect(source).toContain('grisScaledMass(techniqueLogMass[j], maxTechniqueLogMass)');
       expect(source).toContain('out.M = totalAttempts;');
-      expect(source).toContain('grisFinaliseLogScaledReservoir(');
-      expect(source).toContain('!grisSampleKindValid(');
+      expect(source).toContain('grisFinaliseRepresentedReservoir(');
+      expect(source).toContain('var reuseWrs = representedWrsInit();');
+      expect(source).toContain('&out, &reuseWrs,');
+      expect(source).toContain('!reservoirGiHasShiftableCandidate(candidate)');
     }
   });
 });
@@ -248,7 +284,8 @@ describe('GRIS target/proposal boundary', () => {
   it('composes PPG mixture proposals with generalized reuse', () => {
     for (const source of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
       expect(source).toContain('let ppgGuidedOn = ubo.ppgEnabled == 1u;');
-      expect(source).toContain('let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);');
+      expect(source).toContain('let alpha = represented_bernoulli_probability_f32(');
+      expect(source).toContain('select(0.0, ubo.ppgMixAlpha, ppgGuidedOn),');
       expect(source).not.toContain('grisOn');
     }
   });
@@ -257,31 +294,60 @@ describe('GRIS target/proposal boundary', () => {
     expect(RIS_GI_NRC_BODY).toContain('nrcCanSubstitute,');
     expect(RIS_GI_NRC_BODY).not.toContain('nrcCanSubstitute && !grisOn');
     expect(RIS_GI_NRC_BODY).not.toContain('grisOn');
-    expect(RIS_GI_NRC_BODY).toContain('pHat = restir_gi_receiver_phat_from_payload(');
-    expect(RIS_GI_NRC_BODY).toContain(') * candidateVisibility;');
+    expect(RIS_GI_NRC_BODY).toContain('let receiverPHat = restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_NRC_BODY).toContain(
+      'let logPHat = reservoirGiLogPositiveProduct(receiverPHat, candidateVisibility);',
+    );
   });
 
-  it('reweights GRIS samples for glossy/metal while reserving glass for transmitted GI', () => {
+  it('reweights GRIS samples for glossy/metal while native shade-local transport owns glass', () => {
+    const nativeReceiverStart = SHADING_TERMS_WGSL.indexOf(
+      'fn evaluateNativeGlassGiReceiver(',
+    );
     const transmittedStart = SHADING_TERMS_WGSL.indexOf('fn lo_transmittedGI(');
     const specularStart = SHADING_TERMS_WGSL.indexOf('fn lo_indirectSpecular(');
+    expect(nativeReceiverStart).toBeGreaterThan(-1);
     expect(transmittedStart).toBeGreaterThan(-1);
+    expect(transmittedStart).toBeGreaterThan(nativeReceiverStart);
     expect(specularStart).toBeGreaterThan(transmittedStart);
 
+    const nativeReceiver = SHADING_TERMS_WGSL.slice(
+      nativeReceiverStart,
+      transmittedStart,
+    );
     const transmitted = SHADING_TERMS_WGSL.slice(transmittedStart, specularStart);
     const specular = SHADING_TERMS_WGSL.slice(specularStart);
 
     expect(SHADING_TERMS_WGSL).toContain('g.historyEpoch != bitcast<u32>(ubo.sunAngular.y)');
     expect(SHADING_TERMS_WGSL).toContain('return clamp(g.sampleVisibility, 0.0, 1.0);');
-    expect(specular).toContain('if (isGlass) { return vec3f(0.0); }');
+    expect(specular).toContain('if (transmission <= 0.0 && metal <= 0.0');
+    expect(specular).not.toContain('if (isGlass) { return vec3f(0.0); }');
     expect(specular).toContain('g.prefixVertexCount != GI_PREFIX_RECONNECTABLE');
-    expect(specular).toContain('var grisVisibility = giReservoirVisibility(g);');
-    expect(specular).toContain('if (grisVisibility <= 0.0) { return vec3f(0.0); }');
+    expect(specular).toContain('var grisTint = vec3f(giReservoirVisibility(g));');
+    expect(specular).toContain('if (max(grisTint.r, max(grisTint.g, grisTint.b)) <= 0.0)');
     expect(specular).toContain('let toS = giReservoirDirectionVector(g, pos);');
     expect(specular).toContain(
-      'return receiverLo * specBrdf * g.W * domainJacobian * grisVisibility;',
+      'let contributionLogW = restirShadeAppendLogFactor(',
     );
+    expect(specular).toContain(
+      'physicalSpecularLog = restirShadeDirectionalVolumeLog(',
+    );
+    expect(specular).toContain(
+      'return restirShadeExp2Clamped3(physicalSpecularLog);',
+    );
+    expect(specular).not.toMatch(/\bg\.W\b/);
     expect(specular).not.toContain('if (ubo.grisReuse == 1u) { return vec3f(0.0); }');
     expect(transmitted).toContain('if (!isGlass) { return vec3f(0.0); }');
-    expect(transmitted).toContain('g.prefixVertexCount != GI_PREFIX_CAMERA_TRANSMISSION');
+    expect(transmitted).toContain('let receiverR = traceNativeGlassGiReceiver(');
+    expect(transmitted).toContain('let receiverG = traceNativeGlassGiReceiver(');
+    expect(transmitted).toContain('let receiverB = traceNativeGlassGiReceiver(');
+    expect(transmitted).toContain(
+      'return vec3f(radianceR.r, radianceG.g, radianceB.b);',
+    );
+    expect(nativeReceiver).toContain('if (receiver.environment != 0u)');
+    expect(nativeReceiver).toContain(
+      'let scaledIndirect = indirect * ubo.glassMixScale;',
+    );
+    expect(transmitted).not.toContain('GI_PREFIX_CAMERA_TRANSMISSION');
   });
 });

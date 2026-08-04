@@ -10,7 +10,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import type { MaterialSpec } from '@vitrum/core';
+import {
+  KHR_MATERIALS_IOR_INFINITY_APPROX,
+  type MaterialSpec,
+} from '@vitrum/core';
 
 import {
   MATERIAL_ATTEN_DIST_INFINITE,
@@ -20,6 +23,8 @@ import {
   MATERIAL_FLAG_CAST_SHADOW_DISABLED,
   MATERIAL_FLAG_DOUBLE_SIDED,
   MATERIAL_FLAG_IS_GLASS,
+  MATERIAL_FLAG_SKIP_EMITTER,
+  MATERIAL_FLAG_UNLIT,
   coreMaterialToMaterialEntry,
   packMaterials,
   toProductionEmissiveRadiance,
@@ -115,6 +120,13 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
     expect(out[9]).toBe(0);              // transmission at slot 9
   });
 
+  it('maps the legal authored IOR-zero endpoint to finite transport storage', () => {
+    const out = packMaterials([{ ior: 0 }]);
+    expect(out[8]).toBe(Math.fround(KHR_MATERIALS_IOR_INFINITY_APPROX));
+    expect(Number.isFinite(out[8])).toBe(true);
+    expect(() => packMaterials([{ ior: 0.5 }])).toThrow(/0 or >= 1/);
+  });
+
   it('derives flags bit 0 from transmission when not explicitly set', () => {
     const out = packMaterials([
       { transmission: 0 },
@@ -152,6 +164,44 @@ describe('canonical MaterialEntry packing (W2-C5)', () => {
     const U = u32(out);
     expect(U[15]).toBe(MATERIAL_FLAG_DOUBLE_SIDED);
     expect(U[ENTRY + 15]).toBe(MATERIAL_FLAG_IS_GLASS | MATERIAL_FLAG_DOUBLE_SIDED);
+  });
+
+  it('coreMaterialToMaterialEntry packs unlit independently in flag bit 3', () => {
+    const out = packMaterials([
+      coreMaterialToMaterialEntry(spec({ shadingModel: 'unlit' })),
+      coreMaterialToMaterialEntry(spec({
+        shadingModel: 'unlit',
+        transmission: 0.7,
+        doubleSided: true,
+      })),
+    ]);
+    const U = u32(out);
+    expect(U[15]).toBe(MATERIAL_FLAG_UNLIT);
+    expect(U[ENTRY + 15]).toBe(
+      MATERIAL_FLAG_IS_GLASS | MATERIAL_FLAG_DOUBLE_SIDED | MATERIAL_FLAG_UNLIT,
+    );
+  });
+
+  it('packs strict extensions.skipEmitter independently in flag bit 4', () => {
+    const out = packMaterials([
+      coreMaterialToMaterialEntry(spec({ extensions: { skipEmitter: true } })),
+      coreMaterialToMaterialEntry(spec({
+        transmission: 0.7,
+        shadingModel: 'unlit',
+        extensions: { skipEmitter: true },
+      })),
+      coreMaterialToMaterialEntry(spec({ extensions: { skipEmitter: false } })),
+      coreMaterialToMaterialEntry(spec({
+        extensions: { skipEmitter: 1 },
+      })),
+    ]);
+    const U = u32(out);
+    expect(U[15]).toBe(MATERIAL_FLAG_SKIP_EMITTER);
+    expect(U[ENTRY + 15]).toBe(
+      MATERIAL_FLAG_IS_GLASS | MATERIAL_FLAG_UNLIT | MATERIAL_FLAG_SKIP_EMITTER,
+    );
+    expect(U[2 * ENTRY + 15]).toBe(0);
+    expect(U[3 * ENTRY + 15]).toBe(0);
   });
 
   it('flags is written as a real u32 not the IEEE-754 bit pattern of 1.0', () => {

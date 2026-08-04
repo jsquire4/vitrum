@@ -371,8 +371,17 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // Fraunhofer d-line and accepts the complete finite-positive Abbe domain.
     // Re-pinned 2026-07-30: every environment-radiance scale crosses the
     // canonical finite-f32 helper, including miss, SPPM, BDPT, and NEE paths.
-    expect(digest).toBe('1d5dcb0b612968a93ad71d3fe9f00eab6f87bce227006b9ad0c1fd9ed952c6b6');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(588007);
+    // Re-pinned after represented finite-branch probabilities, exact optical
+    // containment/continuation, and transmissive visibility were closed across
+    // every full-tier estimator. This is the frozen source-level contract for
+    // those deliberately semantic transport changes.
+    // Re-pinned 2026-08-04: material records now use checked exact arithmetic;
+    // clearcoat starts from the independent oriented interface frame; thin-sheet
+    // and opposite-interface transport share exact attenuation/visibility; and
+    // MNEE rejects unsupported layered facets conservatively. Strict source
+    // staging is host-side and therefore intentionally absent from this digest.
+    expect(digest).toBe('0c5ee33cb64770cfc9fb6aa2ff6feaa259106038d4e779371939601e027cddf4');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(707832);
   });
 });
 
@@ -395,10 +404,11 @@ describe('pt-webgpu WGSL material contract', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'let volumeThicknessSample = sampleVolumeThicknessTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);',
     );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('materialAttenuationDistance(INFINITY, mat),');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('materialAttenuationDistance(INFINITY, mat)');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let attenuationDist = min(hit.dist, eyeMedium.remainingDistance);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('if (freeFlightDist < attenuationDist)');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('exp(-(walkSigmaT - vec3f(heroSigmaT)) * attenuationDist)');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('let trueTransmittance = materialBeer(walkSigmaT, attenuationDist);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('throughput = throughput * trueTransmittance / survivalPdf;');
   });
 
   it('routes full-tier BSDF-side area/env connections through extension-aware BRDF helpers', () => {
@@ -413,8 +423,8 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('samples clearcoat and sheen with one centralized finite-event estimator', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfDirectionalPdfFullSampled(');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfExtensionLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('fn brdfRepresentedExtensionLobeProbabilities(');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (rand_f32(rng) < extensionProbabilities.x) {');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       '(*result).throughputMul = finiteBsdf * cosine / marginalPdf;',
     );
@@ -497,14 +507,14 @@ describe('pt-webgpu WGSL material contract', () => {
     const pdfEnd = PT_WEBGPU_TRACE_WGSL.indexOf('fn brdfDirectionalPdfFullSampled(', pdfStart + 1);
     const pdfHelper = PT_WEBGPU_TRACE_WGSL.slice(pdfStart, pdfEnd);
     expect(pdfHelper).not.toContain('if (transmission > 0.0 && metallic == 0.0)');
-    expect(pdfHelper).toContain(') / brdfExtensionLobeWeightSum(clearcoat, sheen);');
+    expect(pdfHelper).toContain('return brdfDirectionalPdfFullWithClearcoatNormal(');
 
     const branchStart = PT_WEBGPU_TRACE_WGSL.indexOf('// Transmissive (dielectric) surface');
     const branchEnd = PT_WEBGPU_TRACE_WGSL.indexOf('// Non-transmissive surface', branchStart);
     const branch = PT_WEBGPU_TRACE_WGSL.slice(branchStart, branchEnd);
-    expect(branch).toContain('let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);');
-    expect(branch).toContain('let xiLobe = rand_f32(rng) * lobeWeightSum;');
-    expect(branch).toContain('let xiBase = xiLobe;');
+    expect(branch).toContain('let extensionProbabilities = brdfRepresentedExtensionLobeProbabilities(');
+    expect(branch).toContain('if (rand_f32(rng) < extensionProbabilities.x) {');
+    expect(branch).toContain('let eventProbabilities = bsdfRepresentedDielectricEventProbabilities(');
     expect(branch).not.toContain('microfacetInterface.reflectance * g1Wi *');
     expect(branch).toContain('finalizeFiniteBounceSampleWithClearcoatNormal(');
     expect(branch).toContain(
@@ -838,8 +848,9 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('transforms both TLAS closest-hit bounds into BLAS-local distance', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let localTMin = max(dot(localStart - localRay.origin, localRay.direction), 0.0);',
+      'let localTMin = select(',
     );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('opticalContinuationSourceIsActive(),');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'traceMeshBvh(localRay, localTMin, localTMax, true, &localHit, blasRoot, true);',
     );
@@ -945,7 +956,7 @@ describe('pt-webgpu WGSL material contract', () => {
       .split('\n')
       .filter((l) => !l.trim().startsWith('//'))
       .join('\n');
-    expect(causticCode).toContain('let matId = triMaterialIds[facet.triIndex];');
+    expect(causticCode).toContain('let matId = triMaterialIds[facet.triIndex].x;');
     expect(causticCode).toContain('let mat = decodeMaterial(matId);');
     // NO raw-slot offset arithmetic / inline OOB fallback remains in caustic.
     expect(causticCode).not.toContain('m0Index');

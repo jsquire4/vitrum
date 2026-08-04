@@ -2,6 +2,7 @@ import { luminance } from './luminance.js';
 import { requireFinite, requireFiniteVec3, requireInteger } from './numericGuards.js';
 import { solarDiscTexelCoverage } from './solarDiscCoverage.js';
 import { evaluateHG, HG_G_STABILITY_LIMIT } from './hgPhase.js';
+import { buildRepresentedDistributionF32 } from './representedDistribution.js';
 
 export interface PreethamSkyBakeOptions {
   readonly sunDirection?: readonly [number, number, number];
@@ -205,7 +206,7 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   const normy = perez(1, thetaSun, Ay, By, Cy, Dy, Ey);
   const solarCoverage = solarDiscTexelCoverage(width, height, sunDir);
   const texels = new Float32Array(pixelCount * 4);
-  const cumulativeWeights = new Float64Array(pixelCount + 1);
+  const weights = new Float64Array(pixelCount);
   const deltaPhi = (2 * Math.PI) / width;
   let totalWeight = 0;
 
@@ -266,11 +267,11 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
       );
       totalWeight += weight;
       requireFinite(totalWeight, 'bakePreethamSkyEquirect.totalWeight');
-      cumulativeWeights[i + 1] = totalWeight;
+      weights[i] = weight;
     }
   }
 
-  const cdf = new Float32Array(pixelCount + 1);
+  let cdf: Float32Array = new Float32Array(pixelCount + 1);
   const luminanceIntegral = requireFinite(totalWeight, 'bakePreethamSkyEquirect.luminanceIntegral');
   // A positive Preetham amplitude (positive Rayleigh scale and intensity)
   // mathematically contains sky/sun energy. If every RGB channel rounded to
@@ -287,20 +288,15 @@ export function bakePreethamSkyEquirect(opts: PreethamSkyBakeOptions = {}): Pree
   // An epsilon gate would leave a dim-but-nonblack baked sky with an all-zero
   // CDF even though its RGB texels and luminance integral remain positive.
   if (totalWeight > 0) {
-    for (let i = 0; i < pixelCount; i += 1) {
-      const cdfValue = (cumulativeWeights[i + 1] ?? 0) / totalWeight;
-      cdf[i + 1] = requireF32(cdfValue, 'bakePreethamSkyEquirect.cdf');
-    }
-    cdf[0] = 0;
-    cdf[pixelCount] = 1;
+    cdf = buildRepresentedDistributionF32(weights).cdf;
     for (let i = 0; i < pixelCount; i += 1) {
       const py = (i / width) | 0;
       const theta0 = (py / height) * Math.PI;
       const theta1 = ((py + 1) / height) * Math.PI;
       const texelSolidAngle = deltaPhi * (Math.cos(theta0) - Math.cos(theta1));
-      // Importance sampling consumes the uploaded Float32 CDF.  Derive the
-      // stored density from its adjacent values so bins flattened by Float32
-      // quantization correctly report zero probability to every MIS consumer.
+      // Importance sampling consumes a 24-bit uniform variate. The represented
+      // CDF reserves at least one reachable bucket for every positive texel;
+      // derive the stored density from that exact sampled proposal.
       const pmf = cdf[i + 1]! - cdf[i]!;
       texels[i * 4 + 3] = requireF32(pmf / texelSolidAngle, 'bakePreethamSkyEquirect.pdf');
     }

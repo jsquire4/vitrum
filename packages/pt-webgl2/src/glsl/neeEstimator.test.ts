@@ -229,6 +229,24 @@ describe('separate NEE estimator', () => {
     }
   });
 
+  it('admits opposite-hemisphere finite and distant NEE only for transmissive closures', () => {
+    const admitted = (
+      volumeParticle: boolean,
+      transmission: number,
+      geometricCosine: number,
+    ): boolean => volumeParticle || geometricCosine >= 0 || transmission > 0;
+    expect(admitted(false, 0, -0.5)).toBe(false);
+    expect(admitted(false, 0.75, -0.5)).toBe(true);
+    expect(admitted(false, 0, 0.5)).toBe(true);
+    expect(admitted(true, 0, -0.5)).toBe(true);
+
+    const compact = directLightSource.replace(/\s+/g, ' ');
+    expect(compact).toContain(
+      'bool belowSurface = dot( surf.faceNormal, direction ) < 0.0; return ! belowSurface || surf.transmission > 0.0;',
+    );
+    expect(directLightSource.match(/directLightDirectionAdmitted\(/g)).toHaveLength(6);
+  });
+
   it('gives terminal-bounce NEE full ownership when continuation is not sampled', () => {
     const powerWeight = (sampledPdf: number, competingPdf: number): number =>
       sampledPdf ** 2 / (sampledPdf ** 2 + competingPdf ** 2);
@@ -316,7 +334,7 @@ describe('separate NEE estimator', () => {
   it('reconstructs an already-accepted transparent candidate without a second opacity draw', () => {
     const compactSurfaceSource = surfaceRecordSource.replace(/\s+/g, ' ');
     expect(compactSurfaceSource).toContain(
-      '! stochasticOpacityAlreadyAccepted && material.transparent && ! useAlphaTest && albedo.a < rand( 3 )',
+      '! stochasticOpacityAlreadyAccepted && coverageStatus == SURFACE_COVERAGE_FRACTIONAL && ( ! ( coverage > 0.0 && coverage < 1.0 ) || rand( 3 ) >= representedBernoulliProbabilityF32( coverage ) )',
     );
     expect(compactSurfaceSource).toContain(
       'accumulatedRoughness, pathDepth, heroWavelength, false, surf',
@@ -338,17 +356,15 @@ describe('separate NEE estimator', () => {
 
   it('forms light proposals at the geometric hit and applies one light-hemisphere offset', () => {
     const geometricPoint = RENDER_MAIN.indexOf('vec3 geometricHitPoint =');
-    const continuationPoint = RENDER_MAIN.indexOf('vec3 hitPoint = stepRayOrigin(', geometricPoint);
-    const proposal = RENDER_MAIN.indexOf('sampleDirectLight(', continuationPoint);
+    const proposal = RENDER_MAIN.indexOf('sampleDirectLight(', geometricPoint);
     const prepare = RENDER_MAIN.indexOf('prepareDirectLightSample(', proposal);
     const proposalEnd = RENDER_MAIN.indexOf(');', prepare) + 2;
     const proposalBlock = RENDER_MAIN.slice(proposal, proposalEnd);
     expect(geometricPoint).toBeGreaterThanOrEqual(0);
-    expect(continuationPoint).toBeGreaterThan(geometricPoint);
-    expect(proposal).toBeGreaterThan(continuationPoint);
+    expect(proposal).toBeGreaterThan(geometricPoint);
     expect(prepare).toBeGreaterThan(proposal);
     expect(proposalBlock.match(/geometricHitPoint/g)).toHaveLength(2);
-    expect(proposalBlock).not.toContain('hitPoint, neeLightSample');
+    expect(proposalBlock).not.toContain('stepRayOrigin');
     expect(directLightSource.replace(/\s+/g, ' ')).toContain(
       'lightRay.origin = stepRayOrigin( rayOrigin, vec3( 0.0 ), lightIsBelowSurface ? - surf.faceNormal : surf.faceNormal, 0.0 );',
     );

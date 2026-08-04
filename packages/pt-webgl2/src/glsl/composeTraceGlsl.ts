@@ -376,9 +376,10 @@ function attenuationBlock(features: TraceFeatures): string {
 }
 
 function usesFogTransport(features: TraceFeatures): boolean {
-  // Keep the conservative mapped-rich graph byte-stable, and add the helpers
-  // whenever a narrower scene-proven tier actually contains participating media.
-  return features.mappedRichMaterials || features.fog;
+  // Bulk dielectric identity and participating media share one optical stack.
+  // Every rich tier therefore needs the enclosure builder even when the scene
+  // has absorption-only glass and no scattering volume.
+  return usesAdvancedBsdf(features) || features.fog;
 }
 
 function usesAdvancedBsdf(features: TraceFeatures): boolean {
@@ -434,6 +435,7 @@ function composePathGlsl(features: TraceFeatures, candidatePass: boolean): strin
 					#ifndef NEE_CANDIDATE_PASS
 					#define NEE_CANDIDATE_PASS 0
 					#endif
+					#define ADVANCED_OPTICAL_TRANSPORT ${usesAdvancedBsdf(features) ? 1 : 0}
 
 					precision highp isampler2D;
 					precision highp usampler2D;
@@ -484,7 +486,6 @@ function composePathGlsl(features: TraceFeatures, candidatePass: boolean): strin
 
 					${bdptUniformDecls()}
 
-					${usesFogTransport(features) ? PTBVH.inside_fog_volume_function : ''}
 					${BSDF.ggx_functions}
 					${usesAdvancedBsdf(features) ? BSDF.sheen_functions : ''}
 					${usesAdvancedBsdf(features) ? BSDF.iridescence_functions : ''}
@@ -497,6 +498,8 @@ function composePathGlsl(features: TraceFeatures, candidatePass: boolean): strin
 
 					${RENDER.render_structs}
 					${RENDER.camera_util_functions}
+					${surfaceRecordBlock(features)}
+					${PTBVH.inside_fog_volume_function}
 					${RENDER.trace_scene_function}
 					${
 						candidatePass || features.bdpt
@@ -504,7 +507,6 @@ function composePathGlsl(features: TraceFeatures, candidatePass: boolean): strin
 							: ''
 					}
 					${candidatePass ? RENDER.direct_light_contribution_function : ''}
-                                        ${surfaceRecordBlock(features)}
 
                                         ${features.bdpt ? BDPT_INFINITE_MIS_GLSL : ''}
                                         ${features.bdpt && !candidatePass ? RENDER.bdpt_light_subpath + '\n' + RENDER.bdpt_connection : ''}
@@ -545,6 +547,7 @@ export function composeNeeResolveGlsl(
 					#ifndef NEE_CANDIDATE_PASS
 					#define NEE_CANDIDATE_PASS 0
 					#endif
+					#define ADVANCED_OPTICAL_TRANSPORT ${usesAdvancedBsdf(features) ? 1 : 0}
 
 					precision highp isampler2D;
 					precision highp usampler2D;
@@ -576,7 +579,6 @@ export function composeNeeResolveGlsl(
 					${SAMPLING.light_sampling_functions}
 					${bdptUniformDecls()}
 
-					${usesFogTransport(features) ? PTBVH.inside_fog_volume_function : ''}
 					${BSDF.ggx_functions}
 					${usesAdvancedBsdf(features) ? BSDF.sheen_functions : ''}
 					${usesAdvancedBsdf(features) ? BSDF.iridescence_functions : ''}
@@ -587,8 +589,9 @@ export function composeNeeResolveGlsl(
 					${INLINE_HELPERS}
 
 					${RENDER.render_structs}
-					${RENDER.trace_scene_function}
 					${surfaceRecordBlock(features)}
+					${PTBVH.inside_fog_volume_function}
+					${RENDER.trace_scene_function}
 					${NEE_RESOLVE_MAIN}
 `;
   return compactFeatureTierGlsl(source);

@@ -19,7 +19,13 @@
 
 import { describe, it, expect } from 'vitest';
 import { CIE_X_TABLE, CIE_Y_TABLE, CIE_Z_TABLE } from '../src/cieCmf.js';
-import { X_CMF_CDF, Y_CMF_CDF, Z_CMF_CDF } from '../src/wavelengthSampling.js';
+import {
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS,
+  X_CMF_CDF,
+  Y_CMF_CDF,
+  Z_CMF_CDF,
+} from '../src/wavelengthSampling.js';
 import { HERO_WAVELENGTH_TABLES_WGSL } from '../src/wgsl/heroWavelengthTables.js';
 import { HERO_WAVELENGTH_WGSL } from '../src/wgsl/heroWavelength.wgsl.js';
 
@@ -106,6 +112,24 @@ describe('hero-wavelength WGSL table sizes (bug A2)', () => {
     );
     expect(HERO_WAVELENGTH_WGSL).not.toContain(
       'let t = select(0.0, (uClamped - cdfLo) / (cdfHi - cdfLo)',
+    );
+  });
+
+  it('uses the same represented X/Y/Z selector for sampling and mixture PDF', () => {
+    const strategyVector =
+      `vec3f(\n    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[0]}.0,\n` +
+      `    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[1]}.0,\n` +
+      `    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[2]}.0,\n  )`;
+    expect(HERO_WAVELENGTH_WGSL.split(strategyVector)).toHaveLength(3);
+    expect(HERO_WAVELENGTH_WGSL.match(
+      new RegExp(`${HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT}\\.0`, 'g'),
+    )).toHaveLength(2);
+    expect(HERO_WAVELENGTH_WGSL).toContain(
+      'return dot(strategyProbability, vec3f(x, y, z));',
+    );
+    expect(HERO_WAVELENGTH_WGSL).toContain('if (s < strategyProbability.x)');
+    expect(HERO_WAVELENGTH_WGSL).toContain(
+      'else if (s < strategyProbability.x + strategyProbability.y)',
     );
   });
 });

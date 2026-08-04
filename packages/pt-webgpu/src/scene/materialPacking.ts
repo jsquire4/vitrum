@@ -1,4 +1,7 @@
-import type { MaterialSpec } from '@vitrum/core';
+import {
+  effectiveMaterialIor,
+  type MaterialSpec,
+} from '@vitrum/core';
 import { packRadianceRgbScaleF32 } from '@vitrum/shared-bvh';
 import {
   rgbToSpectralCoefficients,
@@ -18,14 +21,7 @@ export const THIN_FILM_LAYER_LIMIT = 8;
  * In f32, ±1 around this value round away, so the normal-incidence Fresnel
  * ratio evaluates to exactly one while refraction arithmetic stays finite.
  */
-export const KHR_MATERIALS_IOR_INFINITY_APPROX = 100_000_000;
-
-export function effectiveMaterialIor(ior: number | undefined): number {
-  const finiteIor = typeof ior === 'number' && Number.isFinite(ior) ? ior : 1.5;
-  return finiteIor === 0
-    ? KHR_MATERIALS_IOR_INFINITY_APPROX
-    : Math.max(finiteIor, 1);
-}
+export { effectiveMaterialIor, KHR_MATERIALS_IOR_INFINITY_APPROX } from '@vitrum/core';
 /**
  * Matches WGSL `MATERIAL_VEC4_STRIDE`. MUST stay in lockstep with the constant
  * in `wgsl/pathTrace/material.wgsl.ts` and the `matId * MATERIAL_VEC4_STRIDE`
@@ -123,9 +119,11 @@ export function materialToPackedVec4s(
   const roughness = material.roughness ?? 0.5;
   const metallic = material.metallic ?? 0;
   const transmission = material.transmission ?? 0;
-  const hasVolumeThickness =
-    material.thickness != null || material.thicknessMap != null;
   const volumeThickness = Math.max(finite(material.thickness ?? 0), 0);
+  // A thickness texture only scales an authored positive base thickness.  It
+  // cannot turn a surface into a bounded volume by itself, and a zero texel is
+  // a valid local zero-distance cap rather than "no cap".
+  const hasVolumeThickness = volumeThickness > 0;
   // Preserve authored zero in the fixed material slot so decodeMaterial can
   // select the finite infinite-IOR transport surrogate. Other valid values are
   // already >= 1 by the canonical core validation contract.
@@ -229,7 +227,7 @@ export function materialToPackedVec4s(
   if (
     attColor != null &&
     attDistance != null &&
-    Number.isFinite(attDistance) &&
+    (Number.isFinite(attDistance) || attDistance === Number.POSITIVE_INFINITY) &&
     attDistance > 0
   ) {
     // σ_a channel math single-sourced with pt-webgl2 via shared-samplers

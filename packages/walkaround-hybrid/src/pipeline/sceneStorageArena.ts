@@ -4,10 +4,10 @@ import type { SceneBVHBuffers } from '../restir/bvhTypes.js';
  * scene-using pipeline under the WebGPU guaranteed eight-storage-buffer floor. */
 export const SCENE_STORAGE_ARENA_SHARD_COUNT = 3 as const;
 export const SCENE_STORAGE_ARENA_MAGIC = 0x31534156; // ASCII VSA1 little-endian
-export const SCENE_STORAGE_ARENA_VERSION = 3 as const;
+export const SCENE_STORAGE_ARENA_VERSION = 4 as const;
 export const SCENE_STORAGE_ARENA_HEADER_WORDS = 64 as const;
 /** Fingerprint of the fixed segment order, element strides, and header ABI. */
-export const SCENE_STORAGE_ARENA_SCHEMA = 0x7c4ae90d;
+export const SCENE_STORAGE_ARENA_SCHEMA = 0x4f37b8a1;
 export const SCENE_STORAGE_ARENA_EPOCH_WORD = 7 as const;
 export const SCENE_STORAGE_ARENA_SCHEMA_WORD = 62 as const;
 export const SCENE_STORAGE_ARENA_COMPATIBILITY_WORD = 63 as const;
@@ -16,6 +16,7 @@ export const SCENE_STORAGE_SEGMENTS = [
   'bvhNodes',
   'bvhIndex',
   'bvhPositions',
+  'opticalTriangleIdentity',
   'emitters',
   'emitterCdf',
   'emitterAlias',
@@ -26,6 +27,7 @@ export const SCENE_STORAGE_SEGMENTS = [
   'tlasInstanceLocalToWorld',
   'mneeFacetDomains',
   'bvhNormals',
+  'opticalInstanceBoundaryIdBasePlusOne',
 ] as const;
 export type SceneStorageSegment = typeof SCENE_STORAGE_SEGMENTS[number];
 
@@ -34,6 +36,7 @@ export const SCENE_STORAGE_SEGMENT_STRIDE_BYTES = Object.freeze({
   bvhNodes: 32,
   bvhIndex: 16,
   bvhPositions: 16,
+  opticalTriangleIdentity: 8,
   emitters: 80,
   emitterCdf: 4,
   emitterAlias: 16,
@@ -44,12 +47,19 @@ export const SCENE_STORAGE_SEGMENT_STRIDE_BYTES = Object.freeze({
   tlasInstanceLocalToWorld: 64,
   mneeFacetDomains: 32,
   bvhNormals: 16,
+  opticalInstanceBoundaryIdBasePlusOne: 4,
 } as const satisfies Readonly<Record<SceneStorageSegment, number>>);
 
 /** Geometry, acceleration-instance data, and lighting are separate shards so
  * common mutations can replace one binding without repacking unrelated bytes. */
 export const SCENE_STORAGE_SHARD_SEGMENTS = [
-  ['bvhNodes', 'bvhIndex', 'bvhPositions', 'bvhNormals'],
+  [
+    'bvhNodes',
+    'bvhIndex',
+    'bvhPositions',
+    'bvhNormals',
+    'opticalTriangleIdentity',
+  ],
   [
     'tlasNodes',
     'tlasInstanceIndices',
@@ -57,6 +67,7 @@ export const SCENE_STORAGE_SHARD_SEGMENTS = [
     'tlasInstanceWorldToLocal',
     'tlasInstanceLocalToWorld',
     'mneeFacetDomains',
+    'opticalInstanceBoundaryIdBasePlusOne',
   ],
   ['emitters', 'emitterCdf', 'emitterAlias'],
 ] as const satisfies readonly (readonly SceneStorageSegment[])[];
@@ -333,6 +344,8 @@ export function sceneGeometryStorageSources(
     | 'bvhIndex'
     | 'bvhPositions'
     | 'bvhNormals'
+    | 'opticalTriangleIdentity'
+    | 'opticalInstanceBoundaryIdBasePlusOne'
     | 'mneeFacetDomains'
     | 'bvhMode'
     | 'tlas'
@@ -343,12 +356,14 @@ export function sceneGeometryStorageSources(
   | 'bvhIndex'
   | 'bvhPositions'
   | 'bvhNormals'
+  | 'opticalTriangleIdentity'
   | 'tlasNodes'
   | 'tlasInstanceIndices'
   | 'tlasBlasRoots'
   | 'tlasInstanceWorldToLocal'
   | 'tlasInstanceLocalToWorld'
   | 'mneeFacetDomains'
+  | 'opticalInstanceBoundaryIdBasePlusOne'
 > {
   const tlas = bvh.bvhMode === 'tlas' ? bvh.tlas : undefined;
   return {
@@ -356,12 +371,16 @@ export function sceneGeometryStorageSources(
     bvhIndex: source(bvh.bvhIndex),
     bvhPositions: source(bvh.bvhPositions),
     bvhNormals: source(bvh.bvhNormals),
+    opticalTriangleIdentity: source(bvh.opticalTriangleIdentity),
     tlasNodes: source(tlas?.nodes),
     tlasInstanceIndices: source(tlas?.instanceIndices),
     tlasBlasRoots: source(tlas?.blasRoots),
     tlasInstanceWorldToLocal: source(tlas?.worldToLocal),
     tlasInstanceLocalToWorld: source(tlas?.localToWorld),
     mneeFacetDomains: source(bvh.mneeFacetDomains),
+    opticalInstanceBoundaryIdBasePlusOne: source(
+      bvh.opticalInstanceBoundaryIdBasePlusOne,
+    ),
   };
 }
 
@@ -385,6 +404,8 @@ export function sceneStorageSegmentSources(
     | 'emitterCdf'
     | 'emitterAlias'
     | 'bvhNormals'
+    | 'opticalTriangleIdentity'
+    | 'opticalInstanceBoundaryIdBasePlusOne'
     | 'mneeFacetDomains'
     | 'bvhMode'
     | 'tlas'

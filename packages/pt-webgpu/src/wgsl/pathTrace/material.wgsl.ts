@@ -117,9 +117,9 @@ struct FrameParams {
   // Scene-relative secondary-ray origin offset. Uses the struct's existing tail
   // padding, so adding this field does not enlarge FrameParams.
   rayOriginBias: f32,
-  // Integrated luminance of the intensity-scaled HDRI. This is distinct from
-  // environmentMapCdf[last], which is always the normalized value one.
-  environmentDistantPower: f32,
+  // Exact 24-bit represented PMF of the optional environment candidate in the
+  // distant-direct categorical proposal.
+  environmentDistantProposalPmf: f32,
 };
 
 @group(0) @binding(0) var outputTexture: texture_storage_2d<rgba16float, write>;
@@ -127,7 +127,9 @@ struct FrameParams {
 @group(0) @binding(2) var<storage, read_write> accumBuffer: array<vec4f>;
 @group(0) @binding(3) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(4) var<storage, read> indices: array<vec4u>;
-@group(0) @binding(5) var<storage, read> triMaterialIds: array<u32>;
+// Per-triangle vec2u payload: .x material id, .y stable represented primitive-
+// instance ordinal+1 used by exact post-transmission source-feature replay.
+@group(0) @binding(5) var<storage, read> triMaterialIds: array<vec2u>;
 @group(0) @binding(6) var<storage, read> materials: array<vec4f>;
 @group(0) @binding(7) var<storage, read> bvhNodes: array<BVHNode>;
 @group(0) @binding(8) var<storage, read> normals: array<vec4f>;
@@ -298,6 +300,64 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_LITE_EXTRA_BINDINGS_WGSL = /* wgsl */ `
 @group(0) @binding(12) var liteEnvTex:    texture_2d<f32>;
 @group(0) @binding(13) var liteEnvCdfTex: texture_2d<f32>;
 @group(0) @binding(14) var liteLightTex:  texture_2d<f32>;
+
+// The lite tier has one packed mesh BLAS and no TLAS or analytic-shape
+// buffers. A straight forward-only ray can therefore meet each packed
+// triangle at most once; this is the complete pass-through traversal bound.
+fn sceneSurfaceHitLimit() -> u32 {
+  return min(params.triangleCount, arrayLength(&indices));
+}
+
+// The compatibility tier publishes scalar-only material behavior explicitly:
+// it owns no material-texture bindings, so every texture query is the neutral
+// element and every normal perturbation is identity. Keeping these named stubs
+// lets shared optical evaluators (including compound-sheet visibility) execute
+// the same control flow without pretending a texture was sampled.
+fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec4f {
+  return vec4f(1.0);
+}
+fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
+  return vec4f(1.0);
+}
+fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec4f {
+  return vec4f(1.0);
+}
+fn sampleAoFactor(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
+  return 1.0;
+}
+fn sampleTransmissionTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
+  return 1.0;
+}
+fn sampleIridescenceTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
+  return 1.0;
+}
+fn sampleIridescenceThicknessTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
+  return -1.0;
+}
+fn sampleSpecularColorTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec3f {
+  return vec3f(1.0);
+}
+fn sampleSpecularIntensityTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
+  return 1.0;
+}
+fn sampleClearcoatTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
+  return 1.0;
+}
+fn sampleSheenColorTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec3f {
+  return vec3f(1.0);
+}
+fn sampleSheenRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
+  return 1.0;
+}
+fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32, isFrontFace: bool) -> vec3f {
+  return geomNormal;
+}
+fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, instanceIndex: u32) -> vec3f {
+  return shadingNormal;
+}
+fn applyClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, clearcoatNormal: vec3f, instanceIndex: u32) -> vec3f {
+  return clearcoatNormal;
+}
 `;
 
 /**
@@ -330,7 +390,7 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
 // N-directional: packed directional light records.
 // Stride = 2 vec4f (8 floats) per directional:
 //   [di*2+0]: towardLight.xyz, angularDiameter
-//   [di*2+1]: irradiance.rgb,  mean_irradiance
+//   [di*2+1]: irradiance.rgb,  distant-direct represented PMF
 // directionalLightCount records total; an empty scene binds a 16-byte placeholder.
 @group(1) @binding(10) var<storage, read> directionalLights: array<vec4f>;
 `;
@@ -338,9 +398,9 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
 /** Group 2 — TLAS instance table (5 storage buffers).
  *
  *  BDPT light and eye prefixes are fixed invocation-private stacks. The light
- *  stack is eight columns × seven vec4 rows; it is generated inside each trace
+ *  stack is eight columns × eight vec4 rows; it is generated inside each trace
  *  invocation and therefore has no viewport-sized or frame-shared resource.
- *  Layout: `maxLightBounces` columns × 7 rows of vec4f, flattened row-minor as
+ *  Layout: `maxLightBounces` columns × 8 rows of vec4f, flattened row-minor as
  *  `idx = col * BDPT_LIGHT_PATH_ROWS + row` (see `bdptLightPathIndex`). Per
  *  light-vertex: row 0 = pos (+ kind sentinel in .w), row 1 = normal + pdfFwd,
  *  row 2 = throughput + pdfRev, row 3 = (A9) matId + wo-toward-prev for the REAL
@@ -348,8 +408,9 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP1_WGSL = /* wgsl */ `
  *  row 4 = hit-local material coordinates (triIndex plus front-face bit, baryVW,
  *  instanceIndex) for texture-map/material-lobe sampling at surface light vertices,
  *  row 5 = eta_t/eta_i plus the incident/transmitted IOR pair used by nested
- *  dielectric reflection densities, and row 6 = incident/transmitted medium
- *  IDs plus their remaining finite-distance budgets.
+ *  dielectric reflection densities, row 6 = incident/transmitted medium IDs
+ *  plus their remaining finite-distance budgets, and row 7 = both original
+ *  finite-distance caps used to join two partially consumed BDPT halves.
  *  The eye prefix is likewise a fixed `var<private> array<BdptEyeVtx,8>`. */
 const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
 @group(2) @binding(0) var<storage, read> tlasNodes: array<BVHNode>;
@@ -357,6 +418,7 @@ const PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP2_WGSL = /* wgsl */ `
 @group(2) @binding(2) var<storage, read> tlasBlasRoots: array<u32>;
 @group(2) @binding(3) var<storage, read> tlasInstanceWorldToLocal: array<vec4f>;
 @group(2) @binding(4) var<storage, read> tlasInstanceLocalToWorld: array<vec4f>;
+@group(2) @binding(5) var<storage, read> opticalInstanceBoundaryIdBasePlusOne: array<u32>;
 
 fn sceneTraversalSaturatingAdd(a: u32, b: u32) -> u32 {
   if (b > 0xffffffffu - a) { return 0xffffffffu; }
@@ -410,17 +472,18 @@ fn sceneSurfaceHitLimit() -> u32 {
   return sceneTraversalSaturatingAdd(meshSupport, analyticSupport);
 }
 
-// Light-path flat index: 7 vec4f rows per light-vertex column. Row 3 carries
+// Light-path flat index: 8 vec4f rows per light-vertex column. Row 3 carries
 // the reached vertex's matId + wo-toward-prev so the §10.3 connection can evaluate
 // the REAL light-vertex BSDF for a glossy/metallic light-path vertex; row 4 carries
 // hit-local tri/bary/instance payload for texture-map material sampling. The high
 // bit of row-4.x stores the front-face flag; real triangle indices are required to
 // stay below 2^31. matId < 0 marks the emitter vertex, which keeps its
 // Lambertian/emission profile. Row 5 stores interface eta_t/eta_i and both IORs;
-// row 6 stores both medium-side IDs and remaining-distance budgets.
-const BDPT_LIGHT_PATH_ROWS = 7u;
+// row 6 stores both medium-side IDs and remaining-distance budgets; row 7 stores
+// their original caps so a connection subtracts consumption from both halves.
+const BDPT_LIGHT_PATH_ROWS = 8u;
 const BDPT_MAX_LIGHT_DEPTH = 8u;
-var<private> bdptLightPath: array<vec4f, 56>;
+var<private> bdptLightPath: array<vec4f, 64>;
 var<private> bdptInvocationHeroLambdaNm: f32;
 fn bdptSetInvocationHeroLambda(heroLambdaNm: f32) {
   bdptInvocationHeroLambdaNm = heroLambdaNm;
@@ -461,56 +524,92 @@ function materialLayerSamplerWgsl(
   preXformLines: string,
   xformSuffix: string,
 ): string {
-  return `fn ${name}(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
-  if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+  return `fn ${name}(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> MaterialTextureSample {
+  if (
+    layerIdx < 0 ||
+    triIndex >= arrayLength(&indices) ||
+    !materialTextureDescriptorSpanValid(base, uvMetaOffset, 2u) ||
+    !materialTextureFiniteVec2(baryVW) ||
+    !materialTextureFiniteVec2(uvFitScale) ||
+    any(uvFitScale <= vec2f(0.0)) ||
+    any(uvFitScale > vec2f(1.0)) ||
+    !materialTextureWrapModesValid(wrapMode)
+  ) { return materialTextureInvalidSample(); }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
-    return vec4f(1.0);
+    return materialTextureInvalidSample();
   }
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
   let uvMeta = materialTexDescriptors[base + uvMetaOffset];
   let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
-  let gpuUvSlot = u32(uvMeta.x);
+  if (!materialTextureFiniteVec4(uvMeta) || !materialTextureFiniteVec2(uvScale.xy)) {
+    return materialTextureInvalidSample();
+  }
+  let vertexCount = arrayLength(&positions);
+  if (vertexCount == 0u) { return materialTextureInvalidSample(); }
+  let uvSlotCount = arrayLength(&meshUvs) / vertexCount;
+  let gpuUvSlot = materialTextureExactU32(uvMeta.x, uvSlotCount);
+  if (gpuUvSlot == 0xffffffffu) { return materialTextureInvalidSample(); }
   let rawA = materialUvForVertex(tri.x, gpuUvSlot);
   let rawB = materialUvForVertex(tri.y, gpuUvSlot);
   let rawC = materialUvForVertex(tri.z, gpuUvSlot);
   let rawUv = rawA * u + rawB * v + rawC * w;
   ${preXformLines}let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);${xformSuffix}
   let rot = uvMeta.w;
+  if (
+    !materialTextureFiniteVec2(rawA) ||
+    !materialTextureFiniteVec2(rawB) ||
+    !materialTextureFiniteVec2(rawC) ||
+    !materialTextureFiniteVec2(rawUv)
+  ) { return materialTextureInvalidSample(); }
   let c = cos(rot);
   let s = sin(rot);
   let sx = xform.z;
   let sy = xform.w;
-  let uvA = vec2f(
-    sx * c * rawA.x + sx * s * rawA.y + xform.x,
-    -sy * s * rawA.x + sy * c * rawA.y + xform.y,
+  let uvACandidate = vec2f(
+    sx * c * rawA.x - sy * s * rawA.y + xform.x,
+    sx * s * rawA.x + sy * c * rawA.y + xform.y,
   );
-  let uvB = vec2f(
-    sx * c * rawB.x + sx * s * rawB.y + xform.x,
-    -sy * s * rawB.x + sy * c * rawB.y + xform.y,
+  if (!materialTextureFiniteVec2(uvACandidate)) { return materialTextureInvalidSample(); }
+  let uvA = uvACandidate;
+  let uvBCandidate = vec2f(
+    sx * c * rawB.x - sy * s * rawB.y + xform.x,
+    sx * s * rawB.x + sy * c * rawB.y + xform.y,
   );
-  let uvC = vec2f(
-    sx * c * rawC.x + sx * s * rawC.y + xform.x,
-    -sy * s * rawC.x + sy * c * rawC.y + xform.y,
+  if (!materialTextureFiniteVec2(uvBCandidate)) { return materialTextureInvalidSample(); }
+  let uvB = uvBCandidate;
+  let uvCCandidate = vec2f(
+    sx * c * rawC.x - sy * s * rawC.y + xform.x,
+    sx * s * rawC.x + sy * c * rawC.y + xform.y,
   );
-  let uv = vec2f(
-    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
-    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
+  if (!materialTextureFiniteVec2(uvCCandidate)) { return materialTextureInvalidSample(); }
+  let uvC = uvCCandidate;
+  let uvCandidate = vec2f(
+    sx * c * rawUv.x - sy * s * rawUv.y + xform.x,
+    sx * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
+  if (!materialTextureFiniteVec2(uvCandidate)) { return materialTextureInvalidSample(); }
+  let uv = uvCandidate;
   let sourceBaseSize = materialTextureSourceBaseSize(
     vec2u(textureDimensions(${texArray}, i32(0))), uvFitScale,
   );
   let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));
   let texDim = vec2f(sourceBaseSize);
-  let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let texelAreaCandidate = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let texelArea = select(
+    1.0,
+    texelAreaCandidate,
+    materialTextureFiniteF32(texelAreaCandidate) && texelAreaCandidate >= 1.0,
+  );
   let footprint = materialTextureWorldFootprint(tri, baryVW, instanceIndex);
   let worldArea = footprint.x;
   let cameraDistance = footprint.y;
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
-  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
+  let lodCandidate = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
+  let lod = select(0.0, lodCandidate, materialTextureFiniteF32(lodCandidate));
   let mipPolicy = materialTextureMipPolicy(base, mipPolicySlot);
   let policyLod = materialTexturePolicyLod(lod, sourceMipCount, mipPolicy);
   let filterPolicy = materialTextureFilterPolicy(base, mipPolicySlot);
@@ -523,6 +622,99 @@ function materialLayerSamplerWgsl(
 }
 
 const _MATERIAL_SOURCE_RECT_COORDINATES_WGSL = /* wgsl */ `
+struct MaterialTextureSample {
+  value: vec4f,
+  valid: bool,
+}
+
+fn materialTextureInvalidSample() -> MaterialTextureSample {
+  return MaterialTextureSample(vec4f(0.0), false);
+}
+
+fn materialTextureValueOr(sample: MaterialTextureSample, fallback: vec4f) -> vec4f {
+  return select(fallback, sample.value, sample.valid);
+}
+
+fn materialTextureFiniteF32(value: f32) -> bool {
+  return value == value && abs(value) <= PT_F32_MAX;
+}
+
+fn materialTextureFiniteVec2(value: vec2f) -> bool {
+  return all(value == value) && all(abs(value) <= vec2f(PT_F32_MAX));
+}
+
+fn materialTextureFiniteVec3(value: vec3f) -> bool {
+  return all(value == value) && all(abs(value) <= vec3f(PT_F32_MAX));
+}
+
+fn materialTextureFiniteVec4(value: vec4f) -> bool {
+  return all(value == value) && all(abs(value) <= vec4f(PT_F32_MAX));
+}
+
+fn materialTextureNormalizeOr(value: vec3f, fallback: vec3f) -> vec3f {
+  if (!materialTextureFiniteVec3(value)) { return fallback; }
+  let magnitudeScale = max(max(abs(value.x), abs(value.y)), abs(value.z));
+  if (!(magnitudeScale > 1e-20)) { return fallback; }
+  let scaled = value / magnitudeScale;
+  let scaledLength = length(scaled);
+  if (!(scaledLength > 1e-6) || !materialTextureFiniteF32(scaledLength)) {
+    return fallback;
+  }
+  return scaled / scaledLength;
+}
+
+fn materialTextureDescriptorBase(matId: u32) -> u32 {
+  if (matId > 0xffffffffu / MATERIAL_TEX_VEC4_STRIDE) { return 0xffffffffu; }
+  return matId * MATERIAL_TEX_VEC4_STRIDE;
+}
+
+fn materialTextureDescriptorSpanValid(base: u32, offset: u32, count: u32) -> bool {
+  let descriptorCount = arrayLength(&materialTexDescriptors);
+  if (count == 0u || base > descriptorCount) { return false; }
+  let remaining = descriptorCount - base;
+  if (offset > remaining) { return false; }
+  return count <= remaining - offset;
+}
+
+fn materialTextureLayerIndex(value: f32, layerCount: u32) -> i32 {
+  if (
+    !materialTextureFiniteF32(value) ||
+    value < 0.0 ||
+    value != floor(value) ||
+    value > 16777216.0 ||
+    value >= f32(layerCount)
+  ) {
+    return -1;
+  }
+  return i32(value);
+}
+
+fn materialTextureExactU32(value: f32, upperExclusive: u32) -> u32 {
+  if (
+    !materialTextureFiniteF32(value) ||
+    value < 0.0 ||
+    value != floor(value) ||
+    value > 16777216.0 ||
+    value >= f32(upperExclusive)
+  ) {
+    return 0xffffffffu;
+  }
+  return u32(value);
+}
+
+fn materialTextureWrapModesValid(wrapMode: vec2f) -> bool {
+  return materialTextureFiniteVec2(wrapMode) &&
+    all(wrapMode >= vec2f(0.0)) &&
+    all(wrapMode <= vec2f(2.0)) &&
+    all(wrapMode == floor(wrapMode));
+}
+
+fn materialTextureTexelCastSafe(uv: vec2f, sourceSize: vec2u) -> bool {
+  let texelPosition = uv * vec2f(sourceSize);
+  return materialTextureFiniteVec2(texelPosition) &&
+    all(abs(texelPosition) <= vec2f(1073741824.0));
+}
+
 fn materialTextureNearestCoord(uv: vec2f, sourceSize: vec2u, wrapMode: vec2f) -> vec2i {
   let unwrapped = vec2i(floor(uv * vec2f(sourceSize)));
   return vec2i(
@@ -541,11 +733,23 @@ fn materialTextureBilinearAxis(baseCoord: i32, size: u32, wrapMode: f32) -> vec2
 
 function materialSourceRectSamplerWgsl(name: string, texArray: string): string {
   return /* wgsl */ `
-fn ${name}Fetch(layerIdx: i32, coord: vec2i, mip: u32) -> vec4f {
+fn ${name}Fetch(layerIdx: i32, coord: vec2i, mip: u32) -> MaterialTextureSample {
   // Keep the mip operand signed at the texture builtin boundary. WGSL accepts
   // an i32 mip level, and Naga's GLSL robustness lowering then emits the GLSL
   // textureSize(sampler2DArray, int) overload instead of an invalid uint call.
-  return textureLoad(${texArray}, coord, layerIdx, i32(mip));
+  if (layerIdx < 0 || u32(layerIdx) >= textureNumLayers(${texArray})) {
+    return materialTextureInvalidSample();
+  }
+  if (mip >= textureNumLevels(${texArray})) {
+    return materialTextureInvalidSample();
+  }
+  let size = textureDimensions(${texArray}, i32(mip));
+  if (coord.x < 0 || coord.y < 0 || u32(coord.x) >= size.x || u32(coord.y) >= size.y) {
+    return materialTextureInvalidSample();
+  }
+  let value = textureLoad(${texArray}, coord, layerIdx, i32(mip));
+  if (!materialTextureFiniteVec4(value)) { return materialTextureInvalidSample(); }
+  return MaterialTextureSample(value, true);
 }
 
 fn ${name}Bilinear(
@@ -554,7 +758,7 @@ fn ${name}Bilinear(
   sourceSize: vec2u,
   wrapMode: vec2f,
   mip: u32,
-) -> vec4f {
+) -> MaterialTextureSample {
   let samplePosition = uv * vec2f(sourceSize) - vec2f(0.5);
   let baseCoord = vec2i(floor(samplePosition));
   let blend = fract(samplePosition);
@@ -564,7 +768,16 @@ fn ${name}Bilinear(
   let c10 = ${name}Fetch(layerIdx, vec2i(xs.y, ys.x), mip);
   let c01 = ${name}Fetch(layerIdx, vec2i(xs.x, ys.y), mip);
   let c11 = ${name}Fetch(layerIdx, vec2i(xs.y, ys.y), mip);
-  return mix(mix(c00, c10, blend.x), mix(c01, c11, blend.x), blend.y);
+  if (!(c00.valid && c10.valid && c01.valid && c11.valid)) {
+    return materialTextureInvalidSample();
+  }
+  let value = mix(
+    mix(c00.value, c10.value, blend.x),
+    mix(c01.value, c11.value, blend.x),
+    blend.y,
+  );
+  if (!materialTextureFiniteVec4(value)) { return materialTextureInvalidSample(); }
+  return MaterialTextureSample(value, true);
 }
 
 fn ${name}AtMip(
@@ -574,7 +787,7 @@ fn ${name}AtMip(
   wrapMode: vec2f,
   mip: u32,
   linearFilter: bool,
-) -> vec4f {
+) -> MaterialTextureSample {
   if (!linearFilter) {
     let sourceSize = materialTextureSourceMipSize(sourceBaseSize, mip);
     let nearestCoord = materialTextureNearestCoord(uv, sourceSize, wrapMode);
@@ -594,15 +807,29 @@ fn ${name}(
   policyLod: f32,
   filterMode: f32,
   mipPolicy: f32,
-) -> vec4f {
+) -> MaterialTextureSample {
+  if (
+    !materialTextureFiniteF32(policyLod) ||
+    !materialTextureFiniteF32(filterMode) ||
+    !materialTextureFiniteF32(mipPolicy) ||
+    !materialTextureWrapModesValid(wrapMode) ||
+    !materialTextureTexelCastSafe(uv, sourceBaseSize) ||
+    filterMode < 0.0 || filterMode > 1.0 ||
+    mipPolicy < 0.0 || mipPolicy > 2.0
+  ) {
+    return materialTextureInvalidSample();
+  }
   let maxMip = materialTextureSourceMipCount(sourceBaseSize) - 1u;
   let lod0 = min(u32(floor(max(policyLod, 0.0))), maxMip);
-  let lod1 = min(lod0 + 1u, maxMip);
+  let lod1 = select(lod0 + 1u, lod0, lod0 == maxMip);
   let linearFilter = filterMode >= 0.5;
   let c0 = ${name}AtMip(layerIdx, uv, sourceBaseSize, wrapMode, lod0, linearFilter);
   let c1 = ${name}AtMip(layerIdx, uv, sourceBaseSize, wrapMode, lod1, linearFilter);
+  if (!(c0.valid && c1.valid)) { return materialTextureInvalidSample(); }
   let mipBlend = select(0.0, fract(policyLod), mipPolicy >= 1.5);
-  return mix(c0, c1, mipBlend);
+  let value = mix(c0.value, c1.value, mipBlend);
+  if (!materialTextureFiniteVec4(value)) { return materialTextureInvalidSample(); }
+  return MaterialTextureSample(value, true);
 }
 `;
 }
@@ -621,9 +848,8 @@ const _SAMPLE_MAT_LAYER_WGSL = materialLayerSamplerWgsl(
   'materialTextures',
   'sampleMaterialSrgbSourceRect',
   // KHR comment block that precedes `let xform` in the sRGB variant:
-  '// KHR_texture_transform — matches THREE.Matrix3.setUvTransform (center 0), the\n' +
-  '  // convention the importer (three-bindings toTextureRef) extracts offset/repeat/\n' +
-  "  // rotation in:  u' = sx·c·u + sx·s·v + tx ;  v' = -sy·s·u + sy·c·v + ty.\n" +
+  '// KHR_texture_transform — core contract: rotate(uv * scale, rotation) + offset.\n' +
+  "  // u' = sx·c·u - sy·s·v + tx ;  v' = sx·s·u + sy·c·v + ty.\n" +
   '  ',
   ' // offset.xy, scale.xy',
 );
@@ -635,20 +861,20 @@ const _SAMPLE_MAT_LAYER_LINEAR_WGSL = materialLayerSamplerWgsl(
   '',
   '',
 );
-// T1-6 — emissive variant (materialTexturesEmissive — dedicated rgba16float
-// array). Samples exactly like the sRGB variant but from the HDR emissive array
-// (already linear; the CPU upload applied the sRGB decode), so authored HDR
-// emissive > 1.0 is not clamped. Standalone fn — WGSL can't pass a texture as an
-// argument, hence the parallel function mirroring sampleMaterialLayer.
+// T1-6 — outgoing-radiance variant (materialTexturesEmissive — dedicated
+// rgba16float array; historical binding name retained). Samples exactly like the
+// sRGB variant but from the HDR radiance array. Per-layer upload provenance
+// determines whether LDR bytes are sRGB-decoded (emissiveMap) or remain linear
+// (lightMap); Float32 payloads are linear HDR in both roles. Standalone fn — WGSL
+// cannot pass a texture as an argument, hence this parallel sampler.
 const _SAMPLE_MAT_LAYER_EMISSIVE_WGSL = materialLayerSamplerWgsl(
   'sampleMaterialLayerEmissive',
   'materialTexturesEmissive',
   'sampleMaterialEmissiveSourceRect',
   // Same KHR UV-transform preamble as the sRGB variant (emissive maps carry the
   // same KHR_texture_transform metadata as baseColor).
-  '// KHR_texture_transform — matches THREE.Matrix3.setUvTransform (center 0), the\n' +
-  '  // convention the importer (three-bindings toTextureRef) extracts offset/repeat/\n' +
-  "  // rotation in:  u' = sx·c·u + sx·s·v + tx ;  v' = -sy·s·u + sy·c·v + ty.\n" +
+  '// KHR_texture_transform — core contract: rotate(uv * scale, rotation) + offset.\n' +
+  "  // u' = sx·c·u - sy·s·v + tx ;  v' = sx·s·u + sy·c·v + ty.\n" +
   '  ',
   ' // offset.xy, scale.xy',
 );
@@ -675,10 +901,10 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 @group(3) @binding(4) var materialTexSampler: sampler;                    // shared by both arrays
 @group(3) @binding(5) var materialTexturesLinear: texture_2d_array<f32>;  // LINEAR (normal + scalar maps)
 @group(3) @binding(10) var<storage, read> meshTangents: array<vec4f>;      // xyz = tangent, w = bitangent sign
-// T1-6 — dedicated EMISSIVE rgba16float array (linear-decoded on upload). HDR
-// emissive texture values > 1.0 survive here (the sRGB 8-bit array clamped to
-// [0,1]). Sampled as texture_2d_array<f32>; binding 17 is the next free group-3
-// slot after the tangents/colors/SPPM/CWBVH bindings (6..16).
+// T1-6 — dedicated outgoing-RADIANCE rgba16float array. HDR emissive and light-
+// map values > 1.0 survive here (the 8-bit arrays clamp to [0,1]). Sampled as
+// texture_2d_array<f32>; binding 17 is the next free group-3 slot after the
+// tangents/colors/SPPM/CWBVH bindings (6..16).
 @group(3) @binding(17) var materialTexturesEmissive: texture_2d_array<f32>;
 @group(3) @binding(11) var<storage, read> meshVertexColors: array<vec4f>;  // rgba = glTF COLOR_0, defaults to 1
 
@@ -688,14 +914,19 @@ const LT_DIST2_FLOOR: f32 = 1e-3;
 // to the largest sparse TEXCOORD_n index.
 fn materialUvForVertex(vertexIndex: u32, gpuUvSlot: u32) -> vec2f {
   let vertexCount = arrayLength(&positions);
-  if (vertexIndex >= vertexCount || vertexIndex >= arrayLength(&meshUvs)) {
+  let uvCount = arrayLength(&meshUvs);
+  if (vertexCount == 0u || vertexIndex >= vertexCount || vertexIndex >= uvCount) {
     return vec2f(0.0);
   }
   let primary = meshUvs[vertexIndex];
   if (gpuUvSlot == 0u) { return primary.xy; }
   if (gpuUvSlot == 1u) { return primary.zw; }
-  let tailIndex = vertexCount + (gpuUvSlot - 2u) * vertexCount + vertexIndex;
-  if (tailIndex >= arrayLength(&meshUvs)) { return vec2f(0.0); }
+  let tailPlane = gpuUvSlot - 1u;
+  if (tailPlane > (uvCount - 1u - vertexIndex) / vertexCount) {
+    return vec2f(0.0);
+  }
+  let tailIndex = tailPlane * vertexCount + vertexIndex;
+  if (tailIndex >= uvCount) { return vec2f(0.0); }
   return meshUvs[tailIndex].xy;
 }
 
@@ -803,6 +1034,11 @@ const MATERIAL_TEX_MIP_BACK_LAYER_NORMAL = 22u;
 const MATERIAL_TEX_FILTER_POLICY = ${MATERIAL_TEX_FILTER_POLICY_VEC4_OFFSET}u;
 
 fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
+  if (
+    !materialTextureFiniteF32(coord) ||
+    !materialTextureFiniteF32(mode) ||
+    mode < 0.0 || mode > 2.0 || mode != floor(mode)
+  ) { return 0.0; }
   let m = u32(mode);
   if (m == 1u) {
     return min(clamp(coord, 0.0, 1.0), 0.999999);
@@ -815,13 +1051,30 @@ fn wrapTextureCoord(coord: f32, mode: f32) -> f32 {
   return fract(coord);
 }
 
+fn materialTextureSourceExtent(arrayExtent: u32, uvFitScale: f32) -> u32 {
+  if (
+    arrayExtent == 0u ||
+    !materialTextureFiniteF32(uvFitScale) ||
+    !(uvFitScale > 0.0) ||
+    uvFitScale > 1.0
+  ) { return 1u; }
+  let candidate = round(f32(arrayExtent) * uvFitScale);
+  if (
+    !materialTextureFiniteF32(candidate) ||
+    candidate < 1.0 ||
+    candidate > f32(arrayExtent) ||
+    candidate > 16777216.0
+  ) { return 1u; }
+  return u32(candidate);
+}
+
 fn materialTextureSourceBaseSize(arraySize: vec2u, uvFitScale: vec2f) -> vec2u {
   // uvFitScale is packed as sourceSize / arraySize. WebGPU's dimension limit is
   // far below f32's exact-integer ceiling, so round(product) recovers the exact
   // authored integer extent instead of inheriting ratio roundoff.
-  return max(
-    vec2u(1u),
-    vec2u(round(vec2f(arraySize) * uvFitScale)),
+  return vec2u(
+    materialTextureSourceExtent(arraySize.x, uvFitScale.x),
+    materialTextureSourceExtent(arraySize.y, uvFitScale.y),
   );
 }
 
@@ -843,6 +1096,10 @@ fn materialTexturePositiveModulo(value: i32, modulus: i32) -> i32 {
 
 fn materialTextureWrapTexel(index: i32, size: i32, modeValue: f32) -> i32 {
   if (size <= 1) { return 0; }
+  if (
+    !materialTextureFiniteF32(modeValue) ||
+    modeValue < 0.0 || modeValue > 2.0 || modeValue != floor(modeValue)
+  ) { return 0; }
   let mode = u32(modeValue);
   if (mode == 1u) { return clamp(index, 0, size - 1); }
   if (mode == 2u) {
@@ -854,10 +1111,14 @@ fn materialTextureWrapTexel(index: i32, size: i32, modeValue: f32) -> i32 {
 }
 
 fn materialTextureMipPolicy(base: u32, slot: u32) -> f32 {
-  let vecIdx = base + MATERIAL_TEX_MIP_POLICY + slot / 4u;
-  if (vecIdx >= arrayLength(&materialTexDescriptors)) { return 2.0; }
+  let laneGroup = slot / 4u;
+  if (laneGroup > 0xffffffffu - MATERIAL_TEX_MIP_POLICY) { return -1.0; }
+  let offset = MATERIAL_TEX_MIP_POLICY + laneGroup;
+  if (!materialTextureDescriptorSpanValid(base, offset, 1u)) { return -1.0; }
+  let vecIdx = base + offset;
   let packed = materialTexDescriptors[vecIdx];
-  let lane = slot - (slot / 4u) * 4u;
+  if (!materialTextureFiniteVec4(packed)) { return -1.0; }
+  let lane = slot - laneGroup * 4u;
   if (lane == 0u) { return packed.x; }
   if (lane == 1u) { return packed.y; }
   if (lane == 2u) { return packed.z; }
@@ -876,11 +1137,16 @@ fn materialTexturePolicyLod(lod: f32, mipCount: f32, mipPolicy: f32) -> f32 {
 }
 
 fn materialTextureFilterPolicy(base: u32, slot: u32) -> vec2f {
+  if (slot > 0xffffffffu / 2u) { return vec2f(-1.0); }
   let scalarOffset = slot * 2u;
-  let vecIdx = base + MATERIAL_TEX_FILTER_POLICY + scalarOffset / 4u;
-  if (vecIdx >= arrayLength(&materialTexDescriptors)) { return vec2f(1.0); }
+  let laneGroup = scalarOffset / 4u;
+  if (laneGroup > 0xffffffffu - MATERIAL_TEX_FILTER_POLICY) { return vec2f(-1.0); }
+  let offset = MATERIAL_TEX_FILTER_POLICY + laneGroup;
+  if (!materialTextureDescriptorSpanValid(base, offset, 1u)) { return vec2f(-1.0); }
+  let vecIdx = base + offset;
   let packed = materialTexDescriptors[vecIdx];
-  let lane = scalarOffset - (scalarOffset / 4u) * 4u;
+  if (!materialTextureFiniteVec4(packed)) { return vec2f(-1.0); }
+  let lane = scalarOffset - laneGroup * 4u;
   if (lane == 0u) { return packed.xy; }
   return packed.zw;
 }
@@ -932,9 +1198,14 @@ ${_SAMPLE_MAT_LAYER_WGSL}
 
 // baseColor map (sRGB array) — descriptor vec4[0].x.
 fn sampleBaseColorTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec4f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayer(i32(materialTexDescriptors[base].x), base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_BASE_COLOR, materialTexDescriptors[base + 7u].xy, materialTexDescriptors[base + 13u].xy, MATERIAL_TEX_MIP_BASE_COLOR);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 14u)) { return vec4f(1.0); }
+  let layerIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base].x,
+    textureNumLayers(materialTextures),
+  );
+  let sample = sampleMaterialLayer(layerIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_BASE_COLOR, materialTexDescriptors[base + 7u].xy, materialTexDescriptors[base + 13u].xy, MATERIAL_TEX_MIP_BASE_COLOR);
+  return materialTextureValueOr(sample, vec4f(1.0));
 }
 
 fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
@@ -946,7 +1217,8 @@ fn sampleVertexColor(triIndex: u32, baryVW: vec2f) -> vec4f {
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
-  return meshVertexColors[tri.x] * u + meshVertexColors[tri.y] * v + meshVertexColors[tri.z] * w;
+  let value = meshVertexColors[tri.x] * u + meshVertexColors[tri.y] * v + meshVertexColors[tri.z] * w;
+  return select(vec4f(1.0), value, materialTextureFiniteVec4(value));
 }
 
 // T1-6 — emissive sampler variant (dedicated rgba16float emissive array).
@@ -958,9 +1230,14 @@ ${_SAMPLE_MAT_LAYER_EMISSIVE_WGSL}
 // indexOfEmissive), and the UV-fit lane vec4[7].zw is filled from the emissive
 // array's per-layer scales.
 fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec4f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 13u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  return sampleMaterialLayerEmissive(i32(materialTexDescriptors[base].w), base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_EMISSIVE, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 13u].zw, MATERIAL_TEX_MIP_EMISSIVE);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 14u)) { return vec4f(1.0); }
+  let layerIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base].w,
+    textureNumLayers(materialTexturesEmissive),
+  );
+  let sample = sampleMaterialLayerEmissive(layerIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_EMISSIVE, materialTexDescriptors[base + 7u].zw, materialTexDescriptors[base + 13u].zw, MATERIAL_TEX_MIP_EMISSIVE);
+  return materialTextureValueOr(sample, vec4f(1.0));
 }
 
 // As sampleMaterialLayer, but samples the LINEAR array (materialTexturesLinear)
@@ -969,19 +1246,38 @@ fn sampleEmissiveTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex
 // WGSL can't pass a texture as an argument, hence the parallel function.
 ${_SAMPLE_MAT_LAYER_LINEAR_WGSL}
 
-fn sampleMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32, rawUv: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> vec4f {
-  if (layerIdx < 0 || triIndex >= arrayLength(&indices) || base + uvMetaOffset + 1u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
+fn sampleMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32, rawUv: vec2f, uvMetaOffset: u32, uvFitScale: vec2f, wrapMode: vec2f, mipPolicySlot: u32) -> MaterialTextureSample {
+  if (
+    layerIdx < 0 ||
+    triIndex >= arrayLength(&indices) ||
+    !materialTextureDescriptorSpanValid(base, uvMetaOffset, 2u) ||
+    !materialTextureFiniteVec2(baryVW) ||
+    !materialTextureFiniteVec2(rawUv) ||
+    !materialTextureFiniteVec2(uvFitScale) ||
+    any(uvFitScale <= vec2f(0.0)) ||
+    any(uvFitScale > vec2f(1.0)) ||
+    !materialTextureWrapModesValid(wrapMode)
+  ) { return materialTextureInvalidSample(); }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
-    return vec4f(1.0);
+    return materialTextureInvalidSample();
   }
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
   let uvMeta = materialTexDescriptors[base + uvMetaOffset];
   let uvScale = materialTexDescriptors[base + uvMetaOffset + 1u];
-  let gpuUvSlot = u32(uvMeta.x);
+  if (!materialTextureFiniteVec4(uvMeta) || !materialTextureFiniteVec2(uvScale.xy)) {
+    return materialTextureInvalidSample();
+  }
+  let vertexCount = arrayLength(&positions);
+  if (vertexCount == 0u) { return materialTextureInvalidSample(); }
+  let gpuUvSlot = materialTextureExactU32(
+    uvMeta.x,
+    arrayLength(&meshUvs) / vertexCount,
+  );
+  if (gpuUvSlot == 0xffffffffu) { return materialTextureInvalidSample(); }
   let xform = vec4f(uvMeta.y, uvMeta.z, uvScale.x, uvScale.y);
   let rot = uvMeta.w;
   let c = cos(rot);
@@ -991,34 +1287,48 @@ fn sampleMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triIndex: u32,
   let rawA = materialUvForVertex(tri.x, gpuUvSlot);
   let rawB = materialUvForVertex(tri.y, gpuUvSlot);
   let rawC = materialUvForVertex(tri.z, gpuUvSlot);
-  let uvA = vec2f(
-    sx * c * rawA.x + sx * s * rawA.y + xform.x,
-    -sy * s * rawA.x + sy * c * rawA.y + xform.y,
+  let uvACandidate = vec2f(
+    sx * c * rawA.x - sy * s * rawA.y + xform.x,
+    sx * s * rawA.x + sy * c * rawA.y + xform.y,
   );
-  let uvB = vec2f(
-    sx * c * rawB.x + sx * s * rawB.y + xform.x,
-    -sy * s * rawB.x + sy * c * rawB.y + xform.y,
+  if (!materialTextureFiniteVec2(uvACandidate)) { return materialTextureInvalidSample(); }
+  let uvA = uvACandidate;
+  let uvBCandidate = vec2f(
+    sx * c * rawB.x - sy * s * rawB.y + xform.x,
+    sx * s * rawB.x + sy * c * rawB.y + xform.y,
   );
-  let uvC = vec2f(
-    sx * c * rawC.x + sx * s * rawC.y + xform.x,
-    -sy * s * rawC.x + sy * c * rawC.y + xform.y,
+  if (!materialTextureFiniteVec2(uvBCandidate)) { return materialTextureInvalidSample(); }
+  let uvB = uvBCandidate;
+  let uvCCandidate = vec2f(
+    sx * c * rawC.x - sy * s * rawC.y + xform.x,
+    sx * s * rawC.x + sy * c * rawC.y + xform.y,
   );
-  let uv = vec2f(
-    sx * c * rawUv.x + sx * s * rawUv.y + xform.x,
-    -sy * s * rawUv.x + sy * c * rawUv.y + xform.y,
+  if (!materialTextureFiniteVec2(uvCCandidate)) { return materialTextureInvalidSample(); }
+  let uvC = uvCCandidate;
+  let uvCandidate = vec2f(
+    sx * c * rawUv.x - sy * s * rawUv.y + xform.x,
+    sx * s * rawUv.x + sy * c * rawUv.y + xform.y,
   );
+  if (!materialTextureFiniteVec2(uvCandidate)) { return materialTextureInvalidSample(); }
+  let uv = uvCandidate;
   let sourceBaseSize = materialTextureSourceBaseSize(
     vec2u(textureDimensions(materialTexturesLinear, i32(0))), uvFitScale,
   );
   let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));
   let texDim = vec2f(sourceBaseSize);
-  let texelArea = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let texelAreaCandidate = max(abs((uvB.x - uvA.x) * (uvC.y - uvA.y) - (uvB.y - uvA.y) * (uvC.x - uvA.x)) * texDim.x * texDim.y, 1.0);
+  let texelArea = select(
+    1.0,
+    texelAreaCandidate,
+    materialTextureFiniteF32(texelAreaCandidate) && texelAreaCandidate >= 1.0,
+  );
   let footprint = materialTextureWorldFootprint(tri, baryVW, instanceIndex);
   let worldArea = footprint.x;
   let cameraDistance = footprint.y;
   let pixelsPerMeter = 0.5 * f32(max(params.width, params.height)) / cameraDistance;
   let projectedPixels = max(sqrt(worldArea) * pixelsPerMeter, 1.0);
-  let lod = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
+  let lodCandidate = clamp(log2(sqrt(texelArea) / projectedPixels), 0.0, max(sourceMipCount - 1.0, 0.0));
+  let lod = select(0.0, lodCandidate, materialTextureFiniteF32(lodCandidate));
   let mipPolicy = materialTextureMipPolicy(base, mipPolicySlot);
   let policyLod = materialTexturePolicyLod(lod, sourceMipCount, mipPolicy);
   let filterPolicy = materialTextureFilterPolicy(base, mipPolicySlot);
@@ -1034,10 +1344,13 @@ fn sampleMaterialLayerLinearRawUvPolicy(layerIdx: i32, base: u32, triIndex: u32,
 // that by pointing both descriptors at the same layer when a combined map is
 // supplied. Distinct authored maps keep independent UV/wrap metadata.
 fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec4f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 15u >= arrayLength(&materialTexDescriptors)) { return vec4f(1.0); }
-  let roughness = sampleMaterialLayerLinear(
-    i32(materialTexDescriptors[base].z),
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 16u)) { return vec4f(1.0); }
+  let roughnessSample = sampleMaterialLayerLinear(
+    materialTextureLayerIndex(
+      materialTexDescriptors[base].z,
+      textureNumLayers(materialTexturesLinear),
+    ),
     base,
     triIndex,
     baryVW,
@@ -1046,9 +1359,12 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32
     materialTexDescriptors[base + 8u].zw,
     materialTexDescriptors[base + 14u].zw,
     MATERIAL_TEX_MIP_ROUGHNESS,
-  ).g;
-  let metallic = sampleMaterialLayerLinear(
-    i32(materialTexDescriptors[base + 6u].z),
+  );
+  let metallicSample = sampleMaterialLayerLinear(
+    materialTextureLayerIndex(
+      materialTexDescriptors[base + 6u].z,
+      textureNumLayers(materialTexturesLinear),
+    ),
     base,
     triIndex,
     baryVW,
@@ -1057,7 +1373,9 @@ fn sampleOrmTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32
     materialTexDescriptors[base + 9u].xy,
     materialTexDescriptors[base + 15u].xy,
     MATERIAL_TEX_MIP_METALLIC,
-  ).b;
+  );
+  let roughness = materialTextureValueOr(roughnessSample, vec4f(1.0)).g;
+  let metallic = materialTextureValueOr(metallicSample, vec4f(1.0)).b;
   return vec4f(1.0, roughness, metallic, 1.0);
 }
 
@@ -1158,6 +1476,107 @@ fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSl
   return frame;
 }
 
+fn materialTextureApplyTangentNormal(
+  sample: MaterialTextureSample,
+  normalScale: f32,
+  frame: ShadingTangentFrame,
+  fallbackNormal: vec3f,
+) -> vec3f {
+  if (
+    !sample.valid ||
+    !materialTextureFiniteF32(normalScale) ||
+    !materialTextureFiniteVec3(frame.tangent) ||
+    !materialTextureFiniteVec3(frame.bitangent) ||
+    !materialTextureFiniteVec3(fallbackNormal)
+  ) {
+    return fallbackNormal;
+  }
+  let tangentNormal = sample.value.xyz * 2.0 - vec3f(1.0);
+  let coefficients = vec3f(
+    tangentNormal.x * normalScale,
+    tangentNormal.y * normalScale,
+    tangentNormal.z,
+  );
+  if (!materialTextureFiniteVec3(coefficients)) { return fallbackNormal; }
+  let coefficientScale = max(
+    max(abs(coefficients.x), abs(coefficients.y)),
+    abs(coefficients.z),
+  );
+  if (!(coefficientScale > 1e-20)) { return fallbackNormal; }
+  let scaled = coefficients / coefficientScale;
+  let perturbed =
+    frame.tangent * scaled.x +
+    frame.bitangent * scaled.y +
+    fallbackNormal * scaled.z;
+  if (!materialTextureFiniteVec3(perturbed)) { return fallbackNormal; }
+  let perturbedScale = max(
+    max(abs(perturbed.x), abs(perturbed.y)),
+    abs(perturbed.z),
+  );
+  if (!(perturbedScale > 1e-20)) { return fallbackNormal; }
+  let safePerturbed = perturbed / perturbedScale;
+  let safeLength = length(safePerturbed);
+  if (!(safeLength > 1e-6) || !materialTextureFiniteF32(safeLength)) {
+    return fallbackNormal;
+  }
+  return safePerturbed / safeLength;
+}
+
+// Reconstruct the unperturbed, face-oriented smooth interface normal from the
+// same triangle payload used by intersection. BDPT stores the mapped entry
+// normal, so its virtual exit interface uses this helper to resolve a distinct
+// opposite-side layer normal from the original frame instead of from -entry.
+fn materialBaseInterfaceNormal(
+  triIndex: u32,
+  baryVW: vec2f,
+  instanceIndex: u32,
+  isFrontFace: bool,
+  fallback: vec3f,
+) -> vec3f {
+  if (
+    triIndex >= arrayLength(&indices) ||
+    !materialTextureFiniteVec2(baryVW)
+  ) {
+    return fallback;
+  }
+  let tri = indices[triIndex];
+  if (
+    tri.x >= arrayLength(&normals) ||
+    tri.y >= arrayLength(&normals) ||
+    tri.z >= arrayLength(&normals)
+  ) {
+    return fallback;
+  }
+  let v = baryVW.x;
+  let w = baryVW.y;
+  let u = 1.0 - v - w;
+  var worldNormal = materialTextureNormalizeOr(
+    normals[tri.x].xyz * u + normals[tri.y].xyz * v + normals[tri.z].xyz * w,
+    fallback,
+  );
+  if (
+    instanceIndex != INVALID_TLAS_INSTANCE_INDEX &&
+    params.tlasNodeCount != 0u
+  ) {
+    if (instanceIndex > 0xffffffffu / 4u) { return fallback; }
+    let matrixBase = instanceIndex * 4u;
+    if (
+      matrixBase > arrayLength(&tlasInstanceWorldToLocal) ||
+      3u > arrayLength(&tlasInstanceWorldToLocal) - matrixBase
+    ) {
+      return fallback;
+    }
+    worldNormal = transformNormalFromWorldToLocalCols(
+      tlasInstanceWorldToLocal[matrixBase],
+      tlasInstanceWorldToLocal[matrixBase + 1u],
+      tlasInstanceWorldToLocal[matrixBase + 2u],
+      worldNormal,
+    );
+  }
+  let oriented = select(-worldNormal, worldNormal, isFrontFace);
+  return materialTextureNormalizeOr(oriented, fallback);
+}
+
 // Normal map (linear array) — descriptor vec4[0].y. Perturbs the geometric shading
 // normal by the tangent-space normal map. The tangent frame is DERIVED per-hit
 // from the triangle's positions + UVs (Lengyel) — no precomputed tangents needed
@@ -1169,9 +1588,15 @@ fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSl
 // sentinel and keep the historical local-space tangent.
 // Ref: Lengyel, "Computing Tangent Space Basis Vectors for an Arbitrary Mesh".
 fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32, isFrontFace: bool) -> vec3f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 14u >= arrayLength(&materialTexDescriptors)) { return geomNormal; }
-  var normalIdx = i32(materialTexDescriptors[base].y);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) {
+    return geomNormal;
+  }
+  let linearLayerCount = textureNumLayers(materialTexturesLinear);
+  var normalIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base].y,
+    linearLayerCount,
+  );
   if (triIndex >= arrayLength(&indices)) { return geomNormal; }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
@@ -1183,33 +1608,36 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
   var normalWrapMode = materialTexDescriptors[base + 14u].xy;
   var normalMipPolicySlot = MATERIAL_TEX_MIP_NORMAL;
   var normalScale = materialTexDescriptors[base + 5u].w;
-  if (base + MATERIAL_TEX_UV_BACK_LAYER_NORMAL + 1u < arrayLength(&materialTexDescriptors)) {
-    let layerNormal = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL];
-    let layerIdx = select(i32(layerNormal.z), i32(layerNormal.x), isFrontFace);
-    if (layerIdx >= 0) {
-      normalIdx = layerIdx;
-      normalScale = select(layerNormal.w, layerNormal.y, isFrontFace);
-      normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);
-      normalMipPolicySlot = select(MATERIAL_TEX_MIP_BACK_LAYER_NORMAL, MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL, isFrontFace);
-      let layerUvFit = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_UV_FIT];
-      normalUvFitScale = select(layerUvFit.zw, layerUvFit.xy, isFrontFace);
-      let layerWrap = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_WRAP];
-      normalWrapMode = select(layerWrap.zw, layerWrap.xy, isFrontFace);
-    }
+  let layerNormal = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL];
+  let layerIdx = select(
+    materialTextureLayerIndex(layerNormal.z, linearLayerCount),
+    materialTextureLayerIndex(layerNormal.x, linearLayerCount),
+    isFrontFace,
+  );
+  if (layerIdx >= 0) {
+    normalIdx = layerIdx;
+    normalScale = select(layerNormal.w, layerNormal.y, isFrontFace);
+    normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);
+    normalMipPolicySlot = select(MATERIAL_TEX_MIP_BACK_LAYER_NORMAL, MATERIAL_TEX_MIP_FRONT_LAYER_NORMAL, isFrontFace);
+    let layerUvFit = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_UV_FIT];
+    normalUvFitScale = select(layerUvFit.zw, layerUvFit.xy, isFrontFace);
+    let layerWrap = materialTexDescriptors[base + MATERIAL_TEX_LAYER_NORMAL_WRAP];
+    normalWrapMode = select(layerWrap.zw, layerWrap.xy, isFrontFace);
   }
   if (normalIdx < 0) { return geomNormal; }
-  let normalGpuUvSlot = u32(materialTexDescriptors[base + normalUvMetaOffset].x);
+  let vertexCount = arrayLength(&positions);
+  if (vertexCount == 0u) { return geomNormal; }
+  let normalGpuUvSlot = materialTextureExactU32(
+    materialTexDescriptors[base + normalUvMetaOffset].x,
+    arrayLength(&meshUvs) / vertexCount,
+  );
+  if (normalGpuUvSlot == 0xffffffffu) { return geomNormal; }
   let frame = buildShadingTangentFrame(
     triIndex, baryVW, geomNormal, normalGpuUvSlot, instanceIndex,
   );
   if (!frame.valid) { return geomNormal; }
-  let ts = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, instanceIndex, normalUvMetaOffset, normalUvFitScale, normalWrapMode, normalMipPolicySlot).xyz;
-  var tn = ts * 2.0 - vec3f(1.0); // [0,1] → [-1,1] tangent-space normal
-  tn.x = tn.x * normalScale;
-  tn.y = tn.y * normalScale;
-  let perturbed = frame.tangent * tn.x + frame.bitangent * tn.y + geomNormal * tn.z;
-  let plen = length(perturbed);
-  return select(geomNormal, perturbed / plen, plen > 1e-6);
+  let sample = sampleMaterialLayerLinear(normalIdx, base, triIndex, baryVW, instanceIndex, normalUvMetaOffset, normalUvFitScale, normalWrapMode, normalMipPolicySlot);
+  return materialTextureApplyTangentNormal(sample, normalScale, frame, geomNormal);
 }
 
 // KHR_materials_clearcoat clearcoatNormalTexture. This is a LINEAR tangent-space
@@ -1217,23 +1645,32 @@ fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, i
 // normal unchanged when absent, so zero-map scenes keep the historical clearcoat
 // lobe normal exactly.
 fn applyClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, clearcoatNormal: vec3f, instanceIndex: u32) -> vec3f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_CLEARCOAT_NORMAL + 1u >= arrayLength(&materialTexDescriptors)) { return clearcoatNormal; }
-  let clearcoatNormalIdx = i32(materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].x);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) {
+    return clearcoatNormal;
+  }
+  let clearcoatNormalIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].x,
+    textureNumLayers(materialTexturesLinear),
+  );
   if (clearcoatNormalIdx < 0 || triIndex >= arrayLength(&indices)) { return clearcoatNormal; }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
       tri.x >= arrayLength(&positions) || tri.y >= arrayLength(&positions) || tri.z >= arrayLength(&positions)) {
     return clearcoatNormal;
   }
-  let clearcoatNormalGpuUvSlot = u32(
+  let vertexCount = arrayLength(&positions);
+  if (vertexCount == 0u) { return clearcoatNormal; }
+  let clearcoatNormalGpuUvSlot = materialTextureExactU32(
     materialTexDescriptors[base + MATERIAL_TEX_UV_CLEARCOAT_NORMAL].x,
+    arrayLength(&meshUvs) / vertexCount,
   );
+  if (clearcoatNormalGpuUvSlot == 0xffffffffu) { return clearcoatNormal; }
   let frame = buildShadingTangentFrame(
     triIndex, baryVW, clearcoatNormal, clearcoatNormalGpuUvSlot, instanceIndex,
   );
   if (!frame.valid) { return clearcoatNormal; }
-  let ts = sampleMaterialLayerLinear(
+  let sample = sampleMaterialLayerLinear(
     clearcoatNormalIdx,
     base,
     triIndex,
@@ -1243,14 +1680,14 @@ fn applyClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, clearcoatNo
     materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].zw,
     materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL_WRAP].xy,
     MATERIAL_TEX_MIP_CLEARCOAT_NORMAL,
-  ).xyz;
-  var tn = ts * 2.0 - vec3f(1.0);
+  );
   let clearcoatNormalScale = materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].y;
-  tn.x = tn.x * clearcoatNormalScale;
-  tn.y = tn.y * clearcoatNormalScale;
-  let perturbed = frame.tangent * tn.x + frame.bitangent * tn.y + clearcoatNormal * tn.z;
-  let plen = length(perturbed);
-  return select(clearcoatNormal, perturbed / plen, plen > 1e-6);
+  return materialTextureApplyTangentNormal(
+    sample,
+    clearcoatNormalScale,
+    frame,
+    clearcoatNormal,
+  );
 }
 
 // ── D3 — reserved-field consumption (aoMap / lightMap / bumpMap / envMapIntensity
@@ -1268,16 +1705,23 @@ fn applyClearcoatNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, clearcoatNo
 // intent at the cost of slight energy loss vs ground-truth GI. Hosts wanting
 // unbiased transport should omit aoMap. Ref: glTF 2.0 occlusionTexture.
 fn sampleAoFactor(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 15u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let aoIdx = i32(materialTexDescriptors[base + 3u].y);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 16u)) { return 1.0; }
+  let aoIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 3u].y,
+    textureNumLayers(materialTexturesLinear),
+  );
   if (aoIdx < 0) { return 1.0; }
-  let intensity = clamp(materialTexDescriptors[base + 4u].x, 0.0, 1.0);
-  let r = sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_AO, materialTexDescriptors[base + 9u].zw, materialTexDescriptors[base + 15u].zw, MATERIAL_TEX_MIP_AO).r;
+  let intensityRaw = materialTexDescriptors[base + 4u].x;
+  if (!materialTextureFiniteF32(intensityRaw)) { return 1.0; }
+  let intensity = clamp(intensityRaw, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(aoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_AO, materialTexDescriptors[base + 9u].zw, materialTexDescriptors[base + 15u].zw, MATERIAL_TEX_MIP_AO);
+  let r = materialTextureValueOr(sample, vec4f(1.0)).r;
   return clamp(mix(1.0, r, intensity), 0.0, 1.0);
 }
 
-// Light map (LINEAR array) — descriptor vec4[3].z; intensity vec4[4].y.
+// Light map (dedicated linear-float radiance array) — descriptor vec4[3].z;
+// intensity vec4[4].y.
 // Baked OUTGOING radiance added to the surface emission. SEMANTICS: a light map
 // is precomputed *outgoing* radiance, so it is added to \`emissive\` at
 // camera-visible (emissive-on-hit) shade points ONLY. Adding it inside NEE would
@@ -1287,19 +1731,27 @@ fn sampleAoFactor(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) 
 // hosts that authored an sRGB-encoded light map should decode before upload.
 // Ref: glTF lightmap convention; THREE.MeshStandardMaterial.lightMap (additive).
 fn sampleLightMapRadiance(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec3f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 16u >= arrayLength(&materialTexDescriptors)) { return vec3f(0.0); }
-  let lmIdx = i32(materialTexDescriptors[base + 3u].z);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 17u)) { return vec3f(0.0); }
+  let lmIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 3u].z,
+    textureNumLayers(materialTexturesEmissive),
+  );
   if (lmIdx < 0) { return vec3f(0.0); }
   let intensity = materialTexDescriptors[base + 4u].y;
-  let texel = sampleMaterialLayerLinear(lmIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_LIGHT, materialTexDescriptors[base + 10u].xy, materialTexDescriptors[base + 16u].xy, MATERIAL_TEX_MIP_LIGHT).rgb;
+  if (!materialTextureFiniteF32(intensity) || intensity < 0.0) { return vec3f(0.0); }
+  let sample = sampleMaterialLayerEmissive(lmIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_LIGHT, materialTexDescriptors[base + 10u].xy, materialTexDescriptors[base + 16u].xy, MATERIAL_TEX_MIP_LIGHT);
+  if (!sample.valid) { return vec3f(0.0); }
+  let texel = sample.value.rgb;
   return ptFiniteNonNegativeRadianceProduct(texel, vec3f(intensity));
 }
 
 // Per-material environment-map intensity scale — descriptor vec4[4].w (default 1).
 fn materialEnvMapIntensity(matId: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 5u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 4u, 1u)) { return 1.0; }
+  let intensity = materialTexDescriptors[base + 4u].w;
+  if (!materialTextureFiniteF32(intensity)) { return 1.0; }
   return max(materialTexDescriptors[base + 4u].w, 0.0);
 }
 
@@ -1307,12 +1759,18 @@ fn materialEnvMapIntensity(matId: u32) -> f32 {
 // KHR_materials_anisotropy map's B channel. 0 ⇒ isotropic (default) ⇒ the caller
 // keeps the existing isotropic GGX path → byte-identical.
 fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 17u >= arrayLength(&materialTexDescriptors)) { return 0.0; }
-  var a = clamp(materialTexDescriptors[base + 5u].x, 0.0, 1.0);
-  let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 18u)) { return 0.0; }
+  let authored = materialTexDescriptors[base + 5u].x;
+  if (!materialTextureFiniteF32(authored)) { return 0.0; }
+  var a = clamp(authored, 0.0, 1.0);
+  let anisoIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 5u].z,
+    textureNumLayers(materialTexturesLinear),
+  );
   if (anisoIdx >= 0) {
-    a = a * sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY).b;
+    let sample = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY);
+    a = a * materialTextureValueOr(sample, vec4f(1.0)).b;
   }
   return clamp(a, 0.0, 1.0);
 }
@@ -1323,29 +1781,59 @@ fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u
 // BSDF's deterministic ONB, but its direction is authored in the selected UV
 // tangent frame (including mirrored tangent handedness).
 fn materialAnisotropyRotation(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 17u >= arrayLength(&materialTexDescriptors)) { return 0.0; }
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 18u)) { return 0.0; }
   var rot = materialTexDescriptors[base + 5u].y;
-  let anisoIdx = i32(materialTexDescriptors[base + 5u].z);
+  if (!materialTextureFiniteF32(rot)) { rot = 0.0; }
+  let anisoIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 5u].z,
+    textureNumLayers(materialTexturesLinear),
+  );
   var gpuUvSlot = 0u;
   if (anisoIdx >= 0) {
-    gpuUvSlot = u32(materialTexDescriptors[base + MATERIAL_TEX_UV_ANISOTROPY].x);
-    let rg = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY).rg * 2.0 - vec2f(1.0);
-    rot = rot + atan2(rg.y, rg.x);
+    let vertexCount = arrayLength(&positions);
+    if (vertexCount == 0u) { return rot; }
+    gpuUvSlot = materialTextureExactU32(
+      materialTexDescriptors[base + MATERIAL_TEX_UV_ANISOTROPY].x,
+      arrayLength(&meshUvs) / vertexCount,
+    );
+    if (gpuUvSlot == 0xffffffffu) { return rot; }
+    let sample = sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY);
+    if (sample.valid) {
+      let rg = sample.value.rg * 2.0 - vec2f(1.0);
+      let rgScale = max(abs(rg.x), abs(rg.y));
+      if (rgScale > 1e-20 && materialTextureFiniteF32(rgScale)) {
+        let safeRg = rg / rgScale;
+        rot = rot + atan2(safeRg.y, safeRg.x);
+      }
+    }
   }
+  if (!materialTextureFiniteF32(rot)) { return 0.0; }
+  if (triIndex >= arrayLength(&indices)) { return rot; }
   let frame = buildShadingTangentFrame(
     triIndex, baryVW, shadingNormal, gpuUvSlot, instanceIndex,
   );
-  if (!frame.valid) { return rot; }
+  if (
+    !frame.valid ||
+    !materialTextureFiniteVec3(shadingNormal) ||
+    !materialTextureFiniteVec3(frame.tangent) ||
+    !materialTextureFiniteVec3(frame.bitangent)
+  ) { return rot; }
   var canonicalT: vec3f;
   var canonicalB: vec3f;
   buildOnb(shadingNormal, &canonicalT, &canonicalB);
   let authoredDirection =
     cos(rot) * frame.tangent + sin(rot) * frame.bitangent;
-  return atan2(
+  if (
+    !materialTextureFiniteVec3(authoredDirection) ||
+    !materialTextureFiniteVec3(canonicalT) ||
+    !materialTextureFiniteVec3(canonicalB)
+  ) { return rot; }
+  let resolved = atan2(
     dot(authoredDirection, canonicalB),
     dot(authoredDirection, canonicalT),
   );
+  return select(rot, resolved, materialTextureFiniteF32(resolved));
 }
 
 // Bump map (LINEAR height field) — descriptor vec4[3].w; scale vec4[4].z.
@@ -1356,9 +1844,14 @@ fn materialAnisotropyRotation(matId: u32, triIndex: u32, baryVW: vec2f, shadingN
 // the input normal unchanged when there is no bump map → byte-identical.
 // Ref: Blinn 1978, "Simulation of Wrinkled Surfaces"; height-gradient perturbation.
 fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, instanceIndex: u32) -> vec3f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 16u >= arrayLength(&materialTexDescriptors)) { return shadingNormal; }
-  let bumpIdx = i32(materialTexDescriptors[base + 3u].w);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) {
+    return shadingNormal;
+  }
+  let bumpIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 3u].w,
+    textureNumLayers(materialTexturesLinear),
+  );
   if (bumpIdx < 0 || triIndex >= arrayLength(&indices)) { return shadingNormal; }
   let tri = indices[triIndex];
   if (tri.x >= arrayLength(&meshUvs) || tri.y >= arrayLength(&meshUvs) || tri.z >= arrayLength(&meshUvs) ||
@@ -1366,8 +1859,15 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
     return shadingNormal;
   }
   let bumpScale = materialTexDescriptors[base + 4u].z;
+  if (!materialTextureFiniteF32(bumpScale)) { return shadingNormal; }
   let uvMeta = materialTexDescriptors[base + MATERIAL_TEX_UV_BUMP];
-  let bumpGpuUvSlot = u32(uvMeta.x);
+  let vertexCount = arrayLength(&positions);
+  if (vertexCount == 0u) { return shadingNormal; }
+  let bumpGpuUvSlot = materialTextureExactU32(
+    uvMeta.x,
+    arrayLength(&meshUvs) / vertexCount,
+  );
+  if (bumpGpuUvSlot == 0xffffffffu) { return shadingNormal; }
   // Build the same world-space tangent frame applyNormalMap uses (D9.3 shared helper).
   let frame = buildShadingTangentFrame(
     triIndex, baryVW, shadingNormal, bumpGpuUvSlot, instanceIndex,
@@ -1379,6 +1879,12 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
   // source texel; the height-gradient slopes the normal by -scale·(dh/du, dh/dv).
   let bumpUvFitScale = materialTexDescriptors[base + 10u].zw;
   let bumpWrapMode = materialTexDescriptors[base + 16u].zw;
+  if (
+    !materialTextureFiniteVec2(bumpUvFitScale) ||
+    any(bumpUvFitScale <= vec2f(0.0)) ||
+    any(bumpUvFitScale > vec2f(1.0)) ||
+    !materialTextureWrapModesValid(bumpWrapMode)
+  ) { return shadingNormal; }
   let v = baryVW.x;
   let w = baryVW.y;
   let u = 1.0 - v - w;
@@ -1389,114 +1895,165 @@ fn applyBumpMap(matId: u32, triIndex: u32, baryVW: vec2f, shadingNormal: vec3f, 
   let linearDims = vec2f(textureDimensions(materialTexturesLinear, i32(0)));
   let sourceDims = max(linearDims * bumpUvFitScale, vec2f(1.0));
   let texelStep = vec2f(1.0 / sourceDims.x, 1.0 / sourceDims.y);
-  let hC = sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, MATERIAL_TEX_MIP_BUMP).r;
-  let hU = sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv + vec2f(texelStep.x, 0.0), MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, MATERIAL_TEX_MIP_BUMP).r;
-  let hV = sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv + vec2f(0.0, texelStep.y), MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, MATERIAL_TEX_MIP_BUMP).r;
+  if (!materialTextureFiniteVec2(texelStep)) { return shadingNormal; }
+  let sampleC = sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv, MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, MATERIAL_TEX_MIP_BUMP);
+  let sampleU = sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv + vec2f(texelStep.x, 0.0), MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, MATERIAL_TEX_MIP_BUMP);
+  let sampleV = sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv + vec2f(0.0, texelStep.y), MATERIAL_TEX_UV_BUMP, bumpUvFitScale, bumpWrapMode, MATERIAL_TEX_MIP_BUMP);
+  if (!(sampleC.valid && sampleU.valid && sampleV.valid)) { return shadingNormal; }
+  let hC = sampleC.value.r;
+  let hU = sampleU.value.r;
+  let hV = sampleV.value.r;
   let dhdu = (hU - hC) / texelStep.x;
   let dhdv = (hV - hC) / texelStep.y;
-  let perturbed = shadingNormal - bumpScale * (dhdu * tangent + dhdv * bitangent);
-  let plen = length(perturbed);
-  return select(shadingNormal, perturbed / plen, plen > 1e-6);
+  let scaledGradient = vec2f(dhdu, dhdv) * bumpScale;
+  if (!materialTextureFiniteVec2(scaledGradient)) { return shadingNormal; }
+  let perturbed =
+    shadingNormal - scaledGradient.x * tangent - scaledGradient.y * bitangent;
+  return materialTextureNormalizeOr(perturbed, shadingNormal);
 }
 
 // Standalone alpha map (LINEAR coverage data) — descriptor vec4[6].x.
 // Multiplies the baseColor texture alpha and material opacity in alphaMode
 // mask/blend. Returns 1 when absent, so legacy alpha behavior is unchanged.
 fn sampleAlphaTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 17u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let alphaIdx = i32(materialTexDescriptors[base + 6u].x);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 18u)) { return 1.0; }
+  let alphaIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 6u].x,
+    textureNumLayers(materialTexturesLinear),
+  );
   if (alphaIdx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ALPHA, materialTexDescriptors[base + 11u].zw, materialTexDescriptors[base + 17u].zw, MATERIAL_TEX_MIP_ALPHA).r, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ALPHA, materialTexDescriptors[base + 11u].zw, materialTexDescriptors[base + 17u].zw, MATERIAL_TEX_MIP_ALPHA);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).r, 0.0, 1.0);
 }
 
 // Transmission map (LINEAR scalar data) — descriptor vec4[6].y.
 // Multiplies MaterialSpec.transmission using glTF KHR_materials_transmission's
 // R channel. Returns 1 when absent, so scalar-only transmission is unchanged.
 fn sampleTransmissionTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 18u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let transmissionIdx = i32(materialTexDescriptors[base + 6u].y);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 19u)) { return 1.0; }
+  let transmissionIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + 6u].y,
+    textureNumLayers(materialTexturesLinear),
+  );
   if (transmissionIdx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_TRANSMISSION, materialTexDescriptors[base + 12u].xy, materialTexDescriptors[base + 18u].xy, MATERIAL_TEX_MIP_TRANSMISSION).r, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_TRANSMISSION, materialTexDescriptors[base + 12u].xy, materialTexDescriptors[base + 18u].xy, MATERIAL_TEX_MIP_TRANSMISSION);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).r, 0.0, 1.0);
 }
 
 // KHR_materials_volume thicknessTexture (LINEAR scalar data) — descriptor
 // vec4[71].x, sampled from G per glTF. Returns -1 when absent so callers can
 // distinguish "no map" from a legitimate zero-thickness texel.
 fn sampleVolumeThicknessTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_THICKNESS + 1u >= arrayLength(&materialTexDescriptors)) { return -1.0; }
-  let thicknessIdx = i32(materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].x);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) {
+    return -1.0;
+  }
+  let thicknessIdx = materialTextureLayerIndex(
+    materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].x,
+    textureNumLayers(materialTexturesLinear),
+  );
   if (thicknessIdx < 0) { return -1.0; }
-  return clamp(sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].yz, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS_WRAP].xy, MATERIAL_TEX_MIP_THICKNESS).g, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].yz, materialTexDescriptors[base + MATERIAL_TEX_THICKNESS_WRAP].xy, MATERIAL_TEX_MIP_THICKNESS);
+  if (!sample.valid) { return -1.0; }
+  return clamp(sample.value.g, 0.0, 1.0);
+}
+
+// Decode the material at a concrete represented boundary and apply the
+// KHR_materials_volume thickness map exactly as an ordinary surface hit does.
+// Containment reconstruction uses the unmatched exit hit, so retaining its
+// triangle, barycentrics, and instance is required for start-inside parity.
+fn materialAtOpticalBoundary(
+  matId: u32,
+  triIndex: u32,
+  baryVW: vec2f,
+  instanceIndex: u32,
+) -> DecodedMaterial {
+  var mat = decodeMaterial(matId);
+  let thicknessSample = sampleVolumeThicknessTexture(
+    matId, triIndex, baryVW, instanceIndex,
+  );
+  if (thicknessSample >= 0.0 && mat.hasVolumeThickness) {
+    mat.volumeThickness = max(mat.volumeThickness * thicknessSample, 0.0);
+  }
+  return mat;
 }
 
 // Extension-lobe map samplers. Mirrors pt-webgl2/glTF channel conventions:
 // clearcoat R, clearcoatRoughness G, sheenColor RGB, sheenRoughness A,
 // iridescence R, iridescenceThickness G, specularColor RGB, specularIntensity A.
 fn sampleClearcoatTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].x);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return 1.0; }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].x, textureNumLayers(materialTexturesLinear));
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_CLEARCOAT, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].xy, MATERIAL_TEX_MIP_CLEARCOAT).r, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_CLEARCOAT, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].xy, MATERIAL_TEX_MIP_CLEARCOAT);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).r, 0.0, 1.0);
 }
 
 fn sampleClearcoatRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].y);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return 1.0; }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].y, textureNumLayers(materialTexturesLinear));
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].zw, MATERIAL_TEX_MIP_CLEARCOAT_ROUGHNESS).g, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_CLEARCOAT_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP].zw, MATERIAL_TEX_MIP_CLEARCOAT_ROUGHNESS);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).g, 0.0, 1.0);
 }
 
 fn sampleSheenColorTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec3f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return vec3f(1.0); }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].z);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return vec3f(1.0); }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].z, textureNumLayers(materialTextures));
   if (idx < 0) { return vec3f(1.0); }
-  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SHEEN_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].xy, MATERIAL_TEX_MIP_SHEEN_COLOR).rgb, vec3f(0.0), vec3f(1.0));
+  let sample = sampleMaterialLayer(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SHEEN_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].xy, MATERIAL_TEX_MIP_SHEEN_COLOR);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).rgb, vec3f(0.0), vec3f(1.0));
 }
 
 fn sampleSheenRoughnessTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].w);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return 1.0; }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].w, textureNumLayers(materialTexturesLinear));
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SHEEN_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].zw, MATERIAL_TEX_MIP_SHEEN_ROUGHNESS).a, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SHEEN_ROUGHNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 1u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 1u].zw, MATERIAL_TEX_MIP_SHEEN_ROUGHNESS);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).a, 0.0, 1.0);
 }
 
 fn sampleIridescenceTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].x);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return 1.0; }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].x, textureNumLayers(materialTexturesLinear));
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_IRIDESCENCE, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].xy, MATERIAL_TEX_MIP_IRIDESCENCE).r, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_IRIDESCENCE, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].xy, MATERIAL_TEX_MIP_IRIDESCENCE);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).r, 0.0, 1.0);
 }
 
 fn sampleIridescenceThicknessTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return -1.0; }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].y);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return -1.0; }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].y, textureNumLayers(materialTexturesLinear));
   if (idx < 0) { return -1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].zw, MATERIAL_TEX_MIP_IRIDESCENCE_THICKNESS).g, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_IRIDESCENCE_THICKNESS, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 2u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 2u].zw, MATERIAL_TEX_MIP_IRIDESCENCE_THICKNESS);
+  if (!sample.valid) { return -1.0; }
+  return clamp(sample.value.g, 0.0, 1.0);
 }
 
 fn sampleSpecularColorTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> vec3f {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return vec3f(1.0); }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].z);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return vec3f(1.0); }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].z, textureNumLayers(materialTextures));
   if (idx < 0) { return vec3f(1.0); }
-  return clamp(sampleMaterialLayer(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SPECULAR_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].xy, MATERIAL_TEX_MIP_SPECULAR_COLOR).rgb, vec3f(0.0), vec3f(1.0));
+  let sample = sampleMaterialLayer(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SPECULAR_COLOR, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].xy, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].xy, MATERIAL_TEX_MIP_SPECULAR_COLOR);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).rgb, vec3f(0.0), vec3f(1.0));
 }
 
 fn sampleSpecularIntensityTexture(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32 {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + MATERIAL_TEX_UV_SPECULAR_INTENSITY + 1u >= arrayLength(&materialTexDescriptors)) { return 1.0; }
-  let idx = i32(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].w);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, MATERIAL_TEX_VEC4_STRIDE)) { return 1.0; }
+  let idx = materialTextureLayerIndex(materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].w, textureNumLayers(materialTexturesLinear));
   if (idx < 0) { return 1.0; }
-  return clamp(sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SPECULAR_INTENSITY, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].zw, MATERIAL_TEX_MIP_SPECULAR_INTENSITY).a, 0.0, 1.0);
+  let sample = sampleMaterialLayerLinear(idx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_SPECULAR_INTENSITY, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_UV_FIT + 3u].zw, materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_WRAP + 3u].zw, MATERIAL_TEX_MIP_SPECULAR_INTENSITY);
+  return clamp(materialTextureValueOr(sample, vec4f(1.0)).a, 0.0, 1.0);
 }
 
 // P2 alpha test — should this hit be treated as TRANSPARENT (the ray passes
@@ -1512,18 +2069,26 @@ fn sampleSpecularIntensityTexture(matId: u32, triIndex: u32, baryVW: vec2f, inst
 // blends/cuts by opacity).
 // Ref: glTF 2.0 §3.9.4 (alphaMode); PBR screen-door / stochastic transparency.
 fn alphaTestPassThrough(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32, rng: ptr<function, PtRngState>) -> bool {
-  let base = matId * MATERIAL_TEX_VEC4_STRIDE;
-  if (base + 3u >= arrayLength(&materialTexDescriptors)) { return false; }
-  let alphaMode = u32(materialTexDescriptors[base + 1u].x);
+  let base = materialTextureDescriptorBase(matId);
+  if (!materialTextureDescriptorSpanValid(base, 0u, 4u)) { return false; }
+  let alphaMode = materialTextureExactU32(materialTexDescriptors[base + 1u].x, 3u);
+  if (alphaMode == 0xffffffffu) { return false; }
   if (alphaMode == 0u) { return false; } // opaque — byte-identical
   let alphaCutoff = materialTexDescriptors[base + 1u].y;
   let opacity = materialTexDescriptors[base + 1u].z;
+  if (!materialTextureFiniteF32(alphaCutoff) || !materialTextureFiniteF32(opacity)) {
+    return false;
+  }
   let alpha = sampleBaseColorTexture(matId, triIndex, baryVW, instanceIndex).a *
     sampleVertexColor(triIndex, baryVW).a *
     sampleAlphaTexture(matId, triIndex, baryVW, instanceIndex) *
     opacity;
+  if (!materialTextureFiniteF32(alpha)) { return false; }
   if (alphaMode == 1u) { return alpha < alphaCutoff; }   // mask
-  return rand_f32(rng) >= alpha;                          // blend (stochastic)
+  let representedOpacity = represented_bernoulli_probability_f32(
+    clamp(alpha, 0.0, 1.0),
+  );
+  return !(rand_f32(rng) < representedOpacity);           // blend (stochastic)
 }
 `;
 
@@ -1616,7 +2181,62 @@ const SPECTRAL_SAMPLE_COUNT = 32u;
 // use these so the stride lives in one place rather than being repeated at five sites.
 const POINT_LIGHT_VEC4_STRIDE = 3u;
 const SPOT_LIGHT_VEC4_STRIDE = 4u;
+const MATERIAL_INVALID_INDEX = 0xffffffffu;
 ${PT_WEBGPU_POINT_SPOT_ATTENUATION_WGSL}
+
+fn materialCheckedAddU32(a: u32, b: u32) -> u32 {
+  if (a > MATERIAL_INVALID_INDEX - b) { return MATERIAL_INVALID_INDEX; }
+  return a + b;
+}
+
+fn materialCheckedMulU32(a: u32, b: u32) -> u32 {
+  if (b != 0u && a > MATERIAL_INVALID_INDEX / b) {
+    return MATERIAL_INVALID_INDEX;
+  }
+  return a * b;
+}
+
+fn materialSpanValid(base: u32, count: u32, length: u32) -> bool {
+  if (base == MATERIAL_INVALID_INDEX || base > length) { return false; }
+  return count <= length - base;
+}
+
+fn materialRecordFiniteF32(value: f32) -> bool {
+  return value == value && abs(value) <= 3.402823466e+38;
+}
+
+fn materialRecordExactU32(value: f32, upperExclusive: u32) -> u32 {
+  if (
+    !materialRecordFiniteF32(value) ||
+    value < 0.0 ||
+    value != floor(value) ||
+    value > 16777216.0 ||
+    value >= f32(upperExclusive)
+  ) {
+    return MATERIAL_INVALID_INDEX;
+  }
+  return u32(value);
+}
+
+fn materialRecordBase(matId: u32) -> u32 {
+  let base = materialCheckedMulU32(matId, MATERIAL_VEC4_STRIDE);
+  if (!materialSpanValid(base, MATERIAL_VEC4_STRIDE, arrayLength(&materials))) {
+    return MATERIAL_INVALID_INDEX;
+  }
+  return base;
+}
+
+fn materialRecordIndex(base: u32, offset: u32) -> u32 {
+  if (base == MATERIAL_INVALID_INDEX || offset >= MATERIAL_VEC4_STRIDE) {
+    return MATERIAL_INVALID_INDEX;
+  }
+  return materialCheckedAddU32(base, offset);
+}
+
+fn materialRecordVec4Or(index: u32, fallback: vec4f) -> vec4f {
+  if (index >= arrayLength(&materials)) { return fallback; }
+  return materials[index];
+}
 
 // Shared BSDF / light-sample triple. Bundles the {direction, pdf, value}
 // outputs every sampler in this kernel produces, so callers can hand a single
@@ -1637,10 +2257,13 @@ struct BsdfSample {
 }
 
 fn materialScalar(matId: u32, scalarOffset: u32) -> f32 {
-  let scalarIndex = matId * MATERIAL_SCALAR_STRIDE + scalarOffset;
-  let vecIndex = scalarIndex / 4u;
-  if (vecIndex >= arrayLength(&materials)) { return 0.0; }
-  let c = scalarIndex % 4u;
+  if (scalarOffset >= MATERIAL_SCALAR_STRIDE) { return 0.0; }
+  let recordBase = materialRecordBase(matId);
+  if (recordBase == MATERIAL_INVALID_INDEX) { return 0.0; }
+  let vecOffset = scalarOffset / 4u;
+  let vecIndex = materialRecordIndex(recordBase, vecOffset);
+  if (vecIndex == MATERIAL_INVALID_INDEX) { return 0.0; }
+  let c = scalarOffset % 4u;
   let v = materials[vecIndex];
   if (c == 0u) { return v.x; }
   if (c == 1u) { return v.y; }
@@ -1660,6 +2283,7 @@ fn materialStorageScalar(scalarIndex: u32) -> f32 {
 }
 
 fn sampleMaterialSpectralMu(matId: u32, wavelength01: f32) -> f32 {
+  if (!materialRecordFiniteF32(wavelength01)) { return 0.0; }
   let clamped = clamp(wavelength01, 0.0, 1.0);
   let f = clamped * f32(SPECTRAL_SAMPLE_COUNT - 1u);
   let i0 = u32(floor(f));
@@ -1712,15 +2336,28 @@ fn thinFilmCascade(a: ThinFilmScatter, b: ThinFilmScatter) -> ThinFilmScatter {
 }
 
 fn thinFilmLayerN(matId: u32, layerIndex: u32) -> vec2f {
-  let base = THIN_FILM_SCALAR_BASE + layerIndex * 3u;
+  if (layerIndex >= THIN_FILM_LAYER_LIMIT) { return vec2f(1.0, 0.0); }
+  let layerOffset = materialCheckedMulU32(layerIndex, 3u);
+  let base = materialCheckedAddU32(THIN_FILM_SCALAR_BASE, layerOffset);
+  let extinctionOffset = materialCheckedAddU32(base, 2u);
+  if (extinctionOffset == MATERIAL_INVALID_INDEX || extinctionOffset >= MATERIAL_SCALAR_STRIDE) {
+    return vec2f(1.0, 0.0);
+  }
   return vec2f(
     max(materialScalar(matId, base), 1.0),
-    max(materialScalar(matId, base + 2u), 0.0),
+    max(materialScalar(matId, extinctionOffset), 0.0),
   );
 }
 fn thinFilmLayerThicknessNm(matId: u32, layerIndex: u32) -> f32 {
+  if (layerIndex >= THIN_FILM_LAYER_LIMIT) { return 0.0; }
+  let layerOffset = materialCheckedMulU32(layerIndex, 3u);
+  let base = materialCheckedAddU32(THIN_FILM_SCALAR_BASE, layerOffset);
+  let thicknessOffset = materialCheckedAddU32(base, 1u);
+  if (thicknessOffset == MATERIAL_INVALID_INDEX || thicknessOffset >= MATERIAL_SCALAR_STRIDE) {
+    return 0.0;
+  }
   return max(materialScalar(
-    matId, THIN_FILM_SCALAR_BASE + layerIndex * 3u + 1u,
+    matId, thicknessOffset,
   ), 0.0);
 }
 fn thinFilmMediumN(
@@ -1977,26 +2614,56 @@ fn thinFilmTransportRt(
   } else {
     lutPosition = sqrt(cosTheta) * f32(THIN_FILM_RGB_LUT_BINS - 1u);
   }
-  let bin0 = u32(floor(lutPosition));
-  let bin1 = min(bin0 + 1u, THIN_FILM_RGB_LUT_BINS - 1u);
+  if (!materialRecordFiniteF32(lutPosition)) {
+    return thinFilmAbsorbedTransportRt();
+  }
+  let bin0 = materialRecordExactU32(floor(lutPosition), THIN_FILM_RGB_LUT_BINS);
+  if (bin0 == MATERIAL_INVALID_INDEX) {
+    return thinFilmAbsorbedTransportRt();
+  }
+  let bin1 = min(
+    materialCheckedAddU32(bin0, 1u),
+    THIN_FILM_RGB_LUT_BINS - 1u,
+  );
   let alpha = lutPosition - f32(bin0);
   let directionOffset = select(8u, 0u, film.frontFace);
-  let descriptorIndex = film.matId * MATERIAL_VEC4_STRIDE + 28u;
-  if (descriptorIndex >= arrayLength(&materials)) {
+  let materialBase = materialRecordBase(film.matId);
+  let descriptorIndex = materialRecordIndex(materialBase, 28u);
+  if (descriptorIndex == MATERIAL_INVALID_INDEX) {
     return thinFilmAbsorbedTransportRt();
   }
-  // The CPU validates this numeric f32 as an exact non-negative integer below
-  // 2^24 before upload; conversion back to u32 is therefore bit-exact.
-  let lutBaseVec4 = u32(round(max(materials[descriptorIndex].z, 0.0)));
-  let lutEndScalar = lutBaseVec4 * 4u +
-    THIN_FILM_RGB_LUT_BINS * THIN_FILM_RGB_LUT_SCALARS_PER_BIN;
-  if (lutBaseVec4 == 0u || lutEndScalar > arrayLength(&materials) * 4u) {
+  let lutBaseVec4 = materialRecordExactU32(
+    materials[descriptorIndex].z,
+    arrayLength(&materials),
+  );
+  let scalarCount = materialCheckedMulU32(arrayLength(&materials), 4u);
+  let lutBaseScalar = materialCheckedMulU32(lutBaseVec4, 4u);
+  let lutScalarCount = materialCheckedMulU32(
+    THIN_FILM_RGB_LUT_BINS,
+    THIN_FILM_RGB_LUT_SCALARS_PER_BIN,
+  );
+  if (
+    lutBaseVec4 == MATERIAL_INVALID_INDEX ||
+    lutBaseVec4 == 0u ||
+    scalarCount == MATERIAL_INVALID_INDEX ||
+    lutScalarCount == MATERIAL_INVALID_INDEX ||
+    !materialSpanValid(lutBaseScalar, lutScalarCount, scalarCount)
+  ) {
     return thinFilmAbsorbedTransportRt();
   }
-  let base0 = lutBaseVec4 * 4u +
-    bin0 * THIN_FILM_RGB_LUT_SCALARS_PER_BIN + directionOffset;
-  let base1 = lutBaseVec4 * 4u +
-    bin1 * THIN_FILM_RGB_LUT_SCALARS_PER_BIN + directionOffset;
+  let bin0Offset = materialCheckedMulU32(bin0, THIN_FILM_RGB_LUT_SCALARS_PER_BIN);
+  let bin1Offset = materialCheckedMulU32(bin1, THIN_FILM_RGB_LUT_SCALARS_PER_BIN);
+  let base0 = materialCheckedAddU32(
+    lutBaseScalar,
+    materialCheckedAddU32(bin0Offset, directionOffset),
+  );
+  let base1 = materialCheckedAddU32(
+    lutBaseScalar,
+    materialCheckedAddU32(bin1Offset, directionOffset),
+  );
+  if (!materialSpanValid(base0, 8u, scalarCount) || !materialSpanValid(base1, 8u, scalarCount)) {
+    return thinFilmAbsorbedTransportRt();
+  }
   out.reflectance = mix(vec3f(
     materialStorageScalar(base0),
     materialStorageScalar(base0 + 1u),
@@ -2261,6 +2928,13 @@ struct DecodedMaterial {
   spectralAvgMu: f32,
   spectralSampleCount: u32,
   dispersionAbbe: f32,
+  // Authored optical role.  Texture samples never change boundary topology:
+  // a material is either a closed bulk-medium boundary or a virtual zero-
+  // thickness two-interface sheet for the lifetime of a published scene.
+  isBulkMedium: bool,
+  isThinSheet: bool,
+  // Compatibility alias used by older call sites while the transport kernels
+  // are migrated.  This is exactly isBulkMedium, never mapped transmission.
   isTranslucent: bool,
   // WS4 — Beer-Lambert absorption coefficient σ_a (per channel), derived host-side
   // from attenuationColor/attenuationDistance. hasSigmaA distinguishes a clear
@@ -2384,41 +3058,56 @@ fn activeLayerWeightRgb(layerRgb: vec3f, heroLambda: f32, spectralEnabled: bool)
 }
 
 fn decodeMaterial(matId: u32) -> DecodedMaterial {
-  let m0Index = matId * MATERIAL_VEC4_STRIDE;
-  let m1Index = m0Index + 1u;
-  let m2Index = m0Index + 2u;
-  let m3Index = m0Index + 3u;
-  let m4Index = m0Index + 4u;
-  let m5Index = m0Index + 5u;
-  let m6Index = m0Index + 6u;
-  let m19Index = m0Index + 21u;
-  let m22Index = m0Index + 22u; // WS4 σ_a vec4
-  let m23Index = m0Index + 23u; // H52 clearcoat/sheen vec4
-  let m24Index = m0Index + 24u; // H52 sheenColor + iridescence vec4
-  let m25Index = m0Index + 25u; // H52 iridescence params vec4
-  let m26Index = m0Index + 26u; // A3 baseColor Jakob-Hanika coeffs + material flags vec4
-  let m27Index = m0Index + 27u; // SPEC-01 specularColor.rgb + specularIntensity vec4
-  let m28Index = m0Index + 28u; // VOL-THICKNESS thicknessFactor + presence flag vec4
-  let m0 = select(vec4f(0.8, 0.8, 0.8, 0.6), materials[m0Index], m0Index < arrayLength(&materials));
-  let m1 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m1Index], m1Index < arrayLength(&materials));
-  let m2 = select(vec4f(0.0, 1.5, 0.0, 0.0), materials[m2Index], m2Index < arrayLength(&materials));
-  let m3 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m3Index], m3Index < arrayLength(&materials));
-  let m4 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m4Index], m4Index < arrayLength(&materials));
-  let m5 = select(vec4f(1.0, 1.0, 1.0, -1.0), materials[m5Index], m5Index < arrayLength(&materials));
-  let m6 = select(vec4f(0.0, 0.0, 1.0, 0.0), materials[m6Index], m6Index < arrayLength(&materials));
-  let m19 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m19Index], m19Index < arrayLength(&materials));
-  let m22 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m22Index], m22Index < arrayLength(&materials));
+  let m0Index = materialRecordBase(matId);
+  let m1Index = materialRecordIndex(m0Index, 1u);
+  let m2Index = materialRecordIndex(m0Index, 2u);
+  let m3Index = materialRecordIndex(m0Index, 3u);
+  let m4Index = materialRecordIndex(m0Index, 4u);
+  let m5Index = materialRecordIndex(m0Index, 5u);
+  let m6Index = materialRecordIndex(m0Index, 6u);
+  let m19Index = materialRecordIndex(m0Index, 21u);
+  let m22Index = materialRecordIndex(m0Index, 22u); // WS4 σ_a vec4
+  let m23Index = materialRecordIndex(m0Index, 23u); // H52 clearcoat/sheen vec4
+  let m24Index = materialRecordIndex(m0Index, 24u); // H52 sheenColor + iridescence vec4
+  let m25Index = materialRecordIndex(m0Index, 25u); // H52 iridescence params vec4
+  let m26Index = materialRecordIndex(m0Index, 26u); // A3 spectral coeffs + flags
+  let m27Index = materialRecordIndex(m0Index, 27u); // SPEC-01 specular factors
+  let m28Index = materialRecordIndex(m0Index, 28u); // VOL-THICKNESS clamp
+  let m0 = materialRecordVec4Or(m0Index, vec4f(0.8, 0.8, 0.8, 0.6));
+  let m1 = materialRecordVec4Or(m1Index, vec4f(0.0));
+  let m2 = materialRecordVec4Or(m2Index, vec4f(0.0, 1.5, 0.0, 0.0));
+  let m3 = materialRecordVec4Or(m3Index, vec4f(0.0));
+  let m4 = materialRecordVec4Or(m4Index, vec4f(1.0, 1.0, 1.0, -1.0));
+  let m5 = materialRecordVec4Or(m5Index, vec4f(1.0, 1.0, 1.0, -1.0));
+  let m6 = materialRecordVec4Or(m6Index, vec4f(0.0, 0.0, 1.0, 0.0));
+  let m19 = materialRecordVec4Or(m19Index, vec4f(0.0));
+  let m22 = materialRecordVec4Or(m22Index, vec4f(0.0));
   // H52: defaults for all three lobes are 0 (zero-default = numerically identical to pre-H52 path).
-  let m23 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m23Index], m23Index < arrayLength(&materials));
-  let m24 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m24Index], m24Index < arrayLength(&materials));
-  let m25 = select(vec4f(1.3, 100.0, 400.0, 0.0), materials[m25Index], m25Index < arrayLength(&materials));
+  let m23 = materialRecordVec4Or(m23Index, vec4f(0.0));
+  let m24 = materialRecordVec4Or(m24Index, vec4f(0.0));
+  let m25 = materialRecordVec4Or(m25Index, vec4f(1.3, 100.0, 400.0, 0.0));
   // A3 default: a flat grey (c0=0,c1=0,c2=0 ⇒ x=0 ⇒ S≡½) with flag 0 so an
   // unpacked material is treated as having no spectral curve (RGB fallback).
-  let m26 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m26Index], m26Index < arrayLength(&materials));
+  let m26 = materialRecordVec4Or(m26Index, vec4f(0.0));
   // SPEC-01 default: KHR_materials_specular no-op (dielectric F0 = 0.04).
-  let m27 = select(vec4f(1.0, 1.0, 1.0, 1.0), materials[m27Index], m27Index < arrayLength(&materials));
+  let m27 = materialRecordVec4Or(m27Index, vec4f(1.0));
   // VOL-THICKNESS default: no slab clamp, use geometric path length.
-  let m28 = select(vec4f(0.0, 0.0, 0.0, 0.0), materials[m28Index], m28Index < arrayLength(&materials));
+  let m28 = materialRecordVec4Or(m28Index, vec4f(0.0));
+  let thinFilmLayerCountDecoded = materialRecordExactU32(
+    m6.y,
+    THIN_FILM_LAYER_LIMIT + 1u,
+  );
+  let thinFilmLayerCountValid = thinFilmLayerCountDecoded != MATERIAL_INVALID_INDEX;
+  let spectralSampleCountDecoded = materialRecordExactU32(
+    m19.w,
+    SPECTRAL_SAMPLE_COUNT + 1u,
+  );
+  let materialFlagsDecoded = materialRecordExactU32(m26.w, 8u);
+  let materialFlags = select(
+    materialFlagsDecoded,
+    0u,
+    materialFlagsDecoded == MATERIAL_INVALID_INDEX,
+  );
   var mat: DecodedMaterial;
   mat.baseColor = m0.rgb;
   mat.roughness = clamp(m0.w, 0.0, 1.0);
@@ -2440,12 +3129,21 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.frontLayerRoughness = m4.w;
   mat.backLayerTx = m5.rgb;
   mat.backLayerRoughness = m5.w;
-  mat.thinFilmEnabled = m6.x > 0.5;
-  mat.thinFilmLayerCountU = u32(max(m6.y, 0.0));
+  mat.thinFilmEnabled = materialRecordFiniteF32(m6.x) &&
+    m6.x > 0.5 && thinFilmLayerCountValid;
+  mat.thinFilmLayerCountU = select(
+    thinFilmLayerCountDecoded,
+    0u,
+    !thinFilmLayerCountValid,
+  );
   mat.thinFilmIncidentIor = max(m6.z, 1.0);
   mat.thinFilmAngleDependent = m6.w > 0.5;
   mat.spectralAvgMu = max(m19.x, 0.0);
-  mat.spectralSampleCount = u32(max(m19.w, 0.0));
+  mat.spectralSampleCount = select(
+    spectralSampleCountDecoded,
+    0u,
+    spectralSampleCountDecoded == MATERIAL_INVALID_INDEX,
+  );
   mat.dispersionAbbe = max(m19.y, 0.0);
   mat.sigmaA = vec3f(max(m22.x, 0.0), max(m22.y, 0.0), max(m22.z, 0.0));
   mat.hasSigmaA = m22.w > 0.5;
@@ -2461,24 +3159,31 @@ fn decodeMaterial(matId: u32) -> DecodedMaterial {
   mat.iridescenceThicknessMax = max(m25.z, 0.0);
   // A3 — baseColor spectral reflectance (Jakob-Hanika sigmoid coeffs).
   mat.spectralReflCoeffs = m26.xyz;
-  mat.hasSpectralReflectance = (u32(max(m26.w, 0.0)) & 1u) != 0u;
-  mat.isUnlit = (u32(max(m26.w, 0.0)) & 2u) != 0u;
-  mat.doubleSided = (u32(max(m26.w, 0.0)) & 4u) != 0u;
+  mat.hasSpectralReflectance = (materialFlags & 1u) != 0u;
+  mat.isUnlit = (materialFlags & 2u) != 0u;
+  mat.doubleSided = (materialFlags & 4u) != 0u;
 	  mat.specularColor = max(m27.rgb, vec3f(0.0));
 	  mat.specularIntensity = clamp(m27.w, 0.0, 1.0);
 	  mat.volumeThickness = max(m28.x, 0.0);
 	  mat.hasVolumeThickness = m28.y > 0.5;
-  // A material has a PARTICIPATING MEDIUM the eye path must traverse when it is
-  // transmissive AND has either scattering (σ_s) OR Beer-Lambert absorption
-  // (σ_a from attenuationColor / a spectral-attenuation curve). The σ_a-only case
-  // is exactly chromatic stained glass — pure absorption, no scattering — whose
-  // attenuationColor was packed but UNCONSUMED while this gate required σ_s > 0
-  // (the medium walk + enteredMedium/exitedMedium never fired). V23, 2026-05-29.
+  // Canonical authored bulk predicate, mirrored by shared-bvh topology
+  // validation.  Positive base thickness alone is a real clear dielectric
+  // volume (it still changes IOR).  A clear attenuation payload [1,1,1] does
+  // not create bulk, while spectral-attenuation presence intentionally does.
+  // scatteringRgb is already the canonical effective value: the host copies
+  // the scalar fallback into RGB only when an RGB override is absent.
   let hasScattering =
-    mat.scatteringCoeff > 0.0 ||
     max(mat.scatteringRgb.x, max(mat.scatteringRgb.y, mat.scatteringRgb.z)) > 0.0;
-  mat.isTranslucent =
-    mat.transmission > 0.0 && (hasScattering || mat.hasSigmaA || mat.hasSpectralAttenuation);
+  let hasAbsorption =
+    max(mat.sigmaA.x, max(mat.sigmaA.y, mat.sigmaA.z)) > 0.0;
+  mat.isBulkMedium = mat.transmission > 0.0 && (
+    mat.volumeThickness > 0.0 ||
+    hasScattering ||
+    hasAbsorption ||
+    mat.hasSpectralAttenuation
+  );
+  mat.isThinSheet = mat.transmission > 0.0 && !mat.isBulkMedium;
+  mat.isTranslucent = mat.isBulkMedium;
   return mat;
 }
 
@@ -2492,10 +3197,68 @@ fn materialAcceptsSidedHit(matId: u32, isFrontFace: bool) -> bool {
   return mat.doubleSided || mat.transmission > 0.0;
 }
 
-	fn materialAttenuationDistance(segmentDistance: f32, mat: DecodedMaterial) -> f32 {
-	  let d = max(segmentDistance, 0.0);
-	  return select(d, min(d, max(mat.volumeThickness, 0.0)), mat.hasVolumeThickness);
-	}
+// Endpoint-exact Beer--Lambert transport.  Multiplying IEEE infinity by zero
+// produces NaN, so the identity endpoints must be selected before the product.
+// Negative/NaN inputs are malformed and fail dark.  Positive infinity is an
+// authored, useful endpoint: zero extinction remains identity, any positive
+// extinction becomes zero transmittance.
+fn materialBeerLane(sigma: f32, distance: f32) -> f32 {
+  if (!(sigma >= 0.0) || !(distance >= 0.0)) { return 0.0; }
+  if (distance == 0.0 || sigma == 0.0) { return 1.0; }
+  if (sigma > PT_F32_MAX || distance > PT_F32_MAX) { return 0.0; }
+  return exp(-sigma * distance);
+}
+
+fn materialBeer(sigma: vec3f, distance: f32) -> vec3f {
+  return vec3f(
+    materialBeerLane(sigma.x, distance),
+    materialBeerLane(sigma.y, distance),
+    materialBeerLane(sigma.z, distance),
+  );
+}
+
+fn materialFiniteMajorant(sigma: vec3f) -> f32 {
+  var majorant = 0.0;
+  if (sigma.x > 0.0 && sigma.x <= PT_F32_MAX) { majorant = max(majorant, sigma.x); }
+  if (sigma.y > 0.0 && sigma.y <= PT_F32_MAX) { majorant = max(majorant, sigma.y); }
+  if (sigma.z > 0.0 && sigma.z <= PT_F32_MAX) { majorant = max(majorant, sigma.z); }
+  return majorant;
+}
+
+// Marginal proposal terms for an equal-weight RGB channel-mixture free flight.
+// The no-collision weight T_c / mean(T) and collision weight
+// sigmaS_c*T_c / mean(sigmaT*T) are each bounded by three. This avoids the
+// unbounded max-majorant survival ratio while remaining exactly unbiased.
+fn materialRgbSurvivalPdf(sigmaT: vec3f, distance: f32) -> f32 {
+  let t = materialBeer(sigmaT, distance);
+  return (t.x + t.y + t.z) * (1.0 / 3.0);
+}
+
+fn materialExtinctionDensityLane(sigma: f32, distance: f32) -> f32 {
+  if (!(sigma >= 0.0) || !(distance >= 0.0)) { return 0.0; }
+  if (sigma == 0.0) { return 0.0; }
+  // An infinite-rate channel is handled as an immediate absorbing/null event
+  // before this finite-distance density is evaluated.
+  if (sigma > PT_F32_MAX || distance > PT_F32_MAX) { return 0.0; }
+  return sigma * materialBeerLane(sigma, distance);
+}
+
+fn materialRgbCollisionPdf(sigmaT: vec3f, distance: f32) -> f32 {
+  return (
+    materialExtinctionDensityLane(sigmaT.x, distance) * (1.0 / 3.0) +
+    materialExtinctionDensityLane(sigmaT.y, distance) * (1.0 / 3.0) +
+    materialExtinctionDensityLane(sigmaT.z, distance) * (1.0 / 3.0)
+  );
+}
+
+fn materialAttenuationDistance(segmentDistance: f32, mat: DecodedMaterial) -> f32 {
+  if (!(segmentDistance >= 0.0)) { return -1.0; }
+  return select(
+    segmentDistance,
+    min(segmentDistance, mat.volumeThickness),
+    mat.hasVolumeThickness,
+  );
+}
 	`;
 
 /** Full trace pass — 3 bind groups (≤10 storage buffers per group). */

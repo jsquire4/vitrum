@@ -15,12 +15,12 @@ export const GET_SURFACE_RECORD_BASIC_GLSL = /* glsl */ `
     if ( material.side != 0.0 && surfaceHit.side != material.side ) {
       return SKIP_SURFACE;
     }
-    vec3 normal = normalize( textureSampleBarycoord(
+    vec3 sampledNormal = textureSampleBarycoord(
       attributesArray, ATTR_NORMAL, surfaceHit.barycoord, surfaceHit.faceIndices.xyz
-    ).xyz );
-    if ( length( normal ) <= 1e-6 ) {
-      normal = normalize( surfaceHit.faceNormal * surfaceHit.side );
-    }
+    ).xyz;
+    vec3 normal = length( sampledNormal ) > 1e-6
+      ? normalize( sampledNormal )
+      : surfaceHit.faceNormal;
     normal *= surfaceHit.side;
 
     vec3 albedo = material.color;
@@ -35,12 +35,16 @@ export const GET_SURFACE_RECORD_BASIC_GLSL = /* glsl */ `
     surf.frontFace = true;
     surf.normal = normal;
     surf.normalBasis = getBasisFromNormal( normal );
+		surf.oppositeNormal = - normal;
+		surf.oppositeNormalBasis = getBasisFromNormal( surf.oppositeNormal );
     surf.ior = material.ior;
-    surf.eta = 1.0 / material.ior;
+    surf.eta = material.ior == 0.0 ? 0.0 : 1.0 / material.ior;
     surf.f0 = iorRatioToF0( surf.eta );
     surf.roughness = clamp( material.roughness, 0.0, 1.0 );
     surf.roughness *= surf.roughness;
     surf.filteredRoughness = applyFilteredGlossy( surf.roughness, accumulatedRoughness );
+		surf.oppositeRoughness = surf.roughness;
+		surf.oppositeFilteredRoughness = surf.filteredRoughness;
     surf.metalness = clamp( material.metalness, 0.0, 1.0 );
     surf.color = albedo;
     surf.rgbColor = albedo;
@@ -59,6 +63,8 @@ export const GET_SURFACE_RECORD_BASIC_GLSL = /* glsl */ `
     surf.hasSpectralAttenuation = false;
     surf.activeLayerTransmission = vec3( 1.0 );
     surf.hasActiveLayer = false;
+		surf.oppositeLayerTransmission = vec3( 1.0 );
+		surf.hasOppositeLayer = false;
     surf.materialIndex = materialIndex;
     surf.attenuationColor = vec3( 1.0 );
     surf.attenuationDistance = INFINITY;

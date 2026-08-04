@@ -20,6 +20,7 @@ import { OCTAHEDRAL_WGSL } from '@vitrum/shared-bvh';
 import { RAYS_PER_PROBE } from '../ddgiConstants.js';
 import { IRR_CELL, VIS_CELL } from '../ddgiAtlasLayout.js';
 import { DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED } from '../probeState.js';
+import { DDGI_ATLAS_CODEC_WGSL } from './ddgiAtlasCodec.wgsl.js';
 import { DDGI_SH_WGSL } from './ddgiSH.wgsl.js';
 
 // Common header shared by both shaders. IRR_CELL / VIS_CELL are interpolated
@@ -33,7 +34,6 @@ const RAYS_PER_PROBE: u32 = ${RAYS_PER_PROBE}u;
 const IRR_CELL:       u32 = ${IRR_CELL}u;
 const VIS_CELL:       u32 = ${VIS_CELL}u;
 const DDGI_MISS_DISTANCE: f32 = 1.0e19;
-const DDGI_VISIBILITY_MAX_MOMENT_DISTANCE: f32 = 255.0;
 const DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED: f32 = ${DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED};
 
 struct ProbeRay {
@@ -80,9 +80,10 @@ ${makeCommonHeader()}
 
 ${DDGI_SH_WGSL}
 
+${DDGI_ATLAS_CODEC_WGSL}
+
 @group(1) @binding(0) var irrPrev:   texture_2d<f32>;
-@group(1) @binding(1) var irrSamp:   sampler;
-@group(1) @binding(2) var irrOut:    texture_storage_2d<rgba16float, write>;
+@group(1) @binding(1) var irrOut:    texture_storage_2d<rgba16float, write>;
 
 fn irrAtlasCoord(probeIdx: u32, pixel: vec2u) -> vec2u {
   let STRIDE = IRR_CELL + 2u;
@@ -123,7 +124,10 @@ fn probeUpdateBlendIrradiance(
   let baseIdx = probeIdx * RAYS_PER_PROBE;
   let numRays = arrayLength(&rayResults);
   if (baseIdx >= numRays) { return; }
-  if (rayResults[baseIdx]._pad0 < 0.5) {
+  if (
+    !ddgiAtlasFiniteScalar(rayResults[baseIdx]._pad0) ||
+    rayResults[baseIdx]._pad0 < 0.5
+  ) {
     // Inactive probes publish conservative zero, bypassing temporal history.
     textureStore(irrOut, atlasCoord, vec4f(0.0, 0.0, 0.0, 1.0));
     return;
@@ -133,37 +137,59 @@ fn probeUpdateBlendIrradiance(
   // records are invalid samples for a relocated probe and are excluded from
   // both numerator and denominator. This prevents an embedded probe from being
   // dimmed merely because many of its rays were rejected.
-  var accum = vec3f(0.0);
+  // Keep a convex online mean instead of a raw sum. Every intermediate stays
+  // in the finite f32 envelope even when legal radiance approaches f32 max.
+  var projectedMean = vec3f(0.0);
   var validRayCount = 0u;
-  let minHitDistance =
-    gridParams.spacing * DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED;
+  let minHitDistance = ddgiAtlasSaturatingMul(
+    gridParams.spacing,
+    DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED,
+  );
   for (var r = 0u; r < RAYS_PER_PROBE; r = r + 1u) {
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
     let ray = rayResults[rIdx];
+    if (
+      !ddgiAtlasFiniteScalar(ray.hitDistance) ||
+      !ddgiAtlasFiniteVec3(ray.hitRadiance) ||
+      any(ray.hitRadiance < vec3f(0.0))
+    ) { continue; }
     if (ray.hitDistance < minHitDistance) { continue; }
+    let rayDirection = ddgiAtlasNormalizeOrZero(ray.direction);
+    if (all(rayDirection == vec3f(0.0))) { continue; }
     validRayCount = validRayCount + 1u;
-    let Y = ddgiShBasis(ray.direction);
-    accum = accum + ray.hitRadiance * Y[k];
+    let Y = ddgiShBasis(rayDirection);
+    let contribution = ddgiAtlasSaturatingMul3(ray.hitRadiance, Y[k]);
+    let inverseCount = 1.0 / f32(validRayCount);
+    projectedMean = ddgiAtlasSaturatingAdd3(
+      ddgiAtlasSaturatingMul3(projectedMean, 1.0 - inverseCount),
+      ddgiAtlasSaturatingMul3(contribution, inverseCount),
+    );
   }
   // Store the COSINE-CONVOLVED coefficient E_lm = A_l * c_k so the receiver eval
   // (sum_k E_lm * Y_k(n)) yields irradiance E directly. 4PI = 12.56637061436.
-  let coeff = select(
-    vec3f(0.0),
-    accum * (12.56637061436 / f32(max(validRayCount, 1u))) * ddgiShCosineA(k),
-    validRayCount > 0u,
+  let coeff = ddgiAtlasSaturatingMul3(
+    projectedMean,
+    12.56637061436 * ddgiShCosineA(k),
   );
 
-  // EMA read at the EXACT texel centre (bilinear collapses to the exact coeff)
-  // so the sampler binding stays USED and the layout:"auto" blend pipeline does
-  // not prune it (a pruned sampler desyncs the host bind group).
-  let iUv = (vec2f(atlasCoord) + vec2f(0.5)) /
-            vec2f(gridParams.irradianceAtlasW, gridParams.irradianceAtlasH);
-  let prev = textureSampleLevel(irrPrev, irrSamp, iUv, 0.0).rgb;
+  // Block-float exponent metadata is discrete: history must be loaded from the
+  // exact integer texel, decoded, blended in physical f32 space, then re-encoded.
+  let prevEncoded = textureLoad(irrPrev, vec2i(atlasCoord), 0);
+  var prev = vec3f(0.0);
+  if (ddgiAtlasIrradianceEncodingValid(prevEncoded)) {
+    prev = ddgiAtlasDecodeIrradiance(prevEncoded);
+  }
   // An all-invalid update must not retain stale active-probe radiance.
-  let hysteresis = select(0.0, blendParams.hysteresis, validRayCount > 0u);
-  let blended = mix(coeff, prev, hysteresis);
-  textureStore(irrOut, atlasCoord, vec4f(blended, 1.0));
+  var hysteresis = 0.0;
+  if (validRayCount > 0u && ddgiAtlasFiniteScalar(blendParams.hysteresis)) {
+    hysteresis = clamp(blendParams.hysteresis, 0.0, 1.0);
+  }
+  let blended = ddgiAtlasSaturatingAdd3(
+    ddgiAtlasSaturatingMul3(coeff, 1.0 - hysteresis),
+    ddgiAtlasSaturatingMul3(prev, hysteresis),
+  );
+  textureStore(irrOut, atlasCoord, ddgiAtlasEncodeIrradiance(blended));
 }
 
 `;
@@ -179,10 +205,11 @@ export function makeProbeUpdateBlendVisWGSL(): string {
 
 ${makeCommonHeader()}
 
+${DDGI_ATLAS_CODEC_WGSL}
+
 @group(1) @binding(0) var visPrev:   texture_2d<f32>;
-@group(1) @binding(1) var visSamp:   sampler;
 // rg16float is not writable as a storage texture in WebGPU; use rgba16float.
-@group(1) @binding(2) var visOut:    texture_storage_2d<rgba16float, write>;
+@group(1) @binding(1) var visOut:    texture_storage_2d<rgba16float, write>;
 
 fn visAtlasCoord(probeIdx: u32, pixel: vec2u) -> vec2u {
   let STRIDE = VIS_CELL + 2u;
@@ -213,10 +240,13 @@ fn probeUpdateBlendVisibility(
   let baseIdx = probeIdx * RAYS_PER_PROBE;
   let numRays = arrayLength(&rayResults);
   if (baseIdx >= numRays) { return; }
-  if (rayResults[baseIdx]._pad0 < 0.5) {
+  if (
+    !ddgiAtlasFiniteScalar(rayResults[baseIdx]._pad0) ||
+    rayResults[baseIdx]._pad0 < 0.5
+  ) {
     // Inactive/embedded probes are conservatively occluded. Never publish the
     // historical far-open sentinel for a probe with no valid geometry sample.
-    textureStore(visOut, atlasCoord, vec4f(0.0, 0.0, 0.0, 1.0));
+    textureStore(visOut, atlasCoord, ddgiAtlasEncodeVisibility(vec2f(0.0)));
     return;
   }
 
@@ -224,19 +254,22 @@ fn probeUpdateBlendVisibility(
   var newDepthSq = 0.0;
   var totalWeight = 0.0;
   var validRayCount = 0u;
-  // Receivers only interpolate the eight probes surrounding their cell. A
-  // finite distance comfortably beyond that neighbourhood represents an open
-  // ray without overflowing rgba16float's second-moment lane.
+  // Open directions remain world-scale preserving. The moment codec below
+  // stores the finite f32 result in f16 mantissa/exponent form; no arbitrary
+  // 255-world-unit clamp is needed.
   let missDepth = min(
-    DDGI_VISIBILITY_MAX_MOMENT_DISTANCE,
-    gridParams.spacing * 16.0,
+    ddgiAtlasSaturatingMul(gridParams.spacing, 16.0),
+    DDGI_ATLAS_VISIBILITY_DISTANCE_MAX,
   );
-  let minHitDistance =
-    gridParams.spacing * DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED;
+  let minHitDistance = ddgiAtlasSaturatingMul(
+    gridParams.spacing,
+    DDGI_PROBE_MIN_HIT_DISTANCE_NORMALIZED,
+  );
   for (var r = 0u; r < RAYS_PER_PROBE; r = r + 1u) {
     let rIdx = baseIdx + r;
     if (rIdx >= numRays) { break; }
     let ray = rayResults[rIdx];
+    if (!ddgiAtlasFiniteScalar(ray.hitDistance)) { continue; }
     // Backface hits encode negative distance (DDGI paper convention). Skip them in
     // the visibility depth estimate — they represent hits from inside geometry
     // and should not influence mean/depth² (they'd incorrectly tighten the
@@ -253,40 +286,69 @@ fn probeUpdateBlendVisibility(
     // Sky misses are valid open-direction observations. Excluding them
     // conditions mixed hit/miss angular cells only on blockers and
     // over-occludes silhouettes. Substitute the finite far-open depth above
-    // so both the first and second moments remain representable in f16.
-    let d = select(ray.hitDistance, missDepth, ray.hitDistance >= DDGI_MISS_DISTANCE);
+    // so both moments remain finite before range-preserving f16 publication.
+    let d = min(
+      select(ray.hitDistance, missDepth, ray.hitDistance >= DDGI_MISS_DISTANCE),
+      DDGI_ATLAS_VISIBILITY_DISTANCE_MAX,
+    );
+    let rayDirection = ddgiAtlasNormalizeOrZero(ray.direction);
+    if (all(rayDirection == vec3f(0.0))) { continue; }
     validRayCount = validRayCount + 1u;
-    let w = max(0.0, dot(dir, ray.direction));
+    let w = clamp(dot(dir, rayDirection), 0.0, 1.0);
     if (w <= 0.0) { continue; }
     // Variance-shadow visibility kernel — Majercik 2019 §3 uses pow(2) for the
     // depth/depth² accumulation (Chebyshev shadow visibility). pow(50) was too
     // narrow for a 192-ray budget (most atlas pixels had zero aligned rays).
     let weight  = pow(w, 2.0);
-    newDepth   = newDepth + d * weight;
-    newDepthSq = newDepthSq + d * d * weight;
-    totalWeight = totalWeight + weight;
+    let nextTotalWeight = totalWeight + weight;
+    let blendWeight = weight / nextTotalWeight;
+    let dSquared = ddgiAtlasSaturatingMul(d, d);
+    newDepth = ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(newDepth, 1.0 - blendWeight),
+      ddgiAtlasSaturatingMul(d, blendWeight),
+    );
+    newDepthSq = ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(newDepthSq, 1.0 - blendWeight),
+      ddgiAtlasSaturatingMul(dSquared, blendWeight),
+    );
+    totalWeight = nextTotalWeight;
   }
-  if (totalWeight > 0.0) {
-    newDepth   = newDepth / totalWeight;
-    newDepthSq = newDepthSq / totalWeight;
-  } else if (validRayCount > 0u) {
+  if (!(totalWeight > 0.0) && validRayCount > 0u) {
     // The probe has valid observations, but none align with this octahedral
     // cell. Preserve a finite open-direction moment pair.
     newDepth = missDepth;
-    newDepthSq = missDepth * missDepth;
-  } else {
+    newDepthSq = ddgiAtlasSaturatingMul(missDepth, missDepth);
+  } else if (!(totalWeight > 0.0)) {
     // Every ray was invalid/miss/backface. Conservative zero avoids turning an
     // embedded or unclassified probe into a permanently open visibility cell.
     newDepth = 0.0;
     newDepthSq = 0.0;
   }
 
-  let vUv = (vec2f(atlasCoord) + vec2f(0.5)) /
-            vec2f(gridParams.visibilityAtlasW, gridParams.visibilityAtlasH);
-  let prev    = textureSampleLevel(visPrev, visSamp, vUv, 0.0).rg;
-  let hysteresis = select(0.0, blendParams.hysteresis, validRayCount > 0u);
-  let blended = mix(vec2f(newDepth, newDepthSq), prev, hysteresis);
-  textureStore(visOut, atlasCoord, vec4f(blended, 0.0, 1.0));
+  let prevEncoded = textureLoad(visPrev, vec2i(atlasCoord), 0);
+  var prev = vec2f(0.0);
+  if (ddgiAtlasVisibilityEncodingValid(prevEncoded)) {
+    prev = ddgiAtlasDecodeVisibility(prevEncoded);
+  }
+  var hysteresis = 0.0;
+  if (validRayCount > 0u && ddgiAtlasFiniteScalar(blendParams.hysteresis)) {
+    hysteresis = clamp(blendParams.hysteresis, 0.0, 1.0);
+  }
+  var blended = vec2f(
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(newDepth, 1.0 - hysteresis),
+      ddgiAtlasSaturatingMul(prev.x, hysteresis),
+    ),
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(newDepthSq, 1.0 - hysteresis),
+      ddgiAtlasSaturatingMul(prev.y, hysteresis),
+    ),
+  );
+  blended.y = max(
+    blended.y,
+    ddgiAtlasSaturatingMul(blended.x, blended.x),
+  );
+  textureStore(visOut, atlasCoord, ddgiAtlasEncodeVisibility(blended));
 }
 
 `;

@@ -62,6 +62,37 @@ export {
 export { BSDF_PRIMITIVES_WGSL, BSDF_PRIMITIVES_MODULE_NAME } from './wgsl/bsdfPrimitives.wgsl.js';
 export { luminance, luminanceAt } from './luminance.js';
 export {
+  REPRESENTED_PROPOSAL_BUCKET_BITS,
+  REPRESENTED_PROPOSAL_BUCKET_COUNT,
+  buildRepresentedDistributionF32,
+  buildRepresentedPmfF32,
+  buildRepresentedCdfF32,
+  quantizeOpenUnitProbabilityF32,
+  representBernoulliProbabilityF32,
+} from './representedDistribution.js';
+export type {
+  RepresentedDistributionF32,
+  RepresentedDistributionOptions,
+  RepresentedZeroWeightFallback,
+} from './representedDistribution.js';
+export {
+  REPRESENTED_WRS_BUCKET_BITS,
+  REPRESENTED_WRS_BUCKET_COUNT,
+  createRepresentedWrsStateF32,
+  updateRepresentedWrsF32,
+  representedWrsLogWeightSumF32,
+  representedWrsLogSelectionProbability,
+  representedWrsSelectedLogCorrection,
+} from './representedWrs.js';
+export type {
+  RepresentedWrsRandom01,
+  RepresentedWrsStateF32,
+} from './representedWrs.js';
+export {
+  REPRESENTED_WRS_MODULE_NAME,
+  REPRESENTED_WRS_WGSL,
+} from './wgsl/representedWrs.wgsl.js';
+export {
   ALIAS_TABLE_ENTRY_BYTES,
   aliasColumnFromU32,
   buildAliasTable,
@@ -82,6 +113,7 @@ export {
   buildLightTree,
   packLightTreeForGPU,
   LIGHT_TREE_FLOATS_PER_NODE,
+  LIGHT_TREE_BUCKET_COUNT,
   /** Canonical full-sphere orientation cone constant (axis=[0,0,0], thetaO=π,
    *  thetaE=π). Use for unoriented emitters; cone importance term ≡ 1. */
   FULL_SPHERE_CONE,
@@ -89,7 +121,10 @@ export {
   // mirrors. Used by pt-webgpu's WS2 unbiasedness / variance-reduction tests and
   // any host that needs a light's selection pdf independently of the GPU draw.
   sampleLightTreeCPU,
+  samplePackedLightTreeCPU,
   lightTreePdfCPU,
+  packedLightTreePdfCPU,
+  packedLightTreeNodeImportanceCPU,
 } from './lightTree.js';
 export type {
   LightTreeNode,
@@ -104,12 +139,16 @@ export {
   LIGHT_TREE_TRAVERSAL_WGSL,
   LIGHT_TREE_MODULE_NAME,
   lightTreeBindingWgsl,
+  lightTreeTraversalWgsl,
   lightTreeWgsl,
 } from './wgsl/lightTree.wgsl.js';
+export type { LightTreeTraversalWgslOptions } from './wgsl/lightTree.wgsl.js';
 // ReGIR (Boksansky 2021 grid-based reservoirs) CPU reference core + the packed
 // per-cell survivor stride shared with the WGSL grid-build kernel.
 export {
   REGIR_FLOATS_PER_SURVIVOR,
+  REGIR_LOG2_PSEL_INVALID,
+  REGIR_MAX_CANDIDATES_PER_CELL,
   regirBuildSurvivorCPU,
   regirCellTargetFromTree,
   regirCellPmfExact,
@@ -177,6 +216,7 @@ export {
 export {
   sampleHeroWavelength,
   sampleHeroWavelengthMIS,
+  heroWavelengthMisMixturePdf,
   wavelengthToRGB,
   X_CMF_INTEGRAL,
   Y_CMF_INTEGRAL,
@@ -184,6 +224,9 @@ export {
   X_CMF_CDF,
   Y_CMF_CDF,
   Z_CMF_CDF,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT,
+  HERO_WAVELENGTH_MIS_STRATEGY_PMF,
   HERO_LAMBDA_MIN,
   HERO_LAMBDA_MAX,
 } from './wavelengthSampling.js';

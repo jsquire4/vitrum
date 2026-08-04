@@ -1,6 +1,13 @@
 import type { MaterialSpec, Scene } from '@vitrum/core';
 import type { PrimitiveTlasBinding } from '@vitrum/shared-bvh';
 import { ROUGH_DIELECTRIC_SMOOTH_THRESHOLD } from '../math/roughDielectric.js';
+import {
+  createMaterialInputSnapshotContext,
+  snapshotMaterialTextureInput,
+  stagedMapRef,
+  type MaterialInputSnapshotContext,
+  type StagedMaterialTextureInputs,
+} from './materialTextures.js';
 
 /** Bit marker stored in the first vec4 after the real analytic parameters. */
 export const MNEE_FACET_TABLE_MAGIC = 0x4d4e4545;
@@ -11,24 +18,36 @@ export const MNEE_GUIDED_FACET_PROBABILITY = 0.5;
  * Texture-backed scalar channels are treated as potentially active because the
  * opaque texture handle cannot be exhaustively classified during scene packing.
  */
-export function materialMayProduceMneeDelta(material: MaterialSpec): boolean {
-  if (material.thinFilmStack != null) return true;
+function stagedMaterialMayProduceMneeDelta(
+  material: StagedMaterialTextureInputs,
+): boolean {
+  if (material.thinFilmStackPresent) return true;
 
   const mayTransmit =
     (material.transmission ?? 0) > 0 ||
-    material.transmissionMap != null;
-  const mayBeDielectric = material.metallic === 0 || material.metallicMap != null;
+    stagedMapRef(material, 'transmission') != null;
+  const mayBeDielectric =
+    material.metallic === 0 || stagedMapRef(material, 'metallic') != null;
   const faceMayBeSmooth =
-    (material.frontLayer?.roughness != null &&
-      material.frontLayer.roughness <= ROUGH_DIELECTRIC_SMOOTH_THRESHOLD) ||
-    (material.backLayer?.roughness != null &&
-      material.backLayer.roughness <= ROUGH_DIELECTRIC_SMOOTH_THRESHOLD);
+    (material.frontLayerRoughness != null &&
+      material.frontLayerRoughness <= ROUGH_DIELECTRIC_SMOOTH_THRESHOLD) ||
+    (material.backLayerRoughness != null &&
+      material.backLayerRoughness <= ROUGH_DIELECTRIC_SMOOTH_THRESHOLD);
   const mayBeSmooth =
     material.roughness <= ROUGH_DIELECTRIC_SMOOTH_THRESHOLD ||
-    material.roughnessMap != null ||
+    stagedMapRef(material, 'roughness') != null ||
     faceMayBeSmooth;
 
   return mayTransmit && mayBeDielectric && mayBeSmooth;
+}
+
+export function materialMayProduceMneeDelta(
+  material: MaterialSpec,
+  snapshotContext: MaterialInputSnapshotContext = createMaterialInputSnapshotContext(),
+): boolean {
+  return stagedMaterialMayProduceMneeDelta(
+    snapshotMaterialTextureInput(material, snapshotContext),
+  );
 }
 
 /**
@@ -166,15 +185,22 @@ type MneeMeshPrimitive = Extract<
   { readonly kind: 'mesh' | 'instanced-mesh' | 'skinned-mesh' }
 >;
 
-function materialHasMneeNormalPerturbation(material: MaterialSpec): boolean {
+function materialHasMneeNormalPerturbation(
+  material: StagedMaterialTextureInputs,
+): boolean {
   return (
-    (material.normalMap != null && (material.normalScale ?? 1) !== 0) ||
-    (material.bumpMap != null && (material.bumpScale ?? 1) !== 0) ||
-    (material.frontLayer?.normalMap != null &&
-      (material.frontLayer.normalScale ?? 1) !== 0) ||
-    (material.backLayer?.normalMap != null &&
-      (material.backLayer.normalScale ?? 1) !== 0)
+    stagedMapRef(material, 'normal') != null ||
+    (stagedMapRef(material, 'bump') != null && (material.bumpScale ?? 1) !== 0) ||
+    stagedMapRef(material, 'frontLayerNormal') != null ||
+    stagedMapRef(material, 'backLayerNormal') != null ||
+    stagedMapRef(material, 'clearcoatNormal') != null
   );
+}
+
+function materialHasUnsupportedMneeOuterLayer(
+  material: StagedMaterialTextureInputs,
+): boolean {
+  return (material.clearcoat ?? 0) > 0 || (material.sheen ?? 0) > 0;
 }
 
 function firstNonGeometricNormalTriangle(primitive: MneeMeshPrimitive): number | null {
@@ -248,9 +274,13 @@ function firstNonGeometricNormalTriangle(primitive: MneeMeshPrimitive): number |
  * Fail closed outside the implemented planar/geometric-normal manifold domain.
  * This is intentionally called on the CPU-solved scene before any GPU upload.
  */
-export function assertMneeInterfaceDomainSupported(scene: Scene): void {
+export function assertMneeInterfaceDomainSupported(
+  scene: Scene,
+  snapshotContext: MaterialInputSnapshotContext = createMaterialInputSnapshotContext(),
+): void {
   const unsupported = scene.primitives.flatMap((primitive) =>
-    primitive.kind === 'analytic' && materialMayProduceMneeDelta(primitive.material)
+    primitive.kind === 'analytic' &&
+      materialMayProduceMneeDelta(primitive.material, snapshotContext)
       ? [`${primitive.id} (${primitive.shape})`]
       : [],
   );
@@ -264,13 +294,19 @@ export function assertMneeInterfaceDomainSupported(scene: Scene): void {
   }
 
   const shadingNormalViolations: string[] = [];
+  const outerLayerViolations: string[] = [];
   for (const primitive of scene.primitives) {
-    if (primitive.kind === 'analytic' || !materialMayProduceMneeDelta(primitive.material)) {
+    const material = snapshotMaterialTextureInput(primitive.material, snapshotContext);
+    if (primitive.kind === 'analytic' || !stagedMaterialMayProduceMneeDelta(material)) {
       continue;
     }
-    if (materialHasMneeNormalPerturbation(primitive.material)) {
+    if (materialHasUnsupportedMneeOuterLayer(material)) {
+      outerLayerViolations.push(`${primitive.id} (clearcoat/sheen outer layer)`);
+      continue;
+    }
+    if (materialHasMneeNormalPerturbation(material)) {
       shadingNormalViolations.push(
-        `${primitive.id} (normal/bump/layer-normal map)`,
+        `${primitive.id} (normal/bump/layer-normal/clearcoat-normal map)`,
       );
       continue;
     }
@@ -285,9 +321,18 @@ export function assertMneeInterfaceDomainSupported(scene: Scene): void {
     throw new Error(
       '@vitrum/pt-webgpu: causticStrategy="manifold-nee" currently solves ' +
         'planar geometric-normal delta interfaces. Varying vertex normals and ' +
-        'normal/bump/layer-normal maps require a varying-normal manifold Jacobian ' +
+        'normal/bump/layer-normal/clearcoat-normal maps require a varying-normal manifold Jacobian ' +
         'and are rejected before GPU mutation: ' +
         shadingNormalViolations.join(', ') + '.',
+    );
+  }
+  if (outerLayerViolations.length > 0) {
+    throw new Error(
+      '@vitrum/pt-webgpu: causticStrategy="manifold-nee" currently solves ' +
+        'the base dielectric interface only. Active clearcoat or sheen outer layers ' +
+        'require their exact directional lower-layer attenuation in the manifold ' +
+        'Jacobian/throughput and are rejected before GPU mutation: ' +
+        outerLayerViolations.join(', ') + '.',
     );
   }
 }
@@ -310,12 +355,16 @@ export function buildMneeFacetCandidateTable(
   bindings: readonly PrimitiveTlasBinding[],
   storageLimitBytes: number,
   prefixBytes = 0,
+  snapshotContext: MaterialInputSnapshotContext = createMaterialInputSnapshotContext(),
 ): MneeFacetCandidateTable {
   const primitiveById = new Map(scene.primitives.map((primitive) => [primitive.id, primitive]));
   let candidateCount = 0;
   for (const binding of bindings) {
     const primitive = primitiveById.get(binding.primitiveId);
-    if (primitive == null || !materialMayProduceMneeDelta(primitive.material)) continue;
+    if (
+      primitive == null ||
+      !materialMayProduceMneeDelta(primitive.material, snapshotContext)
+    ) continue;
     candidateCount += binding.triCount * binding.instanceCount;
     if (!Number.isSafeInteger(candidateCount) || candidateCount > 0xffff_ffff) {
       throw new Error(
@@ -343,7 +392,8 @@ export function buildMneeFacetCandidateTable(
   let globalInstance = 0;
   for (const binding of bindings) {
     const primitive = primitiveById.get(binding.primitiveId);
-    const eligible = primitive != null && materialMayProduceMneeDelta(primitive.material);
+    const eligible = primitive != null &&
+      materialMayProduceMneeDelta(primitive.material, snapshotContext);
     if (eligible) {
       for (let localInstance = 0; localInstance < binding.instanceCount; localInstance += 1) {
         const instanceIndex = globalInstance + localInstance;

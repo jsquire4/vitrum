@@ -1,7 +1,5 @@
 /** Compact opaque Disney-base/GGX mixture for scene-proven basic materials. */
 export const BSDF_BASIC_GLSL = /* glsl */ `
-  const uint TRANSLUCENT_BIT = 0x10u;
-
   vec3 pathThroughputFromRgb( vec3 rgb, float heroWavelength ) {
     if ( uSpectralRendering == 0 ) return max( rgb, vec3( 0.0 ) );
     return vec3( heroScalarFromRgb( rgb, heroWavelength ) );
@@ -45,21 +43,106 @@ export const BSDF_BASIC_GLSL = /* glsl */ `
     sampler2D materialsTex, const in FogMaterial fog,
     float dist, float heroWavelength
   ) {
-    if ( dist <= 0.0 ) return vec3( 1.0 );
-    return exp(
-      - fogTrueExtinction( materialsTex, fog, heroWavelength ) * dist
+    return extinctionTransmittance(
+      fogTrueExtinction( materialsTex, fog, heroWavelength ),
+      dist
     );
   }
 
-  vec3 fogFreeFlightRatioWeight(
+  float fogFreeFlightSampleDistance(
+    sampler2D materialsTex, const in FogMaterial fog,
+    float heroWavelength, vec2 u
+  ) {
+    vec3 sigmaT = fogTrueExtinction( materialsTex, fog, heroWavelength );
+    float sampledExtinction = sigmaT.x;
+    if ( uSpectralRendering == 0 ) {
+      vec3 channelProbability = representedEqualThreeWayProbabilities();
+      int channel = u.x < channelProbability.x
+        ? 0
+        : u.x < channelProbability.x + channelProbability.y
+          ? 1
+          : 2;
+      sampledExtinction = sigmaT[ channel ];
+    }
+    if (
+      isnan( sampledExtinction ) || sampledExtinction < 0.0 ||
+      isnan( u.y ) || isinf( u.y ) || u.y < 0.0 || u.y > 1.0 ||
+      u.y == 0.0
+    ) return INFINITY;
+    if ( isinf( sampledExtinction ) ) return 0.0;
+    if ( sampledExtinction == 0.0 ) return INFINITY;
+    if ( u.y == 1.0 ) return 0.0;
+    return - log( u.y ) / sampledExtinction;
+  }
+
+  float fogExtinctionCollisionDensity( float extinction, float dist ) {
+    if (
+      isnan( extinction ) || extinction < 0.0 ||
+      isnan( dist ) || dist < 0.0
+    ) return 0.0;
+    if ( dist == 0.0 && isinf( extinction ) ) return INFINITY;
+    if ( isinf( extinction ) || isinf( dist ) ) return 0.0;
+    return extinction * extinctionTransmittance( extinction, dist );
+  }
+
+  float fogProposalSurvival(
     sampler2D materialsTex, const in FogMaterial fog,
     float dist, float heroWavelength
   ) {
-    if ( dist <= 0.0 || fog.opacity <= 0.0 ) return vec3( 1.0 );
-    vec3 sigmaT = fogTrueExtinction(
-      materialsTex, fog, heroWavelength
+    vec3 survival = fogSegmentTransmittance(
+      materialsTex, fog, dist, heroWavelength
     );
-    return exp( ( vec3( fog.opacity ) - sigmaT ) * dist );
+    vec3 channelProbability = representedEqualThreeWayProbabilities();
+    return uSpectralRendering != 0
+      ? survival.x
+      : dot( channelProbability, survival );
+  }
+
+  float fogProposalCollisionDensity(
+    sampler2D materialsTex, const in FogMaterial fog,
+    float dist, float heroWavelength
+  ) {
+    vec3 sigmaT = fogTrueExtinction( materialsTex, fog, heroWavelength );
+    vec3 density = vec3(
+      fogExtinctionCollisionDensity( sigmaT.x, dist ),
+      fogExtinctionCollisionDensity( sigmaT.y, dist ),
+      fogExtinctionCollisionDensity( sigmaT.z, dist )
+    );
+    vec3 channelProbability = representedEqualThreeWayProbabilities();
+    return uSpectralRendering != 0
+      ? density.x
+      : dot( channelProbability, density );
+  }
+
+  vec3 fogFreeFlightSurvivalWeight(
+    sampler2D materialsTex, const in FogMaterial fog,
+    float dist, float heroWavelength
+  ) {
+    vec3 survival = fogSegmentTransmittance(
+      materialsTex, fog, dist, heroWavelength
+    );
+    vec3 channelProbability = representedEqualThreeWayProbabilities();
+    float proposalSurvival = uSpectralRendering != 0
+      ? survival.x
+      : dot( channelProbability, survival );
+    return proposalSurvival > 0.0 && ! isinf( proposalSurvival )
+      ? survival / proposalSurvival
+      : vec3( 0.0 );
+  }
+
+  vec3 fogFreeFlightCollisionWeight(
+    sampler2D materialsTex, const in FogMaterial fog,
+    float dist, float heroWavelength
+  ) {
+    vec3 survival = fogSegmentTransmittance(
+      materialsTex, fog, dist, heroWavelength
+    );
+    float proposalDensity = fogProposalCollisionDensity(
+      materialsTex, fog, dist, heroWavelength
+    );
+    return proposalDensity > 0.0 && ! isinf( proposalDensity )
+      ? survival / proposalDensity
+      : vec3( 0.0 );
   }
 
   float hg_phase( float cosTheta, float g ) {
@@ -119,6 +202,8 @@ export const BSDF_BASIC_GLSL = /* glsl */ `
   ) {
     specularWeight = 0.5 + 0.5 * surf.metalness;
     diffuseWeight = 1.0 - specularWeight;
+    diffuseWeight = representedBernoulliProbabilityF32( diffuseWeight );
+    specularWeight = 1.0 - diffuseWeight;
   }
 
   bool basicBaseLobeIsDelta( SurfaceRecord surf ) {
@@ -277,7 +362,10 @@ export const BSDF_BASIC_GLSL = /* glsl */ `
       volumeResult.pdf = mediumPhasePdf(
         worldWo, volumeResult.direction, surf.sssAnisotropyG
       );
+      volumeResult.pdfRev = volumeResult.pdf;
       volumeResult.sampledDelta = false;
+      volumeResult.sampledNonConnectable = false;
+      volumeResult.sampledRoughness = 0.0;
       volumeResult.throughput = pathThroughputFromRgb(
         surf.color * volumeResult.pdf, heroWavelength
       );
@@ -321,12 +409,17 @@ export const BSDF_BASIC_GLSL = /* glsl */ `
     result.direction = normalize( surf.normalBasis * wi );
     result.throughput = pathThroughputFromRgb( resultColor, heroWavelength );
     result.sampledDelta = sampledDelta;
+    bool reverseDeltaMeasure;
+    result.pdfRev = bsdfPdfResult(
+      result.direction, worldWo, surf, heroWavelength,
+      reverseDeltaMeasure
+    );
+    if (
+      ! ( result.pdfRev >= 0.0 ) ||
+      isnan( result.pdfRev ) || isinf( result.pdfRev )
+    ) result.pdfRev = 0.0;
+    result.sampledNonConnectable = false;
+    result.sampledRoughness = 0.0;
     return result;
-  }
-
-  ScatterRecord sssSample(
-    vec3 worldWo, SurfaceRecord surf, float heroWavelength
-  ) {
-    return bsdfSample( worldWo, surf, heroWavelength );
   }
 `;

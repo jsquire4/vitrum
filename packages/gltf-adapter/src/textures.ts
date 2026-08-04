@@ -1063,6 +1063,8 @@ function textureMinFilterModes(value: number | undefined): {
     case 9987:
       return { minFilter: 'linear', mipFilter: 'linear' };
     default:
+      // glTF does not define a default for omitted sampler.minFilter. Preserve
+      // that omission so TextureRef's library-wide linear mip policy applies.
       return {};
   }
 }

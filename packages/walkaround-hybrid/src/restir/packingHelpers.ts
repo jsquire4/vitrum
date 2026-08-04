@@ -13,6 +13,7 @@
 
 import type { MaterialSpec } from '@vitrum/core';
 import {
+  classifyTriangleEmitterCore,
   materialSpecScalarEmissiveLe,
   materialSpecTriColor,
   quantizePackedMaterialTransmission,
@@ -23,6 +24,7 @@ import {
   validateSurfaceTextureId,
   type SurfaceTextureId,
 } from '@vitrum/stained-glass-extensions';
+import { materialRealtimeBeerReference } from '../bvh/materialOptics.js';
 
 // Generic vertex-stream UV packing (packUVIntoVec4W / packUVIntoPositionW /
 // BufferAttributeLike) moved to `../bvh/bvhPacking.ts` (I3-1: restir/ was a
@@ -387,7 +389,8 @@ export function packBVHBeerColorsFromCore(
     const mat = materials[triMaterialId[t]!];
     let r = WARM_GRAY_DEFAULT_R, g = WARM_GRAY_DEFAULT_G, b = WARM_GRAY_DEFAULT_B;
     if (mat) {
-      const color = materialSpecTriColor(mat, /* applyBeer */ true);
+      const color = materialRealtimeBeerReference(mat) ??
+        materialSpecTriColor(mat, /* applyBeer */ true);
       r = Math.round(Math.min(1, color[0]) * 255) & 0xFF;
       g = Math.round(Math.min(1, color[1]) * 255) & 0xFF;
       b = Math.round(Math.min(1, color[2]) * 255) & 0xFF;
@@ -399,10 +402,11 @@ export function packBVHBeerColorsFromCore(
 }
 
 /**
- * Pack per-triangle HDR emissive radiance Le (stride-4 f32, rgb + 0 pad) from
- * a `MaterialSpec[]`. Non-emissive / missing triangles stay zero; emissive
- * triangles get scalar production Le. Readable emissive maps are sampled in
- * shade.wgsl, not averaged into this buffer.
+ * Pack per-triangle HDR emissive radiance Le plus NEE ownership (stride-4 f32,
+ * rgb + ownership alpha) from a `MaterialSpec[]`. Alpha is exactly 1 when the
+ * production material is represented by the mesh-emitter proposal and 0 when
+ * it is not. Readable emissive maps are sampled in shade.wgsl, not averaged
+ * into the RGB lanes of this buffer.
  */
 export function packBVHEmissiveLeFromCore(
   triMaterialId: Uint32Array,
@@ -414,10 +418,12 @@ export function packBVHEmissiveLeFromCore(
     const mat = materials[triMaterialId[t]!];
     if (!mat) continue;
     const le = scalarProductionEmissiveLe(mat);
-    if (le == null) continue;
-    out[t * 4 + 0] = le[0];
-    out[t * 4 + 1] = le[1];
-    out[t * 4 + 2] = le[2];
+    if (le != null) {
+      out[t * 4 + 0] = le[0];
+      out[t * 4 + 1] = le[1];
+      out[t * 4 + 2] = le[2];
+    }
+    out[t * 4 + 3] = classifyTriangleEmitterCore(mat) == null ? 0 : 1;
   }
   return out;
 }

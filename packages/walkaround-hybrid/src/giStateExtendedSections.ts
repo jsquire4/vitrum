@@ -1,10 +1,11 @@
 /**
- * v8 extension block for complete realtime-estimator persistence.
+ * Complete realtime-estimator persistence extension (v2 in GI snapshot v9).
  *
  * Kept separate from the historical DDGI/ReSTIR-GI/PPG container parser so
  * the legacy layouts remain auditable. The block always carries the live-input
  * compatibility key and optionally carries ReSTIR-DI and NRC state when those
- * subsystems are active.
+ * subsystems are active. Extension v1 DI payloads are validated and reset to a
+ * cold v2 reservoir cohort because their running-weight lane was linear.
  */
 
 import {
@@ -13,8 +14,10 @@ import {
 } from './giStateCompatibility.js';
 import {
   assertRestirDISnapshot,
+  coldMigrateLegacyRestirDISnapshot,
   type RestirDISnapshot,
 } from './restir/restirDiStateSnapshot.js';
+import { RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1 } from './restir/reservoirRepresentation.js';
 import {
   assertNrcLearnedStateSnapshot,
   deserializeNrcLearnedState,
@@ -24,7 +27,8 @@ import {
 } from './neural/nrc/nrcStateSnapshot.js';
 
 const EXTENSION_MAGIC = 0x47495853; // "GIXS"
-const EXTENSION_VERSION = 1;
+const EXTENSION_VERSION = 2;
+const LEGACY_EXTENSION_VERSION = 1;
 const EXTENSION_HEADER_BYTES = 32;
 const DI_SUBHEADER_BYTES = 20;
 const FLAG_RESTIR_DI = 1 << 0;
@@ -100,7 +104,7 @@ export function serializeGIStateExtendedSections(
     view.setUint32(offset, di.height, true); offset += 4;
     view.setUint32(offset, di.strideU32, true); offset += 4;
     view.setUint32(offset, di.current.length, true); offset += 4;
-    view.setUint32(offset, 0, true); offset += 4;
+    view.setUint32(offset, di.representationVersion, true); offset += 4;
     copyBytes(buffer, offset, di.current); offset += di.current.byteLength;
     copyBytes(buffer, offset, di.previous); offset += di.previous.byteLength;
     copyBytes(buffer, offset, di.spatial); offset += di.spatial.byteLength;
@@ -162,9 +166,12 @@ export function deserializeGIStateExtendedSections(
     throw new Error('GI-state extension has an invalid magic value.');
   }
   const version = view.getUint32(offset, true); offset += 4;
-  if (version !== EXTENSION_VERSION) {
+  if (
+    version !== EXTENSION_VERSION &&
+    version !== LEGACY_EXTENSION_VERSION
+  ) {
     throw new Error(
-      `GI-state extension version ${version} is unsupported (expected ${EXTENSION_VERSION}).`,
+      `GI-state extension version ${version} is unsupported (expected ${EXTENSION_VERSION} or ${LEGACY_EXTENSION_VERSION}).`,
     );
   }
   const totalBytes = view.getUint32(offset, true); offset += 4;
@@ -226,10 +233,15 @@ export function deserializeGIStateExtendedSections(
     const height = view.getUint32(offset, true); offset += 4;
     const strideU32 = view.getUint32(offset, true); offset += 4;
     const bufferLengthU32 = view.getUint32(offset, true); offset += 4;
-    const diReserved = view.getUint32(offset, true); offset += 4;
-    if (diReserved !== 0) {
+    const representationVersion = view.getUint32(offset, true); offset += 4;
+    if (
+      (version === LEGACY_EXTENSION_VERSION && representationVersion !== 0) ||
+      (version === EXTENSION_VERSION &&
+        representationVersion !==
+          RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1)
+    ) {
       throw new RangeError(
-        'GI-state ReSTIR-DI reserved sub-header word must be zero.',
+        'GI-state ReSTIR-DI representation marker is incompatible with the extension version.',
       );
     }
     const oneBufferBytes = checkedProduct(
@@ -262,15 +274,31 @@ export function deserializeGIStateExtendedSections(
       offset = end;
       return result;
     };
-    restirDI = {
-      width,
-      height,
-      strideU32,
-      current: take(),
-      previous: take(),
-      spatial: take(),
-    };
-    assertRestirDISnapshot(restirDI);
+    const current = take();
+    const previous = take();
+    const spatial = take();
+    if (version === LEGACY_EXTENSION_VERSION) {
+      restirDI = coldMigrateLegacyRestirDISnapshot({
+        width,
+        height,
+        strideU32,
+        current,
+        previous,
+        spatial,
+      });
+    } else {
+      restirDI = {
+        representationVersion:
+          RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1,
+        width,
+        height,
+        strideU32,
+        current,
+        previous,
+        spatial,
+      };
+      assertRestirDISnapshot(restirDI);
+    }
     if (offset !== diStart + diBytes) {
       throw new Error('GI-state ReSTIR-DI decoder left trailing bytes.');
     }

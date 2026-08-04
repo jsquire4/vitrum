@@ -67,6 +67,7 @@ function snapshot(
   overrides: Partial<RestirDISnapshot> = {},
 ): RestirDISnapshot {
   return {
+    representationVersion: 1,
     width: WIDTH,
     height: HEIGHT,
     strideU32: RESERVOIR_DI_STRIDE_U32,

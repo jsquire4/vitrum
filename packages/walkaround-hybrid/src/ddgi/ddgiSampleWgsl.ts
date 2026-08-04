@@ -17,8 +17,8 @@
  *
  * Mitigation: inline every helper (octEncodeDDGI, irrAtlasUvDDGI,
  * visAtlasUvDDGI) directly inside the single `ddgiSample` body. The
- * parser sees one entry function with exactly 16 inputs, matching the
- * call site's 16 arguments.
+ * parser sees one entry function with exactly 15 inputs, matching the
+ * call site's 15 arguments. Codec/filter helpers are appended after it.
  */
 
 import {
@@ -29,6 +29,7 @@ import {
   VIS_STRIDE,
 } from './ddgiAtlasLayout.js';
 import { DDGI_PROBE_MAX_OFFSET_NORMALIZED } from './probeState.js';
+import { DDGI_ATLAS_CODEC_WGSL } from './wgsl/ddgiAtlasCodec.wgsl.js';
 import type { WgslModule } from '../wgslTypes.js';
 
 // Atlas-layout constants are template-substituted at module-load time so
@@ -41,7 +42,6 @@ fn ddgiSample(
   surfaceNormal: vec3f,
   irradianceAtlas: texture_2d<f32>,
   visibilityAtlas: texture_2d<f32>,
-  samp: sampler,
   gridOriginX: f32, gridOriginY: f32, gridOriginZ: f32,
   gridSpacing: f32,
   gridDimsX: u32, gridDimsY: u32, gridDimsZ: u32,
@@ -49,6 +49,30 @@ fn ddgiSample(
 ) -> vec3f {
   let gridOrigin = vec3f(gridOriginX, gridOriginY, gridOriginZ);
   let gridDims   = vec3u(gridDimsX, gridDimsY, gridDimsZ);
+  let irradianceDimensions = textureDimensions(irradianceAtlas, 0);
+  let visibilityDimensions = textureDimensions(visibilityAtlas, 0);
+  if (
+    !ddgiAtlasFiniteVec3(worldPos) ||
+    !ddgiAtlasFiniteVec3(gridOrigin) ||
+    !ddgiAtlasFiniteScalar(gridSpacing) ||
+    !(gridSpacing > 0.0) ||
+    !ddgiAtlasFiniteScalar(irrW) || !ddgiAtlasFiniteScalar(irrH) ||
+    !ddgiAtlasFiniteScalar(visW) || !ddgiAtlasFiniteScalar(visH) ||
+    !(irrW > 0.0) || !(irrH > 0.0) || !(visW > 0.0) || !(visH > 0.0) ||
+    any(gridDims == vec3u(0u)) ||
+    any(gridDims > vec3u(0x7fffffffu)) ||
+    gridDims.y > 0xffffffffu / gridDims.x ||
+    gridDims.z > 0xffffffffu / (gridDims.x * gridDims.y) ||
+    gridDims.x * gridDims.y * gridDims.z > 0xffffffffu / 192u ||
+    irradianceDimensions.x == 0u || irradianceDimensions.y == 0u ||
+    visibilityDimensions.x == 0u || visibilityDimensions.y == 0u ||
+    irrW != f32(irradianceDimensions.x) ||
+    irrH != f32(irradianceDimensions.y) ||
+    visW != f32(visibilityDimensions.x) ||
+    visH != f32(visibilityDimensions.y)
+  ) { return vec3f(0.0); }
+  let receiverNormal = ddgiAtlasNormalizeOrZero(surfaceNormal);
+  if (all(receiverNormal == vec3f(0.0))) { return vec3f(0.0); }
 
   // Surface/normal bias (Majercik 2019 §4) — offset the receiver OFF the surface
   // toward the probe interior before sampling. CRITICAL: without it a receiver
@@ -63,17 +87,22 @@ fn ddgiSample(
   // offsetting the sample point lifted indirect 0.0004→0.25. A quarter-spacing
   // bias clears the boundary plane while staying inside the receiver's cell; the
   // Chebyshev visibility term still guards against light leak through thin walls.
-  let biasedPos = worldPos + surfaceNormal * (gridSpacing * 0.25);
+  let biasedPos = worldPos + receiverNormal * (gridSpacing * 0.25);
+  if (!ddgiAtlasFiniteVec3(biasedPos)) { return vec3f(0.0); }
 
   let gridPos  = (biasedPos - gridOrigin) / gridSpacing;
+  if (
+    !ddgiAtlasFiniteVec3(gridPos) ||
+    any(abs(gridPos) > vec3f(2147483520.0))
+  ) { return vec3f(0.0); }
   let baseIdx3 = vec3i(floor(gridPos));
   let frac     = fract(gridPos);
 
-  var sum         = vec3f(0.0);
+  var irradianceMean = vec3f(0.0);
   var totalWeight = 0.0;
   var fallbackIrr = vec3f(0.0);
   var fallbackVisibility = 0.0;
-  var fallbackDistance = 1.0e30;
+  var fallbackDistance = DDGI_ATLAS_F32_MAX;
   var hasFallback = false;
 
   for (var i = 0u; i < 8u; i = i + 1u) {
@@ -90,7 +119,7 @@ fn ddgiSample(
         i32(${IRR_PROBE_STATE_LOCAL_Y}),
     );
     let state = textureLoad(irradianceAtlas, stateCoord, 0);
-    if (state.w < 0.5) { continue; }
+    if (!ddgiAtlasFiniteScalar(state.w) || state.w < 0.5) { continue; }
     var normalizedOffset = state.xyz;
     let offsetLength2 = dot(normalizedOffset, normalizedOffset);
     let maxOffset = ${DDGI_PROBE_MAX_OFFSET_NORMALIZED};
@@ -103,6 +132,7 @@ fn ddgiSample(
     }
     let probeWorld =
       gridOrigin + vec3f(pi3) * gridSpacing + normalizedOffset * gridSpacing;
+    if (!ddgiAtlasFiniteVec3(probeWorld)) { continue; }
 
     // Trilinear weight.
     let tw = mix(vec3f(1.0) - frac, frac, vec3f(co));
@@ -141,22 +171,21 @@ fn ddgiSample(
     // "DDGI fidelity vs ground truth"). Backface/occlusion rejection is left to
     // the PHYSICAL Chebyshev visibility term below (depth-based), not a
     // geometric normal heuristic.
-    let toProbe   = probeWorld - biasedPos;
-    let probeDist = length(toProbe);
+    let toProbe = probeWorld - biasedPos;
+    if (!ddgiAtlasFiniteVec3(toProbe)) { continue; }
+    let probeDist = ddgiAtlasSafeLength(toProbe);
 
     // Octahedral-encode the probe→surface direction. The blend producer bins
     // depth moments under each outward probe-ray direction, so the receiver
     // must query that same hemisphere.
-    let probeToSurface = biasedPos - probeWorld;
-    let probeToSurfaceLen2 = dot(probeToSurface, probeToSurface);
+    let probeToSurface = -toProbe;
     // A relocated probe may exactly coincide with the biased receiver. Avoid
     // normalize(vec3f(0)) → NaN octahedral UVs; the deterministic +Y fallback
     // is visible at one zero-measure point only and keeps textureLoad finite.
-    let probeDirToSurf = select(
-      vec3f(0.0, 1.0, 0.0),
-      probeToSurface * inverseSqrt(max(probeToSurfaceLen2, 1.0e-12)),
-      probeToSurfaceLen2 > 1.0e-12,
-    );
+    var probeDirToSurf = ddgiAtlasNormalizeOrZero(probeToSurface);
+    if (all(probeDirToSurf == vec3f(0.0))) {
+      probeDirToSurf = vec3f(0.0, 1.0, 0.0);
+    }
     let dirV       = probeDirToSurf;
     let absV       = abs(dirV);
     let nv         = dirV / (absV.x + absV.y + absV.z);
@@ -176,16 +205,24 @@ fn ddgiSample(
     let visCx     = f32(visPx * visStride) + 1.0 + octV.x * f32(visCell);
     let visCy     = f32((visPy + visPz * gridDims.y) * visStride) + 1.0 + octV.y * f32(visCell);
     let visUv     = vec2f(visCx / visW, visCy / visH);
-    let vis       = textureSampleLevel(visibilityAtlas, samp, visUv, 0.0).rg;
+    let vis = ddgiAtlasSampleVisibilityBilinear(visibilityAtlas, visUv);
+    if (any(vis < vec2f(0.0))) { continue; }
     let mean      = vis.x;
-    let variance  = abs(vis.y - mean * mean);
+    let meanSquared = ddgiAtlasSaturatingMul(mean, mean);
+    let variance  = max(0.0, vis.y - meanSquared);
     let occlusionDelta = max(0.0, probeDist - mean);
-    let chebyshev = select(
-      variance / max(variance + occlusionDelta * occlusionDelta, 1.0e-8),
-      1.0,
-      probeDist <= mean,
-    );
-    w = w * max(chebyshev, 0.0);
+    var chebyshev = 1.0;
+    if (probeDist > mean) {
+      let deltaSquared = ddgiAtlasSaturatingMul(occlusionDelta, occlusionDelta);
+      let ratioScale = max(variance, deltaSquared);
+      chebyshev = 0.0;
+      if (ratioScale > 0.0) {
+        let varianceScaled = variance / ratioScale;
+        let deltaScaled = deltaSquared / ratioScale;
+        chebyshev = varianceScaled / max(varianceScaled + deltaScaled, 1.0e-8);
+      }
+    }
+    w = clamp(w * chebyshev, 0.0, 1.0);
 
     // L2 SH irradiance eval (seam-free; replaces the octahedral cosine-mean
     // lookup that under-read ~33% at axis-aligned normals — the octahedral
@@ -200,16 +237,66 @@ fn ddgiSample(
     let shPz      = shTmpY / gridDims.y;
     let ix        = shPx * irrStride + 1u;
     let iy        = (shPy + shPz * gridDims.y) * irrStride + 1u;
-    let irr =
-        textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 0u), 0).rgb * 0.282095
-      + textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 0u), 0).rgb * (0.488603 * surfaceNormal.y)
-      + textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 0u), 0).rgb * (0.488603 * surfaceNormal.z)
-      + textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 1u), 0).rgb * (0.488603 * surfaceNormal.x)
-      + textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 1u), 0).rgb * (1.092548 * surfaceNormal.x * surfaceNormal.y)
-      + textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 1u), 0).rgb * (1.092548 * surfaceNormal.y * surfaceNormal.z)
-      + textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 2u), 0).rgb * (0.315392 * (3.0 * surfaceNormal.z * surfaceNormal.z - 1.0))
-      + textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 2u), 0).rgb * (1.092548 * surfaceNormal.x * surfaceNormal.z)
-      + textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 2u), 0).rgb * (0.546274 * (surfaceNormal.x * surfaceNormal.x - surfaceNormal.y * surfaceNormal.y));
+    let encodedSh0 = textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 0u), 0);
+    let encodedSh1 = textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 0u), 0);
+    let encodedSh2 = textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 0u), 0);
+    let encodedSh3 = textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 1u), 0);
+    let encodedSh4 = textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 1u), 0);
+    let encodedSh5 = textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 1u), 0);
+    let encodedSh6 = textureLoad(irradianceAtlas, vec2u(ix + 0u, iy + 2u), 0);
+    let encodedSh7 = textureLoad(irradianceAtlas, vec2u(ix + 1u, iy + 2u), 0);
+    let encodedSh8 = textureLoad(irradianceAtlas, vec2u(ix + 2u, iy + 2u), 0);
+    if (
+      !ddgiAtlasIrradianceEncodingValid(encodedSh0) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh1) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh2) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh3) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh4) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh5) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh6) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh7) ||
+      !ddgiAtlasIrradianceEncodingValid(encodedSh8)
+    ) { continue; }
+    let sh0 = ddgiAtlasDecodeIrradiance(encodedSh0);
+    let sh1 = ddgiAtlasDecodeIrradiance(encodedSh1);
+    let sh2 = ddgiAtlasDecodeIrradiance(encodedSh2);
+    let sh3 = ddgiAtlasDecodeIrradiance(encodedSh3);
+    let sh4 = ddgiAtlasDecodeIrradiance(encodedSh4);
+    let sh5 = ddgiAtlasDecodeIrradiance(encodedSh5);
+    let sh6 = ddgiAtlasDecodeIrradiance(encodedSh6);
+    let sh7 = ddgiAtlasDecodeIrradiance(encodedSh7);
+    let sh8 = ddgiAtlasDecodeIrradiance(encodedSh8);
+
+    // Evaluate all nine signed terms in a coefficient-normalized domain. This
+    // preserves cancellation when individual decoded coefficients approach
+    // f32 max; only the final mathematical reconstruction can saturate.
+    var coefficientScale = max(abs(sh0), abs(sh1));
+    coefficientScale = max(coefficientScale, abs(sh2));
+    coefficientScale = max(coefficientScale, abs(sh3));
+    coefficientScale = max(coefficientScale, abs(sh4));
+    coefficientScale = max(coefficientScale, abs(sh5));
+    coefficientScale = max(coefficientScale, abs(sh6));
+    coefficientScale = max(coefficientScale, abs(sh7));
+    coefficientScale = max(coefficientScale, abs(sh8));
+    let safeCoefficientScale = select(
+      vec3f(1.0),
+      coefficientScale,
+      coefficientScale > vec3f(0.0),
+    );
+    let normalizedIrr =
+        (sh0 / safeCoefficientScale) * 0.282095
+      + (sh1 / safeCoefficientScale) * (0.488603 * receiverNormal.y)
+      + (sh2 / safeCoefficientScale) * (0.488603 * receiverNormal.z)
+      + (sh3 / safeCoefficientScale) * (0.488603 * receiverNormal.x)
+      + (sh4 / safeCoefficientScale) * (1.092548 * receiverNormal.x * receiverNormal.y)
+      + (sh5 / safeCoefficientScale) * (1.092548 * receiverNormal.y * receiverNormal.z)
+      + (sh6 / safeCoefficientScale) * (0.315392 * (3.0 * receiverNormal.z * receiverNormal.z - 1.0))
+      + (sh7 / safeCoefficientScale) * (1.092548 * receiverNormal.x * receiverNormal.z)
+      + (sh8 / safeCoefficientScale) * (0.546274 * (receiverNormal.x * receiverNormal.x - receiverNormal.y * receiverNormal.y));
+    let irr = clamp(ddgiAtlasSaturatingMulComponents(
+      normalizedIrr,
+      coefficientScale,
+    ), vec3f(0.0), vec3f(DDGI_ATLAS_F32_MAX));
 
     if (probeDist < fallbackDistance) {
       fallbackDistance = probeDist;
@@ -217,8 +304,15 @@ fn ddgiSample(
       fallbackVisibility = max(chebyshev, 0.0);
       hasFallback = true;
     }
-    sum         = sum + irr * w;
-    totalWeight = totalWeight + w;
+    if (w > 0.0) {
+      let nextTotalWeight = totalWeight + w;
+      let blendWeight = w / nextTotalWeight;
+      irradianceMean = ddgiAtlasSaturatingAdd3(
+        ddgiAtlasSaturatingMul3(irradianceMean, 1.0 - blendWeight),
+        ddgiAtlasSaturatingMul3(irr, blendWeight),
+      );
+      totalWeight = nextTotalWeight;
+    }
   }
 
   if (!(totalWeight > 0.0)) {
@@ -227,14 +321,91 @@ fn ddgiSample(
     // return conservative zero; inactive probes are never reintroduced.
     return select(
       vec3f(0.0),
-      fallbackIrr * fallbackVisibility,
+      ddgiAtlasSaturatingMul3(fallbackIrr, fallbackVisibility),
       hasFallback && fallbackVisibility > 0.0,
     );
   }
   // Each probe's SH eval already returns irradiance E (the cosine convolution
   // is baked into the stored coefficients at blend time), so the trilinear-
   // weighted average across probes IS the irradiance — no *PI reconstruction.
-  return sum / totalWeight;
+  return irradianceMean;
+}
+${DDGI_ATLAS_CODEC_WGSL}
+
+fn ddgiAtlasSampleVisibilityBilinear(
+  visibilityAtlas: texture_2d<f32>,
+  uv: vec2f,
+) -> vec2f {
+  let dimensions = vec2i(textureDimensions(visibilityAtlas, 0));
+  if (
+    any(dimensions <= vec2i(0)) ||
+    any(uv != uv) ||
+    any(abs(uv) > vec2f(DDGI_ATLAS_F32_MAX))
+  ) {
+    return vec2f(-1.0);
+  }
+  let texelPosition = uv * vec2f(dimensions) - vec2f(0.5);
+  if (
+    !all(texelPosition == texelPosition) ||
+    any(abs(texelPosition) > vec2f(2147483520.0))
+  ) {
+    return vec2f(-1.0);
+  }
+  let base = vec2i(floor(texelPosition));
+  let fraction = fract(texelPosition);
+  let maxCoord = dimensions - vec2i(1);
+  let c00 = clamp(base, vec2i(0), maxCoord);
+  let c10 = clamp(base + vec2i(1, 0), vec2i(0), maxCoord);
+  let c01 = clamp(base + vec2i(0, 1), vec2i(0), maxCoord);
+  let c11 = clamp(base + vec2i(1, 1), vec2i(0), maxCoord);
+  let encoded00 = textureLoad(visibilityAtlas, c00, 0);
+  let encoded10 = textureLoad(visibilityAtlas, c10, 0);
+  let encoded01 = textureLoad(visibilityAtlas, c01, 0);
+  let encoded11 = textureLoad(visibilityAtlas, c11, 0);
+  if (
+    !ddgiAtlasVisibilityEncodingValid(encoded00) ||
+    !ddgiAtlasVisibilityEncodingValid(encoded10) ||
+    !ddgiAtlasVisibilityEncodingValid(encoded01) ||
+    !ddgiAtlasVisibilityEncodingValid(encoded11)
+  ) { return vec2f(-1.0); }
+  let m00 = ddgiAtlasDecodeVisibility(encoded00);
+  let m10 = ddgiAtlasDecodeVisibility(encoded10);
+  let m01 = ddgiAtlasDecodeVisibility(encoded01);
+  let m11 = ddgiAtlasDecodeVisibility(encoded11);
+  let top = vec2f(
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(m00.x, 1.0 - fraction.x),
+      ddgiAtlasSaturatingMul(m10.x, fraction.x),
+    ),
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(m00.y, 1.0 - fraction.x),
+      ddgiAtlasSaturatingMul(m10.y, fraction.x),
+    ),
+  );
+  let bottom = vec2f(
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(m01.x, 1.0 - fraction.x),
+      ddgiAtlasSaturatingMul(m11.x, fraction.x),
+    ),
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(m01.y, 1.0 - fraction.x),
+      ddgiAtlasSaturatingMul(m11.y, fraction.x),
+    ),
+  );
+  let filtered = vec2f(
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(top.x, 1.0 - fraction.y),
+      ddgiAtlasSaturatingMul(bottom.x, fraction.y),
+    ),
+    ddgiAtlasSaturatingAdd(
+      ddgiAtlasSaturatingMul(top.y, 1.0 - fraction.y),
+      ddgiAtlasSaturatingMul(bottom.y, fraction.y),
+    ),
+  );
+  return vec2f(
+    filtered.x,
+    max(filtered.y, ddgiAtlasSaturatingMul(filtered.x, filtered.x)),
+  );
 }
 `;
 
@@ -259,9 +430,9 @@ export const DDGI_SAMPLE_MODULE: WgslModule = {
 //
 // Requires: ['ddgiSample'] so fn ddgiSample is in scope for sampleDDGIAtPoint.
 //
-// shade.wgsl: the @group(3) @binding(0..2) irradiance/visibility/sampler
-// bindings remain in shade's own body; only the struct + @binding(3) are here.
-// The binding sequence 0-1-2 (shade body) and 3 (this module, emitted first)
+// shade.wgsl: the @group(3) @binding(0..1) irradiance/visibility bindings
+// remain in shade's own body; only the struct + @binding(3) are here.
+// The binding sequence 0-1 (shade body) and 3 (this module, emitted first)
 // is fine in a single composed string — naga sees them in one pass.
 //
 // Group(3) layout compat: shade uses @group(3) purely for layout compatibility
@@ -287,13 +458,13 @@ struct DDGIGridUBO {
 @group(3) @binding(3) var<uniform> ddgiGrid: DDGIGridUBO;
 // sampleDDGIAtPoint — thin wrapper over ddgiSample using the ddgiGrid UBO fields.
 // D5.2 dedup: extracted from duplicate definitions in risGi + risGiNrc (2026-06-10).
-// The ddgiIrradiance / ddgiVisibility / ddgiSampler bindings are declared in
-// the per-shader body (@group(3) @binding(0..2)) — those are in scope here
+// The ddgiIrradiance / ddgiVisibility bindings are declared in the per-shader
+// body (@group(3) @binding(0..1)) — those are in scope here
 // because the composer emits this module BEFORE the consumer's own source.
 fn sampleDDGIAtPoint(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
   return ddgiSample(
     worldPos, surfaceNormal,
-    ddgiIrradiance, ddgiVisibility, ddgiSampler,
+    ddgiIrradiance, ddgiVisibility,
     ddgiGrid.origin.x, ddgiGrid.origin.y, ddgiGrid.origin.z,
     ddgiGrid.spacing,
     ddgiGrid.dimsX, ddgiGrid.dimsY, ddgiGrid.dimsZ,
@@ -306,8 +477,8 @@ fn sampleDDGIAtPoint(worldPos: vec3f, surfaceNormal: vec3f) -> vec3f {
  * D5.1+D5.2 — shared DDGI grid UBO struct + binding + sampleDDGIAtPoint wrapper.
  * Requires ddgiSample so fn ddgiSample is available for sampleDDGIAtPoint.
  *
- * NOTE: sampleDDGIAtPoint references ddgiIrradiance / ddgiVisibility / ddgiSampler
- * which are declared in the CONSUMER shader's own body (@group(3) @binding(0..2)).
+ * NOTE: sampleDDGIAtPoint references ddgiIrradiance / ddgiVisibility, which
+ * are declared in the CONSUMER shader's own body (@group(3) @binding(0..1)).
  * The WGSL composer emits required modules BEFORE the root's source (see
  * wgslComposer.ts), so those bindings are NOT yet declared when this module's
  * source is emitted. This means ddgiGridUbo CANNOT be a standalone composed root.

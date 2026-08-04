@@ -30,6 +30,10 @@ import {
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
 import { packBvhTextureData, uploadBvhTextures, type BvhTextureData } from './bvhTextureAdapter.js';
+import {
+  buildWebGl2OpticalComponentIds,
+  buildWebGl2RepresentedPrimitiveInstanceIds,
+} from './opticalMediumPolicy.js';
 import { allocGlTexture } from '../gl/texAlloc.js';
 import { retireIndependently } from '../gl/resourceRetirement.js';
 import { foldMeshAreaEmittersIntoMaterials } from './foldEmissiveEmitters.js';
@@ -38,11 +42,13 @@ import { packMaterialsTexture } from './materialsTexture.js';
 import {
   materialTextureAtlasLayerCapacities,
   packMaterialTextureAtlases,
+  snapshotMaterialTextureInputs,
   uploadTextureAtlas,
 } from './texturesArray.js';
 import { packLightsTexture } from './lightsTexture.js';
 import { assertSceneEmissiveMapsCpuReadable, packMeshAreaLights } from './meshAreaLights.js';
 import { buildEquirectInfo } from './equirectHdrInfo.js';
+import { applyRepresentedEmitterProposalPmf } from './representedEmitterProposal.js';
 import {
   computeWebgl2TransportBounds,
   type Webgl2TransportBounds,
@@ -113,9 +119,13 @@ function buildGeometryInputs(
     readonly warningMethod: string;
   },
 ): GeometryBuildInputs {
-  const ptScene = foldMeshAreaEmittersIntoMaterials(scene);
+  // Keep direct geometry/refit callers on the same represented analytic stream
+  // as buildSceneTextures. Without this normalization a no-fallback analytic
+  // can pass topology analysis but then disappear from the merged BVH.
+  const representedScene = expandAnalyticPrimitiveFallbacks(scene).scene;
+  const ptScene = foldMeshAreaEmittersIntoMaterials(representedScene);
   const skinnedScene = solveSkinPrimitives(ptScene, warningOptions);
-  const merged = mergeWorldSpaceFromCore(skinnedScene, {
+  const mergedSource = mergeWorldSpaceFromCore(skinnedScene, {
     positionStride: 4,
     splitMaterialsByCastShadow: true,
     onWarning: (message) => {
@@ -129,6 +139,13 @@ function buildGeometryInputs(
       });
     },
   });
+  // Core validation and geometry/material signature work have completed. From
+  // this point onward, UV layout, both atlases, descriptor packing and HDR
+  // envelope validation share one immutable material-texture input token.
+  const merged: WorldSpaceMergeResult = {
+    ...mergedSource,
+    materials: snapshotMaterialTextureInputs(mergedSource.materials),
+  };
   const uvLayout = buildUvAttributeLayout(skinnedScene, merged, merged.materials);
   const mergedTangents = mergeTangentsFromCore(
     skinnedScene,
@@ -174,7 +191,21 @@ export function buildSceneGeometryTextureData(
     warningMethod: opts?.warningMethod ?? 'setScene',
   };
   const geometry = buildGeometryInputs(scene, warningOptions);
-  const bvhData = packBvhTextureData(geometry.merged);
+  const opticalComponentIds = buildWebGl2OpticalComponentIds(
+    geometry.skinnedScene,
+    geometry.merged,
+    warningOptions.warningMethod,
+  );
+  const representedPrimitiveInstanceIds =
+    buildWebGl2RepresentedPrimitiveInstanceIds(
+      geometry.merged,
+      warningOptions.warningMethod,
+    );
+  const bvhData = packBvhTextureData(
+    geometry.merged,
+    opticalComponentIds,
+    representedPrimitiveInstanceIds,
+  );
   const meshLightsData = packMeshAreaLights(
     scene,
     geometry.merged,
@@ -283,7 +314,21 @@ export function buildRefitSceneGeometryTextures(
     mergedTriMaterialId: currentMerged.mergedTriMaterialId,
   };
 
-  const bvhData = packBvhTextureData(refitMerged);
+  const opticalComponentIds = buildWebGl2OpticalComponentIds(
+    geometry.skinnedScene,
+    refitMerged,
+    warningOptions.warningMethod,
+  );
+  const representedPrimitiveInstanceIds =
+    buildWebGl2RepresentedPrimitiveInstanceIds(
+      refitMerged,
+      warningOptions.warningMethod,
+    );
+  const bvhData = packBvhTextureData(
+    refitMerged,
+    opticalComponentIds,
+    representedPrimitiveInstanceIds,
+  );
   const meshLightsData = packMeshAreaLights(scene, refitMerged, geometry.uvLayout.mergedByTexCoord);
   const vertexColorMaterialIds = collectVertexColorMaterialIds(geometry.skinnedScene, refitMerged);
 
@@ -310,11 +355,19 @@ export function buildSceneTextures(
   gl: WebGL2RenderingContext,
   scene: Scene,
   caps: EngineCapabilities,
-  options: { readonly bdpt?: boolean } = {},
+  options: {
+    readonly bdpt?: boolean;
+    readonly warningPhase?: string;
+    readonly warningMethod?: string;
+  } = {},
 ): SceneTexturesBuild {
-  const analyticExpansion = expandAnalyticPrimitiveFallbacks(scene);
   // (1) capability filter
-  const { supported, warnings } = partitionSceneBySupport(analyticExpansion.scene, caps);
+  const {
+    supported: authoredSupported,
+    warnings,
+  } = partitionSceneBySupport(scene, caps);
+  const analyticExpansion = expandAnalyticPrimitiveFallbacks(authoredSupported);
+  const supported = analyticExpansion.scene;
   warnings.unshift(...analyticExpansion.warnings);
   // This must precede every GL allocation below. An opaque emissive map would
   // otherwise be sampled by forward hits while mesh-light NEE used scalar Le.
@@ -322,8 +375,8 @@ export function buildSceneTextures(
   const structuredWarnings: EngineWarning[] = [];
   const warningOptions = {
     onWarning: (warning: EngineWarning) => structuredWarnings.push(warning),
-    warningPhase: 'setScene',
-    warningMethod: 'setScene',
+    warningPhase: options.warningPhase ?? 'setScene',
+    warningMethod: options.warningMethod ?? 'setScene',
   };
 
   // (1b) fold `mesh-area` emitter radiance back onto its surface material's
@@ -347,7 +400,21 @@ export function buildSceneTextures(
   // allocation. A malformed material map or HDRI must leave no candidate GPU
   // writes for the caller to clean up.
   // (3) BVH data textures (+ per-tri materialIndex), CPU payload.
-  const bvhData = packBvhTextureData(merged);
+  const opticalComponentIds = buildWebGl2OpticalComponentIds(
+    skinnedScene,
+    merged,
+    warningOptions.warningMethod,
+  );
+  const representedPrimitiveInstanceIds =
+    buildWebGl2RepresentedPrimitiveInstanceIds(
+      merged,
+      warningOptions.warningMethod,
+    );
+  const bvhData = packBvhTextureData(
+    merged,
+    opticalComponentIds,
+    representedPrimitiveInstanceIds,
+  );
 
   // (4a) material-map atlas — gather every readable map texture into a sampler2DArray
   //      and a handle→layer map (null when the scene has no usable textures).
@@ -388,6 +455,12 @@ export function buildSceneTextures(
 
   // (6) environment importance-sampling (null for non-HDRI scenes).
   const env = buildEquirectInfo(supported.environment, warningOptions);
+  applyRepresentedEmitterProposalPmf(
+    lightsData,
+    meshLightsData,
+    env,
+    supported.environment,
+  );
 
   // (7) vertex-attribute array (normal / tangent / uv0 / color / uv1), 5 layers.
   // Build a merged uv1 array from the scene primitives using the same vertex-range
@@ -509,7 +582,11 @@ export function buildSceneTextures(
       warnings: [...warnings, ...merged.warnings],
       structuredWarnings,
       transportBounds,
-      supported,
+      // Retain the authored/capability-filtered scene. Analytic lowering is a
+      // build representation, not a destructive API mutation: a later
+      // transmission 0↔>0 patch must be able to switch atomically between an
+      // opaque fallback and canonical transmissive triangles.
+      supported: authoredSupported,
     };
   } catch (error) {
     bvh.destroy();
@@ -527,11 +604,20 @@ export function expandAnalyticPrimitiveFallbacks(scene: Scene): {
   const primitives = scene.primitives.map((primitive): ScenePrimitive => {
     if (primitive.kind !== 'analytic') return primitive;
     changed = true;
+    const transmissive = (primitive.material.transmission ?? 0) > 0;
+    const representation = transmissive || primitive.fallbackMesh == null
+      ? 'canonical generated MeshPrimitive'
+      : 'authored fallback MeshPrimitive';
     warnings.push(
-      `Scene primitive "${primitive.id}" (analytic ${primitive.shape}) is tessellated to a generated MeshPrimitive ` +
-        `fallback for @vitrum/pt-webgl2.`,
+      `Scene primitive "${primitive.id}" (analytic ${primitive.shape}) is tessellated to its ` +
+        `${representation} representation for @vitrum/pt-webgl2.`,
     );
-    return analyticPrimitiveToMesh(primitive);
+    return analyticPrimitiveToMesh(
+      primitive,
+      transmissive
+        ? { preferFallbackMesh: false }
+        : undefined,
+    );
   });
   if (!changed) return { scene, warnings };
   return {

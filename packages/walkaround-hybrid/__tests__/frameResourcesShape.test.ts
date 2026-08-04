@@ -68,7 +68,6 @@ const FIELD_MIGRATION_TABLE = [
   // ddgi ──────────────────────────────────────────────────────────────────
   ['ddgiPlaceholderRgba16f',         'ddgi'],
   ['ddgiPlaceholderVisRgba16f',      'ddgi'],
-  ['ddgiSampler',                    'ddgi'],
   ['ddgiUboBuffer',                  'ddgi'],
 
   // gtao ──────────────────────────────────────────────────────────────────
@@ -121,10 +120,10 @@ describe('FrameResources shape — W1-R2 per-algorithm sub-structs', () => {
   });
 
   it('migration table is exhaustive — covers every legacy FrameResources sibling field', () => {
-    // The live interface has 48 sibling fields after removing the unused
-    // common.placeholderTexture allocation. Every retained entry must appear
-    // exactly once.
-    expect(FIELD_MIGRATION_TABLE.length).toBe(48);
+    // The live interface has 47 sibling fields after removing the unused
+    // common.placeholderTexture allocation and the obsolete shared DDGI
+    // sampler. Every retained entry must appear exactly once.
+    expect(FIELD_MIGRATION_TABLE.length).toBe(47);
     const seen = new Set<string>();
     for (const [field] of FIELD_MIGRATION_TABLE) {
       expect(seen.has(field), `legacy field '${field}' listed twice`).toBe(false);

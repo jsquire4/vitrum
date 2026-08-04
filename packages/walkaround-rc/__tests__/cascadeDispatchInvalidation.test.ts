@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { RCDispatcher, type RCDispatchOptsRaw, type CascadeDim } from '../src/index.js';
+import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
 
 const DIMS: CascadeDim[] = [
   { probes: [1, 1, 1], rays: 16, intervalNear: 0, intervalFar: 4 },
@@ -74,6 +75,8 @@ function baseOpts(device: GPUDevice): RCDispatchOptsRaw {
     bvhNormalsBuf: makeExternalBuffer('bvh-normals'),
     materialsBuf: makeExternalBuffer('materials'),
     triMaterialIdBuf: makeExternalBuffer('tri-material-id'),
+    opticalTriangleIdentityBuf: makeExternalBuffer('optical-triangle-identity', 32),
+    opticalInstanceBoundaryIdBasePlusOneBuf: makeExternalBuffer('optical-instance-base', 4),
     cascadeBufs: [makeExternalBuffer('cascade-0', 256), makeExternalBuffer('cascade-1', 1024)],
     probeOriginWorld: [0, 0, 0],
     roomSize: [1, 1, 1],
@@ -190,9 +193,9 @@ describe('RCDispatcher binding cache invalidation', () => {
     expect(resource(1)).toEqual({ buffer: arena, offset: 256, size: 16 });
     expect(resource(2)).toEqual({ buffer: arena, offset: 512, size: 48 });
     expect(resource(18)).toEqual({ buffer: arena, offset: 768, size: 48 });
-    // Only RC-specific material and triangle-id records enter the compact
-    // adapter arena; the four large geometry windows remain borrowed.
-    expect(copyBufferToBuffer).toHaveBeenCalledTimes(2);
+    // Material records and exact optical identity enter the compact adapter
+    // arena; the four large geometry windows remain borrowed.
+    expect(copyBufferToBuffer).toHaveBeenCalledTimes(4);
   });
 
   it('copies only dirty packed-arena slices and performs zero static-frame copies', () => {
@@ -202,7 +205,7 @@ describe('RCDispatcher binding cache invalidation', () => {
     const merged = baseOpts(device);
 
     dispatcher.dispatchFrameRaw(merged);
-    expect(copyBufferToBuffer).toHaveBeenCalledTimes(2);
+    expect(copyBufferToBuffer).toHaveBeenCalledTimes(4);
     copyBufferToBuffer.mockClear();
     const bindGroupsAfterInitial = createBindGroup.mock.calls.length;
 
@@ -219,7 +222,7 @@ describe('RCDispatcher binding cache invalidation', () => {
     expect(copyBufferToBuffer).toHaveBeenCalledTimes(1);
     expect(copyBufferToBuffer.mock.calls[0]![0]).toBe(nextMaterials);
     expect(copyBufferToBuffer.mock.calls[0]![1]).toBe(0);
-    expect(copyBufferToBuffer.mock.calls[0]![3]).toBe(64);
+    expect(copyBufferToBuffer.mock.calls[0]![3]).toBe(80);
     expect(copyBufferToBuffer.mock.calls[0]![4]).toBe(64);
     expect(createBindGroup.mock.calls.length).toBe(bindGroupsAfterInitial);
   });
@@ -241,24 +244,26 @@ describe('RCDispatcher binding cache invalidation', () => {
     };
 
     dispatcher.dispatchFrameRaw(opts);
-    expect(copyBufferToBuffer).toHaveBeenCalledTimes(7);
+    expect(copyBufferToBuffer).toHaveBeenCalledTimes(9);
     const queue = device.queue as unknown as {
       writeBuffer: { mock: { calls: unknown[][] } };
     };
     const headerWrite = queue.writeBuffer.mock.calls.find((call) => {
       const bytes = call[2];
-      return bytes instanceof ArrayBuffer && bytes.byteLength === 64;
+      return bytes instanceof ArrayBuffer && bytes.byteLength === 80;
     });
     expect(headerWrite).toBeDefined();
     expect(Array.from(new Uint32Array(headerWrite![2] as ArrayBuffer))).toEqual([
-      16, 1,
-      32, 16,
-      48, 2,
-      64, 1,
-      65, 1,
-      66, 4,
-      82, 4,
-      0, 0,
+      20, 1,
+      36, 16,
+      52, 2,
+      68, 1,
+      69, 1,
+      70, 4,
+      86, 4,
+      102, 4,
+      110, 1,
+      111, 0,
     ]);
     copyBufferToBuffer.mockClear();
     const bindGroupsAfterInitial = createBindGroup.mock.calls.length;
@@ -274,12 +279,91 @@ describe('RCDispatcher binding cache invalidation', () => {
     ]);
     expect(copyBufferToBuffer.mock.calls.map((call) => call[1])).toEqual([0, 0, 0, 0, 0]);
     expect(copyBufferToBuffer.mock.calls.map((call) => call[3])).toEqual([
-      192, 256, 260, 264, 328,
+      208, 272, 276, 280, 344,
     ]);
     expect(copyBufferToBuffer.mock.calls.map((call) => call[4])).toEqual([
       64, 4, 4, 64, 64,
     ]);
     expect(createBindGroup.mock.calls.length).toBe(bindGroupsAfterInitial);
+  });
+
+  it('copies only exact optical-identity slices for an in-place topology version change', () => {
+    installWebGpuConstants();
+    const { device, createBindGroup, copyBufferToBuffer } = makeMockDevice();
+    const dispatcher = new RCDispatcher(DIMS);
+    const opts: RCDispatchOptsRaw = {
+      ...baseOpts(device),
+      opticalArenaVersion: 1,
+    };
+
+    dispatcher.dispatchFrameRaw(opts);
+    expect(copyBufferToBuffer).toHaveBeenCalledTimes(4);
+    copyBufferToBuffer.mockClear();
+    const bindGroupsAfterInitial = createBindGroup.mock.calls.length;
+
+    dispatcher.dispatchFrameRaw({
+      ...opts,
+      frameSeed: 2,
+      opticalArenaVersion: 2,
+    });
+    expect(copyBufferToBuffer).toHaveBeenCalledTimes(2);
+    expect(copyBufferToBuffer.mock.calls.map((call) => call[0])).toEqual([
+      opts.opticalTriangleIdentityBuf,
+      opts.opticalInstanceBoundaryIdBasePlusOneBuf,
+    ]);
+    expect(copyBufferToBuffer.mock.calls.map((call) => call[1])).toEqual([0, 0]);
+    expect(copyBufferToBuffer.mock.calls.map((call) => call[3])).toEqual([208, 240]);
+    expect(copyBufferToBuffer.mock.calls.map((call) => call[4])).toEqual([32, 4]);
+    expect(createBindGroup.mock.calls.length).toBe(bindGroupsAfterInitial);
+  });
+
+  it('preserves an explicitly empty TLAS instead of resurrecting direct BLAS root zero', () => {
+    installWebGpuConstants();
+    const { device, createBindGroup, copyBufferToBuffer } = makeMockDevice();
+    const dispatcher = new RCDispatcher(DIMS);
+    const opts: RCDispatchOptsRaw = {
+      ...baseOpts(device),
+      bvhMode: 'tlas',
+      tlasNodeCount: 1,
+      // WebGPU cannot bind zero-sized buffers. These are inert sentinels whose
+      // positive capacities must not change the declared empty-scene mode.
+      tlasNodesBuf: makeExternalBuffer('empty-tlas-node-sentinel', 32),
+      tlasInstanceIndicesBuf: makeExternalBuffer('empty-tlas-index-sentinel', 4),
+      tlasBlasRootsBuf: makeExternalBuffer('empty-tlas-root-sentinel', 4),
+      tlasInstanceWorldToLocalBuf: makeExternalBuffer('empty-tlas-w2l-sentinel', 64),
+      tlasInstanceLocalToWorldBuf: makeExternalBuffer('empty-tlas-l2w-sentinel', 64),
+    };
+    dispatcher.dispatchFrameRaw(opts);
+    const bindGroupsWithLiveTlas = createBindGroup.mock.calls.length;
+    copyBufferToBuffer.mockClear();
+    expect(() => dispatcher.dispatchFrameRaw({
+      ...opts,
+      frameSeed: 2,
+      tlasNodeCount: 0,
+    })).not.toThrow();
+    expect(copyBufferToBuffer).not.toHaveBeenCalled();
+    expect(createBindGroup.mock.calls.length).toBe(bindGroupsWithLiveTlas);
+
+    const queue = device.queue as unknown as {
+      writeBuffer: { mock: { calls: unknown[][] } };
+    };
+    const uniformWrite = queue.writeBuffer.mock.calls
+      .filter((call) => {
+        const bytes = call[2];
+        return bytes instanceof ArrayBuffer && bytes.byteLength === 160;
+      })
+      .at(-1);
+    expect(uniformWrite).toBeDefined();
+    const uniformWords = new Uint32Array(uniformWrite![2] as ArrayBuffer);
+    expect(uniformWords[27]).toBe(1);
+    expect(uniformWords[28]).toBe(0);
+
+    expect(PROBE_RAY_CAST_WGSL).toContain('return rc_u.bvhMode == 1u;');
+    expect(PROBE_RAY_CAST_WGSL).toContain('rc_u.tlasNodeCount == 0u || tlasNodeCapacity() == 0u');
+    expect(PROBE_RAY_CAST_WGSL).toContain('return selected;');
+    expect(PROBE_RAY_CAST_WGSL).not.toContain(
+      'return rc_u.bvhMode == 1u && rc_u.tlasNodeCount > 0u;',
+    );
   });
 
   it('reuses handles for stable bindings and rebuilds on bvhMode or bounds changes', () => {

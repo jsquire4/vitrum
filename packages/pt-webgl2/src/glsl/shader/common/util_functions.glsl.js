@@ -450,11 +450,56 @@ export const util_functions = /* glsl */`
 
 	}
 
+	// Evaluate exp( - extinction * dist ) without ever forming 0 * infinity.
+	// This is also the defensive boundary for malformed transport inputs: a NaN,
+	// negative distance, or negative extinction fails closed instead of poisoning
+	// every later path-throughput operation.
+	float extinctionTransmittance( float extinction, float dist ) {
+
+		if ( isnan( extinction ) || extinction < 0.0 || isnan( dist ) || dist < 0.0 ) {
+
+			return 0.0;
+
+		}
+		if ( dist == 0.0 ) return 1.0;
+		if ( vitrumIsInfiniteDistance( dist ) ) {
+			return extinction == 0.0 ? 1.0 : 0.0;
+		}
+		if ( isinf( extinction ) ) return 0.0;
+		return exp( - extinction * dist );
+
+	}
+
+	vec3 extinctionTransmittance( vec3 extinction, float dist ) {
+
+		return vec3(
+			extinctionTransmittance( extinction.x, dist ),
+			extinctionTransmittance( extinction.y, dist ),
+			extinctionTransmittance( extinction.z, dist )
+		);
+
+	}
+
 	// https://github.com/KhronosGroup/glTF/blob/main/extensions/2.0/Khronos/KHR_materials_volume/README.md#attenuation
 	vec3 transmissionAttenuation( float dist, vec3 attColor, float attDist ) {
 
+		if (
+			isnan( attDist ) || attDist <= 0.0 ||
+			any( isnan( attColor ) ) || any( isinf( attColor ) ) ||
+			any( lessThan( attColor, vec3( 0.0 ) ) ) ||
+			any( greaterThan( attColor, vec3( 1.0 ) ) )
+		) {
+
+			return vec3( 0.0 );
+
+		}
+		if ( vitrumIsInfiniteDistance( attDist ) ) {
+
+			return extinctionTransmittance( vec3( 0.0 ), dist );
+
+		}
 		vec3 ot = - log( attColor ) / attDist;
-		return exp( - ot * dist );
+		return extinctionTransmittance( ot, dist );
 
 	}
 
@@ -512,7 +557,7 @@ export const util_functions = /* glsl */`
 		}
 
 		float muLambda = spectralAttenuationMuHero( materialsTex, materialIndex, heroWavelength );
-		return exp( - muLambda * dist );
+		return extinctionTransmittance( muLambda, dist );
 
 	}
 

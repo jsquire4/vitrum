@@ -7,6 +7,7 @@ import {
   TRI_AREA_LIGHT_TYPE,
   TRI_LIGHT_PIXELS,
 } from './meshAreaLights.js';
+import { materialEmissionExcludedFromMeshNee } from './meshEmitterPolicy.js';
 import {
   FLOAT16_HALF_MIN_SUBNORMAL,
   float16BitsToFloat32,
@@ -61,7 +62,16 @@ function sceneWith(emitters: Scene['emitters']): Scene {
 }
 
 function material(overrides: Partial<MaterialSpec>): MaterialSpec {
-  return { baseColor: [0.5, 0.5, 0.5], roughness: 1, metallic: 0, ...overrides };
+  const resolved: MaterialSpec = {
+    baseColor: [0.5, 0.5, 0.5],
+    roughness: 1,
+    metallic: 0,
+    ...overrides,
+  };
+  // Exact-cell fixtures must opt out of the public trilinear mip default.
+  return resolved.emissiveMap != null && resolved.emissiveMap.mipFilter === undefined
+    ? { ...resolved, emissiveMap: { ...resolved.emissiveMap, mipFilter: 'none' } }
+    : resolved;
 }
 
 function luminance(rgb: readonly [number, number, number]): number {
@@ -107,6 +117,22 @@ function sceneWithPrimitive(primitive: MeshPrimitive, emitters: Scene['emitters'
 }
 
 describe('packMeshAreaLights (B4)', () => {
+  it('treats omitted mipFilter exactly like linear and explicit none as exact-cell eligible', () => {
+    const mapped = (mipFilter?: 'linear' | 'none'): MaterialSpec => ({
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      emissive: [1, 1, 1],
+      emissiveMap: {
+        handle: {},
+        ...(mipFilter !== undefined ? { mipFilter } : {}),
+      },
+    });
+    expect(materialEmissionExcludedFromMeshNee(mapped())).toBe(true);
+    expect(materialEmissionExcludedFromMeshNee(mapped('linear'))).toBe(true);
+    expect(materialEmissionExcludedFromMeshNee(mapped('none'))).toBe(false);
+  });
+
   it('returns null/empty when there are no mesh-area emitters', () => {
     const out = packMeshAreaLights(sceneWith([]), fakeMerged());
     expect(out.data).toBeNull();
@@ -134,7 +160,7 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.totalEmissivePower).toBeCloseTo(luminance([2, 4, 8]), 6);
   });
 
-  it('rejects a cumulative mesh-emitter selection mass that overflows float32', () => {
+  it('represents cumulative mesh-emitter mass beyond float32 without dropping support', () => {
     const repeatedIndices = new Uint32Array([
       0, 1, 2,
       0, 2, 3,
@@ -158,21 +184,23 @@ describe('packMeshAreaLights (B4)', () => {
         },
       ],
     });
-    expect(() =>
-      packMeshAreaLights(
-        sceneWith([{
-          kind: 'mesh-area',
-          id: 'overflowing-panel',
-          meshId: 'panel',
-          color: [1, 1, 1],
-          intensity: 2e38,
-        }]),
-        merged,
-      ),
-    ).toThrow(/mesh-emitter selection-power sum overflows float32/);
+    const packed = packMeshAreaLights(
+      sceneWith([{
+        kind: 'mesh-area',
+        id: 'overflowing-panel',
+        meshId: 'panel',
+        color: [1, 1, 1],
+        intensity: 2e38,
+      }]),
+      merged,
+    );
+    expect(packed.totalEmissivePower).toBeGreaterThan(3.402823466e38);
+    for (let i = 0; i < packed.triLightCount; i += 1) {
+      expect(packed.data![i * 24 + 17]).toBe(0.25);
+    }
   });
 
-  it('rejects positive mesh-emitter proposal mass lost by float32 accumulation or division', () => {
+  it('retains positive mesh-emitter support across adversarial dynamic range', () => {
     const twoSources = fakeMerged({
       meshVertexRanges: [
         { name: 'bright', vertexStart: 0, vertexCount: 3, triStart: 0, triCount: 1 },
@@ -186,25 +214,17 @@ describe('packMeshAreaLights (B4)', () => {
       color: [1, 1, 1] as [number, number, number],
       intensity,
     });
-    expect(() =>
-      packMeshAreaLights(
-        sceneWith([
-          emitter('dominant', 'bright', 1e30),
-          emitter('flattened', 'dim', 1e-30),
-        ]),
-        twoSources,
-      ),
-    ).toThrow(/loses proposal support in the cumulative float32 distribution/);
-
-    expect(() =>
-      packMeshAreaLights(
-        sceneWith([
-          emitter('pdf-collapse', 'bright', 1e-30),
-          emitter('dominant-last', 'dim', 1e30),
-        ]),
-        twoSources,
-      ),
-    ).toThrow(/selection probability collapses to zero in float32/);
+    for (const emitters of [
+      [emitter('dominant', 'bright', 1e30), emitter('retained', 'dim', 1e-30)],
+      [emitter('retained-first', 'bright', 1e-30), emitter('dominant-last', 'dim', 1e30)],
+    ]) {
+      const packed = packMeshAreaLights(sceneWith(emitters), twoSources);
+      const pmf0 = packed.data![17]!;
+      const pmf1 = packed.data![24 + 17]!;
+      expect(pmf0).toBeGreaterThan(0);
+      expect(pmf1).toBeGreaterThan(0);
+      expect(Math.fround(pmf0 + pmf1)).toBe(1);
+    }
   });
 
   it('skips meshes with no matching emitter (only emissive meshes contribute)', () => {
@@ -386,6 +406,24 @@ describe('packMeshAreaLights (B4)', () => {
     expect(out.data?.[5]).toBeCloseTo(2, 6);
     expect(out.data?.[6]).toBeCloseTo(4, 6);
     expect(hasMeshAreaLightForPrimitive(explicit, 'panel')).toBe(true);
+  });
+
+  it('keeps a black explicit mesh-area emitter authoritative over stale implicit emission', () => {
+    const explicit = sceneWithPrimitive(
+      panelPrimitive(material({ emissive: [4, 2, 1], emissiveIntensity: 3 })),
+      [{
+        kind: 'mesh-area',
+        id: 'disabled-panel',
+        meshId: 'panel',
+        color: [1, 1, 1],
+        intensity: 0,
+      }],
+    );
+
+    const out = packMeshAreaLights(explicit, fakeMerged());
+    expect(out.triLightCount).toBe(0);
+    expect(out.data).toBeNull();
+    expect(hasMeshAreaLightForPrimitive(explicit, 'panel')).toBe(false);
   });
 
   it('retains positive emitters below the former luminance cutoff', () => {

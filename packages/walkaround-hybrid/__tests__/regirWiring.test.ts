@@ -7,9 +7,8 @@
  *   1. UBO contract: WalkaroundUBO declares the ReGIR fields at the documented
  *      byte offsets; `updateUBO` packs them and a ReGIR-OFF state writes zeros
  *      (so the kernel's `regirEnabled == 0` gate keeps RIS on the tree path).
- *   2. RIS WGSL branches on `ubo.regirEnabled`, draws from the cell reservoir,
- *      and feeds the cell pmf into the SAME unbiased weight divisor the
- *      light-tree path uses (`emitterSelPmf * ls.pdfArea`).
+ *   2. RIS WGSL draws from the cell reservoir and feeds its represented
+ *      effective log density directly into the shared log-weight path.
  *   3. ReGIR-OFF bit-identity: with `regirEnabled` left 0, the UBO bytes 0..364
  *      (everything the light-tree path reads) are byte-identical whether or not
  *      a ReGIR-OFF state is passed — so RIS reproduces the light-tree path
@@ -27,10 +26,7 @@ import { REGIR_WGSL, REGIR_BUILD_WGSL } from '../src/shaders/regir.wgsl.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { WALKAROUND_UBO_SIZE_BYTES } from '../src/pipeline/constants.js';
 import { updateUBO, type RegirUboState } from '../src/pipeline/uboUpdater.js';
-import {
-  ReGIRCoordinator,
-  resolveReGIRConfig,
-} from '../src/pipeline/ReGIRCoordinator.js';
+import { ReGIRCoordinator, resolveReGIRConfig } from '../src/pipeline/ReGIRCoordinator.js';
 import { uploadBufferPadded } from '../src/pipeline/resourceManager.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
@@ -42,25 +38,50 @@ function fakeInputs(): PipelineFrameInputs {
   const m = new Float32Array(16);
   return {
     camera: { viewMatrix: m, projMatrix: m, prevViewProjMatrix: m, cameraPos: [0, 0, 0] },
-    screen: { screenWidth: 64, screenHeight: 64, frameSeed: 7, swapChainView: {} as GPUTextureView, swapChainFormat: 'bgra8unorm' },
+    screen: {
+      screenWidth: 64,
+      screenHeight: 64,
+      frameSeed: 7,
+      swapChainView: {} as GPUTextureView,
+      swapChainFormat: 'bgra8unorm',
+    },
     lighting: {
       emitterCount: 4,
-      primaryLightDir: [0, 1, 0], primaryLightIntensity: 1,
-      skyTint: [0, 0, 0], skyIrradiance: 0,
-      emitterDist2Floor: 0.01, directFireflyClamp: 4, causticBoost: 1, causticVisClamp: 1,
-      lightTreeEnabled: 1, lightTreeNodeCount: 7,
+      primaryLightDir: [0, 1, 0],
+      primaryLightIntensity: 1,
+      skyTint: [0, 0, 0],
+      skyIrradiance: 0,
+      emitterDist2Floor: 0.01,
+      directFireflyClamp: 4,
+      causticBoost: 1,
+      causticVisClamp: 1,
+      lightTreeEnabled: 1,
+      lightTreeNodeCount: 7,
     },
     restirDI: { temporalMClampDI: 20, spatialReuseRadiusPx: 30, spatialDepthTolFloor: 0.05 },
     restirGI: {
-      restirGiWCap: 16, restirGiIrrClamp: 5, restirGiMClamp: 50,
-      restirGiSpatialRadiusPx: 12, restirGiSpatialNormalDotMin: 0.9,
+      restirGiWCap: 16,
+      restirGiIrrClamp: 5,
+      restirGiMClamp: 50,
+      restirGiSpatialRadiusPx: 12,
+      restirGiSpatialNormalDotMin: 0.9,
       restirGiSpatialCoplanarTol: 0.05,
     },
-    gtao: { gtaoRadiusPx: 32, gtaoIntensity: 2, gtaoDepthThreshold: 2, gtaoBilateralDepthSigma: 0.25, adaptiveSamplingThresholdLow: 0.01, adaptiveSamplingThresholdHigh: 0.1 },
+    gtao: {
+      gtaoRadiusPx: 32,
+      gtaoIntensity: 2,
+      gtaoDepthThreshold: 2,
+      gtaoBilateralDepthSigma: 0.25,
+      adaptiveSamplingThresholdLow: 0.01,
+      adaptiveSamplingThresholdHigh: 0.1,
+    },
     filter: {
-      triIntersectEpsilon: 1e-5, rayOriginBias: 1e-3,
-      glassMixScale: 0.7, indirectFireflyClamp: [1, 1, 1],
-      atrousDirectSigmas: [128, 5, 0.05], atrousIndirectSigmas: [32, 20, 0.5],
+      triIntersectEpsilon: 1e-5,
+      rayOriginBias: 1e-3,
+      glassMixScale: 0.7,
+      indirectFireflyClamp: [1, 1, 1],
+      atrousDirectSigmas: [128, 5, 0.05],
+      atrousIndirectSigmas: [32, 20, 0.5],
       stainedGlassFlags: 0,
     },
     bvh: { bvhMode: 0, tlasNodeCount: 0 },
@@ -82,8 +103,13 @@ function capturingDevice(backing: Uint8Array): GPUDevice {
 describe('WalkaroundUBO — ReGIR field contract', () => {
   it('declares the ReGIR fields with the documented offsets', () => {
     for (const sub of [
-      'regirOrigin:', 'regirInvCellSize:', 'regirDims:', 'regirEnabled:',
-      'regirCandidatesPerCell:', 'regirSurvivorsPerCell:', 'regirGridFloatOffset:',
+      'regirOrigin:',
+      'regirInvCellSize:',
+      'regirDims:',
+      'regirEnabled:',
+      'regirCandidatesPerCell:',
+      'regirSurvivorsPerCell:',
+      'regirGridFloatOffset:',
     ]) {
       expect(WALKAROUND_UBO_WGSL).toContain(sub);
     }
@@ -112,19 +138,21 @@ describe('updateUBO — ReGIR packing + offsets', () => {
     expect(f32[93]).toBeCloseTo(-2.5);
     expect(f32[94]).toBeCloseTo(3.5);
     expect(f32[95]).toBeCloseTo(0.25); // offset 380 — regirInvCellSize
-    expect(u32[96]).toBe(16);          // offset 384 — regirDims.x
+    expect(u32[96]).toBe(16); // offset 384 — regirDims.x
     expect(u32[97]).toBe(8);
     expect(u32[98]).toBe(12);
-    expect(u32[99]).toBe(1);           // offset 396 — regirEnabled
-    expect(u32[100]).toBe(32);         // offset 400 — M
-    expect(u32[101]).toBe(8);          // offset 404 — K
-    expect(u32[102]).toBe(84);         // offset 408 — gridFloatOffset
+    expect(u32[99]).toBe(1); // offset 396 — regirEnabled
+    expect(u32[100]).toBe(32); // offset 400 — M
+    expect(u32[101]).toBe(8); // offset 404 — K
+    expect(u32[102]).toBe(84); // offset 408 — gridFloatOffset
   });
 
   it('ReGIR-OFF default writes a zeroed gate (regirEnabled = 0)', () => {
     const backing = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
-    updateUBO(capturingDevice(backing), {} as GPUBuffer, fakeInputs(),
-      { enabled: false, mixAlpha: 0 }); // regir defaults to OFF
+    updateUBO(capturingDevice(backing), {} as GPUBuffer, fakeInputs(), {
+      enabled: false,
+      mixAlpha: 0,
+    }); // regir defaults to OFF
     const u32 = new Uint32Array(backing.buffer);
     expect(u32[99]).toBe(0); // regirEnabled gate off
     expect(u32[100]).toBe(0);
@@ -136,10 +164,21 @@ describe('updateUBO — ReGIR packing + offsets', () => {
     const a = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     const b = new Uint8Array(WALKAROUND_UBO_SIZE_BYTES);
     updateUBO(capturingDevice(a), {} as GPUBuffer, fakeInputs(), { enabled: false, mixAlpha: 0 });
-    updateUBO(capturingDevice(b), {} as GPUBuffer, fakeInputs(), { enabled: false, mixAlpha: 0 }, {
-      enabled: false, origin: [9, 9, 9], invCellSize: 99, dims: [9, 9, 9],
-      candidatesPerCell: 9, survivorsPerCell: 9, gridFloatOffset: 9,
-    });
+    updateUBO(
+      capturingDevice(b),
+      {} as GPUBuffer,
+      fakeInputs(),
+      { enabled: false, mixAlpha: 0 },
+      {
+        enabled: false,
+        origin: [9, 9, 9],
+        invCellSize: 99,
+        dims: [9, 9, 9],
+        candidatesPerCell: 9,
+        survivorsPerCell: 9,
+        gridFloatOffset: 9,
+      },
+    );
     // Everything the light-tree path reads (bytes 0..364 inclusive) must be
     // byte-identical: a disabled ReGIR state never perturbs the tree path.
     expect(Array.from(a.slice(0, 368))).toEqual(Array.from(b.slice(0, 368)));
@@ -152,17 +191,16 @@ describe('RIS WGSL — ReGIR cell selection enters the unbiased weight', () => {
   it('the M_LIGHT loop branches on ubo.regirEnabled and samples the cell reservoir', () => {
     expect(RIS_WGSL).toContain('ubo.regirEnabled == 1u');
     expect(RIS_WGSL).toContain('regir_sample_cell(pos, &rng)');
-    // The cell pmf (q̂_c/Ŝ) is captured into emitterSelPmf — the EXACT source
-    // pmf the WRS weight divides by.
-    expect(RIS_WGSL).toContain('emitterSelPmf = rs.pSel');
+    // The represented occurrence correction stays in log space.
+    expect(RIS_WGSL).toContain('emitterLogSelectionPmf = rs.log2PSel');
   });
 
-  it('the cell pmf flows through the SAME unbiased divisor as the tree path', () => {
-    // pX = emitterSelPmf × ls.pdfArea, then w = p̂ / pX. The regir branch sets
-    // emitterSelPmf = the cell pmf, so the divisor is exact ⇒ unbiased.
-    expect(RIS_WGSL).toContain('emitterSelPmf * ls.pdfArea');
-    expect(RIS_WGSL).toContain('if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }');
-    expect(RIS_WGSL).toContain('if (!reservoirDiFinite(w)) { w = 0.0; }');
+  it('the represented log density flows directly into the common log-weight path', () => {
+    // No linear exp2 endpoint is introduced before the reservoir update.
+    expect(RIS_WGSL).toContain('let logWeight = reservoirDiInitialCandidateLogWeight(');
+    expect(RIS_WGSL).toContain('emitterLogSelectionPmf,');
+    expect(RIS_WGSL).toContain('ls.pdfArea,');
+    expect(RIS_WGSL).toContain('updateReservoirDI(&r, &wrs, lid, xiTri, logWeight, &rng);');
   });
 
   it('the tree + flat-CDF fallback paths are preserved (regir branch is else-if)', () => {
@@ -171,37 +209,69 @@ describe('RIS WGSL — ReGIR cell selection enters the unbiased weight', () => {
   });
 });
 
-describe('ReGIR WGSL — grid build stores the exact per-cell pmf', () => {
-  it('the read path returns the survivor emitter + its pSel', () => {
+describe('ReGIR WGSL — grid build stores represented effective log density', () => {
+  it('the read path accepts finite signed logs and rejects the invalid sentinel separately', () => {
     expect(REGIR_WGSL).toContain('fn regir_sample_cell(');
-    expect(REGIR_WGSL).toContain('out.pSel = pSel');
+    expect(REGIR_WGSL).toContain('out.log2PSel = log2PSel');
+    expect(REGIR_WGSL).toContain('floor(emitterF) == emitterF');
+    expect(REGIR_WGSL).toContain(
+      'if (!(log2PSel > REGIR_LOG2_PSEL_INVALID && log2PSel <= REGIR_F32_MAX))',
+    );
+    expect(REGIR_WGSL).not.toContain('log2PSel <= 0.0');
   });
 
-  it('the build kernel computes pSel = q̂(e*) · M / wSum (the unbiased effective pmf)', () => {
+  it('uses represented WRS and stores log2(M * occurrenceProbability * treePmf)', () => {
     expect(REGIR_BUILD_WGSL).toContain('fn regirBuildMain(');
-    expect(REGIR_BUILD_WGSL).toContain('let pSel = (chosenQHat * f32(M)) / wSum;');
+    expect(REGIR_BUILD_WGSL).toContain('var wrs = representedWrsInit();');
+    expect(REGIR_BUILD_WGSL).toContain('representedWrsUpdate(&wrs, logWeight, &rng)');
+    expect(REGIR_BUILD_WGSL).toContain(
+      'let occurrenceLog = representedWrsLogSelectionProbabilityParts(wrs);',
+    );
+    expect(REGIR_BUILD_WGSL).toContain('log2(f32(M))');
+    expect(REGIR_BUILD_WGSL).toContain('log2(chosenTreePmf)');
+    expect(REGIR_BUILD_WGSL).toContain('regirGridRW[base + 1u] = log2PSel;');
+    expect(REGIR_BUILD_WGSL).not.toContain('exp2(max(logPSel');
     // The build pass gates on the same UBO flag.
     expect(REGIR_BUILD_WGSL).toContain('if (ubo.regirEnabled == 0u) { return; }');
-    // WRS source weight = target / tree pdf (light-tree-seeded).
-    expect(REGIR_BUILD_WGSL).toContain('let w = qHat / draw.pdf;');
+    // WRS source weight = represented target / tree pdf, evaluated in log space.
+    expect(REGIR_BUILD_WGSL).toContain('let logWeight = log2(qHat) - log2(draw.pdf);');
   });
 
   it('uses packed light-tree leaf importance for qHat instead of scalar EmitterTri.Le', () => {
-    expect(REGIR_BUILD_WGSL).toContain('struct RBTreeSample { emitterIndex: i32, pdf: f32, qHat: f32 }');
-    expect(REGIR_BUILD_WGSL).toContain('s.qHat = rb_importance(base, p, dist2Floor);');
-    expect(REGIR_BUILD_WGSL).toContain('let qHat = draw.qHat;');
+    expect(REGIR_BUILD_WGSL).toContain('struct RBLightTreeSelection');
+    expect(REGIR_BUILD_WGSL).toContain(
+      'result.qHat = rb_lt_importance(draw.nodeIndex * RB_LIGHT_TREE_STRIDE, p, dist2Floor);',
+    );
+    expect(REGIR_BUILD_WGSL).toContain('let qHat = max(draw.qHat, rb_lt_F32_MIN_NORMAL);');
+    expect(REGIR_BUILD_WGSL).toContain('let leafPower = regirGridRW[leafBase + 1u];');
     expect(REGIR_WGSL).not.toContain('fn regir_cell_target(');
     expect(REGIR_BUILD_WGSL).not.toContain('fn rb_cell_target(');
     expect(REGIR_BUILD_WGSL).not.toContain('luminance(e.Le) * e.area');
+  });
+
+  it('instantiates the canonical represented-support traversal with angular-radius cones', () => {
+    expect(REGIR_BUILD_WGSL).toContain('const rb_lt_ROOT_BUCKETS: u32 = 16777216u;');
+    expect(REGIR_BUILD_WGSL).toContain('u32(regirGridRW[leftBase + 15u])');
+    expect(REGIR_BUILD_WGSL).toContain('let radiusVectorHalf = 0.25 * bmax - 0.25 * bmin;');
+    expect(REGIR_BUILD_WGSL).toContain('if (logRatio >= 0.0) { return 1.0; }');
+    expect(REGIR_BUILD_WGSL).toContain(
+      'result.pdf = f32(currentBuckets) / f32(rb_lt_ROOT_BUCKETS);',
+    );
+    expect(REGIR_BUILD_WGSL).not.toContain('fn rb_dist2ToAabb');
+    expect(REGIR_BUILD_WGSL).not.toContain('fn rb_coneFactor');
+    expect(REGIR_BUILD_WGSL).not.toContain('pdf = pdf *');
+  });
+
+  it('selects a cell survivor with the exact bounded-u32 helper', () => {
+    expect(REGIR_WGSL).toContain('let j = rand_bounded_u32(rng, k);');
+    expect(REGIR_WGSL).not.toContain('rand_f32(rng) * f32(k)');
   });
 
   it('binds only the combined light-tree buffer and UBO', () => {
     expect(REGIR_BUILD_WGSL).toContain(
       '@group(0) @binding(0) var<storage, read_write> regirGridRW',
     );
-    expect(REGIR_BUILD_WGSL).toContain(
-      '@group(0) @binding(1) var<uniform>             ubo:',
-    );
+    expect(REGIR_BUILD_WGSL).toContain('@group(0) @binding(1) var<uniform>             ubo:');
     expect(REGIR_BUILD_WGSL).not.toContain('emittersRW');
     expect(REGIR_BUILD_WGSL).not.toContain('@group(0) @binding(2)');
   });
@@ -211,11 +281,15 @@ describe('ReGIRCoordinator', () => {
   function bvh(nodeCount: number, treeEnabled: boolean): SceneBVHBuffers {
     // 8 verts in a 4-unit cube, stride-4 (xyz + packed-uv w).
     const positions = new Float32Array([
-      0, 0, 0, 0,  4, 0, 0, 0,  0, 4, 0, 0,  4, 4, 0, 0,
-      0, 0, 4, 0,  4, 0, 4, 0,  0, 4, 4, 0,  4, 4, 4, 0,
+      0, 0, 0, 0, 4, 0, 0, 0, 0, 4, 0, 0, 4, 4, 0, 0, 0, 0, 4, 0, 4, 0, 4, 0, 0, 4, 4, 0, 4, 4, 4,
+      0,
     ]);
     return {
-      bvhPositions: { cpuData: positions.buffer as ArrayBuffer, byteLength: positions.byteLength, count: 8 },
+      bvhPositions: {
+        cpuData: positions.buffer as ArrayBuffer,
+        byteLength: positions.byteLength,
+        count: 8,
+      },
       lightTreeNodeCount: nodeCount,
       lightTreeEnabled: treeEnabled,
     } as unknown as SceneBVHBuffers;
@@ -231,9 +305,14 @@ describe('ReGIRCoordinator', () => {
   });
 
   it('enabled + tree live + pipeline ready → live, grid geometry derived from BVH bounds', () => {
-    const c = new ReGIRCoordinator(resolveReGIRConfig({
-      enabled: true, cellsPerAxis: 8, candidatesPerCell: 16, survivorsPerCell: 4,
-    }));
+    const c = new ReGIRCoordinator(
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 8,
+        candidatesPerCell: 16,
+        survivorsPerCell: 4,
+      }),
+    );
     // Grid byte count = 8³ cells × 4 survivors × 2 floats × 4 bytes.
     expect(c.gridRegionBytes()).toBe(8 ** 3 * 4 * REGIR_FLOATS_PER_SURVIVOR * 4);
     c.initialize(bvh(7, true), true);
@@ -310,11 +389,13 @@ describe('ReGIR grid allocation gate', () => {
   });
 
   it('enabled ReGIR appends exactly the configured grid region', () => {
-    const coord = new ReGIRCoordinator(resolveReGIRConfig({
-      enabled: true,
-      cellsPerAxis: 2,
-      survivorsPerCell: 3,
-    }));
+    const coord = new ReGIRCoordinator(
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 2,
+        survivorsPerCell: 3,
+      }),
+    );
     const gridBytes = coord.gridRegionBytes();
     const sizes: number[] = [];
     uploadBufferPadded(

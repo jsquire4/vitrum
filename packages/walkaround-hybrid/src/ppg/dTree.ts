@@ -26,9 +26,14 @@ import {
   PPG_DTREE_MERGE_FRACTION,
   PPG_DTREE_MAX_DEPTH,
 } from './ppgConstants.js';
+import {
+  REPRESENTED_PROPOSAL_BUCKET_COUNT,
+  buildRepresentedDistributionF32,
+} from '@vitrum/shared-samplers';
 import type { DTree, DTreeNode } from './types.js';
 
 const FOUR_PI = 4 * Math.PI;
+const UNIFORM_SPHERE_PDF_F32 = Math.fround(1 / Math.fround(FOUR_PI));
 const MAX_FINITE_F32 = 3.402823466e38;
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -220,24 +225,22 @@ export function findDTreeLeaf(dTree: DTree, octUV: [number, number]): number {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Guide: sample a direction from the dTree proportional to leaf flux
+// Guide: sample the exact represented leaf distribution
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * Sample an octahedral UV direction from `dTree` proportional to leaf flux.
+ * Sample an equal-area cylindrical UV direction from the 24-bit represented
+ * distribution derived from the dTree's packed-f32 leaf fluxes.
  *
  * Returns `{ octUV, pdf }` where:
- *   - `octUV` is the sampled direction in octahedral UV space [0,1]²
+ *   - `octUV` is the legacy field name for the sampled equal-area UV in [0,1]²
  *   - `pdf`   is the solid-angle PDF for that direction:
- *       pdf(ω) = (flux_leaf / totalFlux) / solidAngle_leaf
+ *       pdf(ω) = (leafBuckets / 2^24) / solidAngle_leaf
  *
- * DEVIATION 5 FIX: the PDF uses the per-leaf `solidAngle` (exact octahedral
- * patch area × 4π), NOT the uniform 4π/N approximation.
+ * The cylindrical map is equal-area, so `solidAngle = 4π × uvArea` exactly.
  *
  * @param dTree     The directional tree to sample from.
  * @param u0, u1    Uniform random variables in [0, 1).
- * @param totalFlux Total flux across all leaves (pre-computed from dTree state).
- *
  * @internal CPU reference oracle for the WGSL D-tree sampler; not public API.
  */
 export function dTreeSample(
@@ -245,97 +248,137 @@ export function dTreeSample(
   u0: number,
   u1: number,
 ): { octUV: [number, number]; pdf: number } {
-  const totalFlux = dTree.totalFlux;
+  const represented = buildRepresentedDTreeBuckets(dTree);
 
-  // Degenerate case: no flux accumulated yet → uniform sample.
-  if (totalFlux <= 0) {
-    return { octUV: [u0, u1], pdf: 1 / FOUR_PI };
+  // Degenerate case: no representable flux accumulated yet → uniform sample.
+  if (represented.rootBuckets === 0) {
+    return { octUV: [u0, u1], pdf: UNIFORM_SPHERE_PDF_F32 };
   }
 
   let idx = 0;
-  let remaining = u0 * totalFlux;
+  const rootIsLeaf = dTree.nodes[0]!.isLeaf;
+  const scaledSelection = Math.min(
+    Math.max(u0, 0),
+    1 - Number.EPSILON,
+  ) * REPRESENTED_PROPOSAL_BUCKET_COUNT;
+  let remaining = Math.floor(scaledSelection);
+  // The binary64 fraction below the 24-bit selection lattice provides the
+  // first independent within-leaf jitter dimension in this two-input CPU
+  // oracle. The GPU draws that jitter from its next PCG word instead.
+  const selectionResidual = rootIsLeaf ? u0 : scaledSelection - remaining;
 
   while (true) {
     const node = dTree.nodes[idx]!;
     if (node.isLeaf) {
-      // Leaf jitter must be UNIFORM within the leaf rectangle AND INDEPENDENT
-      // of the flux-proportional descent path. The GPU production sampler
+      // Leaf jitter must be uniform within the leaf rectangle and independent
+      // of the represented selection bucket. The GPU production sampler
       // (ppgPdf.wgsl.ts `ppgDTreeSampleLeafBase` -> `ppgSampleGuidedDir`)
       // draws two fresh randoms for the leaf u,v jitter after the descent, so
       // its jitter is fully decorrelated from which leaf was picked. The old
-      // CPU oracle instead reused the SAME `u0` that had
-      // already been consumed by the descent (`remaining = u0 * totalFlux`,
-      // decremented through the tree) for `vSample`, correlating the leaf
-      // v-position with the descent path — a divergence from the GPU.
-      //
-      // FIX (rescaled descent residual — standard hierarchical-sampling
-      // decorrelation, Müller §3.2 / pbrt §13.3 inverse-CDF residual reuse):
-      // after descent, `remaining` holds the leftover mass WITHIN the chosen
-      // leaf's flux interval, i.e. `remaining ∈ [0, leafFlux)`. Rescaling it
-      // to [0,1) yields a value that is uniform within the leaf and
-      // statistically independent of the coarse path selection (which
-      // consumed the high-order bits of `u0`). We use it for `vSample`, so a
-      // single (u0,u1) pair still maps to ONE deterministic sample (oracle
-      // determinism the tests rely on) while removing the correlation. This
-      // matches the GPU's fresh-random leaf jitter in distribution.
-      const leafFlux = node.flux;
-      const uLeaf = leafFlux > 0
-        ? Math.min(remaining / leafFlux, 1 - 1e-7)
-        : u0; // cold leaf (zero flux) reached via uniform fallback: keep u0.
-      // Sample uniformly within the leaf's octahedral patch. uSample uses the
+      // CPU oracle splits continuous `u0` into a 24-bit integer selection and
+      // its lower binary64 fractional remainder. Those components are uniform
+      // and independent; the remainder supplies v jitter while `u1` supplies
+      // u jitter. This matches the GPU's fresh-random jitter in distribution.
+      const leafBuckets = represented.nodeBuckets[idx]!;
+      const uLeaf = Math.min(Math.max(selectionResidual, 0), 1 - Number.EPSILON);
+      // Sample uniformly within the leaf's equal-area patch. uSample uses the
       // independent `u1` (already correct); vSample uses the decorrelated
       // residual `uLeaf` instead of the descent-consumed `u0`.
       const uSample = node.u0 + u1 * (node.u1 - node.u0);
       const vSample = node.v0 + uLeaf * (node.v1 - node.v0);
-      // PDF = (leafFlux / totalFlux) / solidAngle_leaf  (deviation 5 fix) —
-      // unchanged by this fix; the jitter decorrelation does not alter the
-      // per-leaf solid-angle PDF.
-      const representedLeaf = node.flux > 0
-        && totalFlux > 0
-        && Number.isFinite(node.solidAngle)
-        && node.solidAngle > 0;
+      // The published PDF is the probability actually realized by the root
+      // bucket draw, not the ideal pre-quantization flux ratio.
+      const representedLeaf = leafBuckets > 0
+        && Number.isFinite(Math.fround(node.solidAngle))
+        && Math.fround(node.solidAngle) > 0;
       const pdf = representedLeaf
-        ? (node.flux / totalFlux) / node.solidAngle
-        : 1 / FOUR_PI;
+        ? Math.fround(
+            Math.fround(leafBuckets / REPRESENTED_PROPOSAL_BUCKET_COUNT) /
+              Math.fround(node.solidAngle),
+          )
+        : 0;
       return { octUV: [uSample, vSample], pdf };
     }
 
-    // Traverse children by selecting proportional to accumulated flux.
+    // Traverse children by the exact integer subtree bucket counts used by the
+    // GPU query view. Subtracting preceding intervals is an integer inverse CDF.
     const c0 = node.firstChild;
-    let cumFlux = 0;
-    let chosen = 3; // default to last child
+    let chosen = -1;
     for (let ci = 0; ci < 4; ci++) {
-      cumFlux += dTree.nodes[c0 + ci]!.flux;
-      if (remaining < cumFlux) {
+      const childBuckets = represented.nodeBuckets[c0 + ci]!;
+      if (remaining < childBuckets) {
         chosen = ci;
         break;
       }
+      remaining -= childBuckets;
     }
-    // Adjust remaining for the next level: subtract the preceding siblings'
-    // cumulative flux so `remaining` becomes the residual within the chosen
-    // child's flux interval. At the leaf this residual ∈ [0, leafFlux) is the
-    // decorrelated jitter rescaled above.
-    const chosenFlux = dTree.nodes[c0 + chosen]!.flux;
-    remaining -= (cumFlux - chosenFlux);
+    if (chosen < 0) {
+      throw new Error('dTree represented proposal failed to select a child bucket.');
+    }
     idx = c0 + chosen;
   }
 }
 
 /**
- * Evaluate the dTree PDF for a given octahedral UV direction.
- * Returns the solid-angle PDF: (leafFlux / totalFlux) / solidAngle_leaf.
- * Returns 1/(4π) if totalFlux ≤ 0 (uniform fall-back).
+ * Evaluate the represented dTree PDF for a given equal-area UV direction.
+ * Returns `(leafBuckets / 2^24) / solidAngle_leaf`, zero for an unreachable
+ * leaf in a live guide, and 1/(4π) only when the complete guide is cold.
  *
  * Used for MIS weight computation (Müller §3.4).
  */
 export function dTreePdf(dTree: DTree, octUV: [number, number]): number {
-  if (dTree.totalFlux <= 0) return 1 / FOUR_PI;
+  const represented = buildRepresentedDTreeBuckets(dTree);
+  if (represented.rootBuckets === 0) return UNIFORM_SPHERE_PDF_F32;
   const leafIdx = findDTreeLeaf(dTree, octUV);
   const leaf = dTree.nodes[leafIdx]!;
-  if (!(leaf.flux > 0) || !Number.isFinite(leaf.solidAngle) || !(leaf.solidAngle > 0)) {
-    return 1 / FOUR_PI;
+  const leafBuckets = represented.nodeBuckets[leafIdx]!;
+  if (leafBuckets === 0) return 0;
+  const solidAngle = Math.fround(leaf.solidAngle);
+  if (!Number.isFinite(solidAngle) || !(solidAngle > 0)) return 0;
+  return Math.fround(
+    Math.fround(leafBuckets / REPRESENTED_PROPOSAL_BUCKET_COUNT) / solidAngle,
+  );
+}
+
+/** Exact represented bucket counts for the reachable CPU dTree topology. */
+function buildRepresentedDTreeBuckets(dTree: DTree): {
+  readonly nodeBuckets: Uint32Array;
+  readonly rootBuckets: number;
+} {
+  if (dTree.nodes.length === 0) {
+    throw new RangeError('cannot build a represented proposal for an empty dTree');
   }
-  return (leaf.flux / dTree.totalFlux) / leaf.solidAngle;
+  const leafIndices: number[] = [];
+  for (let index = 0; index < dTree.nodes.length; index += 1) {
+    if (dTree.nodes[index]!.isLeaf) leafIndices.push(index);
+  }
+  const represented = buildRepresentedDistributionF32(
+    leafIndices.map((index) => {
+      const flux = Math.fround(dTree.nodes[index]!.flux);
+      if (!Number.isFinite(flux) || flux < 0) {
+        throw new RangeError(`dTree leaf ${index} flux is not finite non-negative f32.`);
+      }
+      return flux;
+    }),
+  );
+  const nodeBuckets = new Uint32Array(dTree.nodes.length);
+  for (let ordinal = 0; ordinal < leafIndices.length; ordinal += 1) {
+    nodeBuckets[leafIndices[ordinal]!] = represented.bucketCounts[ordinal]!;
+  }
+  for (let index = dTree.nodes.length - 1; index >= 0; index -= 1) {
+    const node = dTree.nodes[index]!;
+    if (node.isLeaf) continue;
+    let subtree = 0;
+    for (let child = 0; child < 4; child += 1) {
+      subtree += nodeBuckets[node.firstChild + child]!;
+    }
+    nodeBuckets[index] = subtree;
+  }
+  const rootBuckets = nodeBuckets[0]!;
+  if (rootBuckets !== 0 && rootBuckets !== REPRESENTED_PROPOSAL_BUCKET_COUNT) {
+    throw new Error(`dTree represented root has ${rootBuckets} buckets.`);
+  }
+  return { nodeBuckets, rootBuckets };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -709,13 +752,13 @@ export function sumLeafSolidAngles(dTree: DTree): number {
  * Computed as Σ (flux_i / total) = 1 when all flux is accounted for.
  */
 export function sumLeafPdfIntegrals(dTree: DTree): number {
-  const total = dTree.totalFlux;
-  if (total <= 0) return 1; // degenerate: uniform PDF integrates to 1.
+  const represented = buildRepresentedDTreeBuckets(dTree);
+  if (represented.rootBuckets === 0) return 1; // degenerate uniform PDF.
   let sum = 0;
-  for (const node of dTree.nodes) {
+  for (let index = 0; index < dTree.nodes.length; index += 1) {
+    const node = dTree.nodes[index]!;
     if (node.isLeaf && node.solidAngle > 0) {
-      // pdf(ω) × solidAngle = flux_i / total (the probability mass of this leaf)
-      sum += node.flux / total;
+      sum += represented.nodeBuckets[index]! / REPRESENTED_PROPOSAL_BUCKET_COUNT;
     }
   }
   return sum;

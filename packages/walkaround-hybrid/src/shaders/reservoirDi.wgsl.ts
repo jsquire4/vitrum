@@ -7,10 +7,10 @@
  * strided pack/unpack helpers (load/store, 8×u32 stride) shared by
  * ris/temporal/spatial.
  *
- * `updateReservoirDI` forward-references `rand_f32` (defined in the shared
- * primitives module). WGSL resolves module-scope functions regardless of
- * declaration order, and `common` aggregates the modules in the original
- * source order, so the forward reference is well-formed.
+ * `updateReservoirDI` and the finalizers forward-reference the represented-WRS
+ * state/functions defined in the later shared-primitives module. WGSL resolves
+ * module-scope declarations regardless of source order, and `common` preserves
+ * that canonical aggregate order, so the forward references are well-formed.
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
@@ -58,15 +58,22 @@ fn envDirFromXi(xi: vec2f) -> vec3f {
 struct ReservoirDI {
   lightId: u32,
   M:       u32,
-  w_sum:   f32,
-  W:       f32,
+  // H = log2(W_uncapped * pHat_selected).  This is the represented WRS
+  // estimator numerator, not a raw linear weight sum.  Keeping H in word 2
+  // preserves reuse support independently of the shading endpoint.
+  logEstimatorNumerator: f32,
+  // Persisted log2(W_uncapped), capped only to the maximum finite *log
+  // coordinate* (not log2(F32_MAX)). Shading combines this with the selected
+  // contribution before exp2, so W cannot underflow or overflow prematurely.
+  logW:    f32,
   xi:      vec2f,    // sampled (u, v) on the chosen emitter
   areaM:   u32,      // scheduled finite-emitter-domain proposals
   envM:    u32,      // scheduled directional-environment proposals
 };
 
 const RESERVOIR_DI_MAX_FINITE_F32: f32 = 3.402823466e38;
-const RESERVOIR_DI_INVALID_LOG_DENSITY: f32 = -3.402823466e38;
+const RESERVOIR_DI_LOG_ZERO: f32 = -3.402823466e38;
+const RESERVOIR_DI_INVALID_LOG_DENSITY: f32 = RESERVOIR_DI_LOG_ZERO;
 // DI reuse keeps the exact sampled point xi on the same finite emitter.
 // Both source and destination therefore use emitter-area measure and the shift
 // Jacobian is exactly one (unlike a receiver-reconnection path-space shift).
@@ -75,6 +82,30 @@ const RESERVOIR_DI_EMITTER_AREA_SHIFT_JACOBIAN: f32 = 1.0;
 fn reservoirDiFinite(value: f32) -> bool {
   return value >= -RESERVOIR_DI_MAX_FINITE_F32
       && value <= RESERVOIR_DI_MAX_FINITE_F32;
+}
+
+fn reservoirDiPositiveLog2(value: f32) -> f32 {
+  if (!reservoirDiFinite(value) || !(value > 0.0)) {
+    return RESERVOIR_DI_LOG_ZERO;
+  }
+  return log2(value);
+}
+
+fn reservoirDiHasEstimatorNumerator(r: ReservoirDI) -> bool {
+  return r.logEstimatorNumerator > RESERVOIR_DI_LOG_ZERO &&
+    reservoirDiFinite(r.logEstimatorNumerator);
+}
+
+fn reservoirDiCoarseReuseLogWeight(r: ReservoirDI) -> f32 {
+  if (r.M == 0u || !reservoirDiHasEstimatorNumerator(r)) {
+    return RESERVOIR_DI_LOG_ZERO;
+  }
+  let result = r.logEstimatorNumerator + log2(f32(r.M));
+  return select(
+    RESERVOIR_DI_LOG_ZERO,
+    result,
+    result > RESERVOIR_DI_LOG_ZERO && reservoirDiFinite(result),
+  );
 }
 
 fn reservoirDiSaturatingAddU32(a: u32, b: u32) -> u32 {
@@ -115,6 +146,78 @@ fn reservoirDiScaledDensityFromLog(
   return exp2(min(0.0, logDensity - maxLogDensity));
 }
 
+fn reservoirDiLogSumExpFromMaxScale(
+  maxLogDensity: f32,
+  scaledTechniqueDenominator: f32,
+) -> f32 {
+  if (
+    maxLogDensity == RESERVOIR_DI_INVALID_LOG_DENSITY ||
+    !reservoirDiFinite(maxLogDensity) ||
+    !reservoirDiFinite(scaledTechniqueDenominator) ||
+    !(scaledTechniqueDenominator > 0.0)
+  ) {
+    return RESERVOIR_DI_INVALID_LOG_DENSITY;
+  }
+  let result = maxLogDensity + log2(scaledTechniqueDenominator);
+  return select(
+    RESERVOIR_DI_INVALID_LOG_DENSITY,
+    result,
+    reservoirDiFinite(result),
+  );
+}
+
+fn reservoirDiSourceLogW(
+  sourceLogEstimatorNumerator: f32,
+  sourceDensity: f32,
+) -> f32 {
+  if (
+    sourceLogEstimatorNumerator <= RESERVOIR_DI_LOG_ZERO ||
+    !reservoirDiFinite(sourceLogEstimatorNumerator) ||
+    !reservoirDiFinite(sourceDensity) ||
+    !(sourceDensity > 0.0)
+  ) {
+    return RESERVOIR_DI_INVALID_LOG_DENSITY;
+  }
+  let logW = sourceLogEstimatorNumerator - log2(sourceDensity);
+  if (!reservoirDiFinite(logW)) {
+    return RESERVOIR_DI_INVALID_LOG_DENSITY;
+  }
+  return min(logW, RESERVOIR_DI_MAX_FINITE_F32);
+}
+
+// Initial RIS candidate weight in log space:
+//   log2(pHat / (p_select * p_within) * stratifiedScale).
+// logSelectionPmf may come from a represented producer such as ReGIR, so it
+// remains logarithmic instead of being forced through a linear f32 endpoint.
+fn reservoirDiInitialCandidateLogWeight(
+  targetDensity: f32,
+  logSelectionPmf: f32,
+  withinEmitterPdf: f32,
+  logStratifiedScale: f32,
+) -> f32 {
+  if (
+    !reservoirDiFinite(targetDensity) ||
+    !(targetDensity > 0.0) ||
+    logSelectionPmf <= RESERVOIR_DI_LOG_ZERO ||
+    !reservoirDiFinite(logSelectionPmf) ||
+    !reservoirDiFinite(withinEmitterPdf) ||
+    !(withinEmitterPdf > 0.0) ||
+    !reservoirDiFinite(logStratifiedScale)
+  ) {
+    return RESERVOIR_DI_LOG_ZERO;
+  }
+  let result =
+    log2(targetDensity) -
+    logSelectionPmf -
+    log2(withinEmitterPdf) +
+    logStratifiedScale;
+  return select(
+    RESERVOIR_DI_LOG_ZERO,
+    result,
+    result > RESERVOIR_DI_LOG_ZERO && reservoirDiFinite(result),
+  );
+}
+
 // Generalized Talbot MIS (Lin et al. 2022, Eq. 36 / supplemental Eq. S.7)
 // after grouping the M_i represented attempts of each input reservoir:
 //
@@ -124,40 +227,39 @@ fn reservoirDiScaledDensityFromLog(
 //
 //   w_i = m_i(y_i) pHat_0(y_i) W_i |J_i|,  |J_i| = 1.
 //
-// Callers collect every candidate log-weight first, subtract their shared
-// maximum, and only then run WRS. This preserves candidate ratios across the
-// complete finite f32 input range; independently capping each pHat_0 * W_i
-// would collapse unequal overflowing products to the same value.
+// The source UCW is reconstructed from H rather than word 3. Consequently a
+// capped logW never removes a valid source from reuse. The represented
+// finite-RNG WRS consumes this log-weight
+// directly; no max-scaled linear candidate weight is formed.
 fn reservoirDiGeneralizedReuseLogWeight(
   sourceLogDensity: f32,
-  maxLogDensity: f32,
-  scaledTechniqueDenominator: f32,
+  logTechniqueDenominator: f32,
   canonicalDensity: f32,
-  sourceReservoirW: f32,
+  sourceDensity: f32,
+  sourceLogEstimatorNumerator: f32,
 ) -> f32 {
-  let sourceNumerator = reservoirDiScaledDensityFromLog(
-    sourceLogDensity,
-    maxLogDensity,
-  );
   if (
-    !(sourceNumerator > 0.0) ||
-    !reservoirDiFinite(scaledTechniqueDenominator) ||
-    !(scaledTechniqueDenominator > 0.0) ||
+    sourceLogDensity == RESERVOIR_DI_INVALID_LOG_DENSITY ||
+    !reservoirDiFinite(sourceLogDensity) ||
+    logTechniqueDenominator == RESERVOIR_DI_INVALID_LOG_DENSITY ||
+    !reservoirDiFinite(logTechniqueDenominator) ||
     !reservoirDiFinite(canonicalDensity) ||
-    !(canonicalDensity > 0.0) ||
-    !reservoirDiFinite(sourceReservoirW) ||
-    !(sourceReservoirW > 0.0)
+    !(canonicalDensity > 0.0)
   ) {
     return RESERVOIR_DI_INVALID_LOG_DENSITY;
   }
-  let misWeight = sourceNumerator / scaledTechniqueDenominator;
-  if (!reservoirDiFinite(misWeight) || !(misWeight > 0.0)) {
+  let sourceLogW = reservoirDiSourceLogW(
+    sourceLogEstimatorNumerator,
+    sourceDensity,
+  );
+  if (sourceLogW == RESERVOIR_DI_INVALID_LOG_DENSITY) {
     return RESERVOIR_DI_INVALID_LOG_DENSITY;
   }
   let logWeight =
-    log2(misWeight) +
+    sourceLogDensity -
+    logTechniqueDenominator +
     log2(canonicalDensity) +
-    log2(sourceReservoirW) +
+    sourceLogW +
     log2(RESERVOIR_DI_EMITTER_AREA_SHIFT_JACOBIAN);
   return select(
     RESERVOIR_DI_INVALID_LOG_DENSITY,
@@ -166,64 +268,118 @@ fn reservoirDiGeneralizedReuseLogWeight(
   );
 }
 
-// Generalized reuse already includes represented attempt multiplicity in the
-// all-technique MIS denominator, so it must not divide by M again. The stored
-// WRS sum is max-log-scaled; recover the unscaled UCW directly in log space:
-// W = 2^maxLogWeight * scaledWeightSum / pHat_0(z). M/areaM/envM remain
-// confidence/support counts.
-fn finaliseReservoirDIFromGeneralizedReuse(
+fn reservoirDiCollapseLogParts(parts: vec2f) -> f32 {
+  let result = parts.x + parts.y;
+  return select(
+    RESERVOIR_DI_LOG_ZERO,
+    result,
+    result > RESERVOIR_DI_LOG_ZERO && reservoirDiFinite(result),
+  );
+}
+
+fn reservoirDiFinaliseLogWFromH(
   r: ptr<function, ReservoirDI>,
-  maxLogWeight: f32,
   selectedCanonicalDensity: f32,
 ) {
-  (*r).W = 0.0;
+  (*r).logW = RESERVOIR_DI_LOG_ZERO;
   if (
-    (*r).M == 0u ||
-    maxLogWeight == RESERVOIR_DI_INVALID_LOG_DENSITY ||
-    !reservoirDiFinite(maxLogWeight) ||
-    !reservoirDiFinite((*r).w_sum) ||
-    !((*r).w_sum > 0.0) ||
+    !reservoirDiHasEstimatorNumerator(*r) ||
     !reservoirDiFinite(selectedCanonicalDensity) ||
     !(selectedCanonicalDensity > 0.0)
   ) {
     return;
   }
-  let logW =
-    maxLogWeight +
-    log2((*r).w_sum) -
-    log2(selectedCanonicalDensity);
-  if (!reservoirDiFinite(logW)) {
+  let result = (*r).logEstimatorNumerator - log2(selectedCanonicalDensity);
+  if (!reservoirDiFinite(result)) {
     return;
   }
-  if (logW >= log2(RESERVOIR_DI_MAX_FINITE_F32)) {
-    (*r).W = RESERVOIR_DI_MAX_FINITE_F32;
+  (*r).logW = min(result, RESERVOIR_DI_MAX_FINITE_F32);
+}
+
+// Native RIS and coarse reuse represent M scheduled attempts.  The finite-RNG
+// WRS primitive supplies log2(a_selected / pi_selected); division by M turns
+// that represented total into the estimator numerator H. Visibility is a
+// target-receiver term and is deliberately deferred to final shading so a
+// source receiver's occlusion cannot survive a temporal/spatial shift.
+fn finaliseReservoirDIFromNativeWrs(
+  r: ptr<function, ReservoirDI>,
+  wrs: RepresentedWrsState,
+  selectedCanonicalDensity: f32,
+) {
+  (*r).logEstimatorNumerator = RESERVOIR_DI_LOG_ZERO;
+  (*r).logW = RESERVOIR_DI_LOG_ZERO;
+  if (
+    (*r).M == 0u ||
+    !wrs.hasSelection ||
+    !reservoirDiFinite(selectedCanonicalDensity) ||
+    !(selectedCanonicalDensity > 0.0)
+  ) {
     return;
   }
-  let rawW = exp2(logW);
-  if (reservoirDiFinite(rawW) && rawW > 0.0) {
-    (*r).W = rawW;
+  let representedCorrection = representedWrsSelectedLogCorrectionParts(wrs);
+  let normalized = representedWrsAddLogTerm(
+    representedCorrection.x,
+    representedCorrection.y,
+    -log2(f32((*r).M)),
+  );
+  (*r).logEstimatorNumerator = reservoirDiCollapseLogParts(normalized);
+  reservoirDiFinaliseLogWFromH(r, selectedCanonicalDensity);
+}
+
+// Generalized reuse already includes represented attempt multiplicity in its
+// all-technique MIS denominator, so it must not divide by M again.
+fn finaliseReservoirDIFromGeneralizedReuse(
+  r: ptr<function, ReservoirDI>,
+  wrs: RepresentedWrsState,
+  selectedCanonicalDensity: f32,
+) {
+  (*r).logEstimatorNumerator = RESERVOIR_DI_LOG_ZERO;
+  (*r).logW = RESERVOIR_DI_LOG_ZERO;
+  if (
+    (*r).M == 0u ||
+    !wrs.hasSelection ||
+    !reservoirDiFinite(selectedCanonicalDensity) ||
+    !(selectedCanonicalDensity > 0.0)
+  ) {
+    return;
   }
+  (*r).logEstimatorNumerator = reservoirDiCollapseLogParts(
+    representedWrsSelectedLogCorrectionParts(wrs),
+  );
+  reservoirDiFinaliseLogWFromH(r, selectedCanonicalDensity);
 }
 
 fn emptyReservoirDI() -> ReservoirDI {
-  return ReservoirDI(0u, 0u, 0.0, 0.0, vec2f(0.0, 0.0), 0u, 0u);
+  return ReservoirDI(
+    0u,
+    0u,
+    RESERVOIR_DI_LOG_ZERO,
+    RESERVOIR_DI_LOG_ZERO,
+    vec2f(0.0, 0.0),
+    0u,
+    0u,
+  );
 }
 
-fn updateReservoirDI(r: ptr<function, ReservoirDI>, lid: u32, xi: vec2f, w: f32, rng: ptr<function, u32>) {
-  if (!reservoirDiFinite(w) || !(w > 0.0)) { return; }
-  let nextWeightSum = (*r).w_sum + w;
-  if (!reservoirDiFinite(nextWeightSum) || !(nextWeightSum > 0.0)) { return; }
-  (*r).w_sum = nextWeightSum;
-  if (rand_f32(rng) * nextWeightSum < w) {
+fn updateReservoirDI(
+  r: ptr<function, ReservoirDI>,
+  wrs: ptr<function, RepresentedWrsState>,
+  lid: u32,
+  xi: vec2f,
+  logWeight: f32,
+  rng: ptr<function, u32>,
+) {
+  if (representedWrsUpdate(wrs, logWeight, rng)) {
     (*r).lightId = lid;
     (*r).xi      = xi;
   }
 }
 
 // Reduce a reservoir's effective history while retaining the area/env proposal
-// ratio and the exact W = w_sum / (M * pHat) identity. The chosen sample's
-// domain keeps at least one count whenever possible, so later reductions do not
-// erase the support that produced the stored sample.
+// ratio. H and logW are the already-normalized estimator and remain unchanged;
+// only confidence/support multiplicity is reduced. The chosen sample's domain
+// keeps at least one count whenever possible, so later reductions do not erase
+// the support that produced the stored sample.
 fn scaleReservoirDIToM(r: ptr<function, ReservoirDI>, targetMUnclamped: u32) {
   let oldM = (*r).M;
   let targetM = min(oldM, targetMUnclamped);
@@ -232,8 +388,8 @@ fn scaleReservoirDIToM(r: ptr<function, ReservoirDI>, targetMUnclamped: u32) {
     (*r).M = 0u;
     (*r).areaM = 0u;
     (*r).envM = 0u;
-    (*r).w_sum = 0.0;
-    (*r).W = 0.0;
+    (*r).logEstimatorNumerator = RESERVOIR_DI_LOG_ZERO;
+    (*r).logW = RESERVOIR_DI_LOG_ZERO;
     return;
   }
 
@@ -246,7 +402,6 @@ fn scaleReservoirDIToM(r: ptr<function, ReservoirDI>, targetMUnclamped: u32) {
     nextArea = 1u;
     nextEnv = targetM - 1u;
   }
-  (*r).w_sum = (*r).w_sum * f32(targetM) / f32(oldM);
   (*r).M = targetM;
   (*r).areaM = nextArea;
   (*r).envM = nextEnv;
@@ -254,7 +409,7 @@ fn scaleReservoirDIToM(r: ptr<function, ReservoirDI>, targetMUnclamped: u32) {
 
 // ============================================================
 // ReservoirDI pack/unpack helpers — canonical, used by ris/temporal/spatial.
-// lightId, M, areaM, and envM are u32; w_sum and W are
+// lightId, M, areaM, and envM are u32; H and logW are
 // bit-cast to/from u32 to preserve f32 precision through the storage buffer.
 // ============================================================
 // 8 u32 = 32 bytes per reservoir (6 u32 before support-count persistence).
@@ -276,8 +431,8 @@ fn packReservoirDI(r: ReservoirDI) -> array<u32, ${RESERVOIR_DI_STRIDE_U32}> {
   return array<u32, ${RESERVOIR_DI_STRIDE_U32}>(
     r.lightId,
     r.M,
-    bitcast<u32>(r.w_sum),
-    bitcast<u32>(r.W),
+    bitcast<u32>(r.logEstimatorNumerator),
+    bitcast<u32>(r.logW),
     bitcast<u32>(r.xi.x),
     bitcast<u32>(r.xi.y),
     r.areaM,

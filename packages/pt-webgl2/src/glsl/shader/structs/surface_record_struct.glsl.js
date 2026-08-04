@@ -10,6 +10,10 @@ export const surface_record_struct = /* glsl */`
 		bool frontFace;
 		vec3 normal;
 		mat3 normalBasis;
+		// The authored opposite face of a zero-thickness sheet. Stored in its
+		// outward-facing frame so reciprocal sampling can orient it from worldWo.
+		vec3 oppositeNormal;
+		mat3 oppositeNormalBasis;
 
 		// cached properties
 		float eta;
@@ -18,6 +22,8 @@ export const surface_record_struct = /* glsl */`
 		// material
 		float roughness;
 		float filteredRoughness;
+		float oppositeRoughness;
+		float oppositeFilteredRoughness;
 		float metalness;
 		vec3 color;
 		vec3 rgbColor;
@@ -38,6 +44,8 @@ export const surface_record_struct = /* glsl */`
 		bool hasSpectralAttenuation;
 		vec3 activeLayerTransmission;
 		bool hasActiveLayer;
+		vec3 oppositeLayerTransmission;
+		bool hasOppositeLayer;
 		uint materialIndex;
 		vec3 attenuationColor;
 		float attenuationDistance;
@@ -86,12 +94,19 @@ export const surface_record_struct = /* glsl */`
         struct ScatterRecord {
                 float specularPdf;
                 float pdf;
+				float pdfRev;
                 vec3 direction;
                 vec3 throughput;
                 // True only when the actually selected sampling lobe is
                 // mathematically singular. This is event identity, not a PDF
                 // magnitude test: a finite rough-glossy density may exceed 1.
                 bool sampledDelta;
+				// A continuous augmented-path event whose latent interface samples
+				// cannot be reconstructed by arbitrary-direction connection strategies.
+				bool sampledNonConnectable;
+				// Exact sampled roughness contribution used by path filtering when a
+				// compound event has no single external Walter half-vector.
+				float sampledRoughness;
         };
 
 `;

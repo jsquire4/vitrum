@@ -24,11 +24,13 @@ struct PrimarySurface {
   hit:    bool,
   pos:    vec3f,
   normal: vec3f,
+  geoNormal: vec3f,
   clearcoatNormal: vec3f,
   wo:     vec3f,
   albedo: vec3f,
   rough:  f32,
   metal:  f32,
+  transmission: f32,
   isGlass: bool,
   specular: vec4f,
   anisotropy: vec2f,
@@ -38,6 +40,7 @@ struct PrimarySurface {
   clearcoat: vec2f,
   sheen: vec4f,
   sheenRoughness: f32,
+  reflectionLayerTransmission: vec3f,
   layerTransmission: vec3f,
   volumeScattering: vec4f,
   bulkThickness: f32,
@@ -67,14 +70,130 @@ const GI_PREFIX_RECONNECTABLE: u32 = 1u;
 // Camera-side dielectric throughput is baked into Lo and cannot be shifted to
 // a different receiver without storing the full refractive prefix.
 const GI_PREFIX_CAMERA_TRANSMISSION: u32 = 2u;
+// Word-19 sample/technique flags. NRC's target depends on outgoing direction
+// and source spread state that the 28-word reservoir cannot reconstruct after
+// a shift, so its native technique remains local. Ordinary RIS remains a
+// shiftable technique, but any native estimator that accumulated an angular
+// or stochastic-alpha contribution must be admitted only at its own receiver.
+// Its technique M still normalizes safe candidates from other reservoirs.
+const GI_SAMPLE_FLAG_LOCAL_TECHNIQUE: u32 = 1u;
+const GI_SAMPLE_FLAG_LOCAL_ESTIMATOR: u32 = 2u;
+// A shifted/reused representative stores only scalar visibility in word 23.
+// Its exact colored reconnection transmittance must therefore be retraced by
+// final shade and applied componentwise to the selected contribution.
+const GI_SAMPLE_FLAG_RECAST_TINT: u32 = 4u;
+// Word 11 persists the uncapped estimator numerator in log2 space.  The
+// sentinel is deliberately finite so it can be stored in the existing f32
+// lane without changing the 28-word ABI.
+const RESERVOIR_GI_LOG_ZERO: f32 = -3.402823466e38;
+const RESERVOIR_GI_LOG2_ROUND_TO_ZERO: f32 = -150.0;
+const RESERVOIR_GI_LOG2_OVERFLOW: f32 = 128.0;
+const RESERVOIR_GI_MAX_FINITE_F32: f32 = 3.402823466e38;
 
 fn reservoirGiFinite(value: f32) -> bool {
   return value == value && abs(value) <= 3.402823466e38;
 }
 
+fn reservoirGiValidLog(value: f32) -> bool {
+  return reservoirGiFinite(value) && value > RESERVOIR_GI_LOG_ZERO;
+}
+
+fn reservoirGiLogPositive(value: f32) -> f32 {
+  if (!reservoirGiFinite(value) || !(value > 0.0)) {
+    return RESERVOIR_GI_LOG_ZERO;
+  }
+  return log2(value);
+}
+
+// Convert a log-domain value only when an API genuinely requires linear f32.
+// Preserve subnormals down to the correctly-rounded half-min-subnormal cutoff;
+// saturate only at exp2's actual overflow boundary. Reservoir metadata and
+// estimator arithmetic remain logarithmic and do not call this helper.
+fn reservoirGiRepresentPositiveLog(logValue: f32) -> f32 {
+  if (!reservoirGiValidLog(logValue)
+   || logValue <= RESERVOIR_GI_LOG2_ROUND_TO_ZERO) {
+    return 0.0;
+  }
+  if (logValue >= RESERVOIR_GI_LOG2_OVERFLOW) {
+    return RESERVOIR_GI_MAX_FINITE_F32;
+  }
+  return min(exp2(logValue), RESERVOIR_GI_MAX_FINITE_F32);
+}
+
+fn reservoirGiLogPositiveProduct(a: f32, b: f32) -> f32 {
+  let logA = reservoirGiLogPositive(a);
+  let logB = reservoirGiLogPositive(b);
+  if (!reservoirGiValidLog(logA) || !reservoirGiValidLog(logB)) {
+    return RESERVOIR_GI_LOG_ZERO;
+  }
+  let result = logA + logB;
+  if (!reservoirGiFinite(result)) { return RESERVOIR_GI_LOG_ZERO; }
+  return result;
+}
+
+// Stable log2(alpha*pGuide + (1-alpha)*pCos).  This is the proposal density
+// actually represented by native RIS, even when the linear mixture would
+// underflow before division.
+fn reservoirGiLogProposalMixture(alpha: f32, pGuide: f32, pCos: f32) -> f32 {
+  if (!reservoirGiFinite(alpha) || alpha < 0.0 || alpha > 1.0) {
+    return RESERVOIR_GI_LOG_ZERO;
+  }
+  if (
+    (alpha > 0.0 && (!reservoirGiFinite(pGuide) || pGuide < 0.0)) ||
+    (alpha < 1.0 && (!reservoirGiFinite(pCos) || pCos < 0.0))
+  ) {
+    return RESERVOIR_GI_LOG_ZERO;
+  }
+  var maxTerm = RESERVOIR_GI_LOG_ZERO;
+  var guideTerm = RESERVOIR_GI_LOG_ZERO;
+  var cosineTerm = RESERVOIR_GI_LOG_ZERO;
+  if (alpha > 0.0 && reservoirGiFinite(pGuide) && pGuide > 0.0) {
+    guideTerm = log2(alpha) + log2(pGuide);
+    maxTerm = guideTerm;
+  }
+  if (alpha < 1.0 && reservoirGiFinite(pCos) && pCos > 0.0) {
+    cosineTerm = log2(1.0 - alpha) + log2(pCos);
+    maxTerm = max(maxTerm, cosineTerm);
+  }
+  if (!reservoirGiValidLog(maxTerm)) { return RESERVOIR_GI_LOG_ZERO; }
+  var scaledSum = 0.0;
+  if (reservoirGiValidLog(guideTerm)) {
+    scaledSum = scaledSum + exp2(guideTerm - maxTerm);
+  }
+  if (reservoirGiValidLog(cosineTerm)) {
+    scaledSum = scaledSum + exp2(cosineTerm - maxTerm);
+  }
+  if (!reservoirGiFinite(scaledSum) || !(scaledSum > 0.0)) {
+    return RESERVOIR_GI_LOG_ZERO;
+  }
+  return maxTerm + log2(scaledSum);
+}
+
 fn reservoirGiSaturatingAddU32(a: u32, b: u32) -> u32 {
   if (b > 0xffffffffu - a) { return 0xffffffffu; }
   return a + b;
+}
+
+fn reservoirGiDirectionBetween(fromPoint: vec3f, toPoint: vec3f) -> vec3f {
+  if (
+    !reservoirGiFinite(fromPoint.x) || !reservoirGiFinite(fromPoint.y) ||
+    !reservoirGiFinite(fromPoint.z) || !reservoirGiFinite(toPoint.x) ||
+    !reservoirGiFinite(toPoint.y) || !reservoirGiFinite(toPoint.z)
+  ) {
+    return vec3f(0.0);
+  }
+  let coordinateScale = max(
+    max(abs(fromPoint.x), max(abs(fromPoint.y), abs(fromPoint.z))),
+    max(abs(toPoint.x), max(abs(toPoint.y), abs(toPoint.z))),
+  );
+  if (!(coordinateScale > 0.0)) { return vec3f(0.0); }
+  let scaledDelta = toPoint / coordinateScale - fromPoint / coordinateScale;
+  let deltaScale = max(
+    abs(scaledDelta.x),
+    max(abs(scaledDelta.y), abs(scaledDelta.z)),
+  );
+  if (!(deltaScale > 0.0)) { return vec3f(0.0); }
+  return safe_normalize(scaledDelta / deltaScale);
 }
 
 struct ReservoirPT {
@@ -86,19 +205,19 @@ struct ReservoirPT {
   // compatibility with the historical zero-filled word.
   receiverMaterialKey: u32, // receiver-domain identity   idx 3
   nv:      vec3f,   // normal at xv                       idx 4..6
-  W:       f32,     // RIS contribution weight    idx 7
+  logW:    f32,     // capped log2 RIS contribution weight idx 7
   xs:      vec3f,   // sample point (reconnection vertex)  idx 8..10
-  w_sum:   f32,     // running RIS weight sum              idx 11
+  H:       f32,     // log2(W_uncapped * selected pHat)     idx 11
   ns:      vec3f,   // normal at xs                       idx 12..14
   M:       u32,     // confidence (candidate count)        idx 15
   Lo:      vec3f,   // outgoing radiance at xs             idx 16..18
-  lightId: u32,     //                                    idx 19
+  sampleFlags: u32, // technique/sample behavior flags    idx 19
   // ── GRIS DDGI-proxy reuse metadata (u32 [20..27], appended) ──
   wi_recon:          vec3f, // unit incident dir xv→xs    idx 20..22
   sampleVisibility:      f32,   // reconnection visibility    idx 23
   prefixVertexCount: u32,   // reconnection-support class  idx 24
   sampleKind:           u32,   //                             idx 25
-  nativePHat:           f32,   //                             idx 26
+  nativeLogPHat:        f32,   // exact log2 native target    idx 26
   historyEpoch:           u32,   //                             idx 27
 };
 
@@ -111,27 +230,32 @@ fn emptyReservoirGI() -> ReservoirPT {
   var r: ReservoirPT;
   r.xv = vec3f(0.0); r.nv = vec3f(0,1,0);
   r.xs = vec3f(0.0); r.ns = vec3f(0,1,0);
-  r.Lo = vec3f(0.0); r.W = 0.0; r.w_sum = 0.0; r.M = 0u;
-  r.lightId = 0u; r.receiverMaterialKey = 0u;
+  r.Lo = vec3f(0.0);
+  r.logW = RESERVOIR_GI_LOG_ZERO;
+  r.H = RESERVOIR_GI_LOG_ZERO;
+  r.M = 0u;
+  r.sampleFlags = 0u; r.receiverMaterialKey = 0u;
   // Generalized-reuse metadata is zero-initialised when gi-ris produces no
   // reconnectable vertex. The canonical temporal and spatial passes consume it.
   r.wi_recon = vec3f(0.0);
   r.sampleVisibility = 0.0;
   r.prefixVertexCount = 0u;
-  r.sampleKind = GI_SAMPLE_SURFACE; r.nativePHat = 0.0; r.historyEpoch = 0u;
+  r.sampleKind = GI_SAMPLE_SURFACE;
+  r.nativeLogPHat = RESERVOIR_GI_LOG_ZERO;
+  r.historyEpoch = 0u;
   return r;
 }
 
 // Sprint 16 / GRIS — ReservoirPT byte layout:
 //   [0..2]   xv.xyz       [3]    receiverMaterialKey
-//   [4..6]   nv.xyz       [7]    W
-//   [8..10]  xs.xyz       [11]   w_sum
+//   [4..6]   nv.xyz       [7]    capped logW
+//   [8..10]  xs.xyz       [11]   H = log2(W_uncapped * selected pHat)
 //   [12..14] ns.xyz       [15]   M
-//   [16..18] Lo.xyz       [19]   lightId
+//   [16..18] Lo.xyz       [19]   sampleFlags
 //   ── appended GRIS DDGI-proxy metadata ──
 //   [20..22] wi_recon.xyz [23]   sampleVisibility
 //   [24]     prefixVertexCount
-//   [25]     sampleKind   [26]   nativePHat   [27] historyEpoch
+//   [25]     sampleKind   [26]   nativeLogPHat [27] historyEpoch
 // Strided storage in array<u32> (4-byte elements): the live stride is 28 u32.
 // NOTE: indices [0..19] preserve the pre-GRIS ReservoirGI word layout. Old
 // snapshots migrate with receiverMaterialKey=0 because word 3 was padding.
@@ -142,19 +266,19 @@ fn unpackReservoirGI(words: array<u32, ${strideU32}>) -> ReservoirPT {
   r.xv      = vec3f(bitcast<f32>(words[0u]), bitcast<f32>(words[1u]), bitcast<f32>(words[2u]));
   r.receiverMaterialKey = words[3u];
   r.nv      = vec3f(bitcast<f32>(words[4u]), bitcast<f32>(words[5u]), bitcast<f32>(words[6u]));
-  r.W       = bitcast<f32>(words[7u]);
+  r.logW    = bitcast<f32>(words[7u]);
   r.xs      = vec3f(bitcast<f32>(words[8u]), bitcast<f32>(words[9u]), bitcast<f32>(words[10u]));
-  r.w_sum   = bitcast<f32>(words[11u]);
+  r.H       = bitcast<f32>(words[11u]);
   r.ns      = vec3f(bitcast<f32>(words[12u]), bitcast<f32>(words[13u]), bitcast<f32>(words[14u]));
   r.M       = words[15u];
   r.Lo      = vec3f(bitcast<f32>(words[16u]), bitcast<f32>(words[17u]), bitcast<f32>(words[18u]));
-  r.lightId = words[19u];
+  r.sampleFlags = words[19u];
   // Generalized DDGI-proxy metadata.
   r.wi_recon          = vec3f(bitcast<f32>(words[20u]), bitcast<f32>(words[21u]), bitcast<f32>(words[22u]));
   r.sampleVisibility      = bitcast<f32>(words[23u]);
   r.prefixVertexCount = words[24u];
   r.sampleKind           = words[25u];
-  r.nativePHat       = bitcast<f32>(words[26u]);
+  r.nativeLogPHat    = bitcast<f32>(words[26u]);
   r.historyEpoch           = words[27u];
   return r;
 }
@@ -168,11 +292,11 @@ fn packReservoirGI(r: ReservoirPT) -> array<u32, ${strideU32}> {
   words[4u]  = bitcast<u32>(r.nv.x);
   words[5u]  = bitcast<u32>(r.nv.y);
   words[6u]  = bitcast<u32>(r.nv.z);
-  words[7u]  = bitcast<u32>(r.W);
+  words[7u]  = bitcast<u32>(r.logW);
   words[8u]  = bitcast<u32>(r.xs.x);
   words[9u]  = bitcast<u32>(r.xs.y);
   words[10u] = bitcast<u32>(r.xs.z);
-  words[11u] = bitcast<u32>(r.w_sum);
+  words[11u] = bitcast<u32>(r.H);
   words[12u] = bitcast<u32>(r.ns.x);
   words[13u] = bitcast<u32>(r.ns.y);
   words[14u] = bitcast<u32>(r.ns.z);
@@ -180,7 +304,7 @@ fn packReservoirGI(r: ReservoirPT) -> array<u32, ${strideU32}> {
   words[16u] = bitcast<u32>(r.Lo.x);
   words[17u] = bitcast<u32>(r.Lo.y);
   words[18u] = bitcast<u32>(r.Lo.z);
-  words[19u] = r.lightId;
+  words[19u] = r.sampleFlags;
   // Generalized DDGI-proxy metadata (written by gi-ris; read by temporal/spatial reuse).
   words[20u] = bitcast<u32>(r.wi_recon.x);
   words[21u] = bitcast<u32>(r.wi_recon.y);
@@ -188,7 +312,7 @@ fn packReservoirGI(r: ReservoirPT) -> array<u32, ${strideU32}> {
   words[23u] = bitcast<u32>(r.sampleVisibility);
   words[24u] = r.prefixVertexCount;
   words[25u] = r.sampleKind;
-  words[26u] = bitcast<u32>(r.nativePHat);
+  words[26u] = bitcast<u32>(r.nativeLogPHat);
   words[27u] = r.historyEpoch;
   return words;
 }
@@ -200,9 +324,9 @@ fn foldInvalidReservoirGICandidates(
   historyEpoch: u32,
 ) {
   (*r).M = reservoirGiSaturatingAddU32((*r).M, attemptCount);
-  if ((*r).w_sum <= 0.0) {
+  if (!reservoirGiValidLog((*r).nativeLogPHat)) {
     (*r).sampleKind = sampleKind;
-    (*r).nativePHat = 0.0;
+    (*r).nativeLogPHat = RESERVOIR_GI_LOG_ZERO;
     (*r).sampleVisibility = 0.0;
     (*r).historyEpoch = historyEpoch;
   }
@@ -218,21 +342,23 @@ fn recordInvalidReservoirGICandidate(
 
 fn updateReservoirGIWithMetadata(
   r: ptr<function, ReservoirPT>,
+  wrs: ptr<function, RepresentedWrsState>,
   xs: vec3f, ns: vec3f, Lo: vec3f,
   sampleKind: u32, sampleDirection: vec3f,
-  nativePHat: f32, sampleVisibility: f32, historyEpoch: u32,
-  w: f32,
+  sampleFlags: u32,
+  nativeLogPHat: f32, sampleVisibility: f32, historyEpoch: u32,
+  logWeight: f32,
   rng: ptr<function, u32>,
 ) {
   (*r).M = reservoirGiSaturatingAddU32((*r).M, 1u);
-  (*r).w_sum = (*r).w_sum + w;
-  if (rand_f32(rng) * (*r).w_sum < w) {
+  if (representedWrsUpdate(wrs, logWeight, rng)) {
     (*r).xs = xs;
     (*r).ns = ns;
     (*r).Lo = Lo;
     (*r).sampleKind = sampleKind;
+    (*r).sampleFlags = sampleFlags;
     (*r).wi_recon = sampleDirection;
-    (*r).nativePHat = nativePHat;
+    (*r).nativeLogPHat = nativeLogPHat;
     (*r).sampleVisibility = sampleVisibility;
     (*r).historyEpoch = historyEpoch;
   }
@@ -241,62 +367,149 @@ fn updateReservoirGIWithMetadata(
 // Refresh the GRIS DDGI-proxy reuse metadata fields on a reservoir after
 // the final sample is chosen (risGi / risGiNrc producers).  Populates wi_recon,
 // sampleVisibility, and prefixVertexCount from the chosen base path edge xv → xs.
-// Leaves the direction zeroed and prefixVertexCount = 0
-// when the reservoir is empty (M == 0) or exactly degenerate (xv == xs).
+// Leaves the direction zeroed for an all-null technique while preserving its
+// declared shiftability class and M. Only a truly cold record (M == 0) or an
+// invalid class becomes GI_PREFIX_INVALID.
 // Call after the final visibility test and W update.
 fn refreshGrisMetadata(r: ptr<function, ReservoirPT>) {
-  if ((*r).M == 0u) {
+  let declaredPrefix = (*r).prefixVertexCount;
+  if (!reservoirGiValidLog((*r).H)) {
     (*r).wi_recon = vec3f(0.0);
-    (*r).prefixVertexCount = GI_PREFIX_INVALID;
+    if (
+      (*r).M == 0u ||
+      (declaredPrefix != GI_PREFIX_RECONNECTABLE &&
+       declaredPrefix != GI_PREFIX_CAMERA_TRANSMISSION)
+    ) {
+      (*r).prefixVertexCount = GI_PREFIX_INVALID;
+    }
     return;
   }
-  (*r).prefixVertexCount = GI_PREFIX_RECONNECTABLE;
+  if (declaredPrefix != GI_PREFIX_CAMERA_TRANSMISSION) {
+    (*r).prefixVertexCount = GI_PREFIX_RECONNECTABLE;
+  }
   if ((*r).sampleKind == GI_SAMPLE_ENVIRONMENT) {
     (*r).wi_recon = safe_normalize((*r).wi_recon);
     return;
   }
-  let toRecon = (*r).xs - (*r).xv;
-  let reconScale = max(abs(toRecon.x), max(abs(toRecon.y), abs(toRecon.z)));
-  if (reconScale > 0.0 && reconScale <= 3.402823466e38) {
-    (*r).wi_recon = safe_normalize(toRecon);
+  let reconnectDirection = reservoirGiDirectionBetween((*r).xv, (*r).xs);
+  if (dot(reconnectDirection, reconnectDirection) > 0.0) {
+    (*r).wi_recon = reconnectDirection;
   } else {
     (*r).wi_recon = vec3f(0.0);
     (*r).prefixVertexCount = GI_PREFIX_INVALID;
   }
 }
 
-// Finalise the stored ReSTIR-GI reservoir contribution weight.
-//
-// Producer/native-domain reservoirs divide by the raw attempt count M.
-// Canonical generalized-reuse passes instead call
-// grisFinaliseLogScaledReservoir, whose all-technique denominator already
-// carries the exact attempt multiplicity for each proposal domain.
-fn finaliseGIReservoirWFromPHat(
+fn reservoirGiCollapseLogParts(parts: vec2f) -> f32 {
+  if (!reservoirGiValidLog(parts.x) || !reservoirGiFinite(parts.y)) {
+    return RESERVOIR_GI_LOG_ZERO;
+  }
+  let result = parts.x + parts.y;
+  if (!reservoirGiFinite(result)) { return RESERVOIR_GI_LOG_ZERO; }
+  return result;
+}
+
+fn reservoirGiHasEstimatorNumerator(r: ReservoirPT) -> bool {
+  return
+    reservoirGiValidLog(r.H) &&
+    reservoirGiValidLog(r.nativeLogPHat);
+}
+
+fn reservoirGiFiniteReceiver(r: ReservoirPT) -> bool {
+  return
+    reservoirGiFinite(r.xv.x) && reservoirGiFinite(r.xv.y) &&
+    reservoirGiFinite(r.xv.z) && reservoirGiFinite(r.nv.x) &&
+    reservoirGiFinite(r.nv.y) && reservoirGiFinite(r.nv.z) &&
+    dot(r.nv, r.nv) > 0.0;
+}
+
+// A domain can represent scheduled proposal attempts even when every sampled
+// target was zero and no candidate survived. It then has no candidate row,
+// but its M remains in every other candidate's generalized-balance
+// denominator. Camera-prefix and NRC techniques stay local because this ABI
+// does not contain the state required to evaluate their shifted target.
+fn reservoirGiHasShiftableTechnique(r: ReservoirPT) -> bool {
+  return
+    r.M > 0u &&
+    r.prefixVertexCount == GI_PREFIX_RECONNECTABLE &&
+    (r.sampleFlags & GI_SAMPLE_FLAG_LOCAL_TECHNIQUE) == 0u &&
+    reservoirGiFiniteReceiver(r);
+}
+
+fn reservoirGiHasShiftableCandidate(r: ReservoirPT) -> bool {
+  return
+    reservoirGiHasShiftableTechnique(r) &&
+    (r.sampleFlags & GI_SAMPLE_FLAG_LOCAL_ESTIMATOR) == 0u &&
+    reservoirGiHasEstimatorNumerator(r) &&
+    reservoirGiFinite(r.sampleVisibility) && r.sampleVisibility > 0.0 &&
+    (r.sampleKind == GI_SAMPLE_SURFACE ||
+     r.sampleKind == GI_SAMPLE_ENVIRONMENT);
+}
+
+fn reservoirGiHasLocalEstimator(r: ReservoirPT) -> bool {
+  return
+    (r.sampleFlags & GI_SAMPLE_FLAG_LOCAL_ESTIMATOR) != 0u &&
+    reservoirGiHasEstimatorNumerator(r);
+}
+
+fn reservoirGiSourceLogW(r: ReservoirPT) -> f32 {
+  if (!reservoirGiHasEstimatorNumerator(r)) {
+    return RESERVOIR_GI_LOG_ZERO;
+  }
+  let result = r.H - r.nativeLogPHat;
+  if (!reservoirGiFinite(result)) { return RESERVOIR_GI_LOG_ZERO; }
+  return result;
+}
+
+// Word 7 stores capped log2(W), not a linear value.  Keeping this lane in log
+// space preserves contributions for which linear W would underflow even though
+// Lo*W remains representable.  Eligibility and reuse always use H.
+fn reservoirGiFinaliseLogWFromH(
   r: ptr<function, ReservoirPT>,
   wCap: f32,
-  pHatF: f32,
 ) {
-  (*r).W = 0.0;
-  if ((*r).M == 0u) { return; }
-
-  // Positive subnormal pHat values remain valid: no epsilon cutoff is applied.
-  // A mathematically huge finite ratio that overflows f32 is saturated by the
-  // configured W cap.
+  (*r).logW = RESERVOIR_GI_LOG_ZERO;
   if (
-    reservoirGiFinite(pHatF) && pHatF > 0.0 &&
-    reservoirGiFinite((*r).w_sum) && (*r).w_sum >= 0.0 &&
-    reservoirGiFinite(wCap) && wCap >= 0.0
+    reservoirGiHasEstimatorNumerator(*r) &&
+    reservoirGiFinite(wCap) && wCap > 0.0
   ) {
-    let denominator = f32((*r).M) * pHatF;
-    if (reservoirGiFinite(denominator) && denominator > 0.0) {
-      let W_raw = (*r).w_sum / denominator;
-      if (reservoirGiFinite(W_raw)) {
-        (*r).W = min(max(W_raw, 0.0), wCap);
-      } else if (W_raw > 0.0) {
-        (*r).W = wCap;
-      }
+    let logW = reservoirGiSourceLogW(*r);
+    if (!reservoirGiValidLog(logW)) { return; }
+    let logCap = log2(wCap);
+    let cappedLogW = min(logW, logCap);
+    if (reservoirGiValidLog(cappedLogW)) {
+      (*r).logW = cappedLogW;
     }
   }
+}
+
+// Native RIS counts every scheduled attempt in M, including null attempts.
+// WRS itself sees only finite positive log weights.  Its exact represented
+// selection probability supplies the correction without a linear sum:
+//   H = log2(a_selected / selectionProbability / M).
+// Visibility is already present exactly once in nativeLogPHat/logWeight and is
+// therefore not multiplied again here.
+fn finaliseGIReservoirFromNativeWrs(
+  r: ptr<function, ReservoirPT>,
+  wrs: RepresentedWrsState,
+  wCap: f32,
+) {
+  (*r).H = RESERVOIR_GI_LOG_ZERO;
+  (*r).logW = RESERVOIR_GI_LOG_ZERO;
+  if (
+    (*r).M == 0u || !wrs.hasSelection ||
+    !reservoirGiValidLog((*r).nativeLogPHat)
+  ) {
+    return;
+  }
+  var correction = representedWrsSelectedLogCorrectionParts(wrs);
+  correction = representedWrsAddLogTerm(
+    correction.x,
+    correction.y,
+    -log2(f32((*r).M)),
+  );
+  (*r).H = reservoirGiCollapseLogParts(correction);
+  reservoirGiFinaliseLogWFromH(r, wCap);
 }
 
 `;

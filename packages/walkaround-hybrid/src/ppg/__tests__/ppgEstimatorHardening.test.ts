@@ -12,6 +12,13 @@ import { PPG_UPDATE_WGSL } from '../ppgUpdate.wgsl.js';
 import { PPG_PDF_WGSL } from '../ppgPdf.wgsl.js';
 import { PPG_MIS_ALPHA } from '../ppgConstants.js';
 import { RIS_GI_WGSL } from '../../shaders/risGi.wgsl.js';
+import { NATIVE_GLASS_GI_WGSL } from '../../shaders/risGiGlassWalk.wgsl.js';
+import {
+  REPRESENTED_PROPOSAL_BUCKET_COUNT,
+  createRepresentedWrsStateF32,
+  representedWrsSelectedLogCorrection,
+  updateRepresentedWrsF32,
+} from '@vitrum/shared-samplers';
 
 describe('PPG estimator hardening', () => {
   it('never selects a zero-mass leading CDF interval at the exact zero RNG endpoint', () => {
@@ -25,7 +32,9 @@ describe('PPG estimator hardening', () => {
 
     const sample = dTreeSample(tree, 0, 0.5);
     expect(findDTreeLeaf(tree, sample.octUV)).toBe(2);
-    expect(sample.pdf).toBeCloseTo(1 / tree.nodes[2]!.solidAngle, 12);
+    expect(sample.pdf).toBe(
+      Math.fround(1 / Math.fround(tree.nodes[2]!.solidAngle)),
+    );
   });
 
   it('recomputes newly-created interior subtree flux before the refined guide is sampled', () => {
@@ -81,7 +90,7 @@ describe('PPG estimator hardening', () => {
     expect(() => buildEmptyDTree(-1)).toThrow(RangeError);
   });
 
-  it('uses the selected-reservoir w_sum/M estimator as an unbiased multi-bin histogram oracle', () => {
+  it('uses represented exp2(H) as an unbiased multi-bin histogram oracle', () => {
     const proposal = [0.65, 0.2, 0.1, 0.05] as const;
     const targetMass = [0, 0.3, 0.8, 1.7] as const;
     const candidatesPerReservoir = 8;
@@ -104,14 +113,23 @@ describe('PPG estimator hardening', () => {
 
     for (let trial = 0; trial < trials; trial++) {
       let selected = -1;
-      let weightSum = 0;
+      const wrs = createRepresentedWrsStateF32();
       for (let candidate = 0; candidate < candidatesPerReservoir; candidate++) {
         const bin = drawBin();
         const weight = targetMass[bin]! / proposal[bin]!;
-        weightSum += weight;
-        if (weight > 0 && random() < weight / weightSum) selected = bin;
+        if (
+          weight > 0 &&
+          updateRepresentedWrsF32(wrs, Math.log2(weight), random)
+        ) {
+          selected = bin;
+        }
       }
-      if (selected >= 0) totals[selected] = totals[selected]! + weightSum / candidatesPerReservoir;
+      if (selected >= 0) {
+        const H =
+          representedWrsSelectedLogCorrection(wrs) -
+          Math.log2(candidatesPerReservoir);
+        totals[selected] = totals[selected]! + 2 ** H;
+      }
     }
 
     for (let bin = 0; bin < targetMass.length; bin++) {
@@ -151,16 +169,39 @@ describe('PPG estimator hardening', () => {
     );
 
     expect(RIS_GI_WGSL).toContain('if (bern < alpha)');
-    expect(RIS_GI_WGSL).toContain('pSrc = alpha * pGuide + (1.0 - alpha) * pCos;');
-    expect(RIS_GI_WGSL).toContain('if (!reservoirGiFinite(pSrc) || !(pSrc > 0.0))');
-    expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
-    expect(PPG_PDF_WGSL).toContain('if (totalFlux <= 0.0) { return 1.0 / PPG_FOUR_PI; }');
-    expect(PPG_PDF_WGSL).toContain('if (!(leafFlux > 0.0) || !(solidAng > 0.0))');
-    expect(PPG_PDF_WGSL).toContain('return (leafFlux / totalFlux) / solidAng;');
+    expect(RIS_GI_WGSL).toContain(
+      'logPSrc = reservoirGiLogProposalMixture(alpha, pGuide, pCos);',
+    );
+    expect(RIS_GI_WGSL).toContain('if (!reservoirGiValidLog(logPSrc))');
+    expect(RIS_GI_WGSL).toContain('let logWeight = logPHat - logPSrc;');
+    expect(PPG_PDF_WGSL).toContain('!ppgDTreeRootValidGi(dOff)');
+    expect(PPG_PDF_WGSL).toContain(
+      'if (distributionBuckets == 0u) { return 0.0; }',
+    );
+    expect(PPG_PDF_WGSL).toContain(
+      'return (f32(distributionBuckets) * PPG_INV_REPRESENTED_BUCKETS) / solidAng;',
+    );
+    expect(PPG_PDF_WGSL).toContain('var remaining = pcgNext(rng) >> 8u;');
     expect(PPG_PDF_WGSL).not.toContain('max(solidAng, 1e-12)');
   });
 
-  it('preserves the exact represented PDF of an extremely small positive-flux leaf', () => {
+  it('uses one local-patch fallback contract for partial dTree corruption', () => {
+    expect(PPG_PDF_WGSL).toContain(
+      'return childBucketSum == ppgDTreeNodeBucketCount(base);',
+    );
+    expect(PPG_PDF_WGSL).toContain(
+      'if (!ppgDTreeChildrenValidGi(dTreeOffset, nodeCount, idx, base))',
+    );
+    expect(PPG_PDF_WGSL).toContain(
+      'let distributionBase = ppgDTreeFindDistributionBase(dOff, octUV);',
+    );
+    expect(PPG_PDF_WGSL).toContain(
+      'let solidAng = ppgDTreePatchSolidAngle(distributionBase);',
+    );
+    expect(PPG_PDF_WGSL).toContain('ppgQueryArena_gi[15] != arenaWords');
+  });
+
+  it('preserves support and publishes the actual represented PDF of an extremely small positive-flux leaf', () => {
     const tree = buildEmptyDTree(1);
     const tinyFlux = 1e-20;
     tree.nodes[1]!.flux = tinyFlux;
@@ -171,23 +212,88 @@ describe('PPG estimator hardening', () => {
     tree.totalFlux = 3 + tinyFlux;
 
     const sample = dTreeSample(tree, 0, 0.5);
-    const expected = (tinyFlux / tree.totalFlux) / tree.nodes[1]!.solidAngle;
+    const expected = Math.fround(
+      Math.fround(1 / REPRESENTED_PROPOSAL_BUCKET_COUNT) /
+        Math.fround(tree.nodes[1]!.solidAngle),
+    );
     expect(findDTreeLeaf(tree, sample.octUV)).toBe(1);
     expect(sample.pdf).toBe(expected);
     expect(sample.pdf).toBeGreaterThan(0);
-    expect(sample.pdf).toBeLessThan(1e-12);
+    expect(sample.pdf).toBeLessThan(1e-7);
   });
 
-  it('pins finite non-negative w_sum/M training and lock-free f32 CAS in WGSL', () => {
-    expect(PPG_UPDATE_WGSL).toContain('let reservoirWSum = bitcast<f32>(ppgReservoirGiCurrent[b + 11u]);');
-    expect(PPG_UPDATE_WGSL).toContain('let trainingMass = reservoirWSum / f32(reservoirM);');
+  it('keeps formerly overflowing glass-candidate weights selectable in log WRS', () => {
+    const maxF32 = 3.402823466e38;
+    const retainedWeight = maxF32 * 0.75;
+    const nextWeight = maxF32 * 0.5;
+    expect(Number.isFinite(Math.fround(retainedWeight))).toBe(true);
+    expect(Number.isFinite(Math.fround(nextWeight))).toBe(true);
+    expect(nextWeight > maxF32 - retainedWeight).toBe(true);
+    const wrs = createRepresentedWrsStateF32();
+    let selected = -1;
+    if (updateRepresentedWrsF32(wrs, Math.log2(retainedWeight), () => 0)) {
+      selected = 0;
+    }
+    if (updateRepresentedWrsF32(wrs, Math.log2(nextWeight), () => 0)) {
+      selected = 1;
+    }
+    const H = representedWrsSelectedLogCorrection(wrs) - Math.log2(2);
+    expect(selected).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(H)).toBe(true);
+    expect(NATIVE_GLASS_GI_WGSL).toContain(
+      'let logWeight = logPHat - logPSrc;',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).toContain('var wrs = representedWrsInit();');
+    expect(NATIVE_GLASS_GI_WGSL).toContain(
+      'finaliseGIReservoirFromNativeWrs(',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).toContain('&reservoir,');
+    expect(NATIVE_GLASS_GI_WGSL).toContain('&wrs,');
+    expect(NATIVE_GLASS_GI_WGSL).not.toContain('w_sum');
+  });
+
+  it('pins correctly-rounded exp2(H) endpoint training and lock-free f32 CAS in WGSL', () => {
+    expect(PPG_UPDATE_WGSL).toContain('let reservoirH = bitcast<f32>(ppgReservoirGiCurrent[b + 11u]);');
+    expect(PPG_UPDATE_WGSL).toContain('PPG_LOG2_ROUND_TO_ZERO: f32 = -150.0');
+    expect(PPG_UPDATE_WGSL).toContain('PPG_LOG2_OVERFLOW: f32 = 128.0');
+    expect(PPG_UPDATE_WGSL).toContain('reservoirH <= PPG_LOG2_ROUND_TO_ZERO');
+    expect(PPG_UPDATE_WGSL).toContain('reservoirH < PPG_LOG2_OVERFLOW');
+    expect(PPG_UPDATE_WGSL).toContain('trainingMass = min(exp2(reservoirH), MAX_FINITE_F32);');
+    expect(PPG_UPDATE_WGSL).not.toContain('exp2(clamp(');
     expect(PPG_UPDATE_WGSL).toContain('if (!(trainingMass > 0.0) || trainingMass > MAX_FINITE_F32) { return; }');
     expect(PPG_UPDATE_WGSL).toContain('if (!(value > 0.0) || value > MAX_FINITE_F32) { return; }');
     expect(PPG_UPDATE_WGSL).toContain('atomicCompareExchangeWeak');
-    expect(PPG_UPDATE_WGSL).toContain('const MAX_FLUX_CAS_ATTEMPTS: u32 = 256u;');
-    expect(PPG_UPDATE_WGSL).toContain('attempt < MAX_FLUX_CAS_ATTEMPTS');
-    expect(PPG_UPDATE_WGSL).not.toMatch(/loop\s*\{/);
+    expect(PPG_UPDATE_WGSL).toContain('if (oldValue == MAX_FINITE_F32) { return; }');
+    expect(PPG_UPDATE_WGSL).toMatch(/loop\s*\{/);
+    expect(PPG_UPDATE_WGSL).not.toContain('MAX_FLUX_CAS_ATTEMPTS');
     expect(PPG_UPDATE_WGSL).not.toContain('luminance(');
+    expect(PPG_UPDATE_WGSL).not.toContain('reservoirWSum');
+    expect(PPG_UPDATE_WGSL).not.toContain('/ f32(reservoirM)');
+  });
+
+  it('preserves subnormal and high finite PPG training mass without flooring or truncation', () => {
+    const maxF32 = Math.fround(3.402823466e38);
+    const endpoint = (H: number): number => {
+      if (!Number.isFinite(H) || H <= -150) return 0;
+      if (H >= 128) return maxF32;
+      return Math.min(Math.fround(2 ** H), maxF32);
+    };
+
+    expect(endpoint(-200)).toBe(0);
+    expect(endpoint(-150)).toBe(0);
+    expect(endpoint(-149.5)).toBe(2 ** -149);
+    expect(endpoint(-100)).toBe(Math.fround(2 ** -100));
+    expect(endpoint(127.5)).toBe(Math.fround(2 ** 127.5));
+    expect(endpoint(127.5)).toBeLessThan(maxF32);
+    expect(endpoint(200)).toBe(maxF32);
+  });
+
+  it('trains from the persisted robust reconnection direction instead of subtracting endpoints', () => {
+    expect(PPG_UPDATE_WGSL).toContain('ppgReservoirGiCurrent[b + 20u]');
+    expect(PPG_UPDATE_WGSL).toContain('ppgReservoirGiCurrent[b + 21u]');
+    expect(PPG_UPDATE_WGSL).toContain('ppgReservoirGiCurrent[b + 22u]');
+    expect(PPG_UPDATE_WGSL).not.toContain('let samplePoint = vec3f(');
+    expect(PPG_UPDATE_WGSL).not.toContain('samplePoint - pos');
   });
 
   it('updates every directional ancestor automatically and rejects invalid deposits transactionally', () => {

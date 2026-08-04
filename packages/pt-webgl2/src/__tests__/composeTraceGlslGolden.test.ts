@@ -78,31 +78,33 @@ const FEATURE_SETS: Record<string, TraceFeatures> = {
 // representability, scale-stable thin-lens refocusing, exact max-float
 // infinite-distance classification, staged environment radiance products, and
 // finite-f32 exposure with an RGBA16F final-write ceiling.
+// The represented environment-emitter PMF now reads the packed CDF texture
+// through EquirectHdrInfo.distributionWeights, matching the declared GLSL field.
 // length + sha256(utf8) of composeTraceGlsl(features) for each set.
 const GOLDENS: Record<string, { length: number; sha256: string }> = {
   default: {
-    length: 159443,
-    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
+    length: 236986,
+    sha256: 'e78d484646cbac1a5656b50cfadd18d297a43b524e9eb50ebfba21cebe68d944',
   },
   bdptOn: {
-    length: 216704,
-    sha256: '91429dca45f6cd9a88c25f31e7d2fdba9062fda9d418553c99932562b536f6ed',
+    length: 307565,
+    sha256: '49e49b5b0e48697b7d3576a8add8cd017573220f2fe108a613d6d546c73350d1',
   },
   bdptOff: {
-    length: 159443,
-    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
+    length: 236986,
+    sha256: 'e78d484646cbac1a5656b50cfadd18d297a43b524e9eb50ebfba21cebe68d944',
   },
   sobol: {
-    length: 165315,
-    sha256: '4845f1e81e0ca68161d0787b5e706e538de239e381890ffefe64697221182248',
+    length: 242858,
+    sha256: '150ac91e3bf35ba4bb3c41c76bbe8a0e4a185155b0580630e50c6f7c22782480',
   },
   orthographic: {
-    length: 159443,
-    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
+    length: 236986,
+    sha256: 'e78d484646cbac1a5656b50cfadd18d297a43b524e9eb50ebfba21cebe68d944',
   },
   dof: {
-    length: 159443,
-    sha256: '6b1fd2f07ad4c97c84460b6ae2e7658eae942843c4089c93326d1454831e3242',
+    length: 236986,
+    sha256: 'e78d484646cbac1a5656b50cfadd18d297a43b524e9eb50ebfba21cebe68d944',
   },
 };
 

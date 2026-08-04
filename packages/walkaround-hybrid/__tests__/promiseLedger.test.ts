@@ -79,12 +79,17 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     expect(sorted(caps.supportedAnalyticShapes)).toEqual(sorted(expected.supportedAnalyticShapes));
     expect(caps.supportDetails).toEqual({
       ...expected.supportDetails,
+      // The static ledger is the conservative all-feature profile (4). This
+      // default instance has neither constrained suffix and truthfully exposes
+      // its wider eight-entry live stack.
+      opticalMedia: caps.supportDetails?.opticalMedia,
       denoisers: {
         ...expected.supportDetails.denoisers,
         neural: 'unsupported',
         'oidn-final': 'unsupported',
       },
     });
+    expect(caps.supportDetails?.opticalMedia?.maxNestedMedia).toBe(8);
 
     expect(typeof engineView.updatePrimitive === 'function').toBe(expected.methodPromises.updatePrimitive);
     expect(typeof engineView.updateEmitter === 'function').toBe(expected.methodPromises.updateEmitter);
@@ -168,7 +173,7 @@ describe('walkaround-hybrid promise ledger compliance', () => {
     });
   });
 
-  it('forces scale 1 for unshiftable camera transmission and lowers the complete graph in auto mode', () => {
+  it('keeps the auto reservoir grid independent while requiring full-rate glass shading', () => {
     const engine = new HybridEngine({
       device: makeMockDevice(),
       width: 1920,
@@ -178,6 +183,7 @@ describe('walkaround-hybrid promise ledger compliance', () => {
       skyTint: [1, 1, 1],
       skyIrradiance: 1,
       debug: true,
+      checkerboardRendering: true,
     });
     try {
       const engineView = engine as unknown as Engine;
@@ -187,32 +193,36 @@ describe('walkaround-hybrid promise ledger compliance', () => {
         }
       )._initCoordinator;
       vi.spyOn(initCoordinator, 'startInit').mockImplementation(() => {});
-      expect(engineView.debug?.frameResourceResolution?.()?.restirReservoirScale)
-        .toBe(2);
+      const beforeScale = engineView.debug?.frameResourceResolution?.()?.restirReservoirScale;
       engine.setScene(transmissionScene());
       const resolution = engineView.debug?.frameResourceResolution?.();
-      expect(resolution?.restirReservoirScale).toBe(1);
-      expect(resolution!.effectiveInternalWidth).toBeLessThan(1920);
-      expect(resolution!.effectiveInternalHeight).toBeLessThan(1080);
-      expect(resolution!.restirDiWidth).toBe(resolution!.effectiveInternalWidth);
-      expect(resolution!.restirDiHeight).toBe(resolution!.effectiveInternalHeight);
+      const scale = resolution!.restirReservoirScale;
+      expect(beforeScale).toBeGreaterThan(1);
+      expect(scale).toBeGreaterThan(1);
+      expect(resolution!.restirDiWidth)
+        .toBe(Math.floor(resolution!.effectiveInternalWidth / scale));
+      expect(resolution!.restirDiHeight)
+        .toBe(Math.floor(resolution!.effectiveInternalHeight / scale));
       expect(resolution!.restirGiWidth)
-        .toBe(Math.floor(resolution!.effectiveInternalWidth / 2));
+        .toBe(Math.floor(resolution!.effectiveInternalWidth / (2 * scale)));
       expect(resolution!.restirGiHeight)
-        .toBe(Math.floor(resolution!.effectiveInternalHeight / 2));
-      expect(resolution!.resizePeakBytes).toBe(resolution!.persistentBytes);
+        .toBe(Math.floor(resolution!.effectiveInternalHeight / (2 * scale)));
       const initHost = (
         initCoordinator as unknown as {
-          host: { readonly restirReservoirScale?: number };
+          host: {
+            readonly restirReservoirScale?: number;
+            readonly cameraPrefixFullRateRequired: boolean;
+          };
         }
       ).host;
-      expect(initHost.restirReservoirScale).toBe(1);
+      expect(initHost.restirReservoirScale).toBe(scale);
+      expect(initHost.cameraPrefixFullRateRequired).toBe(true);
     } finally {
       engine.dispose();
     }
   });
 
-  it('rejects an explicit coarse scale before accepting a transmission scene', () => {
+  it('accepts an explicit coarse reservoir grid for a full-rate transmission scene', () => {
     const engine = new HybridEngine({
       device: makeMockDevice(),
       width: 64,
@@ -222,12 +232,26 @@ describe('walkaround-hybrid promise ledger compliance', () => {
       skyTint: [1, 1, 1],
       skyIrradiance: 1,
       restirReservoirScale: 2,
+      checkerboardRendering: true,
     });
     try {
-      expect(() => engine.setScene(transmissionScene())).toThrow(
-        /cannot shift camera-transmission GI prefixes/,
-      );
-      expect(engine.getScene()).toBeNull();
+      const initCoordinator = (
+        engine as unknown as {
+          _initCoordinator: {
+            startInit(): void;
+            host: {
+              readonly restirReservoirScale?: number;
+              readonly cameraPrefixFullRateRequired: boolean;
+            };
+          };
+        }
+      )._initCoordinator;
+      vi.spyOn(initCoordinator, 'startInit').mockImplementation(() => {});
+
+      expect(() => engine.setScene(transmissionScene())).not.toThrow();
+      expect(engine.getScene()).toEqual(transmissionScene());
+      expect(initCoordinator.host.restirReservoirScale).toBe(2);
+      expect(initCoordinator.host.cameraPrefixFullRateRequired).toBe(true);
     } finally {
       engine.dispose();
     }

@@ -10,7 +10,7 @@ import { buildReservoirGiWgsl } from '../src/shaders/reservoirGi.wgsl.js';
 installWebGPUPolyfills();
 
 describe('NRC and guided-RIS estimator hardening', () => {
-  it('accepts every finite-positive pHat/PDF and diagnoses only invalid or unrepresentable ratios', () => {
+  it('accepts every finite-positive log contribution without forming an overflowing ratio', () => {
     const defaultCosGuard = 'if (!reservoirGiFinite(cosTheta) || !(cosTheta > 0.0))';
     const defaultCosStart = RIS_GI_WGSL.indexOf(defaultCosGuard);
     const defaultCosReject = RIS_GI_WGSL.slice(
@@ -20,10 +20,10 @@ describe('NRC and guided-RIS estimator hardening', () => {
     expect(defaultCosReject).toContain(
       'recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);',
     );
-    expect(RIS_GI_WGSL).toContain('!reservoirGiFinite(pHat) || !(pHat > 0.0)');
-    expect(RIS_GI_WGSL).toContain('if (!reservoirGiFinite(pSrc) || !(pSrc > 0.0))');
-    expect(RIS_GI_WGSL).toContain('!reservoirGiFinite(w) || !(w > 0.0)');
-    expect(RIS_GI_WGSL).toContain('w > 3.402823466e38 - r.w_sum');
+    expect(RIS_GI_WGSL).toContain('if (!reservoirGiValidLog(logPHat))');
+    expect(RIS_GI_WGSL).toContain('if (!reservoirGiValidLog(logPSrc))');
+    expect(RIS_GI_WGSL).toContain('let logWeight = logPHat - logPSrc;');
+    expect(RIS_GI_WGSL).not.toContain('r.w_sum');
     expect(RIS_GI_WGSL).not.toContain('pHat < 1e-9');
     expect(RIS_GI_WGSL).not.toContain('pSrc > 1e-12');
     expect(RIS_GI_WGSL).not.toContain('select(0.0, pHat /');
@@ -36,20 +36,23 @@ describe('NRC and guided-RIS estimator hardening', () => {
     expect(cosineReject).toContain(
       'recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);',
     );
-    expect(RIS_GI_NRC_BODY).toContain('let invalidPHat = !nrcFinite(pHat) || !(pHat > 0.0)');
-    expect(RIS_GI_NRC_BODY).toContain('if (!nrcFinite(pSrc) || !(pSrc > 0.0))');
-    expect(RIS_GI_NRC_BODY).toContain('!nrcFinite(w) || !(w > 0.0)');
-    expect(RIS_GI_NRC_BODY).toContain('w > 3.402823466e38 - r.w_sum');
+    expect(RIS_GI_NRC_BODY).toContain('if (!reservoirGiValidLog(logPHat))');
+    expect(RIS_GI_NRC_BODY).toContain('if (!reservoirGiValidLog(logPSrc))');
+    expect(RIS_GI_NRC_BODY).toContain('let logWeight = logPHat - logPSrc;');
+    expect(RIS_GI_NRC_BODY).not.toContain('r.w_sum');
     expect(RIS_GI_NRC_BODY).toContain('nrcRecordInvalidPdf();');
     expect(RIS_GI_NRC_BODY).not.toContain('pHat < 1e-9');
     expect(RIS_GI_NRC_BODY).not.toContain('pSrc > 1e-12');
     expect(RIS_GI_NRC_BODY).not.toContain('select(0.0, pHat / pSrc');
 
     const reservoir = buildReservoirGiWgsl();
-    expect(reservoir).toContain('reservoirGiFinite(pHatF) && pHatF > 0.0');
-    expect(reservoir).toContain('} else if (W_raw > 0.0) {');
+    expect(reservoir).toContain('fn reservoirGiSourceLogW(r: ReservoirPT) -> f32');
+    expect(reservoir).toContain('let result = r.H - r.nativeLogPHat;');
+    expect(reservoir).not.toContain('log2(r.nativeLogPHat)');
+    expect(reservoir).toContain('let cappedLogW = min(logW, logCap);');
+    expect(reservoir).not.toMatch(/r\.H\s*=\s*min\(/);
     expect(reservoir).not.toContain('pHatF > 1e-9');
-    expect(reservoir).not.toContain('select(0.0, (*r).w_sum /');
+    expect(reservoir).not.toContain('w_sum');
   });
 
     it('pairs each NRC training input with an independent target from that suffix vertex', () => {
@@ -66,7 +69,10 @@ describe('NRC and guided-RIS estimator hardening', () => {
 
   it('uses the actual guided/cosine proposal mixture in the spread footprint', () => {
     expect(RIS_GI_NRC_BODY).toContain(
-      'pSrcBounce = alpha * ppgEvalPdf(pos, wi) + (1.0 - alpha) * pCosBounce;',
+      'logPSrcBounce = reservoirGiLogProposalMixture(',
+    );
+    expect(RIS_GI_NRC_BODY).toContain(
+      'let pSrcBounce = reservoirGiRepresentPositiveLog(logPSrcBounce);',
     );
   });
 

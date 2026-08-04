@@ -239,10 +239,10 @@ describe('Wave 4 — WGSL structural assertions for HDRI probe-ray miss path', (
   });
 });
 
-// ── 5. Bind-group layout: bg1 carries vertex colors; bg2 consumes env sampler
+// ── 5. Bind-group layout: bg1 carries vertex colors; bg2 uses exact atlas loads
 
 describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => {
-  it('bg1 carries vertex colors and bg2 binds the consumed environment sampler', () => {
+  it('bg1 carries vertex colors and bg2 omits the removed atlas sampler binding', () => {
     const bindGroupEntryLists: unknown[][] = [];
     const createBindGroup = vi.fn((desc: { entries: unknown[] }) => {
       bindGroupEntryLists.push(desc.entries);
@@ -281,6 +281,8 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
       tlasW2lBuf:        mockBuf,
       tlasL2wBuf:        mockBuf,
       traceParamsBuf:    mockBuf,
+      opticalTriangleIdentityBuf: mockBuf,
+      opticalInstanceBoundaryIdBasePlusOneBuf: mockBuf,
       materialsBuf:      mockBuf,
       lightsBuf:         mockBuf,
       lightsCapacityBytes: 16,
@@ -300,7 +302,6 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
       borderVisUboBuf:   mockBuf,
       rayResultsBuf:     mockBuf,
       activeProbesBuf:   mockBuf,
-      linearSampler:     mockSampler,
       envMapView:        mockView,
       envMapOwnedByPass: true,
       envMapPlaceholderTex: null,
@@ -329,6 +330,8 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
       gpu.tlasW2lBuf,
       gpu.tlasL2wBuf,
       gpu.traceParamsBuf,
+      gpu.opticalTriangleIdentityBuf,
+      gpu.opticalInstanceBoundaryIdBasePlusOneBuf,
     ]);
 
     const bg1Entries = bindGroupEntryLists[1] as Array<{ binding: number; resource: unknown }>;
@@ -339,10 +342,10 @@ describe('Wave 4 — dispatchProbeUpdateRaysPass DDGI resource bindings', () => 
     // bg2 is the 3rd createBindGroup call (index 2).
     const bg2Entries = bindGroupEntryLists[2] as Array<{ binding: number }>;
     expect(bg2Entries).toBeDefined();
-    expect(bg2Entries.length).toBe(8);
+    expect(bg2Entries.length).toBe(7);
 
     const bindings = bg2Entries.map((e) => e.binding).sort((a, b) => a - b);
-    expect(bindings).toEqual([0, 1, 2, 3, 4, 5, 6, 8]);
+    expect(bindings).toEqual([0, 1, 2, 4, 5, 6, 8]);
 
     const replacementView = {} as GPUTextureView;
     gpu.envMapView = replacementView;

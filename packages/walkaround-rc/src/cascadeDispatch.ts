@@ -85,6 +85,7 @@ interface DispatchHandles {
   sceneArenaCopies: SceneArenaCopy[];
   materialArenaVersion: number;
   tlasArenaVersion: number;
+  opticalArenaVersion: number;
   /** Every destroyable resource allocated while building this candidate. */
   ownedResources: OwnedGpuResource[];
 }
@@ -99,7 +100,7 @@ interface SceneArenaCopy {
   source: GPUBuffer;
   readonly destinationOffset: number;
   readonly size: number;
-  readonly category: 'material' | 'tlas';
+  readonly category: 'material' | 'tlas' | 'optical';
   dirty: boolean;
 }
 
@@ -115,7 +116,7 @@ export const RC_MIN_TRANSMITTED_INTERFACE_BUDGET = 1;
 export const RC_MAX_TRANSMITTED_INTERFACE_BUDGET = 8;
 export const RC_DEFAULT_TRANSMITTED_INTERFACE_BUDGET = 8;
 
-const RC_SCENE_ARENA_HEADER_WORDS = 16;
+const RC_SCENE_ARENA_HEADER_WORDS = 20;
 const RC_SCENE_ARENA_HEADER_BYTES = RC_SCENE_ARENA_HEADER_WORDS * 4;
 const RC_CASCADE_UNIFORM_WORDS = 40;
 const RC_CASCADE_UNIFORM_BYTES = RC_CASCADE_UNIFORM_WORDS * 4;
@@ -205,6 +206,21 @@ export interface RCDispatchOptsRaw {
   /** Increment when material/triangle-material data is mutated in place. A
    *  replacement buffer identity is detected automatically. */
   materialArenaVersion?: number;
+
+  /**
+   * Exact optical-topology identity, one `vec2u` per BLAS triangle. `.x` is
+   * the packed component lane (or final encoded boundary in merged mode) and
+   * `.y` is the represented primitive/range id used by direct traversal.
+   * Must include `GPUBufferUsage.COPY_SRC`.
+   */
+  opticalTriangleIdentityBuf: GPUBuffer;
+  /**
+   * Encoded boundary-id base plus one, one `u32` per TLAS instance (or one
+   * entry for merged traversal). Must include `GPUBufferUsage.COPY_SRC`.
+   */
+  opticalInstanceBoundaryIdBasePlusOneBuf: GPUBuffer;
+  /** Increment when either optical identity buffer is mutated in place. */
+  opticalArenaVersion?: number;
 
   /** One cascade-output `GPUBuffer` per cascade, same order as
    *  {@link CASCADE_DIMS}. The dispatcher writes into these (cast) and
@@ -703,6 +719,20 @@ function validateSceneArenaSources(opts: RCDispatchOptsRaw): {
       validateBuffer(opts.tlasInstanceLocalToWorldBuf, 'tlasInstanceLocalToWorldBuf', 64, GPUBufferUsage.COPY_SRC),
     );
   }
+  sources.push(
+    validateBuffer(
+      opts.opticalTriangleIdentityBuf,
+      'opticalTriangleIdentityBuf',
+      8,
+      GPUBufferUsage.COPY_SRC,
+    ),
+    validateBuffer(
+      opts.opticalInstanceBoundaryIdBasePlusOneBuf,
+      'opticalInstanceBoundaryIdBasePlusOneBuf',
+      4,
+      GPUBufferUsage.COPY_SRC,
+    ),
+  );
 
   let arenaBytes = RC_SCENE_ARENA_HEADER_BYTES;
   for (const source of sources) {
@@ -740,6 +770,7 @@ function validateDispatchOptsRaw(
   }
   assertU32(opts.materialArenaVersion ?? 0, 'materialArenaVersion');
   assertU32(opts.tlasArenaVersion ?? 0, 'tlasArenaVersion');
+  assertU32(opts.opticalArenaVersion ?? 0, 'opticalArenaVersion');
   assertU32(opts.tlasNodeCount ?? 0, 'tlasNodeCount');
   assertU32(opts.emitterCount ?? 0, 'emitterCount');
   assertU32(opts.lightCount ?? 0, 'lightCount');
@@ -831,11 +862,13 @@ function validateDispatchOptsRaw(
   if (opts.triMaterialIdBuf.size / 4 < triCount) {
     throw new Error('[RCDispatcher] triMaterialIdBuf does not cover every geometry triangle.');
   }
+  if (opts.opticalTriangleIdentityBuf.size / 8 < triCount) {
+    throw new Error(
+      '[RCDispatcher] opticalTriangleIdentityBuf does not cover every geometry triangle.',
+    );
+  }
 
   if (mode === 'tlas') {
-    if ((opts.tlasNodeCount ?? 0) === 0) {
-      throw new Error('[RCDispatcher] bvhMode="tlas" requires a positive tlasNodeCount.');
-    }
     const tlasNodeCapacity = opts.tlasNodesBuf!.size / 32;
     if ((opts.tlasNodeCount ?? 0) > tlasNodeCapacity) {
       throw new Error('[RCDispatcher] tlasNodeCount exceeds tlasNodesBuf capacity.');
@@ -848,6 +881,11 @@ function validateDispatchOptsRaw(
     ) {
       throw new Error('[RCDispatcher] TLAS instance-index/root/transform capacities must match.');
     }
+    if (opts.opticalInstanceBoundaryIdBasePlusOneBuf.size / 4 < instanceCount) {
+      throw new Error(
+        '[RCDispatcher] opticalInstanceBoundaryIdBasePlusOneBuf does not cover every TLAS instance.',
+      );
+    }
   } else {
     if ((opts.tlasNodeCount ?? 0) !== 0) {
       throw new Error('[RCDispatcher] merged bvhMode requires tlasNodeCount=0.');
@@ -858,6 +896,11 @@ function validateDispatchOptsRaw(
       opts.tlasInstanceLocalToWorldBuf != null
     ) {
       throw new Error('[RCDispatcher] TLAS buffers are only valid when bvhMode="tlas".');
+    }
+    if (opts.opticalInstanceBoundaryIdBasePlusOneBuf.size < 4) {
+      throw new Error(
+        '[RCDispatcher] merged traversal requires one optical instance-boundary base entry.',
+      );
     }
   }
 
@@ -1547,6 +1590,7 @@ export class RCDispatcher {
         sceneArenaCopies: bvhBindings.sceneArenaCopies,
         materialArenaVersion: opts.materialArenaVersion ?? 0,
         tlasArenaVersion: opts.tlasArenaVersion ?? 0,
+        opticalArenaVersion: opts.opticalArenaVersion ?? 0,
         ownedResources,
         ...(placeholderEnvTexture ? { placeholderEnvTexture } : {}),
         ...(placeholderMaterialAtlasTexture ? { placeholderMaterialAtlasTexture } : {}),
@@ -1567,10 +1611,12 @@ export class RCDispatcher {
   }
 
   /**
-   * Pack material metadata and the five TLAS arrays behind one storage binding.
-   * The 64-byte header stores `(wordOffset, elementCount)` pairs in this order:
+   * Pack material metadata, the five TLAS arrays, and exact optical identities
+   * behind one storage binding. The 80-byte header stores
+   * `(wordOffset, elementCount)` pairs in this order:
    * materials, triangle-material ids, TLAS nodes, instance ids, BLAS roots,
-   * world-to-local columns, local-to-world columns. The last pair is reserved.
+   * world-to-local columns, local-to-world columns, per-triangle optical
+   * identity, and per-instance boundary-id base. The last pair is reserved.
    *
    * Only dirty subranges are recopied: replacement identities are detected
    * automatically and in-place writers opt in through the two version fields.
@@ -1589,6 +1635,7 @@ export class RCDispatcher {
       label: string,
       source: GPUBuffer,
       elementStride: number,
+      category: SceneArenaCopy['category'],
     ): void => {
       const size = source.size;
       if (!Number.isSafeInteger(size) || size < elementStride || size % 4 !== 0) {
@@ -1612,7 +1659,7 @@ export class RCDispatcher {
         source,
         destinationOffset: cursor,
         size,
-        category: pairIndex <= 1 ? 'material' : 'tlas',
+        category,
         dirty: true,
       });
       cursor += size;
@@ -1623,8 +1670,8 @@ export class RCDispatcher {
       header[pairIndex * 2 + 1] = 0;
     };
 
-    append(0, 'materialsBuf', opts.materialsBuf, 64);
-    append(1, 'triMaterialIdBuf', opts.triMaterialIdBuf, 4);
+    append(0, 'materialsBuf', opts.materialsBuf, 64, 'material');
+    append(1, 'triMaterialIdBuf', opts.triMaterialIdBuf, 4, 'material');
 
     const tlasBuffers = [
       opts.tlasNodesBuf,
@@ -1639,16 +1686,32 @@ export class RCDispatcher {
           '[RCDispatcher] bvhMode="tlas" requires all five TLAS buffers.',
         );
       }
-      append(2, 'tlasNodesBuf', tlasBuffers[0]!, 32);
-      append(3, 'tlasInstanceIndicesBuf', tlasBuffers[1]!, 4);
-      append(4, 'tlasBlasRootsBuf', tlasBuffers[2]!, 4);
-      append(5, 'tlasInstanceWorldToLocalBuf', tlasBuffers[3]!, 16);
-      append(6, 'tlasInstanceLocalToWorldBuf', tlasBuffers[4]!, 16);
+      append(2, 'tlasNodesBuf', tlasBuffers[0]!, 32, 'tlas');
+      append(3, 'tlasInstanceIndicesBuf', tlasBuffers[1]!, 4, 'tlas');
+      append(4, 'tlasBlasRootsBuf', tlasBuffers[2]!, 4, 'tlas');
+      append(5, 'tlasInstanceWorldToLocalBuf', tlasBuffers[3]!, 16, 'tlas');
+      append(6, 'tlasInstanceLocalToWorldBuf', tlasBuffers[4]!, 16, 'tlas');
     } else {
       for (let pairIndex = 2; pairIndex <= 6; pairIndex += 1) {
         markEmpty(pairIndex);
       }
     }
+
+    append(
+      7,
+      'opticalTriangleIdentityBuf',
+      opts.opticalTriangleIdentityBuf,
+      8,
+      'optical',
+    );
+    append(
+      8,
+      'opticalInstanceBoundaryIdBasePlusOneBuf',
+      opts.opticalInstanceBoundaryIdBasePlusOneBuf,
+      4,
+      'optical',
+    );
+    markEmpty(9);
 
     const sceneArenaBuf = own(device.createBuffer({
       label: 'rc-scene-arena',
@@ -1686,6 +1749,10 @@ export class RCDispatcher {
       if (tlas.some((buffer) => buffer == null)) return false;
       desired.push(tlas[0]!, tlas[1]!, tlas[2]!, tlas[3]!, tlas[4]!);
     }
+    desired.push(
+      opts.opticalTriangleIdentityBuf,
+      opts.opticalInstanceBoundaryIdBasePlusOneBuf,
+    );
     if (desired.length !== handles.sceneArenaCopies.length) return false;
 
     // Validate the complete replacement shape before mutating any retained copy.
@@ -1714,6 +1781,13 @@ export class RCDispatcher {
         if (copy.category === 'tlas') copy.dirty = true;
       }
       handles.tlasArenaVersion = tlasVersion;
+    }
+    const opticalVersion = opts.opticalArenaVersion ?? 0;
+    if (opticalVersion !== handles.opticalArenaVersion) {
+      for (const copy of handles.sceneArenaCopies) {
+        if (copy.category === 'optical') copy.dirty = true;
+      }
+      handles.opticalArenaVersion = opticalVersion;
     }
     return true;
   }

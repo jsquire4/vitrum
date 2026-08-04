@@ -316,12 +316,12 @@ describe('DDGI packed probe-state shader contract', () => {
     const irr = makeProbeUpdateBlendIrrWGSL();
     const vis = makeProbeUpdateBlendVisWGSL();
     expect(irr).toContain('validRayCount = validRayCount + 1u');
-    expect(irr).toContain('f32(max(validRayCount, 1u))');
+    expect(irr).toContain('let inverseCount = 1.0 / f32(validRayCount);');
     expect(irr).not.toContain('/ f32(RAYS_PER_PROBE)');
     expect(irr).toContain('rayResults[baseIdx]._pad0 < 0.5');
     expect(vis).toContain('rayResults[baseIdx]._pad0 < 0.5');
     expect(vis).toMatch(
-      /validRayCount > 0u[\s\S]*newDepth = missDepth;[\s\S]*newDepthSq = missDepth \* missDepth/,
+      /validRayCount > 0u[\s\S]*newDepth = missDepth;[\s\S]*newDepthSq = ddgiAtlasSaturatingMul\(missDepth, missDepth\)/,
     );
     expect(vis).toMatch(/Every ray was invalid[\s\S]*newDepth = 0\.0/);
   });
@@ -330,13 +330,20 @@ describe('DDGI packed probe-state shader contract', () => {
     expect(DDGI_GRID_UBO_WGSL).not.toContain('@group(3) @binding(10)');
     expect(DDGI_GRID_UBO_WGSL).not.toContain('ddgiProbeState');
     expect(DDGI_SAMPLE_WGSL).toContain('textureLoad(irradianceAtlas, stateCoord, 0)');
-    expect(DDGI_SAMPLE_WGSL).toContain('if (state.w < 0.5) { continue; }');
+    expect(DDGI_SAMPLE_WGSL).toContain(
+      'if (!ddgiAtlasFiniteScalar(state.w) || state.w < 0.5) { continue; }',
+    );
     expect(DDGI_SAMPLE_WGSL).toContain('normalizedOffset * gridSpacing');
     expect(DDGI_SAMPLE_WGSL).toContain('offsetLength2 > maxOffset * maxOffset');
-    expect(DDGI_SAMPLE_WGSL).toContain('probeToSurfaceLen2 > 1.0e-12');
+    expect(DDGI_SAMPLE_WGSL).toContain('ddgiAtlasSafeLength(toProbe)');
+    expect(DDGI_SAMPLE_WGSL).toContain(
+      'ddgiAtlasNormalizeOrZero(probeToSurface)',
+    );
     expect(DDGI_SAMPLE_WGSL).not.toContain('normalize(biasedPos - probeWorld)');
-    expect(DDGI_SAMPLE_WGSL).toContain('return sum / totalWeight');
-    expect(DDGI_SAMPLE_WGSL).toContain('fallbackIrr * fallbackVisibility');
+    expect(DDGI_SAMPLE_WGSL).toContain('return irradianceMean;');
+    expect(DDGI_SAMPLE_WGSL).toContain(
+      'ddgiAtlasSaturatingMul3(fallbackIrr, fallbackVisibility)',
+    );
   });
 });
 
@@ -349,15 +356,20 @@ describe('DDGI irradiance/state ping-pong publication', () => {
     const grid = new ProbeGrid();
     grid.computeFromBounds({ min: [0, 0, 0], max: [2, 2, 2] }, 1, 4);
     grid.allocateAtlases();
+    const initialIrradianceRead = grid.irradianceReadTex;
+    const initialIrradianceWrite = grid.irradianceWriteTex;
+    if (!initialIrradianceRead || !initialIrradianceWrite) {
+      throw new Error('expected allocated DDGI irradiance atlas slots');
+    }
     const irradianceA = texture(
       'irradiance-a',
-      grid.irradianceReadTex.width,
-      grid.irradianceReadTex.height,
+      initialIrradianceRead.width,
+      initialIrradianceRead.height,
     );
     const irradianceB = texture(
       'irradiance-b',
-      grid.irradianceWriteTex.width,
-      grid.irradianceWriteTex.height,
+      initialIrradianceWrite.width,
+      initialIrradianceWrite.height,
     );
     const encoder = {
       copyTextureToTexture: vi.fn(),

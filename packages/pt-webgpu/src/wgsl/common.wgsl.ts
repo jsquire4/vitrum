@@ -171,6 +171,20 @@ fn rand_f32(state: ptr<function, PtRngState>) -> f32 {
   return f32(ptSobolNextU32(state) >> 8u) * PT_SOBOL_FACTOR;
 }
 
+// Sobol exposes the same 24-bit finite uniform domain as shared PCG. Mirror
+// the canonical shared-samplers helper so every composed sampling mode uses
+// one represented Bernoulli contract at its call sites.
+fn represented_bernoulli_probability_f32(probability: f32) -> f32 {
+  if (!(probability > 0.0)) { return 0.0; }
+  if (probability >= 1.0) { return 1.0; }
+  let bucket = clamp(
+    floor(probability * 16777216.0 + 0.5),
+    1.0,
+    16777215.0,
+  );
+  return bucket / 16777216.0;
+}
+
 fn rand2(state: ptr<function, PtRngState>) -> vec2f {
   return vec2f(rand_f32(state), rand_f32(state));
 }
@@ -240,6 +254,24 @@ struct HitResult {
 };
 
 ${rng}
+
+// Build a full-width word from the exact high bits exposed by both PCG and the
+// Owen-Sobol stream, then use rejection for an unbiased arbitrary-u32 bound.
+fn ptRandomU32(state: ptr<function, PtRngState>) -> u32 {
+  let high24 = pcgNext(state) & 0xffffff00u;
+  let low8 = pcgNext(state) >> 24u;
+  return high24 | low8;
+}
+
+fn ptRandBoundedU32(state: ptr<function, PtRngState>, bound: u32) -> u32 {
+  if (bound <= 1u) { return 0u; }
+  let threshold = ((0xffffffffu % bound) + 1u) % bound;
+  loop {
+    let word = ptRandomU32(state);
+    if (word >= threshold) { return word % bound; }
+  }
+  return 0u;
+}
 
 fn safe_normalize(v: vec3f) -> vec3f {
   let scale = max(abs(v.x), max(abs(v.y), abs(v.z)));

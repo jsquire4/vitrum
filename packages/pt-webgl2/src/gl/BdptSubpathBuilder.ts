@@ -21,7 +21,7 @@ import { createRenderTarget, clearRenderTarget, type RenderTarget } from './fram
 
 /** Bounded general-BDPT light-path texture dimensions (matches the GLSL layout). */
 export const BDPT_LIGHT_PATH_COLS = 8;
-export const BDPT_LIGHT_PATH_ROWS = 8;
+export const BDPT_LIGHT_PATH_ROWS = 14;
 
 /**
  * Manages the BDPT light-subpath ping-pong textures and issues the per-column
@@ -46,7 +46,7 @@ export class BdptSubpathBuilder {
    * uploaded light source) — the caller then leaves the dummy
    * bound and the frame renders unidirectionally.
    *
-   * Per-column protocol (one fullscreen draw over an 8×8 viewport per bounce):
+   * Per-column protocol (one fullscreen draw over an 8×12 viewport per bounce):
    *   read  = the texture holding columns < col already built this frame
    *   write = the other ping-pong slot
    *   1. blit read → write (copy already-built columns forward; the kernel `discard`s
@@ -147,7 +147,7 @@ export class BdptSubpathBuilder {
       // the kernel ignores the texture; binding the read slot is harmless.)
       bindSceneTextures(prog, scene, read.color);
 
-      // 4. Draw the 8×6 viewport into the write slot. The shader also overwrites
+      // 4. Draw the 8×12 viewport into the write slot. The shader also overwrites
       // predecessor row 0 (delta kind) and row 2 (reverse directional density)
       // now that the successor direction is known.
       const { fbo } = write;

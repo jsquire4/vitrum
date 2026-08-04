@@ -146,7 +146,7 @@ const BUILDER_DRIVERS: Record<BindGroupTableId, (d: GPUDevice, c: BGLCache) => G
   ),
   indirectCombine: (d, c) => buildIndirectCombineBindGroup(d, c, view, view, view, view),
   transparentOit: (d, c) => buildTransparentOitBindGroup(
-    d, c, view, view, sampler, buf, buf, buf, view, view,
+    d, c, view, view, buf, buf, buf, view, view,
   ),
 };
 

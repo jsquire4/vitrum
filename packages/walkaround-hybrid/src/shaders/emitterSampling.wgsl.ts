@@ -54,7 +54,10 @@ fn sampleEmitterIdx(
   var hi = emitterCount;
   while (lo < hi) {
     let mid = (lo + hi) / 2u;
-    if (sceneLoadEmitterCdf(mid) < xi) {
+    // xi is an exact 24-bit bucket coordinate and every CDF endpoint is on
+    // that same grid. Intervals are [previous, endpoint), so an exact endpoint
+    // belongs to the following emitter rather than the preceding one.
+    if (sceneLoadEmitterCdf(mid) <= xi) {
       lo = mid + 1u;
     } else {
       hi = mid;

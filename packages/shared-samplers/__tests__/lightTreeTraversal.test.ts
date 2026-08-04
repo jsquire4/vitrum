@@ -15,10 +15,17 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildLightTree,
+  LIGHT_TREE_BUCKET_COUNT,
+  FULL_SPHERE_CONE,
+  packLightTreeForGPU,
+  packedLightTreeNodeImportanceCPU,
+  packedLightTreePdfCPU,
+  samplePackedLightTreeCPU,
   sampleLightTreeCPU,
   lightTreePdfCPU,
   nodeImportance,
   type LightTreeBuildInput,
+  type LightTreeNode,
 } from '../src/lightTree.js';
 import { lightTreeWgsl } from '../src/wgsl/lightTree.wgsl.js';
 
@@ -48,6 +55,52 @@ function makeLcg(seed: number): () => number {
     s = Math.imul(1664525, s) + 1013904223;
     return (s >>> 0) / 0x1_0000_0000;
   };
+}
+
+/** A physically consistent, 320-level power comb (each split is 50/50). */
+function makeDeepPowerComb(leafCount: number): LightTreeNode[] {
+  const leafPowers = Array.from({ length: leafCount }, (_, index) =>
+    index === leafCount - 1 ? 2 ** -(leafCount - 1) : 2 ** -(index + 1));
+  const nodes: LightTreeNode[] = [];
+  const append = (firstLeaf: number): number => {
+    const nodeIndex = nodes.length;
+    if (firstLeaf === leafCount - 1) {
+      nodes.push({
+        emitterIndex: firstLeaf,
+        totalPower: leafPowers[firstLeaf]!,
+        aabbMin: [0, 0, 0],
+        aabbMax: [0, 0, 0],
+        leftChild: -1,
+        rightChild: -1,
+        cone: FULL_SPHERE_CONE,
+      });
+      return nodeIndex;
+    }
+    nodes.push(undefined as unknown as LightTreeNode);
+    const leftChild = nodes.length;
+    nodes.push({
+      emitterIndex: firstLeaf,
+      totalPower: leafPowers[firstLeaf]!,
+      aabbMin: [0, 0, 0],
+      aabbMax: [0, 0, 0],
+      leftChild: -1,
+      rightChild: -1,
+      cone: FULL_SPHERE_CONE,
+    });
+    const rightChild = append(firstLeaf + 1);
+    nodes[nodeIndex] = {
+      emitterIndex: -1,
+      totalPower: nodes[leftChild]!.totalPower + nodes[rightChild]!.totalPower,
+      aabbMin: [0, 0, 0],
+      aabbMax: [0, 0, 0],
+      leftChild,
+      rightChild,
+      cone: FULL_SPHERE_CONE,
+    };
+    return nodeIndex;
+  };
+  append(0);
+  return nodes;
 }
 
 describe('lightTreePdfCPU — pmf partitions to 1 over the emitter set', () => {
@@ -109,6 +162,110 @@ describe('lightTreePdfCPU — pmf partitions to 1 over the emitter set', () => {
   it('emitter not in the tree → pdf 0', () => {
     const { nodes } = buildLightTree(makeInput([1, 2, 3]));
     expect(lightTreePdfCPU(nodes, [0, 0, 0], FLOOR, 99)).toBe(0);
+  });
+});
+
+describe('24-bit represented proposal — support, exact PMFs, and packed parity', () => {
+  it('preserves min/max positive powers and returns exact bucket-multiple PMFs', () => {
+    const { nodes } = buildLightTree(makeInput([Number.MIN_VALUE, Number.MAX_VALUE]));
+    const packed = packLightTreeForGPU(nodes);
+    const pdfs = [0, 1].map((emitter) =>
+      packedLightTreePdfCPU(packed, [0, 0, 0], FLOOR, emitter));
+    expect(pdfs[0]).toBeGreaterThanOrEqual(1 / LIGHT_TREE_BUCKET_COUNT);
+    expect(pdfs[1]).toBeGreaterThanOrEqual(1 / LIGHT_TREE_BUCKET_COUNT);
+    expect(pdfs[0]! + pdfs[1]!).toBe(1);
+    for (const pdf of pdfs) {
+      expect(Number.isInteger(pdf * LIGHT_TREE_BUCKET_COUNT)).toBe(true);
+    }
+  });
+
+  it('selects the exact leaf interval on both sides of a represented boundary', () => {
+    const { nodes } = buildLightTree(makeInput([Number.MIN_VALUE, Number.MAX_VALUE]));
+    const packed = packLightTreeForGPU(nodes);
+    const leftBuckets =
+      packedLightTreePdfCPU(packed, [0, 0, 0], FLOOR, 0) *
+      LIGHT_TREE_BUCKET_COUNT;
+    expect(leftBuckets).toBeGreaterThanOrEqual(1);
+    const left = samplePackedLightTreeCPU(
+      packed,
+      [0, 0, 0],
+      FLOOR,
+      () => (leftBuckets - 0.5) / LIGHT_TREE_BUCKET_COUNT,
+    );
+    const right = samplePackedLightTreeCPU(
+      packed,
+      [0, 0, 0],
+      FLOOR,
+      () => (leftBuckets + 0.5) / LIGHT_TREE_BUCKET_COUNT,
+    );
+    expect(left.emitterIndex).toBe(0);
+    expect(right.emitterIndex).toBe(1);
+    expect(left.pdf).toBe(packedLightTreePdfCPU(packed, [0, 0, 0], FLOOR, 0));
+    expect(right.pdf).toBe(packedLightTreePdfCPU(packed, [0, 0, 0], FLOOR, 1));
+  });
+
+  it('keeps every leaf positive through a 320-level tree without PDF products', () => {
+    const nodes = makeDeepPowerComb(320);
+    const packed = packLightTreeForGPU(nodes);
+    let sum = 0;
+    for (let emitter = 0; emitter < 320; emitter++) {
+      const pdf = packedLightTreePdfCPU(packed, [0, 0, 0], FLOOR, emitter);
+      expect(pdf).toBeGreaterThanOrEqual(1 / LIGHT_TREE_BUCKET_COUNT);
+      expect(Number.isInteger(pdf * LIGHT_TREE_BUCKET_COUNT)).toBe(true);
+      sum += pdf;
+    }
+    expect(sum).toBe(1);
+    expect(packed[15]).toBe(320);
+  });
+
+  it('reads normalized cone axes and extreme AABBs from packed f32 lanes', () => {
+    const max = Math.fround(3.4028234663852886e38);
+    const rawAxis = [1e-30, -2e-30, 3e-30] as const;
+    const { nodes } = buildLightTree({
+      powers: [1, 1],
+      centroids: [[-max, 0, 0], [max, 0, 0]],
+      aabbs: [
+        { min: [-max, 0, 0], max: [-max, 0, 0] },
+        { min: [max, 0, 0], max: [max, 0, 0] },
+      ],
+      cones: [
+        { axis: rawAxis, thetaO: 0, thetaE: Math.PI / 2 },
+        { axis: [0, 0, 0] },
+      ],
+    });
+    const packed = packLightTreeForGPU(nodes);
+    const orientedIndex = nodes.findIndex((node) => node.emitterIndex === 0);
+    const base = orientedIndex * 16;
+    const length = Math.hypot(...rawAxis);
+    expect(Array.from(packed.slice(base + 10, base + 13))).toEqual([
+      Math.fround(rawAxis[0] / length),
+      Math.fround(rawAxis[1] / length),
+      Math.fround(rawAxis[2] / length),
+    ]);
+    for (let nodeIndex = 0; nodeIndex < nodes.length; nodeIndex++) {
+      const q = packedLightTreeNodeImportanceCPU(
+        packed,
+        nodeIndex,
+        [0, 0, 0],
+        FLOOR,
+      );
+      expect(Number.isFinite(q)).toBe(true);
+      expect(q).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('consumes no RNG for empty or single-leaf trees', () => {
+    let draws = 0;
+    const rand = (): number => {
+      draws++;
+      return 0.25;
+    };
+    expect(samplePackedLightTreeCPU(new Float32Array(0), [0, 0, 0], FLOOR, rand))
+      .toEqual({ emitterIndex: -1, pdf: 0 });
+    const { nodes } = buildLightTree(makeInput([1]));
+    expect(sampleLightTreeCPU(nodes, [0, 0, 0], FLOOR, rand))
+      .toEqual({ emitterIndex: 0, pdf: 1 });
+    expect(draws).toBe(0);
   });
 });
 
@@ -308,7 +465,7 @@ describe('B8 orientation cones — oriented emitters culled from behind', () => 
     // The WGSL compares the dimensionless radius/distance ratio, avoiding an
     // absolute world-unit floor and squared-distance underflow.
     const wgsl = lightTreeWgsl({ group: 0, binding: 1 });
-    expect(wgsl).toContain('radiusOverDistance >= 1.0');
+    expect(wgsl).toContain('if (logRatio >= 0.0) { return 1.0; }');
     expect(wgsl).not.toContain('radius * radius, 1e-');
   });
 
@@ -377,6 +534,16 @@ describe('lightTreeWgsl RNG-state specialization', () => {
     expect(specialized).toContain('@group(3) @binding(0)');
     expect(specialized).toContain('rng: ptr<function, PtRngState>');
     expect(specialized).not.toContain('rng: ptr<function, u32>');
+  });
+
+  it('guards an empty tree before storage reads and defers the sole RNG draw until an internal root', () => {
+    const wgsl = lightTreeWgsl({ group: 0, binding: 1 });
+    expect(wgsl.indexOf('if (nodeCount == 0u)')).toBeLessThan(
+      wgsl.indexOf('let rootLeft = i32(lightTree[2u])'),
+    );
+    expect(wgsl).toContain('if (rootLeft >= 0 && rootRight >= 0)');
+    expect((wgsl.match(/rand_f32\(rng\)/g) ?? [])).toHaveLength(1);
+    expect(wgsl).toContain('result.pdf = f32(currentBuckets) / f32(lt_ROOT_BUCKETS)');
   });
 
   it('rejects a non-identifier RNG type instead of emitting malformed WGSL', () => {

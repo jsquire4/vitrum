@@ -97,7 +97,7 @@ export function dispatchProbeUpdateRaysPass(
   if (!gpu.bgCache) gpu.bgCache = makeBgCache();
   const c = gpu.bgCache;
 
-  // Group 0: BVH geometry buffers (11 entries). Key every bound identity:
+  // Group 0: BVH geometry buffers (13 entries). Key every bound identity:
   // transform-only TLAS refits preserve the BLAS buffers and may replace only
   // the TLAS streams whose capacities grew.
   const raysG0 = getOrCreateBindGroup(c, 'raysG0', [
@@ -112,6 +112,8 @@ export function dispatchProbeUpdateRaysPass(
     gpu.tlasW2lBuf,
     gpu.tlasL2wBuf,
     gpu.traceParamsBuf,
+    gpu.opticalTriangleIdentityBuf,
+    gpu.opticalInstanceBoundaryIdBasePlusOneBuf,
   ], () => gpu.device.createBindGroup({
     layout: gpu.raysPipeline.getBindGroupLayout(0),
     entries: [
@@ -126,6 +128,13 @@ export function dispatchProbeUpdateRaysPass(
       { binding: 8, resource: { buffer: gpu.tlasW2lBuf } },
       { binding: 9, resource: { buffer: gpu.tlasL2wBuf } },
       { binding: 10, resource: { buffer: gpu.traceParamsBuf } },
+      { binding: 11, resource: { buffer: gpu.opticalTriangleIdentityBuf } },
+      {
+        binding: 12,
+        resource: {
+          buffer: gpu.opticalInstanceBoundaryIdBasePlusOneBuf,
+        },
+      },
     ],
   }));
 
@@ -169,7 +178,6 @@ export function dispatchProbeUpdateRaysPass(
       { binding: 0, resource: { buffer: gpu.rayResultsBuf } },
       { binding: 1, resource: { buffer: gpu.activeProbesBuf } },
       { binding: 2, resource: irrReadTex.createView() },
-      { binding: 3, resource: gpu.linearSampler },
       { binding: 4, resource: { buffer: gpu.gridParamsBuf } },
       { binding: 5, resource: { buffer: gpu.frameParamsBuf } },
       // Wave 4 (2026-06-10) — HDRI into DDGI probe misses.
@@ -290,8 +298,7 @@ export function dispatchProbeUpdateBlendIrrPass(
     layout: gpu.blendIrrPipeline.getBindGroupLayout(1),
     entries: [
       { binding: 0, resource: irrReadTex.createView() },
-      { binding: 1, resource: gpu.linearSampler },
-      { binding: 2, resource: irrWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+      { binding: 1, resource: irrWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
     ],
   }));
 
@@ -335,8 +342,7 @@ export function dispatchProbeUpdateBlendVisPass(
     layout: gpu.blendVisPipeline.getBindGroupLayout(1),
     entries: [
       { binding: 0, resource: visReadTex.createView() },
-      { binding: 1, resource: gpu.linearSampler },
-      { binding: 2, resource: visWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
+      { binding: 1, resource: visWriteTex.createView({ format: 'rgba16float', mipLevelCount: 1 }) },
     ],
   }));
 

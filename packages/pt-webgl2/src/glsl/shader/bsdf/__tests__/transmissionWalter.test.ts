@@ -12,10 +12,13 @@ describe('rough-transmission BTDF/PDF pairing', () => {
       'float pdfWi = pdfWh * abs( wiDotH ) / denom;',
     );
     expect(bsdf_functions).toContain(
-      '( 1.0 - F ) * D * G * abs( wiDotH * woDotH ) * eta * eta',
+      'D * G * abs( wiDotH * woDotH ) * eta * eta',
     );
     expect(bsdf_functions).toContain(
-      'float F = dielectricFresnel( abs( woDotH ), eta );',
+      'interfaceResponse.baseTransmittance * btdfCos',
+    );
+    expect(bsdf_functions).toContain(
+      'surfaceLayeredInterfaceResponse(',
     );
   });
 

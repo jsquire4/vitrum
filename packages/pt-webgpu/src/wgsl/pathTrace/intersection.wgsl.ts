@@ -34,7 +34,7 @@ function tlasSceneHitTraversalWithInstanceIndex(wgsl: string): string {
   // than by grep for a stale hardcoded string here.
   const withInit = wgsl.replace(
     TLAS_SCENE_HIT_INIT_ANCHOR,
-    `  (*hit).normal = vec3f(0.0, 1.0, 0.0);\n  (*hit).frontFace = false;\n  (*hit).baryVW = vec2f(0.0);\n  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;\n}`,
+    `  (*hit).position = vec3f(0.0);\n  (*hit).normal = vec3f(0.0, 1.0, 0.0);\n  (*hit).frontFace = false;\n  (*hit).baryVW = vec2f(0.0);\n  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;\n  (*hit).zeroEdgeMask = 0u;\n}`,
   );
   if (withInit === wgsl) {
     throw new Error('TLAS SceneHit init anchor changed; update pt-webgpu instance-index augmentation.');
@@ -42,7 +42,7 @@ function tlasSceneHitTraversalWithInstanceIndex(wgsl: string): string {
 
   const withAssignment = withInit.replace(
     TLAS_SCENE_HIT_ASSIGNMENT_ANCHOR,
-    `      (*hit).triIndex = localHit.triIndex;\n      (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);\n      let orientationPreserving = transformLinearOrientationSign(l2w0, l2w1, l2w2) > 0.0;\n      (*hit).frontFace = select(!localHit.frontFace, localHit.frontFace, orientationPreserving);\n      (*hit).instanceIndex = instIdx;\n      // Barycentric weights are space-invariant`,
+    `      (*hit).triIndex = localHit.triIndex;\n      (*hit).position = worldHitPos;\n      (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);\n      let orientationPreserving = transformLinearOrientationSign(l2w0, l2w1, l2w2) > 0.0;\n      (*hit).frontFace = select(!localHit.frontFace, localHit.frontFace, orientationPreserving);\n      (*hit).instanceIndex = instIdx;\n      (*hit).zeroEdgeMask = localHit.zeroEdgeMask;\n      // Barycentric weights are space-invariant`,
   );
   if (withAssignment === withInit) {
     throw new Error('TLAS SceneHit assignment anchor changed; update pt-webgpu instance-index augmentation.');
@@ -89,11 +89,160 @@ function tlasSceneHitTraversalWithInstanceIndex(wgsl: string): string {
     );
   }
 
-  return withAnyFailClosed;
+  const closestCall =
+    `_ = traceMeshBvh(localRay, localTMin, localTMax, true, &localHit, blasRoot, true);`;
+  const closestWithContext =
+    `opticalSetTraversalInstance(instIdx);\n    ${closestCall}`;
+  const withClosestContext = withAnyFailClosed.replace(
+    closestCall,
+    closestWithContext,
+  );
+  if (withClosestContext === withAnyFailClosed) {
+    throw new Error(
+      'TLAS closest BLAS call changed; update pt-webgpu source-feature context routing.',
+    );
+  }
+
+  const anyCall =
+    `return traceMeshBvh(localRay, localTMin, localTMax, false, &localHit, blasRoot, false);`;
+  const anyWithContext =
+    `opticalSetTraversalInstance(instIdx);\n  ${anyCall}`;
+  const withAnyContext = withClosestContext.replace(anyCall, anyWithContext);
+  if (withAnyContext === withClosestContext) {
+    throw new Error(
+      'TLAS any-hit BLAS call changed; update pt-webgpu source-feature context routing.',
+    );
+  }
+
+  const localMinLine =
+    `  let localTMin = max(dot(localStart - localRay.origin, localRay.direction), 0.0);`;
+  const localMinWithContinuation =
+    `  let localTMin = select(\n    max(dot(localStart - localRay.origin, localRay.direction), 0.0),\n    0.0,\n    opticalContinuationSourceIsActive(),\n  );`;
+  const withConservativeContinuationMin = withAnyContext.replaceAll(
+    localMinLine,
+    localMinWithContinuation,
+  );
+  if (
+    withConservativeContinuationMin === withAnyContext ||
+    withConservativeContinuationMin.includes(localMinLine)
+  ) {
+    throw new Error(
+      'TLAS local lower-bound conversion changed; update exact continuation routing.',
+    );
+  }
+
+  const reconstructedLocalHitPoint =
+    `    let localHitPos = localRay.origin + localRay.direction * localHit.dist;`;
+  const representedLocalHitPoint =
+    `    let localHitPos = localHit.position;`;
+  const withRepresentedHitPoint = withConservativeContinuationMin.replaceAll(
+    reconstructedLocalHitPoint,
+    representedLocalHitPoint,
+  );
+  if (
+    withRepresentedHitPoint === withConservativeContinuationMin ||
+    withRepresentedHitPoint.includes(reconstructedLocalHitPoint)
+  ) {
+    throw new Error(
+      'TLAS local hit-point reconstruction changed; update represented-point routing.',
+    );
+  }
+
+  return withRepresentedHitPoint;
 }
 
 export const PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL = /* wgsl */ `
+fn opticalEncodedBoundaryId(triIndex: u32, instanceIndex: u32) -> u32 {
+  if (
+    triIndex >= min(params.triangleCount, arrayLength(&indices)) ||
+    instanceIndex == INVALID_TLAS_INSTANCE_INDEX ||
+    instanceIndex >= arrayLength(&opticalInstanceBoundaryIdBasePlusOne)
+  ) {
+    return 0u;
+  }
+  let componentPlusOne = indices[triIndex].w;
+  let basePlusOne = opticalInstanceBoundaryIdBasePlusOne[instanceIndex];
+  if (
+    componentPlusOne == 0u || basePlusOne == 0u ||
+    componentPlusOne - 1u > 0xffffffffu - basePlusOne
+  ) {
+    return 0u;
+  }
+  return basePlusOne + componentPlusOne - 1u;
+}
+
+var<private> opticalContinuationSource: OpticalSourceFeature;
+var<private> opticalTraversalInstanceIndex: u32;
+
+fn opticalSetTraversalInstance(instanceIndex: u32) {
+  opticalTraversalInstanceIndex = instanceIndex;
+}
+
+fn opticalContinuationSourceIsActive() -> bool {
+  return opticalContinuationSource.kind != OPTICAL_SOURCE_FEATURE_INVALID;
+}
+
+fn opticalClearContinuationSource() {
+  opticalContinuationSource = opticalSourceFeatureInvalid();
+}
+
+fn opticalTraversalSuppressesTriangle(
+  triangleIndex: u32,
+  tri: vec4u,
+  a: vec3f,
+  b: vec3f,
+  c: vec3f,
+) -> bool {
+  if (
+    !opticalContinuationSourceIsActive() ||
+    opticalTraversalInstanceIndex == INVALID_TLAS_INSTANCE_INDEX ||
+    opticalTraversalInstanceIndex == 0xffffffffu
+  ) {
+    return false;
+  }
+  let representedId = opticalTraversalInstanceIndex + 1u;
+  return opticalSourceFeatureSuppressesTriangle(
+    opticalContinuationSource,
+    opticalEncodedBoundaryId(triangleIndex, opticalTraversalInstanceIndex),
+    representedId,
+    triangleIndex,
+    materialTexturePointToWorld(a, opticalTraversalInstanceIndex),
+    materialTexturePointToWorld(b, opticalTraversalInstanceIndex),
+    materialTexturePointToWorld(c, opticalTraversalInstanceIndex),
+  );
+}
+
 ${PT_WEBGPU_INTERSECTION_CORE_WGSL}
+
+fn opticalSetContinuationSourceFromHit(hit: SceneHit) -> bool {
+  if (
+    hit.triIndex >= min(params.triangleCount, arrayLength(&indices)) ||
+    hit.instanceIndex == INVALID_TLAS_INSTANCE_INDEX ||
+    hit.instanceIndex == 0xffffffffu
+  ) {
+    opticalClearContinuationSource();
+    return false;
+  }
+  let tri = indices[hit.triIndex];
+  if (
+    tri.x >= arrayLength(&positions) ||
+    tri.y >= arrayLength(&positions) ||
+    tri.z >= arrayLength(&positions)
+  ) {
+    opticalClearContinuationSource();
+    return false;
+  }
+  opticalContinuationSource = opticalCreateSourceFeature(
+    opticalEncodedBoundaryId(hit.triIndex, hit.instanceIndex),
+    hit.instanceIndex + 1u,
+    hit.triIndex,
+    hit.zeroEdgeMask,
+    materialTexturePointToWorld(positions[tri.x].xyz, hit.instanceIndex),
+    materialTexturePointToWorld(positions[tri.y].xyz, hit.instanceIndex),
+    materialTexturePointToWorld(positions[tri.z].xyz, hit.instanceIndex),
+  );
+  return opticalContinuationSourceIsActive();
+}
 
 fn traceAnalyticShapes(
   ray: Ray,
@@ -163,17 +312,140 @@ fn traceAnalyticShapes(
       }
       (*hit).didHit = true;
       (*hit).dist = worldT;
+      (*hit).position = worldHitPos;
       (*hit).triIndex = params.triangleCount + ai;
       (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localN);
       (*hit).frontFace = dot((*hit).normal, ray.direction) < 0.0;
       (*hit).baryVW = vec2f(0.0);
       (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+      (*hit).zeroEdgeMask = 0u;
     }
   }
   return false;
 }
 
 ${tlasSceneHitTraversalWithInstanceIndex(TLAS_SCENE_HIT_TRAVERSAL_WGSL)}
+
+// Full-tier optical replay intentionally walks every represented TLAS instance
+// but traverses each instance's BLAS, rather than scanning triangles. This is a
+// launch-time operation and preserves the exact same represented transform and
+// geometry stream as radiance transport without introducing a crossing cap.
+fn traceOpticalBoundaryClosest(
+  ray: Ray,
+  exclusiveMinT: f32,
+  tMax: f32,
+) -> OpticalBoundaryHit {
+  var result: OpticalBoundaryHit;
+  opticalResetBoundaryHit(&result, tMax);
+  if (
+    params.tlasNodeCount == 0u ||
+    arrayLength(&tlasNodes) == 0u ||
+    arrayLength(&tlasInstanceIndices) == 0u
+  ) {
+    result.valid = false;
+    return result;
+  }
+  let instanceLimit = min(
+    arrayLength(&tlasBlasRoots),
+    min(
+      arrayLength(&tlasInstanceWorldToLocal) / 4u,
+      arrayLength(&tlasInstanceLocalToWorld) / 4u,
+    ),
+  );
+  if (instanceLimit == 0u) {
+    result.valid = false;
+    return result;
+  }
+  for (var instIdx = 0u; instIdx < instanceLimit; instIdx = instIdx + 1u) {
+    let matrixBase = instIdx * 4u;
+    let w2l0 = tlasInstanceWorldToLocal[matrixBase];
+    let w2l1 = tlasInstanceWorldToLocal[matrixBase + 1u];
+    let w2l2 = tlasInstanceWorldToLocal[matrixBase + 2u];
+    let w2l3 = tlasInstanceWorldToLocal[matrixBase + 3u];
+    let l2w0 = tlasInstanceLocalToWorld[matrixBase];
+    let l2w1 = tlasInstanceLocalToWorld[matrixBase + 1u];
+    let l2w2 = tlasInstanceLocalToWorld[matrixBase + 2u];
+    let l2w3 = tlasInstanceLocalToWorld[matrixBase + 3u];
+    var localRay: Ray;
+    localRay.origin = transformPointCols(
+      w2l0, w2l1, w2l2, w2l3, ray.origin,
+    );
+    localRay.direction = transformDirectionCols(
+      w2l0, w2l1, w2l2, ray.direction,
+    );
+    // Do not convert the exclusive world cursor to one rounded local-space
+    // threshold. Under a non-uniform transform that threshold can round upward
+    // and skip the adjacent representable boundary. Replay from the fixed local
+    // origin, discard already-consumed events only after converting each exact
+    // hit back to world t, and stop at this instance's first remaining event.
+    // The loop has no crossing ceiling; only the live medium stack is bounded.
+    var localCursor = 0.0;
+    loop {
+      var localHit: OpticalLocalBoundaryHit;
+      traceOpticalMeshBvhLocal(
+        localRay,
+        localCursor,
+        INFINITY,
+        tlasBlasRoots[instIdx],
+        &localHit,
+      );
+      if (!localHit.valid) {
+        result.valid = false;
+        return result;
+      }
+      if (!localHit.didHit) { break; }
+      if (!(localHit.dist > localCursor)) {
+        result.valid = false;
+        return result;
+      }
+      let localHitPoint =
+        localRay.origin + localRay.direction * localHit.dist;
+      let worldHitPoint = transformPointCols(
+        l2w0, l2w1, l2w2, l2w3, localHitPoint,
+      );
+      let worldT = dot(worldHitPoint - ray.origin, ray.direction);
+      if (!(worldT == worldT) || abs(worldT) > 3.402823e38) {
+        result.valid = false;
+        return result;
+      }
+      if (!(worldT > exclusiveMinT)) {
+        localCursor = localHit.dist;
+        continue;
+      }
+      if (!(worldT < tMax)) { break; }
+      let boundary = mediumBoundaryIdentity(localHit.triIndex, instIdx);
+      if (!mediumBoundaryIsValid(boundary)) {
+        result.valid = false;
+        return result;
+      }
+      let orientationPreserving =
+        transformLinearOrientationSign(l2w0, l2w1, l2w2) > 0.0;
+      let frontFace = select(
+        !localHit.frontFace, localHit.frontFace, orientationPreserving,
+      );
+      if (!result.didHit || worldT < result.dist) {
+        result.didHit = true;
+        result.ambiguous = localHit.ambiguous;
+        result.tangent = localHit.tangent;
+      result.dist = worldT;
+      result.triIndex = localHit.triIndex;
+      result.instanceIndex = instIdx;
+      result.baryVW = localHit.baryVW;
+      result.matId = triMaterialIds[localHit.triIndex].x;
+        result.boundary = boundary;
+        result.frontFace = frontFace;
+      } else if (bitcast<u32>(worldT) == bitcast<u32>(result.dist)) {
+        if (!opticalBoundaryHitSameEvent(
+          boundary, frontFace, result.boundary, result.frontFace,
+        )) {
+          result.ambiguous = true;
+        }
+      }
+      break;
+    }
+  }
+  return result;
+}
 
 fn traceClosestRaw(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
   var hit: SceneHit;
@@ -183,24 +455,30 @@ fn traceClosestRaw(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
 }
 
 fn nextSidedTraversalCursor(cursor: f32, hitDist: f32) -> f32 {
-  let step = max(
-    max(params.triIntersectEpsilon, 1.175494351e-38),
-    abs(hitDist) * (4.0 * 1.192092896e-7),
-  );
-  let fromHit = hitDist + step;
-  return select(fromHit, cursor + step, !(fromHit > cursor));
+  _ = cursor;
+  return hitDist;
 }
 
 fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
-  var cursor = tMin;
+  // A post-transmission ray starts at the exact accepted hit and owns an exact
+  // source-feature token. Its lower bound is therefore zero-exclusive; the
+  // public clearance policy must not erase an arbitrarily close next surface.
+  var cursor = select(tMin, 0.0, opticalContinuationSourceIsActive());
   var hit = traceClosestRaw(ray, cursor, tMax);
   loop {
-    if (!hit.didHit) { return hit; }
+    if (!hit.didHit) {
+      opticalClearContinuationSource();
+      return hit;
+    }
     let matId = hitMaterialId(hit);
-    if (materialAcceptsSidedHit(matId, hit.frontFace)) { return hit; }
+    if (materialAcceptsSidedHit(matId, hit.frontFace)) {
+      opticalClearContinuationSource();
+      return hit;
+    }
     let nextCursor = nextSidedTraversalCursor(cursor, hit.dist);
     if (!(nextCursor > cursor) || !(nextCursor < tMax)) {
       hit.didHit = false;
+      opticalClearContinuationSource();
       return hit;
     }
     cursor = nextCursor;
@@ -215,10 +493,13 @@ fn traceAny(
   tMax: f32,
   rng: ptr<function, PtRngState>,
 ) -> bool {
-  var cursor = tMin;
+  var cursor = select(tMin, 0.0, opticalContinuationSourceIsActive());
   loop {
     let hit = traceClosestRaw(ray, cursor, tMax);
-    if (!hit.didHit) { return false; }
+    if (!hit.didHit) {
+      opticalClearContinuationSource();
+      return false;
+    }
     let matId = hitMaterialId(hit);
     if (
       materialAcceptsSidedHit(matId, hit.frontFace) &&
@@ -227,18 +508,23 @@ fn traceAny(
         matId, hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
       )
     ) {
+      opticalClearContinuationSource();
       return true;
     }
     let nextCursor = nextSidedTraversalCursor(cursor, hit.dist);
-    if (!(nextCursor > cursor) || !(nextCursor < tMax)) { return false; }
+    if (!(nextCursor > cursor) || !(nextCursor < tMax)) {
+      opticalClearContinuationSource();
+      return false;
+    }
     cursor = nextCursor;
   }
+  opticalClearContinuationSource();
   return false;
 }
 
 fn hitMaterialId(hit: SceneHit) -> u32 {
   if (hit.triIndex < params.triangleCount) {
-    return select(0u, triMaterialIds[hit.triIndex], hit.triIndex < arrayLength(&triMaterialIds));
+    return select(0u, triMaterialIds[hit.triIndex].x, hit.triIndex < arrayLength(&triMaterialIds));
   }
   let analyticIndex = hit.triIndex - params.triangleCount;
   if (analyticIndex < arrayLength(&analyticHeaders)) {
@@ -247,34 +533,6 @@ fn hitMaterialId(hit: SceneHit) -> u32 {
   return 0u;
 }
 
-const MEDIUM_BOUNDARY_KIND_TLAS: u32 = 0u;
-const MEDIUM_BOUNDARY_KIND_ANALYTIC: u32 = 1u;
-const MEDIUM_BOUNDARY_KIND_INVALID: u32 = 0xffffffffu;
-
-fn mediumBoundaryIdentity(triIndex: u32, instanceIndex: u32) -> vec2u {
-  if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX) {
-    return vec2u(MEDIUM_BOUNDARY_KIND_TLAS, instanceIndex);
-  }
-  if (triIndex >= params.triangleCount) {
-    let analyticIndex = triIndex - params.triangleCount;
-    let analyticTotal = min(params.analyticCount, arrayLength(&analyticHeaders));
-    if (analyticIndex < analyticTotal) {
-      return vec2u(MEDIUM_BOUNDARY_KIND_ANALYTIC, analyticIndex);
-    }
-  }
-  // A merged mesh hit has no primitive/instance identity. A triangle id cannot
-  // stand in for a closed boundary because entry and exit use different faces.
-  return vec2u(MEDIUM_BOUNDARY_KIND_INVALID);
-}
-
-fn mediumBoundaryIsValid(boundary: vec2u) -> bool {
-  return boundary.x != MEDIUM_BOUNDARY_KIND_INVALID;
-}
-
-fn mediumBoundaryMatches(kind: u32, index: u32, boundary: vec2u) -> bool {
-  return mediumBoundaryIsValid(boundary) &&
-    kind == boundary.x && index == boundary.y;
-}
 `;
 
 function replaceWgslFunction(source: string, name: string, replacement: string): string {
@@ -347,11 +605,22 @@ fn traceMeshCwbvhClosest(
 ) -> bool {
   (*hit).didHit = false;
   (*hit).dist = tMaxBound;
+  (*hit).position = vec3f(0.0);
   (*hit).triIndex = 0u;
   (*hit).normal = vec3f(0.0, 1.0, 0.0);
   (*hit).frontFace = false;
   (*hit).baryVW = vec2f(0.0);
   (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  (*hit).zeroEdgeMask = 0u;
+
+  // Continuation filtering needs the exact represented face/edge/vertex fan;
+  // the wide traversal does not expose every tied candidate. Use the binary
+  // watertight traversal for this one post-transmission segment.
+  if (opticalContinuationSourceIsActive()) {
+    return traceMeshBvh(
+      ray, tMin, tMaxBound, true, hit, binaryRootNode, captureShadingDetails,
+    );
+  }
 
   let nodeCount = arrayLength(&cwbvhChildCount);
   if (nodeCount == 0u || rootNode >= nodeCount) {
@@ -378,10 +647,37 @@ fn traceMeshCwbvhClosest(
     return traceMeshBvh(ray, tMin, tMaxBound, true, hit, binaryRootNode, captureShadingDetails);
   }
 
+  let acceptedTri = indices[cHit.triIndex];
+  if (
+    acceptedTri.x >= arrayLength(&positions) ||
+    acceptedTri.y >= arrayLength(&positions) ||
+    acceptedTri.z >= arrayLength(&positions)
+  ) {
+    return traceMeshBvh(
+      ray, tMin, tMaxBound, true, hit, binaryRootNode, captureShadingDetails,
+    );
+  }
+  let exactHit = opticalWatertightTriangleIntersect(
+    ray.origin,
+    ray.direction,
+    positions[acceptedTri.x].xyz,
+    positions[acceptedTri.y].xyz,
+    positions[acceptedTri.z].xyz,
+    tMin,
+  );
+  if (
+    !exactHit.hit ||
+    bitcast<u32>(exactHit.t) != bitcast<u32>(cHit.dist)
+  ) {
+    return traceMeshBvh(
+      ray, tMin, tMaxBound, true, hit, binaryRootNode, captureShadingDetails,
+    );
+  }
+
   // CWBVH stores its geometric normal oriented against the incident ray;
   // SceneHit keeps the authored-winding normal and records side separately.
-  var shadeNormal = cHit.normal * cHit.side;
-  var shadeBaryVW = vec2f(cHit.barycoord.y, cHit.barycoord.z);
+  var shadeNormal = exactHit.normal * exactHit.side;
+  var shadeBaryVW = vec2f(exactHit.bary.y, exactHit.bary.z);
   if (captureShadingDetails) {
     let tri = indices[cHit.triIndex];
     if (tri.x < arrayLength(&positions) && tri.y < arrayLength(&positions) && tri.z < arrayLength(&positions)) {
@@ -389,17 +685,26 @@ fn traceMeshCwbvhClosest(
         let na = normals[tri.x].xyz;
         let nb = normals[tri.y].xyz;
         let nc = normals[tri.z].xyz;
-        shadeNormal = safe_normalize(na * cHit.barycoord.x + nb * cHit.barycoord.y + nc * cHit.barycoord.z);
+        shadeNormal = safe_normalize(
+          na * exactHit.bary.x + nb * exactHit.bary.y + nc * exactHit.bary.z,
+        );
       }
     }
   }
   (*hit).didHit = true;
   (*hit).dist = cHit.dist;
+  (*hit).position = opticalCanonicalHitPoint(
+    exactHit,
+    positions[acceptedTri.x].xyz,
+    positions[acceptedTri.y].xyz,
+    positions[acceptedTri.z].xyz,
+  );
   (*hit).triIndex = cHit.triIndex;
   (*hit).normal = shadeNormal;
-  (*hit).frontFace = cHit.side > 0.0;
+  (*hit).frontFace = exactHit.side > 0.0;
   (*hit).baryVW = shadeBaryVW;
   (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  (*hit).zeroEdgeMask = exactHit.zeroEdgeMask;
   return true;
 }
 
@@ -416,16 +721,21 @@ fn traceTlasClosestCwbvhFallback(
 
 fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, SceneHit>) -> bool {
   tlasTraversalStatusCode = TLAS_TRAVERSAL_STATUS_COMPLETE;
+  if (opticalContinuationSourceIsActive()) {
+    return traceTlasClosest(ray, 0.0, tMax, hit);
+  }
   if (params.tlasNodeCount == 0u || arrayLength(&tlasNodes) == 0u || arrayLength(&tlasInstanceIndices) == 0u) {
     return traceTlasClosest(ray, tMin, tMax, hit);
   }
   (*hit).didHit = false;
   (*hit).dist = tMax;
+  (*hit).position = vec3f(0.0);
   (*hit).triIndex = 0u;
   (*hit).normal = vec3f(0.0, 1.0, 0.0);
   (*hit).frontFace = false;
   (*hit).baryVW = vec2f(0.0);
   (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  (*hit).zeroEdgeMask = 0u;
   var stack: array<u32, 64>;
   var stackPtr = 0u;
   stack[stackPtr] = 0u;
@@ -487,14 +797,16 @@ fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, Scen
         }
         let binaryBlasRoot = rootPair.y;
         let blasRoot = rootPair.z;
+        opticalSetTraversalInstance(instIdx);
         _ = traceMeshCwbvhClosest(localRay, localTMin, localTMax, &localHit, blasRoot, binaryBlasRoot, true);
         if (localHit.didHit && localHit.dist > localTMin) {
-          let localHitPos = localRay.origin + localRay.direction * localHit.dist;
+          let localHitPos = localHit.position;
           let worldHitPos = transformPointCols(l2w0, l2w1, l2w2, l2w3, localHitPos);
           let worldDist = dot(worldHitPos - ray.origin, ray.direction);
           if (worldDist <= tMin || worldDist >= (*hit).dist) { continue; }
           (*hit).didHit = true;
           (*hit).dist = worldDist;
+          (*hit).position = worldHitPos;
           (*hit).triIndex = localHit.triIndex;
           (*hit).normal = transformNormalFromWorldToLocalCols(w2l0, w2l1, w2l2, localHit.normal);
           let orientationPreserving =
@@ -502,6 +814,7 @@ fn traceTlasClosestCwbvh(ray: Ray, tMin: f32, tMax: f32, hit: ptr<function, Scen
           (*hit).frontFace = select(!localHit.frontFace, localHit.frontFace, orientationPreserving);
           (*hit).instanceIndex = instIdx;
           (*hit).baryVW = localHit.baryVW;
+          (*hit).zeroEdgeMask = localHit.zeroEdgeMask;
         }
       }
     } else {

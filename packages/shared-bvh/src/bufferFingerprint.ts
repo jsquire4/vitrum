@@ -25,7 +25,9 @@ function mixHash(h: number, value: number): number {
 }
 
 function byteView(data: ArrayBuffer | ArrayBufferView): Uint8Array {
-  return data instanceof ArrayBuffer || data instanceof SharedArrayBuffer
+  const isShared =
+    typeof SharedArrayBuffer !== 'undefined' && data instanceof SharedArrayBuffer;
+  return data instanceof ArrayBuffer || isShared
     ? new Uint8Array(data)
     : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
 }
@@ -99,6 +101,53 @@ export function fingerprintBuffersExact(...parts: Array<ArrayBuffer | ArrayBuffe
   return h >>> 0;
 }
 
+/** Result of hashing current buffer parts while comparing them with a retained
+ * exact state in the same byte pass. */
+export interface ExactBufferFingerprintComparison {
+  readonly fingerprint: number;
+  readonly equal: boolean;
+}
+
+/**
+ * Compute the same value as {@link fingerprintBuffersExact} while also doing a
+ * collision-safe byte comparison against `expectedParts`.
+ *
+ * Correctness-sensitive refresh paths commonly need both operations: the
+ * compact fingerprint remains useful as a version/diagnostic tag, but equality
+ * must be decided from the retained bytes. Combining the operations avoids a
+ * second full traversal of unchanged scene buffers on every frame.
+ */
+export function fingerprintBuffersExactAndEqual(
+  parts: readonly (ArrayBuffer | ArrayBufferView)[],
+  expectedParts: readonly (ArrayBuffer | ArrayBufferView)[],
+): ExactBufferFingerprintComparison {
+  let h = FNV_OFFSET;
+  let equal = parts.length === expectedParts.length;
+  for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+    const current = byteView(parts[partIndex]!);
+    const expected = partIndex < expectedParts.length
+      ? byteView(expectedParts[partIndex]!)
+      : null;
+    let partHash = mixHash(FNV_OFFSET, current.byteLength);
+    if (expected == null || expected.byteLength !== current.byteLength) {
+      equal = false;
+    }
+    for (let byteIndex = 0; byteIndex < current.byteLength; byteIndex += 1) {
+      const value = current[byteIndex]!;
+      partHash = mixHash(partHash, value);
+      if (
+        equal &&
+        expected != null &&
+        expected[byteIndex] !== value
+      ) {
+        equal = false;
+      }
+    }
+    h = mixHash(h, partHash);
+  }
+  return { fingerprint: h >>> 0, equal };
+}
+
 /**
  * Exact byte state published by {@link SceneBvh}.
  *
@@ -114,6 +163,10 @@ export interface PackedSceneBvhFingerprintState {
   readonly indices: ArrayBuffer | ArrayBufferView;
   readonly normals: ArrayBuffer | ArrayBufferView;
   readonly triMaterialId: ArrayBuffer | ArrayBufferView;
+  /** vec2u(component/boundary lane, represented primitive-instance lane). */
+  readonly opticalTriangleIdentity: ArrayBuffer | ArrayBufferView;
+  /** Encoded boundary-ID base plus one for each represented instance. */
+  readonly opticalInstanceBoundaryIdBasePlusOne: ArrayBuffer | ArrayBufferView;
   readonly materialEntries: ArrayBuffer | ArrayBufferView;
   /**
    * Ordered canonical signatures for the raw `materials/coreMaterials` list
@@ -163,6 +216,8 @@ export function fingerprintPackedSceneBvhState(
     state.indices,
     state.normals,
     state.triMaterialId,
+    state.opticalTriangleIdentity,
+    state.opticalInstanceBoundaryIdBasePlusOne,
     state.materialEntries,
   );
   h = mixHash(h, fingerprintStringsExact(state.materialSignatures ?? []));
@@ -208,6 +263,11 @@ export function packedSceneBvhStateEqual(
     byteEqual(a.indices, b.indices) &&
     byteEqual(a.normals, b.normals) &&
     byteEqual(a.triMaterialId, b.triMaterialId) &&
+    byteEqual(a.opticalTriangleIdentity, b.opticalTriangleIdentity) &&
+    byteEqual(
+      a.opticalInstanceBoundaryIdBasePlusOne,
+      b.opticalInstanceBoundaryIdBasePlusOne,
+    ) &&
     byteEqual(a.materialEntries, b.materialEntries) &&
     stringArrayEqual(a.materialSignatures ?? [], b.materialSignatures ?? [])
   );

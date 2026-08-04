@@ -56,12 +56,20 @@ describe('walkaround spot cone shader convention', () => {
     const opaque = functionBody(SHADING_TERMS_WGSL, 'lo_analyticNEE');
     const transparent = functionBody(TRANSPARENT_OIT_WGSL, 'oitLayerAnalyticNEE');
 
-    expect(opaque).toContain('let brdf = evalDirectSurfaceBrdf(');
-    expect(opaque).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;');
+    expect(opaque).toContain('let layeredBrdf = evalDirectSurfaceBrdf(');
+    expect(opaque).toContain(
+      'let unvolumedContribution = lightLe * shadowT * layeredBrdf *',
+    );
+    expect(opaque).toContain(
+      'let contribution = applyHomogeneousVolumeSingleScatterDirectional(',
+    );
+    expect(opaque).toContain('Lo += contribution;');
     expect(opaque).not.toContain('Lo += lightLe * brdf * nDotL');
 
-    expect(transparent).toContain('let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(transparent).toContain('Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;');
+    expect(transparent).toContain(
+      'let incidentRadiance = lightLe * shadowT * cone * attenuation *',
+    );
+    expect(transparent).toContain('Lo += oitLayerDirectionalResponse(');
     expect(transparent).not.toContain('Lo += lightLe * brdf * nDotL');
   });
 

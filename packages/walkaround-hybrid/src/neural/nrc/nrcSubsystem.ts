@@ -934,6 +934,10 @@ export class NrcSubsystem implements PipelineSubsystem {
     if (!boundsMin || !boundsMax) {
       throw new Error('NRC scene bounds are unavailable for learned-state export.');
     }
+    const config = this._snapshotConfig();
+    const sceneBoundsMin: [number, number, number] = [...boundsMin];
+    const sceneBoundsMax: [number, number, number] = [...boundsMax];
+    const trainedSteps = this._trainedSteps;
     const bytesPerScalar = Float32Array.BYTES_PER_ELEMENT;
     let totalBytes = 0;
     const reserve = (scalars: number, label: string): number => {
@@ -1043,10 +1047,10 @@ export class NrcSubsystem implements PipelineSubsystem {
       const copy = (offset: number, scalars: number): Float32Array =>
         new Float32Array(range, offset, scalars).slice();
       const snapshot: NrcLearnedStateSnapshot = {
-        config: this._snapshotConfig(),
-        sceneBoundsMin: [...boundsMin],
-        sceneBoundsMax: [...boundsMax],
-        trainedSteps: this._trainedSteps,
+        config,
+        sceneBoundsMin,
+        sceneBoundsMax,
+        trainedSteps,
         mlp: {
           weights: copy(offsets.weights, trainerState.weightScalars),
           biases: copy(offsets.biases, trainerState.biasScalars),

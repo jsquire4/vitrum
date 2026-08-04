@@ -856,6 +856,29 @@ describe('merged instanced geometry mutations', () => {
 });
 
 describe('material candidate isolation', () => {
+  it('fails closed before a direct material fast path can change optical topology', () => {
+    const scene = sceneOf({
+      kind: 'mesh',
+      id: 'a',
+      positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+      normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      material: {
+        baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+      },
+    });
+    const collector = new CollectingBvhUpdateSink();
+    const ctx = context(scene, scene, collector, 'merged');
+    const identityBefore = ctx.bvhBuffers!.opticalTriangleIdentity.cpuData;
+
+    expect(() => materialPatch(
+      'a',
+      { material: { transmission: 1 } },
+      ctx,
+    )).toThrow(/must be routed through a topology rebuild/);
+    expect(ctx.bvhBuffers!.opticalTriangleIdentity.cpuData).toBe(identityBefore);
+    expect(collector.snapshot().material).toBeUndefined();
+  });
+
   it('isolates two TLAS primitives authored with the same material object', () => {
     const shared = { baseColor: [0.4, 0.4, 0.4] as [number, number, number], roughness: 0.5, metallic: 0 };
     const mesh = (id: string, x: number): ScenePrimitive => ({

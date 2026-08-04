@@ -6,7 +6,7 @@ describe('pt-webgpu invocation-local BDPT', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('bdptEnabled');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('evaluateBdptConnection');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'var<private> bdptLightPath: array<vec4f, 56>;',
+      'var<private> bdptLightPath: array<vec4f, 64>;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'var<private> bdptEyeStackPrivate: array<BdptEyeVtx, 8>;',
@@ -18,8 +18,12 @@ describe('pt-webgpu invocation-local BDPT', () => {
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('@compute @workgroup_size(1, 1, 1)');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('bdptExtendLightSubpath');
     expect(PT_WEBGPU_TRACE_WGSL).not.toContain('bdptSetCurrentPixel');
-    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('@group(2) @binding(5)');
-    expect(PT_WEBGPU_TRACE_WGSL).not.toContain('@group(2) @binding(6)');
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'var<storage, read_write> bdptLightPath',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
+      'var<storage, read_write> bdptEyeStack',
+    );
   });
 
   it('keeps full Veach strategy bookkeeping and rich light-vertex material state', () => {
@@ -35,7 +39,7 @@ describe('pt-webgpu invocation-local BDPT', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'swappedDirectionalPdf * reverseEdgeDensity,',
     );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 7u;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularColor,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularIntensity,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let maxLv = min(params.bdptMaxLightBounces, 8u);');

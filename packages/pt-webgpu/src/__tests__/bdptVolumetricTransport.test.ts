@@ -130,9 +130,9 @@ describe('pt-webgpu symmetric volumetric BDPT', () => {
   });
 
   it('selects the transmitted nested medium and preserves the full reversed factor product', () => {
-    const outer = { matId: 7, remainingDistance: 4.0 };
-    const innerEye = { matId: 13, remainingDistance: 0.45 };
-    const innerLight = { matId: 13, remainingDistance: 0.8 };
+    const outer = { matId: 7, initialDistance: 4.0, remainingDistance: 4.0 };
+    const innerEye = { matId: 13, initialDistance: 1.0, remainingDistance: 0.5 };
+    const innerLight = { matId: 13, initialDistance: 1.0, remainingDistance: 0.75 };
     const eyeSurface: BdptMediumEndpointCpu = {
       isMedium: false,
       normal: [0, 0, 1],
@@ -154,7 +154,11 @@ describe('pt-webgpu symmetric volumetric BDPT', () => {
     const reversedMedium = sharedBdptEdgeMediumCpu(
       lightVolume, [0, 0, 1], eyeSurface, [0, 0, -1],
     );
-    expect(forwardMedium).toEqual({ matId: 13, remainingDistance: 0.45 });
+    expect(forwardMedium).toEqual({
+      matId: 13,
+      initialDistance: 1,
+      remainingDistance: 0.25,
+    });
     expect(reversedMedium).toEqual(forwardMedium);
     // The removed single-side implementation used `active` (outer=7) here and
     // therefore rejected this valid connection against the inner volume (13).
@@ -192,9 +196,13 @@ describe('pt-webgpu symmetric volumetric BDPT', () => {
     expect(forwardFactor).toBeCloseTo(reversedFactor, 14);
   });
 
-  it('clamps a long edge to both endpoint budgets and is invariant to asymmetric reversal', () => {
-    const makeVolume = (matId: number, remainingDistance: number): BdptMediumEndpointCpu => {
-      const side = { matId, remainingDistance };
+  it('subtracts both partial-path consumptions from one shared cap and is reversal invariant', () => {
+    const makeVolume = (
+      matId: number,
+      initialDistance: number,
+      remainingDistance: number,
+    ): BdptMediumEndpointCpu => {
+      const side = { matId, initialDistance, remainingDistance };
       return {
         isMedium: true,
         normal: [0, 0, 0],
@@ -204,31 +212,40 @@ describe('pt-webgpu symmetric volumetric BDPT', () => {
       };
     };
     const edgeDistance = 4.0;
-    const a = makeVolume(21, 0.35);
-    const b = makeVolume(21, 0.8);
+    const a = makeVolume(21, 2.0, 1.25);
+    const b = makeVolume(21, 2.0, 1.5);
     const ab = sharedBdptEdgeMediumCpu(a, [1, 0, 0], b, [-1, 0, 0]);
     const ba = sharedBdptEdgeMediumCpu(b, [-1, 0, 0], a, [1, 0, 0]);
-    expect(ab).toEqual({ matId: 21, remainingDistance: 0.35 });
+    expect(ab).toEqual({
+      matId: 21,
+      initialDistance: 2,
+      remainingDistance: 0.75,
+    });
     expect(ba).toEqual(ab);
-    expect(edgeDistance).toBeGreaterThan(a.active.remainingDistance);
-    expect(edgeDistance).toBeGreaterThan(b.active.remainingDistance);
-    expect(bdptEffectiveMediumDistanceCpu(edgeDistance, ab!)).toBe(0.35);
+    expect(bdptEffectiveMediumDistanceCpu(edgeDistance, ab!)).toBe(0.75);
 
     const sigmaT = 1.2;
     const clampedSurvival = bdptSegmentDistanceDensityCpu(
       sigmaT, edgeDistance, ab!.remainingDistance, false,
     );
-    expect(clampedSurvival).toBeCloseTo(Math.exp(-sigmaT * 0.35), 14);
+    expect(clampedSurvival).toBeCloseTo(Math.exp(-sigmaT * 0.75), 14);
     expect(clampedSurvival).not.toBeCloseTo(Math.exp(-sigmaT * edgeDistance), 6);
 
-    const c = makeVolume(21, 1.25);
-    const d = makeVolume(21, 0.2);
+    const c = makeVolume(21, 2.0, 1.25);
+    const d = makeVolume(21, 2.0, 0.2);
     const cd = sharedBdptEdgeMediumCpu(c, [0, 1, 0], d, [0, -1, 0]);
     const dc = sharedBdptEdgeMediumCpu(d, [0, -1, 0], c, [0, 1, 0]);
-    expect(cd).toEqual({ matId: 21, remainingDistance: 0.2 });
+    expect(cd).toEqual({ matId: 21, initialDistance: 2, remainingDistance: 0 });
     expect(dc).toEqual(cd);
+    expect(sharedBdptEdgeMediumCpu(
+      makeVolume(21, 2.0, 1.5), [1, 0, 0],
+      makeVolume(21, 1.5, 1.0), [-1, 0, 0],
+    )).toBeNull();
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'a.matId, min(a.remainingDistance, b.remainingDistance),',
+      'a.remainingDistance + b.remainingDistance - a.initialDistance,',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'if (a.initialDistance != b.initialDistance)',
     );
   });
 
@@ -260,8 +277,10 @@ describe('pt-webgpu symmetric volumetric BDPT', () => {
   it('preserves tiny positive extinction in CPU and production WGSL density classification', () => {
     const sigmaT = 1e-12;
     expect(bdptSegmentDistanceDensityCpu(sigmaT, 2, 2, true)).toBeGreaterThan(0);
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (heroSigmaT <= 0.0)');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain('heroSigmaT <= 1e-6');
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'materialExtinctionDensityLane(rate, effectiveDistance)',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).not.toContain('rate <= 1e-6');
   });
 
   it('composes matching nested medium walks on production eye and light paths', () => {

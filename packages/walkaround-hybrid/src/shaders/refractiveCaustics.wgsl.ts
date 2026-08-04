@@ -21,6 +21,84 @@ fn refractiveCausticChannel(value: vec3f, channel: u32) -> f32 {
   return value.b;
 }
 
+const REFRACTIVE_CAUSTIC_MEDIUM_CAPACITY: u32 = 4u;
+
+struct RefractiveCausticContainingMedia {
+  valid: u32,
+  depth: u32,
+  ior: array<f32, 4>,
+  tri: array<u32, 4>,
+  materialId: array<u32, 4>,
+  instance: array<u32, 4>,
+  beer: array<f32, 4>,
+  thickness: array<f32, 4>,
+  thicknessMapScale: array<f32, 4>,
+  scattering: array<vec4f, 4>,
+  transmissionPaid: array<u32, 4>,
+};
+
+// An opaque receiver may itself be enclosed by one or more authored glass
+// shells. Reconstruct those media with an alpha-aware winding scan so the
+// receiver-to-first-exit segment is transported instead of rejecting the first
+// back face. Stable material+instance identity owns topology; mapped thickness
+// changes absorption only.
+fn classifyRefractiveCausticContainingMedia(
+  origin: vec3f,
+  direction: vec3f,
+  channel: u32,
+) -> RefractiveCausticContainingMedia {
+  var out: RefractiveCausticContainingMedia;
+  out.valid = 0u;
+  out.depth = 0u;
+  let containingMedia = materialShadowClassifyContainingMedia(
+    ubo.bvhMode,
+    ubo.tlasNodeCount,
+    origin,
+    direction,
+    ubo.triIntersectEpsilon,
+    bvh_material,
+    BVH_MATERIAL_TEX_WIDTH,
+    bvh_beer,
+  );
+  if (
+    containingMedia.valid == 0u ||
+    containingMedia.state.depth > REFRACTIVE_CAUSTIC_MEDIUM_CAPACITY
+  ) { return out; }
+  for (
+    var seed = 0u;
+    seed < containingMedia.state.depth;
+    seed = seed + 1u
+  ) {
+    let triIndex = containingMedia.state.tri[seed];
+    let materialCoord = vec2u(
+      triIndex % BVH_MATERIAL_TEX_WIDTH,
+      triIndex / BVH_MATERIAL_TEX_WIDTH,
+    );
+    let materialWord = textureLoad(
+      bvh_material, vec2i(materialCoord), 0,
+    ).r;
+    out.ior[seed] = refractiveCausticChannel(
+      materialDispersionIorRgb(triIndex, decodeIor(materialWord)),
+      channel,
+    );
+    out.tri[seed] = triIndex;
+    out.materialId[seed] = containingMedia.state.materialId[seed];
+    out.instance[seed] = containingMedia.state.instance[seed];
+    out.beer[seed] = refractiveCausticChannel(
+      containingMedia.state.tint[seed], channel,
+    );
+    out.thickness[seed] = containingMedia.state.thickness[seed];
+    out.thicknessMapScale[seed] =
+      containingMedia.state.thicknessMapScale[seed];
+    out.scattering[seed] = containingMedia.state.scattering[seed];
+    out.transmissionPaid[seed] =
+      containingMedia.state.transmissionPaid[seed];
+  }
+  out.depth = containingMedia.state.depth;
+  out.valid = 1u;
+  return out;
+}
+
 fn traceRefractiveCausticPath(
   origin: vec3f,
   initialDirection: vec3f,
@@ -38,23 +116,53 @@ fn traceRefractiveCausticPath(
   var mediumDepth = 0u;
   var mediumIor: array<f32, 4>;
   var mediumTri: array<u32, 4>;
-  var mediumMaterialWord: array<u32, 4>;
+  var mediumMaterialId: array<u32, 4>;
   var mediumInstance: array<u32, 4>;
   var mediumBeer: array<f32, 4>;
   var mediumThickness: array<f32, 4>;
+  var mediumThicknessMapScale: array<f32, 4>;
+  var mediumScattering: array<vec4f, 4>;
+  var mediumTransmissionPaid: array<u32, 4>;
   var interfaceCount = 0u;
+  var containingMediaClassified = false;
+  var continuationSourceFeature = opticalSourceFeatureInvalid();
 
   // Two faces per closed slab plus one nested shell. Overflow is rejected,
   // never treated as visibility, so the work and energy are both bounded.
   // Four interface slots plus one terminal visibility query. The terminal hit
   // may be a miss (successful escape) or an opaque blocker, never interface 5.
   for (var depth = 0u; depth <= 4u; depth = depth + 1u) {
-    let hit = traceSceneFirstHitAlphaMaskTextured(
-      ubo.bvhMode, ubo.tlasNodeCount,
-      ray, ubo.triIntersectEpsilon,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH,
-      ubo.frameSeed ^ (channel * 0x85ebca6bu) ^ (depth * 0x9e3779b9u) ^ 0x43415553u,
-    );
+    let alphaSeed = ubo.frameSeed ^ (channel * 0x85ebca6bu) ^
+      (depth * 0x9e3779b9u) ^ 0x43415553u;
+    var hit: IntersectionResult;
+    if (continuationSourceFeature.kind != OPTICAL_SOURCE_FEATURE_INVALID) {
+      let sourceAware =
+        traceSceneFirstHitAlphaMaskTexturedCastShadowWithOpticalSource(
+          ubo.bvhMode,
+          ubo.tlasNodeCount,
+          ray,
+          continuationSourceFeature,
+          bvh_material,
+          BVH_MATERIAL_TEX_WIDTH,
+          alphaSeed,
+        );
+      if (sourceAware.valid == 0u) {
+        out.throughput = 0.0;
+        out.eligible = 0u;
+        return out;
+      }
+      hit = sourceAware.hit;
+    } else {
+      hit = traceSceneFirstHitAlphaMaskTexturedCastShadow(
+        ubo.bvhMode,
+        ubo.tlasNodeCount,
+        ray,
+        ubo.triIntersectEpsilon,
+        bvh_material,
+        BVH_MATERIAL_TEX_WIDTH,
+        alphaSeed,
+      );
+    }
     if (!hit.didHit) {
       out.direction = ray.direction;
       // A scene-global refractive-caustic gate means most receiver probes can
@@ -69,28 +177,147 @@ fn traceRefractiveCausticPath(
       return out;
     }
 
+    var acceptedSourceFeature = opticalSourceFeatureInvalid();
+    if (packedMaterialHasTransmission(hit.matColorPacked)) {
+      let exactHit = traceSceneRetraceOpticalHit(
+        ubo.bvhMode, ubo.tlasNodeCount, ray, hit, 0.0,
+      );
+      let sourceFeature = sceneOpticalSourceFeatureForExactHit(
+        ubo.bvhMode, ubo.tlasNodeCount, hit, exactHit,
+      );
+      if (
+        !exactHit.hit ||
+        sourceFeature.kind == OPTICAL_SOURCE_FEATURE_INVALID
+      ) {
+        out.throughput = 0.0;
+        out.eligible = 0u;
+        return out;
+      }
+      let exactUseTlas = ubo.bvhMode == 1u && ubo.tlasNodeCount > 0u;
+      let exactTriangle = sceneLoadOpticalWorldTriangle(
+        exactUseTlas, hit.indices.w, hit.instanceIndex,
+      );
+      if (exactTriangle.valid == 0u) {
+        out.throughput = 0.0;
+        out.eligible = 0u;
+        return out;
+      }
+      hit.normal = exactHit.normal;
+      hit.barycoord = exactHit.bary;
+      hit.side = exactHit.side;
+      hit.dist = exactHit.t;
+      hit.uv = exactHit.bary.x * exactTriangle.uvA +
+        exactHit.bary.y * exactTriangle.uvB +
+        exactHit.bary.z * exactTriangle.uvC;
+      acceptedSourceFeature = sourceFeature;
+    }
+
+    let hitUseTlas = ubo.bvhMode == 1u && ubo.tlasNodeCount > 0u;
+    let hitBoundaryId = sceneOpticalEncodedBoundaryId(
+      hitUseTlas, hit.indices.w, hit.instanceIndex,
+    );
+    let hitRepresentedId = sceneOpticalRepresentedPrimitiveInstanceId(
+      hitUseTlas, hit.indices.w, hit.instanceIndex,
+    );
+
+    let scalar = decodeMaterialColor(hit.matColorPacked);
+    let authoredTransmissionTopology = materialHasTransmission(scalar.a);
+    // Stay lazy for the common no-glass miss/opaque case, but classify on the
+    // first authored transmissive hit regardless of its face or thickness. A
+    // nested front face or thin sheet can be the first hit while the receiver is
+    // already enclosed by another bulk medium; seed that stack before charging
+    // this already-measured segment.
+    if (!containingMediaClassified && authoredTransmissionTopology) {
+      let containingMedia = classifyRefractiveCausticContainingMedia(
+        origin, initialDirection, channel,
+      );
+      if (containingMedia.valid == 0u) {
+        out.throughput = 0.0;
+        out.eligible = 0u;
+        return out;
+      }
+      for (
+        var seed = 0u;
+        seed < containingMedia.depth;
+        seed = seed + 1u
+      ) {
+        mediumIor[seed] = containingMedia.ior[seed];
+        mediumTri[seed] = containingMedia.tri[seed];
+        mediumMaterialId[seed] = containingMedia.materialId[seed];
+        mediumInstance[seed] = containingMedia.instance[seed];
+        mediumBeer[seed] = containingMedia.beer[seed];
+        mediumThickness[seed] = containingMedia.thickness[seed];
+        mediumThicknessMapScale[seed] =
+          containingMedia.thicknessMapScale[seed];
+        mediumScattering[seed] = containingMedia.scattering[seed];
+        mediumTransmissionPaid[seed] =
+          containingMedia.transmissionPaid[seed];
+      }
+      mediumDepth = containingMedia.depth;
+      containingMediaClassified = true;
+      if (mediumDepth > 0u) { out.sawGlass = 1u; }
+    }
+
     // Integrate the geometric segment through the current medium before the
     // next interface. The packed RGB Beer tint represents authored thickness;
     // rescale it to the actual segment while spectral curves consume scene-
     // length distance directly.
     if (mediumDepth > 0u) {
       let top = mediumDepth - 1u;
-      let segmentDistance = hit.dist + ubo.triIntersectEpsilon * 4.0;
-      let distanceScale = segmentDistance / max(mediumThickness[top], 1e-5);
-      let fallback = pow(clamp(mediumBeer[top], 0.0, 1.0), distanceScale);
-      let spectral = materialSpectralAttenuation(
-        mediumTri[top], segmentDistance, vec3f(fallback),
+      let segmentDistance = hit.dist;
+      var segmentTri = mediumTri[top];
+      var segmentBeer = mediumBeer[top];
+      var segmentThickness = mediumThickness[top];
+      var segmentThicknessMapScale = mediumThicknessMapScale[top];
+      var segmentScattering = mediumScattering[top];
+      if (
+        packedMaterialHasTransmission(hit.matColorPacked) &&
+        hit.side < 0.0 &&
+        hitBoundaryId == mediumMaterialId[top] &&
+        hitRepresentedId == mediumInstance[top]
+      ) {
+        segmentTri = hit.indices.w;
+        segmentBeer = refractiveCausticChannel(
+          materialShadowAuthoredBeerTint(hit, bvh_beer), channel,
+        );
+        segmentThickness = materialShadowAuthoredThickness(hit);
+        segmentThicknessMapScale = materialShadowThicknessMapScale(hit);
+        segmentScattering = sampleVolumeScatteringControls(hit.indices.w);
+      }
+      let referenceThickness = select(
+        1.0, segmentThickness, segmentThickness > 0.0,
       );
-      out.throughput = out.throughput * refractiveCausticChannel(spectral, channel);
+      let transportDistance = select(
+        segmentDistance,
+        min(
+          segmentDistance,
+          referenceThickness * clamp(segmentThicknessMapScale, 0.0, 1.0),
+        ),
+        segmentThickness > 0.0,
+      );
+      let distanceScale = transportDistance / referenceThickness;
+      let fallback = pow(clamp(segmentBeer, 0.0, 1.0), distanceScale);
+      let spectral = materialSpectralAttenuation(
+        segmentTri, transportDistance, vec3f(fallback),
+      );
+      let scatterExtinction = homogeneousBeerTransmittanceRgb(
+        max(segmentScattering.rgb, vec3f(0.0)),
+        transportDistance,
+      );
+      out.throughput = out.throughput *
+        refractiveCausticChannel(spectral * scatterExtinction, channel);
     }
 
-    let scalar = decodeMaterialColor(hit.matColorPacked);
-    let transmission = sampleTransmissionMapForHit(hit, scalar.a);
-    if (!materialHasTransmission(transmission)) {
+    let transmission = clamp(
+      sampleTransmissionMapForHit(hit, scalar.a), 0.0, 1.0,
+    );
+    if (!authoredTransmissionTopology) {
       out.throughput = 0.0;
+      if (out.sawGlass == 0u) {
+        out.eligible = 0u;
+      }
       return out;
     }
-    out.sawGlass = 1u;
 
     let materialCoord = vec2u(
       hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
@@ -98,32 +325,31 @@ fn traceRefractiveCausticPath(
     );
     let materialWord = textureLoad(bvh_material, vec2i(materialCoord), 0).r;
     let layerControls = sampleFaceLayerControls(hit.indices.w, hit.side >= 0.0);
+    let mappedBaseRoughness = sampleMaterialScalarMap(
+      hit, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, decodeRoughMetal(materialWord).x,
+    );
     let materialRoughness = faceLayerRoughness(
-      sampleMaterialScalarMap(
-        hit, MATERIAL_MAP_SLOT_ROUGHNESS, 1u, decodeRoughMetal(materialWord).x,
-      ),
-      layerControls,
+      mappedBaseRoughness, layerControls,
     );
     let iorRgb = materialDispersionIorRgb(hit.indices.w, decodeIor(materialWord));
     let materialIor = refractiveCausticChannel(iorRgb, channel);
-    var materialThickness = max(materialOpticalThickness(hit.indices.w), 0.0);
-    let thicknessTexel = sampleMaterialAtlasRawAtOffset(
-      hit.indices.w,
-      MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
-      hit.uv,
-      materialAtlasUv1ForHit(hit),
-    );
-    if (thicknessTexel.x >= 0.0) {
-      materialThickness = materialThickness *
-        clamp(thicknessTexel.g, 0.0, 1.0);
-    }
-    let incidentDirection = ray.direction;
-    let entering = hit.side >= 0.0;
-    if (materialThickness > 0.0 && !entering && mediumDepth == 0u) {
+    // Authored scalar transmission plus the nonzero optical-thickness header
+    // define a closed bulk boundary. Neither mapped transmission nor a local
+    // thickness texel may classify entry and exit faces differently.
+    let materialThickness = materialShadowAuthoredThickness(hit);
+    if (authoredTransmissionTopology && hitRepresentedId == 0u) {
       out.throughput = 0.0;
       return out;
     }
-    let interfaceCost = select(1u, 2u, materialThickness <= 0.0);
+    let bulkMedium = authoredTransmissionTopology && hitBoundaryId != 0u;
+    let thinSheet = authoredTransmissionTopology && !bulkMedium;
+    let incidentDirection = ray.direction;
+    let entering = hit.side >= 0.0;
+    if (bulkMedium && !entering && mediumDepth == 0u) {
+      out.throughput = 0.0;
+      return out;
+    }
+    let interfaceCost = select(1u, 2u, thinSheet);
     if (interfaceCount + interfaceCost > 4u) {
       out.throughput = 0.0;
       return out;
@@ -164,14 +390,19 @@ fn traceRefractiveCausticPath(
       out.eligible = 0u;
       return out;
     }
+    let interfaceAnisotropy = sampleAnisotropyControls(hit);
+    let interfaceAnisotropyFrame = materialTangentFrameForHit(
+      hit, faceNormal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET,
+    );
     var incidentIor = 1.0;
     if (mediumDepth > 0u) {
       incidentIor = mediumIor[mediumDepth - 1u];
-    } else if (materialThickness > 0.0 && !entering) {
+    } else if (bulkMedium && !entering) {
       incidentIor = materialIor;
     }
     var targetIor = materialIor;
-    if (materialThickness <= 0.0) {
+    var pairedExitTransmissionPaid = 1u;
+    if (thinSheet) {
       targetIor = materialIor;
     } else if (entering) {
       if (mediumDepth >= 4u) {
@@ -182,24 +413,45 @@ fn traceRefractiveCausticPath(
     } else {
       let top = mediumDepth - 1u;
       if (
-        mediumMaterialWord[top] != materialWord ||
-        mediumInstance[top] != hit.instanceIndex
+        mediumMaterialId[top] != hitBoundaryId ||
+        mediumInstance[top] != hitRepresentedId
       ) {
         out.throughput = 0.0;
         return out;
       }
+      pairedExitTransmissionPaid = mediumTransmissionPaid[top];
       if (mediumDepth > 1u) {
         targetIor = mediumIor[mediumDepth - 2u];
       }
     }
 
+    // The entry owns mapped scalar transmission for a closed bulk traversal.
+    // A paired paid exit must retain unit support even when its own UV samples a
+    // zero transmission texel. Unpaid exits and thin/entry events still require
+    // positive mapped support. Before any glass, rejection belongs to the direct
+    // baseline rather than a negative caustic residual.
+    let pairedPaidExit =
+      bulkMedium && !entering && pairedExitTransmissionPaid != 0u;
+    if (!materialHasTransmission(transmission) && !pairedPaidExit) {
+      out.throughput = 0.0;
+      if (out.sawGlass == 0u) {
+        out.eligible = 0u;
+      }
+      return out;
+    }
+    out.sawGlass = 1u;
+
     var interfaceRng =
       ubo.frameSeed ^ (channel * 0x85ebca6bu) ^
       (depth * 0x9e3779b9u) ^ hit.indices.w ^ 0x43415553u;
-    let interfaceBtdf = ggxSampleDielectricTransmission(
+    let interfaceBtdf = ggxSampleDielectricTransmissionAnisotropyFrame(
       faceNormal,
+      interfaceAnisotropyFrame.tangent,
+      interfaceAnisotropyFrame.bitangent,
       -ray.direction,
       materialRoughness,
+      interfaceAnisotropy.x,
+      interfaceAnisotropy.y,
       incidentIor,
       targetIor,
       &interfaceRng,
@@ -229,16 +481,39 @@ fn traceRefractiveCausticPath(
     interfaceWeight = interfaceWeight *
       refractiveCausticChannel(faceLayerTransmission(layerControls), channel);
 
-    if (materialThickness <= 0.0) {
+    if (thinSheet) {
       // A thin sheet still crosses two reciprocal rough interfaces. Sample the
       // opposite authored face rather than silently preserving the direction.
       let exitLayer = sampleFaceLayerControls(hit.indices.w, hit.side < 0.0);
-      let exitRoughness = faceLayerRoughness(materialRoughness, exitLayer);
+      let exitRoughness = faceLayerRoughness(mappedBaseRoughness, exitLayer);
+      let exitMappedNormal = applyBumpMapForHit(
+        hit,
+        applyNormalMapForSideForHit(
+          hit, interfaceSmoothNormal, hit.side < 0.0,
+        ),
+      );
+      let exitAlignedNormal = select(
+        -exitMappedNormal,
+        exitMappedNormal,
+        dot(exitMappedNormal, hit.normal) >= 0.0,
+      );
+      let exitFaceNormal = select(
+        -exitAlignedNormal,
+        exitAlignedNormal,
+        dot(interfaceBtdf.direction, exitAlignedNormal) < 0.0,
+      );
+      let exitAnisotropyFrame = materialTangentFrameForHit(
+        hit, exitFaceNormal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET,
+      );
       var exitRng = interfaceRng ^ 0xb7e15162u;
-      let exitBtdf = ggxSampleDielectricTransmission(
-        faceNormal,
+      let exitBtdf = ggxSampleDielectricTransmissionAnisotropyFrame(
+        exitFaceNormal,
+        exitAnisotropyFrame.tangent,
+        exitAnisotropyFrame.bitangent,
         -interfaceBtdf.direction,
         exitRoughness,
+        interfaceAnisotropy.x,
+        interfaceAnisotropy.y,
         targetIor,
         incidentIor,
         &exitRng,
@@ -269,7 +544,8 @@ fn traceRefractiveCausticPath(
         interfaceWeight * exitWeight * transmission;
       let thinHitPos = ray.origin + incidentDirection * hit.dist;
       ray.direction = exitBtdf.direction;
-      ray.origin = thinHitPos + ray.direction * (ubo.triIntersectEpsilon * 4.0);
+      ray.origin = thinHitPos;
+      continuationSourceFeature = acceptedSourceFeature;
       out.direction = ray.direction;
       continue;
     }
@@ -277,8 +553,9 @@ fn traceRefractiveCausticPath(
     out.throughput = out.throughput * interfaceWeight;
     var entryBeer = 1.0;
     let entryThickness = materialThickness;
+    var entryThicknessMapScale = 1.0;
+    var entryScattering = vec4f(0.0);
     if (entering) {
-      out.throughput = out.throughput * transmission;
       let beerCoord = vec2u(
         hit.indices.w % BVH_BEER_TEX_WIDTH,
         hit.indices.w / BVH_BEER_TEX_WIDTH,
@@ -289,26 +566,41 @@ fn traceRefractiveCausticPath(
         f32((packedBeer >> 16u) & 0xffu) / 255.0,
         f32((packedBeer >> 8u) & 0xffu) / 255.0,
       );
-      rgbBeer = applyThicknessMapToBeerTint(
-        hit.indices.w, hit.uv, materialAtlasUv1ForHit(hit), rgbBeer,
-      );
       entryBeer = refractiveCausticChannel(rgbBeer, channel);
+      let thicknessMap = sampleMaterialAtlasRawAtOffsetForHit(
+        hit,
+        MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+      );
+      if (thicknessMap.valid != 0u) {
+        entryThicknessMapScale = materialOpticalThicknessMapScale(
+          hit.indices.w,
+          thicknessMap.value.g,
+        );
+      }
+      entryScattering = sampleVolumeScatteringControls(hit.indices.w);
+    }
+    if (entering || pairedExitTransmissionPaid == 0u) {
+      out.throughput = out.throughput * transmission;
     }
 
     if (entering) {
       mediumIor[mediumDepth] = materialIor;
       mediumTri[mediumDepth] = hit.indices.w;
-      mediumMaterialWord[mediumDepth] = materialWord;
-      mediumInstance[mediumDepth] = hit.instanceIndex;
+      mediumMaterialId[mediumDepth] = hitBoundaryId;
+      mediumInstance[mediumDepth] = hitRepresentedId;
       mediumBeer[mediumDepth] = entryBeer;
       mediumThickness[mediumDepth] = entryThickness;
+      mediumThicknessMapScale[mediumDepth] = entryThicknessMapScale;
+      mediumScattering[mediumDepth] = entryScattering;
+      mediumTransmissionPaid[mediumDepth] = 1u;
       mediumDepth = mediumDepth + 1u;
     } else if (mediumDepth > 0u) {
       mediumDepth = mediumDepth - 1u;
     }
     let hitPos = ray.origin + incidentDirection * hit.dist;
     ray.direction = interfaceBtdf.direction;
-    ray.origin = hitPos + ray.direction * (ubo.triIntersectEpsilon * 4.0);
+    ray.origin = hitPos;
+    continuationSourceFeature = acceptedSourceFeature;
     out.direction = ray.direction;
   }
   out.throughput = 0.0;
@@ -433,5 +725,11 @@ fn lo_refractive_caustic(
 export const REFRACTIVE_CAUSTICS_MODULE: WgslModule = {
   name: 'refractiveCaustics',
   source: REFRACTIVE_CAUSTICS_WGSL,
-  requires: ['common', 'materialAtlas', 'ggxBrdf', 'manifoldCaustics'],
+  requires: [
+    'common',
+    'materialAtlas',
+    'surfaceTextures',
+    'ggxBrdf',
+    'manifoldCaustics',
+  ],
 };

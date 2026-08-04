@@ -27,12 +27,12 @@
  * `py = gid.y`, EXACTLY the (px+py)&1 == frameParity set ShadePass shades +
  * SpatialReservoirPass refines this frame.
  *
- * Gap-parity correctness: RIS does NOT write the gap-parity reservoir slots, so
- * each retains the carried-forward reservoir RIS wrote when that pixel was last
- * active (the parity flips each frame). The FULL-RATE temporal pass — which must
- * STAY full-rate — reads that carried-forward reservoir as its `cur` and keeps
- * combining it with the reprojected previous-frame history, so every pixel has a
- * VALID reservoir for temporal/spatial/shade to consume. The net effect for a
+ * Gap-parity correctness: RIS does NOT write the gap-parity reservoir slots.
+ * Their stale bytes duplicate the previous-frame terminal reservoir, so the
+ * FULL-RATE temporal pass — which must STAY full-rate — treats that slot as an
+ * empty current technique and carries valid reprojected history exactly once.
+ * Every pixel therefore has a VALID reservoir for spatial/shade to consume
+ * without double-counting M/support. The net effect for a
  * gap pixel is one missed fresh candidate that frame (an effectively half-rate
  * candidate cadence reconstructed by the temporal pass + the denoiser). This
  * mirrors {@link ShadePass} / {@link SpatialReservoirPass} so the active-parity

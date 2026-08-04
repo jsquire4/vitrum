@@ -83,7 +83,11 @@ import {
   type ParsedHybridEngineConfig,
 } from './HybridEngineConfig.js';
 import { createHybridEngineDebugSurface } from './HybridEngineDebug.js';
-import type { PickCamera } from '@vitrum/shared-bvh';
+import {
+  assertOpticalMediumTopology,
+  lowerTransmissiveAnalyticPrimitives,
+  type PickCamera,
+} from '@vitrum/shared-bvh';
 import {
   fingerprintHybridPipelineRebuildKey,
   resolveInternalRenderSize,
@@ -100,6 +104,7 @@ import {
 import {
   rebuildEmitterBuffersFromCoreScene,
   rebuildBvhEmissiveLeFromCoreScene,
+  resolveReSTIRBvhMode,
   resolveProductionEmissiveMaterialsForCoreScene,
   type ReSTIRBvhMode,
   type SceneBVHBuffers,
@@ -113,8 +118,7 @@ import {
   type ResolvedFrameResourcePlan,
 } from './pipeline/frameResourcePlan.js';
 import {
-  sceneRequiresExactGiCameraPrefixes,
-  sceneTransitionRequiresGiScaleReplan,
+  sceneRequiresFullRateGlassShading,
 } from './reservoirScalePolicy.js';
 import { applyEmitterPatchToScene, applyPrimitivePatchToScene } from './scenePatch.js';
 import { solveSkin } from '@vitrum/core';
@@ -285,9 +289,54 @@ function sceneWithAnalyticMeshFallback(scene: Scene): Scene {
   const primitives = scene.primitives.map((primitive) => {
     if (primitive.kind !== 'analytic') return primitive;
     changed = true;
-    return analyticPrimitiveToMesh(primitive);
+    return analyticPrimitiveToMesh(primitive, {
+      // Every transmissive analytic is transported as its canonical generated
+      // triangles. A host fallback mesh is allowed only for non-transmissive
+      // raster/opaque geometry; proving one surface and tracing another would
+      // invalidate both component identity and source-feature exclusion.
+      preferFallbackMesh: !((primitive.material.transmission ?? 0) > 0),
+    });
   });
   return changed ? { ...scene, primitives } : scene;
+}
+
+function materialDefinesOpticalTransmission(material: MaterialSpec): boolean {
+  return (material.transmission ?? 0) > 0;
+}
+
+/** Convert the engine-owned render snapshot's already-solved skinned streams
+ * to ordinary meshes so the shared topology preflight does not solve them a
+ * second time. This is used only by the internal skinning batch transaction;
+ * authored setScene/updatePrimitive candidates go through solveSkin normally. */
+function sceneWithResolvedSkinnedMeshes(scene: Scene): Scene {
+  const analyticResolved = sceneWithAnalyticMeshFallback(scene);
+  let changed = analyticResolved !== scene;
+  const primitives = analyticResolved.primitives.map((primitive) => {
+    if (primitive.kind !== 'skinned-mesh') return primitive;
+    changed = true;
+    return {
+      kind: 'mesh' as const,
+      id: primitive.id,
+      positions: primitive.positions,
+      normals: primitive.normals,
+      ...(primitive.uvs != null ? { uvs: primitive.uvs } : {}),
+      ...(primitive.uv1 != null ? { uv1: primitive.uv1 } : {}),
+      ...(primitive.uvSets != null ? { uvSets: primitive.uvSets } : {}),
+      ...(primitive.tangents != null ? { tangents: primitive.tangents } : {}),
+      ...(primitive.colors != null ? { colors: primitive.colors } : {}),
+      ...(primitive.colorSets != null ? { colorSets: primitive.colorSets } : {}),
+      ...(primitive.vertexColorSet !== undefined
+        ? { vertexColorSet: primitive.vertexColorSet }
+        : {}),
+      ...(primitive.indices != null ? { indices: primitive.indices } : {}),
+      material: primitive.material,
+      ...(primitive.transform != null ? { transform: primitive.transform } : {}),
+      ...(primitive.castShadow !== undefined
+        ? { castShadow: primitive.castShadow }
+        : {}),
+    };
+  });
+  return changed ? { ...analyticResolved, primitives } : analyticResolved;
 }
 
 /**
@@ -512,6 +561,27 @@ function assertSceneEmitterRadianceEnvelopes(
       emitter.intensity,
       `${method} emitters[${index}] (${String(emitter.id)})`,
     );
+  });
+}
+
+function assertSupportedMaterialCombinations(
+  scene: Scene,
+  method: 'setScene' | 'updatePrimitive',
+): void {
+  scene.primitives.forEach((primitive, index) => {
+    const material = primitive.material;
+    if (
+      material.alphaMode === 'blend' &&
+      (material.transmission ?? 0) > 0
+    ) {
+      throw new Error(
+        `HybridEngine.${method}: primitives[${index}] (${String(primitive.id)}) ` +
+        `combines alphaMode:'blend' coverage with physical transmission. ` +
+        `The walkaround backend cannot composite a refracted covered layer in ` +
+        `its ordered-alpha pass; split coverage and refractive glass into ` +
+        `separate primitives or choose a converged path-tracing backend.`,
+      );
+    }
   });
 }
 
@@ -1164,6 +1234,13 @@ export class HybridEngine implements Engine {
             ? 'certified'
             : 'uncertified',
       oidnModelAvailable: cfg.oidnModelUrl != null,
+      // NRC's independent teacher and the bounded refractive-trace estimator
+      // own four-entry medium stacks. The ordinary/DDGI/native-glass/manifold
+      // paths own eight; publish the exact minimum active on this instance.
+      maxNestedMedia:
+        opts.nrcEnabled === true || opts.causticStrategy === 'refractive-trace'
+          ? 4
+          : 8,
     });
     this._ppgDispatchInterval = cfg.ppgDispatchInterval;
     if (opts.onWarning != null) {
@@ -1601,6 +1678,30 @@ export class HybridEngine implements Engine {
     this._materialWarner.warnMaterialTextureAtlasDiagnostics(diagnostics, method);
   }
 
+  /** Internal subsystem seam: synchronously reject malformed/over-capacity
+   * bulk optical geometry before any candidate reaches GPU state. */
+  preflightOpticalMediumTopology(
+    scene: Scene,
+    method: string,
+  ): void {
+    const contract = this._supportManifest.opticalMedia;
+    if (contract == null) return;
+    const renderScene = lowerTransmissiveAnalyticPrimitives(scene);
+    const bvhMode = resolveReSTIRBvhMode(
+      renderScene,
+      this._cfg.restirBvhModeOverride,
+    );
+    assertOpticalMediumTopology(renderScene, {
+      maxNestedMedia: contract.maxNestedMedia,
+      backend: '@vitrum/walkaround-hybrid',
+      method,
+      analyticGeometry: 'generated-triangle',
+      transformArithmetic: bvhMode === 'tlas'
+        ? 'tlas-shader-f32'
+        : 'merged-world-f64-to-f32',
+    });
+  }
+
   /**
    * Replace the scene. Triggers a full pipeline reinitialisation
    * (BVH rebuild + ReSTIR pipeline re-init).
@@ -1636,6 +1737,8 @@ export class HybridEngine implements Engine {
       this._supportManifest,
       'setScene',
     );
+    assertSupportedMaterialCombinations(scene, 'setScene');
+    this.preflightOpticalMediumTopology(scene, 'HybridEngine.setScene');
     assertSceneEmitterRadianceEnvelopes(scene, 'setScene');
     assertNoUnconsumedMaterialFields(
       scene.primitives as unknown as ReadonlyArray<{
@@ -1645,19 +1748,6 @@ export class HybridEngine implements Engine {
       }>,
       'setScene',
     );
-    const requiresExactGiCameraPrefixes =
-      sceneRequiresExactGiCameraPrefixes(scene);
-    if (
-      requiresExactGiCameraPrefixes
-      && this._cfg.restirReservoirScale !== undefined
-      && this._cfg.restirReservoirScale !== 1
-    ) {
-      throw new RangeError(
-        '[HybridEngine] restirReservoirScale > 1 cannot shift camera-' +
-        'transmission GI prefixes. Use scale 1 or omit the override so auto ' +
-        'can lower the complete internal shading resolution.',
-      );
-    }
     const requestedInternalWidth = Math.max(
       1,
       Math.round(this._width * this._resolutionFactor),
@@ -1673,7 +1763,6 @@ export class HybridEngine implements Engine {
       // replacement allocates, so there is never a two-generation frame graph
       // here. Keep the public peak ledger equal to the real candidate bytes.
       0,
-      requiresExactGiCameraPrefixes ? 1 : undefined,
     );
 
     const renderScene = sceneWithAnalyticMeshFallback(scene);
@@ -1795,6 +1884,9 @@ export class HybridEngine implements Engine {
   //  - material-only patches → `materialPatch` fast path (A3): re-pack the
   //     affected `bvhIndex` / `bvhBeerColors` triangle slices + partial GPU
   //     upload — NO `setScene`, no pipeline recompile.
+  //  - an analytic material crossing transmission 0↔positive → whole-scene
+  //     replacement, because the render representation switches between its
+  //     opaque authored fallback and canonical generated transmissive mesh.
   //
   // Implementations live in `HybridEnginePrimitiveUpdates.ts`; this method
   // is the routing dispatcher.
@@ -1826,8 +1918,32 @@ export class HybridEngine implements Engine {
     // This rejects unknown/symbol/non-enumerable/accessor fields and forbidden
     // id/kind properties without invoking host accessors.
     const preflightScene = applyPrimitivePatchToScene(this._lastScene, id, patch);
+    const currentPrimitive = this._lastScene.primitives[primIndex]!;
+    const preflightPrimitive = preflightScene.primitives[primIndex];
+    if (preflightPrimitive == null || String(preflightPrimitive.id) !== id) {
+      throw new Error(
+        `HybridEngine.updatePrimitive("${id}"): patched scene did not preserve primitive identity.`,
+      );
+    }
     assertKnownPrimitivePatchKeys(this._lastScene.primitives[primIndex]!, patch, id);
     sceneAcceptedByManifest(preflightScene, this._supportManifest, 'updatePrimitive');
+    assertSupportedMaterialCombinations(preflightScene, 'updatePrimitive');
+    // The previously published scene has already passed the whole-scene
+    // optical-topology proof.  An incremental patch can invalidate that proof
+    // only when the patched primitive participates in transmissive transport
+    // before or after the patch.  Re-running the whole-scene proof for an
+    // opaque material-only patch would call validateScene(scene) and re-read
+    // every unchanged geometry stream, defeating the targeted-validation
+    // contract of updatePrimitive().
+    if (
+      materialDefinesOpticalTransmission(currentPrimitive.material) ||
+      materialDefinesOpticalTransmission(preflightPrimitive.material)
+    ) {
+      this.preflightOpticalMediumTopology(
+        preflightScene,
+        'HybridEngine.updatePrimitive',
+      );
+    }
     assertNoUnconsumedMaterialFields(
       preflightScene.primitives as unknown as ReadonlyArray<{
         readonly id?: string;
@@ -1849,56 +1965,21 @@ export class HybridEngine implements Engine {
     if (Reflect.ownKeys(routedPatch).length === 0) {
       return;
     }
-    const requiresGiScaleReplan = sceneTransitionRequiresGiScaleReplan(
-      this._lastScene,
-      preflightScene,
-      this._frameResourceResolution.restirReservoirScale,
-      this._cfg.restirReservoirScale,
-    );
-    let nextFrameResourceResolution: ResolvedFrameResourcePlan | undefined;
-    if (requiresGiScaleReplan) {
-      const nextRequiresExactGiPrefixes =
-        sceneRequiresExactGiCameraPrefixes(preflightScene);
-      if (
-        nextRequiresExactGiPrefixes
-        && this._cfg.restirReservoirScale !== undefined
-        && this._cfg.restirReservoirScale !== 1
-      ) {
-        throw new RangeError(
-          '[HybridEngine] restirReservoirScale > 1 cannot shift camera-' +
-          'transmission GI prefixes. Use scale 1 or omit the override so auto ' +
-          'can lower the complete internal shading resolution.',
-        );
-      }
-      if (this._pipeline == null) {
-        throw new Error(
-          `HybridEngine.updatePrimitive("${id}"): cannot replan ReSTIR ` +
-          'resources without a live pipeline.',
-        );
-      }
-      const requestedInternalWidth = Math.max(
-        1,
-        Math.round(this._width * this._resolutionFactor),
-      );
-      const requestedInternalHeight = Math.max(
-        1,
-        Math.round(this._height * this._resolutionFactor),
-      );
-      nextFrameResourceResolution = this._resolveFrameResourceResolution(
-        requestedInternalWidth,
-        requestedInternalHeight,
-        this._frameResourceResolution.persistentBytes,
-        nextRequiresExactGiPrefixes ? 1 : undefined,
-      );
-    }
-
     // Wholesale-replacement patches — `instances` (instanced-mesh
     // instance-count change), `params` / `shape` (analytic), and
     // `fallbackMesh` — require a complete scene repack. Keep that repack in the
-    // same candidate-first transaction as DDGI, RC, the pipeline BVH arena, and
-    // any transmission-driven frame-resource replan. The final pipeline
+    // same candidate-first transaction as DDGI, RC, and the pipeline BVH arena.
+    // Camera-prefix glass GI is shade-local and therefore does not resize the
+    // half-resolution reservoir grid. The final pipeline
     // participant remains the sole queue submission and irreversible boundary.
+    const analyticRenderRepresentationChanged =
+      this._lastScene.primitives[primIndex]?.kind === 'analytic' &&
+      preflightPrimitive.kind === 'analytic' &&
+      materialDefinesOpticalTransmission(
+        this._lastScene.primitives[primIndex]!.material,
+      ) !== materialDefinesOpticalTransmission(preflightPrimitive.material);
     if (
+      analyticRenderRepresentationChanged ||
       TOPOLOGY_PATCH_WHOLESALE_FIELDS.some(
         (f) => Object.prototype.hasOwnProperty.call(routedPatch, f),
       )
@@ -1927,7 +2008,7 @@ export class HybridEngine implements Engine {
           collector.snapshot(),
           undo,
           [],
-          nextFrameResourceResolution,
+          undefined,
           deriveScaleAwareClamps(
             result.updatedRenderScene ?? preflightScene,
             {
@@ -1936,6 +2017,9 @@ export class HybridEngine implements Engine {
               hostExplicit: this._clampHostExplicit,
             },
           ),
+        );
+        this._pipeline?.setCameraPrefixFullRateRequired(
+          sceneRequiresFullRateGlassShading(preflightScene),
         );
       } catch (error) {
         undo.restore();
@@ -1981,7 +2065,10 @@ export class HybridEngine implements Engine {
         collector.snapshot(),
         undo,
         [],
-        nextFrameResourceResolution,
+        undefined,
+      );
+      this._pipeline?.setCameraPrefixFullRateRequired(
+        sceneRequiresFullRateGlassShading(preflightScene),
       );
     } catch (error) {
       undo.restore();
@@ -2007,6 +2094,8 @@ export class HybridEngine implements Engine {
    *  - `transform` only → `transformRefit` (refit AABB bounds in place).
    *  - `material` only → `materialPatch` (re-pack slices, NO GI propagation;
    *    the result carries `applySubsystems: false`).
+   *  - analytic transmission 0↔positive → `wholeSceneRebuild`, preserving
+   *    proof/transport identity across the render-representation switch.
    */
   private _routePrimitiveUpdate(
     id: string,
@@ -2019,6 +2108,36 @@ export class HybridEngine implements Engine {
     const hasSkinnedPose = SKIN_POSE_PATCH_FIELDS.some((f) => has(f));
     const currentPrimitive =
       ctx.lastScene.primitives.find((primitive) => String(primitive.id) === id);
+    const nextScene = applyPrimitivePatchToScene(
+      ctx.lastScene,
+      id,
+      patch,
+    );
+    const nextPrimitive = nextScene.primitives.find(
+      (primitive) => String(primitive.id) === id,
+    );
+    const currentTransmissive = currentPrimitive != null &&
+      materialDefinesOpticalTransmission(currentPrimitive.material);
+    const nextTransmissive = nextPrimitive != null &&
+      materialDefinesOpticalTransmission(nextPrimitive.material);
+    if (
+      currentPrimitive?.kind === 'analytic' &&
+      nextPrimitive?.kind === 'analytic' &&
+      currentTransmissive !== nextTransmissive
+    ) {
+      // An analytic's render representation changes at the transmission
+      // boundary: opaque analytics may use an authored fallback mesh, while
+      // every transmissive analytic must use the canonical generated mesh that
+      // the optical-topology preflight proves. Patching the existing render
+      // mesh would retain the representation from the previous side of that
+      // boundary and publish geometry different from the validated candidate.
+      return wholeSceneRebuild(
+        nextScene,
+        sceneWithAnalyticMeshFallback(nextScene),
+        ctx,
+      );
+    }
+    const transmissiveGeometry = currentTransmissive || nextTransmissive;
     const hasSkinnedRestStream =
       currentPrimitive?.kind === 'skinned-mesh' &&
       SKIN_REST_STREAM_PATCH_FIELDS.some((field) => has(field));
@@ -2037,9 +2156,17 @@ export class HybridEngine implements Engine {
     if (has('positions') && has('transform')) {
       return topologyRebuild(id, patch, ctx);
     }
-    if (has('positions')) return positionsRefit(id, patch, ctx);
+    if (has('positions')) {
+      return transmissiveGeometry
+        ? topologyRebuild(id, patch, ctx)
+        : positionsRefit(id, patch, ctx);
+    }
     if (has('normals')) return topologyRebuild(id, patch, ctx);
-    if (has('transform')) return transformRefit(id, patch, ctx);
+    if (has('transform')) {
+      return transmissiveGeometry
+        ? topologyRebuild(id, patch, ctx)
+        : transformRefit(id, patch, ctx);
+    }
     if (has('material')) {
       const previousPrimitive = ctx.lastScene.primitives.find((p) => String(p.id) === id);
       const previousMaterial =
@@ -2047,6 +2174,7 @@ export class HybridEngine implements Engine {
           ? previousPrimitive.material
           : undefined;
       if (
+        transmissiveGeometry ||
         materialPatchAffectsDisplacementGeometry(
           previousMaterial,
           patch.material as unknown as Parameters<
@@ -2125,7 +2253,14 @@ export class HybridEngine implements Engine {
       throw new Error('HybridEngine.applySkinningBatch: duplicate primitive id.');
     }
 
-    const topology = updates.some((update) =>
+    const transmissiveGeometry = updates.some((update) => {
+      const primitive = this._renderScene?.primitives.find(
+        (candidate) => String(candidate.id) === update.id,
+      );
+      return primitive != null &&
+        materialDefinesOpticalTransmission(primitive.material);
+    });
+    const topology = transmissiveGeometry || updates.some((update) =>
       TOPOLOGY_PATCH_FIELDS.some(
         (field) =>
           field !== 'normals' &&
@@ -2134,7 +2269,10 @@ export class HybridEngine implements Engine {
     );
     if (topology && skinCommands != null) {
       throw new Error(
-        'HybridEngine.applySkinningBatch: topology fallback cannot target live GPU buffers.',
+        transmissiveGeometry
+          ? 'HybridEngine.applySkinningBatch: GPU-only skinning cannot publish ' +
+            'transmissive geometry without rebuilding its host topology and identity.'
+          : 'HybridEngine.applySkinningBatch: topology fallback cannot target live GPU buffers.',
       );
     }
 
@@ -2224,6 +2362,12 @@ export class HybridEngine implements Engine {
         }
         result = latest!;
       }
+      this.preflightOpticalMediumTopology(
+        sceneWithResolvedSkinnedMeshes(
+          result.updatedRenderScene ?? currentRenderScene,
+        ),
+        'HybridEngine.applySkinningBatch',
+      );
     } catch (error) {
       undo.restore();
       throw error;
@@ -3392,9 +3536,7 @@ export class HybridEngine implements Engine {
   async captureFrame(opts?: CaptureFrameOptions): Promise<CapturedFrame | null> {
     const colorSpace = opts?.colorSpace ?? 'linear';
     if (colorSpace === 'output') {
-      const rgba = (await this._pipeline?.captureOutputFrame()) ?? null;
-      if (rgba == null) return null;
-      return { width: this._internalWidth, height: this._internalHeight, rgba };
+      return (await this._pipeline?.captureOutputFrame()) ?? null;
     }
     const seedResult = this.getProgressiveSeedTexture();
     if (seedResult == null) return null;
@@ -3504,10 +3646,6 @@ export class HybridEngine implements Engine {
       this._pipeline == null
         ? 0
         : this._frameResourceResolution.persistentBytes,
-      this._lastScene != null
-        && sceneRequiresExactGiCameraPrefixes(this._lastScene)
-        ? 1
-        : undefined,
     );
     let resizeFinalizationError: SceneMutationFinalizationError | null = null;
     try {
@@ -3575,10 +3713,6 @@ export class HybridEngine implements Engine {
         this._pipeline == null
           ? 0
           : this._frameResourceResolution.persistentBytes,
-        this._lastScene != null
-          && sceneRequiresExactGiCameraPrefixes(this._lastScene)
-          ? 1
-          : undefined,
       );
       let resizeFinalizationError: SceneMutationFinalizationError | null = null;
       try {
@@ -4219,11 +4353,14 @@ export class HybridEngine implements Engine {
       get height() {
         return self._internalHeight;
       },
-      // The selected scale is resolution- and scene-dependent. In particular,
-      // setScene() can force scale 1 for a transmissive camera prefix after
-      // construction but before the async pipeline generation is created.
+      // The selected scale remains resolution-dependent; camera-prefix
+      // transmission independently disables sparse checkerboard shading.
       get restirReservoirScale() {
         return self._frameResourceResolution.restirReservoirScale;
+      },
+      get cameraPrefixFullRateRequired() {
+        return self._lastScene != null &&
+          sceneRequiresFullRateGlassShading(self._lastScene);
       },
       get lastScene() {
         return self._renderScene;

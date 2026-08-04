@@ -21,20 +21,20 @@ import type { MaterialSpec } from '@vitrum/core';
 import {
   luminance,
   buildLightTree,
+  buildRepresentedDistributionF32,
+  FULL_SPHERE_CONE,
   packLightTreeForGPU,
   LIGHT_TREE_FLOATS_PER_NODE,
+  REPRESENTED_PROPOSAL_BUCKET_COUNT,
+  type OrientationCone,
 } from '@vitrum/shared-samplers';
 import {
   classifyTriangleEmitterCore,
   materialSpecScalarEmissiveLe,
-  multiplyNonNegativeRadianceScalarsF32,
   packNonNegativeRadianceRgbF32,
   packNonNegativeRadianceScalarF32,
 } from '@vitrum/shared-bvh';
-import {
-  classifyTriangleAreaF32,
-  normalizeDirectionF32,
-} from './areaEmitterGeometry.js';
+import { classifyTriangleAreaF32, normalizeDirectionF32 } from './areaEmitterGeometry.js';
 
 /**
  * EmitterTri struct layout (80 bytes, 16-byte aligned, 20 f32 per entry):
@@ -54,7 +54,6 @@ export const EMITTER_TRI_STRIDE_BYTES = 80;
 const EMITTER_FLOATS = EMITTER_TRI_STRIDE_BYTES / 4;
 export const EMITTER_TRI_CAST_SHADOW_DISABLED_FLAG = 1;
 export const EMITTER_TRI_TWO_SIDED_FLAG = 2;
-
 
 interface EmitterListOptions {
   /**
@@ -115,6 +114,9 @@ export interface EmitterTreeInput {
   centroids: [number, number, number][];
   /** Per-emitter triangle AABB (min/max over the 3 vertices). */
   aabbs: { min: [number, number, number]; max: [number, number, number] }[];
+  /** Per-emitter emission cone. One-sided triangles use their outward
+   * hemisphere; two-sided or unoriented entries use the full-sphere sentinel. */
+  cones: OrientationCone[];
 }
 
 /**
@@ -122,7 +124,7 @@ export interface EmitterTreeInput {
  * integer multiples of 2^-24. Every integer in this range is exactly
  * representable by binary32, including the final endpoint 1.
  */
-export const EMITTER_CDF_F32_BUCKETS = 0x01000000;
+export const EMITTER_CDF_F32_BUCKETS = REPRESENTED_PROPOSAL_BUCKET_COUNT;
 
 /**
  * Quantize non-negative source weights to a monotone binary32 CDF.
@@ -133,109 +135,23 @@ export const EMITTER_CDF_F32_BUCKETS = 0x01000000;
  * is derived from those exact intervals and is therefore the distribution
  * shader-side `emitterCdfPmf` observes.
  */
-export function buildRepresentedEmitterCdfF32(
-  weights: readonly number[],
-): {
+export function buildRepresentedEmitterCdfF32(weights: readonly number[]): {
   readonly cdf: Float32Array;
   readonly representedPmf: Float32Array;
 } {
-  const count = weights.length;
-  if (count === 0) {
+  if (weights.length === 0) {
     return {
       cdf: new Float32Array(0),
       representedPmf: new Float32Array(0),
     };
   }
-  const packed = weights.map((weight, index) =>
-    packNonNegativeRadianceScalarF32(
-      weight,
-      `emitter CDF weight[${index}]`,
-    )
-  );
-  const positiveIndices = packed
-    .map((weight, index) => weight > 0 ? index : -1)
-    .filter((index) => index >= 0);
-  const representedSupportCount = positiveIndices.length === 0
-    ? count
-    : positiveIndices.length;
-  if (representedSupportCount > EMITTER_CDF_F32_BUCKETS) {
-    throw new RangeError(
-      'emitter CDF has more positive intervals than binary32 can represent.',
-    );
-  }
-
-  const buckets = new Uint32Array(count);
-  if (positiveIndices.length === 0) {
-    const base = Math.floor(EMITTER_CDF_F32_BUCKETS / count);
-    let remainder = EMITTER_CDF_F32_BUCKETS - base * count;
-    for (let index = 0; index < count; index += 1) {
-      buckets[index] = base + (remainder > 0 ? 1 : 0);
-      if (remainder > 0) remainder -= 1;
-    }
-  } else {
-    let maxWeight = 0;
-    for (const index of positiveIndices) {
-      maxWeight = Math.max(maxWeight, packed[index]!);
-      buckets[index] = 1;
-    }
-    let relativeSum = 0;
-    let compensation = 0;
-    const relativeWeights = new Float64Array(count);
-    for (const index of positiveIndices) {
-      const relative = packed[index]! / maxWeight;
-      relativeWeights[index] = relative;
-      const corrected = relative - compensation;
-      const next = relativeSum + corrected;
-      compensation = (next - relativeSum) - corrected;
-      relativeSum = next;
-    }
-
-    const available = EMITTER_CDF_F32_BUCKETS - positiveIndices.length;
-    const remainders: Array<{ index: number; fraction: number }> = [];
-    let allocated = positiveIndices.length;
-    for (const index of positiveIndices) {
-      const exactExtra = available * relativeWeights[index]! / relativeSum;
-      const whole = Math.floor(exactExtra);
-      buckets[index] = buckets[index]! + whole;
-      allocated += whole;
-      remainders.push({ index, fraction: exactExtra - whole });
-    }
-    if (allocated > EMITTER_CDF_F32_BUCKETS) {
-      throw new RangeError('emitter CDF bucket allocation exceeded its exact f32 domain.');
-    }
-    remainders.sort((a, b) =>
-      b.fraction - a.fraction || a.index - b.index
-    );
-    let remaining = EMITTER_CDF_F32_BUCKETS - allocated;
-    for (let ordinal = 0; remaining > 0; ordinal += 1, remaining -= 1) {
-      const target = remainders[ordinal % remainders.length]!;
-      buckets[target.index] = buckets[target.index]! + 1;
-    }
-  }
-
-  const cdf = new Float32Array(count);
-  const representedPmf = new Float32Array(count);
-  let cumulativeBuckets = 0;
-  for (let index = 0; index < count; index += 1) {
-    const intervalBuckets = buckets[index]!;
-    cumulativeBuckets += intervalBuckets;
-    representedPmf[index] = intervalBuckets / EMITTER_CDF_F32_BUCKETS;
-    cdf[index] = cumulativeBuckets / EMITTER_CDF_F32_BUCKETS;
-    if (packed[index]! > 0 && representedPmf[index] === 0) {
-      throw new RangeError(
-        `emitter CDF lost positive weight[${index}] during Float32 publication.`,
-      );
-    }
-    if (index > 0 && packed[index]! > 0 && !(cdf[index]! > cdf[index - 1]!)) {
-      throw new RangeError(
-        `emitter CDF flattened positive weight[${index}] during Float32 publication.`,
-      );
-    }
-  }
-  if (cumulativeBuckets !== EMITTER_CDF_F32_BUCKETS || cdf[count - 1] !== 1) {
-    throw new RangeError('emitter CDF failed to terminate at exactly one.');
-  }
-  return { cdf, representedPmf };
+  const represented = buildRepresentedDistributionF32(weights, {
+    zeroWeightFallback: 'uniform',
+  });
+  // Emitter ABI stores inclusive upper endpoints rather than the helper's
+  // leading-zero prefix endpoint.
+  const cdf = represented.cdf.slice(1);
+  return { cdf, representedPmf: represented.pmf };
 }
 
 /**
@@ -278,6 +194,7 @@ export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuff
     powers: treeInput.powers,
     centroids: treeInput.centroids,
     aabbs: treeInput.aabbs,
+    cones: treeInput.cones,
   });
   return {
     nodes: packLightTreeForGPU(nodes),
@@ -295,8 +212,8 @@ export function buildLightTreeBuffer(treeInput: EmitterTreeInput): LightTreeBuff
  */
 export function buildEmitterListFromCore(
   indices: Uint32Array,
-  positions: Float32Array,    // stride-4: read .xyz only
-  normals: Float32Array,      // stride-4: read .xyz only
+  positions: Float32Array, // stride-4: read .xyz only
+  normals: Float32Array, // stride-4: read .xyz only
   triMatIdMap: Uint32Array,
   materials: readonly MaterialSpec[],
   options: EmitterListOptions,
@@ -315,7 +232,8 @@ export function buildEmitterListFromCore(
       const mat = materials[triMatIdMap[t]!];
       if (!mat) return null;
       const classified = classifyTriangleEmitterCore(mat);
-      const castShadowDisabled = (mat as MaterialSpec & { readonly castShadow?: boolean }).castShadow === false;
+      const castShadowDisabled =
+        (mat as MaterialSpec & { readonly castShadow?: boolean }).castShadow === false;
       const twoSided = mat.doubleSided === true;
       if (classified == null) return null;
       const scalarLe = scalarMaterialEmissiveLe(mat);
@@ -393,7 +311,6 @@ function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, numb
   return materialSpecScalarEmissiveLe(material);
 }
 
-
 /**
  * Shared emitter-list builder core. Iterates the merged world-space triangle
  * stream, derives each triangle's area + face normal (cross-product, then
@@ -406,8 +323,8 @@ function scalarMaterialEmissiveLe(material: MaterialSpec): [number, number, numb
  */
 function buildEmitterListCore(
   indices: Uint32Array,
-  positions: Float32Array,    // stride-4: read .xyz only
-  normals: Float32Array,      // stride-4: read .xyz only
+  positions: Float32Array, // stride-4: read .xyz only
+  normals: Float32Array, // stride-4: read .xyz only
   classify: TriangleEmitterClassifier,
   options: EmitterListOptions,
 ): {
@@ -449,27 +366,23 @@ function buildEmitterListCore(
     twoSided: boolean;
     selectionColor?: [number, number, number];
   }): void => {
-    const color = packNonNegativeRadianceRgbF32(
-      e.color,
-      `emitter triangle ${e.triIdx} radiance`,
-    );
+    const color = packNonNegativeRadianceRgbF32(e.color, `emitter triangle ${e.triIdx} radiance`);
     const powerColor = packNonNegativeRadianceRgbF32(
       e.selectionColor ?? color,
       `emitter triangle ${e.triIdx} selection radiance`,
     );
-    const area = packNonNegativeRadianceScalarF32(
-      e.area,
-      `emitter triangle ${e.triIdx} area`,
-    );
-    const emittedLuminance = packNonNegativeRadianceScalarF32(
-      luminance(powerColor[0], powerColor[1], powerColor[2]),
-      `emitter triangle ${e.triIdx} luminance`,
-    );
-    const power = multiplyNonNegativeRadianceScalarsF32(
-      emittedLuminance,
-      area,
-      `emitter triangle ${e.triIdx} luminance×area`,
-    );
+    const area = packNonNegativeRadianceScalarF32(e.area, `emitter triangle ${e.triIdx} area`);
+    // Selection weights are CPU-side heuristics, not shader evaluation
+    // operands. Keep the published f32 radiance and area, but multiply them in
+    // binary64 so a valid very-dim/very-small emitter is not rejected merely
+    // because its proposal weight would underflow if prematurely packed.
+    const emittedLuminance = luminance(powerColor[0], powerColor[1], powerColor[2]);
+    const power = emittedLuminance * area;
+    if (!Number.isFinite(power) || power < 0) {
+      throw new RangeError(
+        `emitter triangle ${e.triIdx} luminance×area must be finite and non-negative.`,
+      );
+    }
     if (!(power > 0)) return;
     emitterData.push({
       triIdx: e.triIdx,
@@ -493,9 +406,15 @@ function buildEmitterListCore(
     const i1 = indices[t * 3 + 1]!;
     const i2 = indices[t * 3 + 2]!;
 
-    const ax = positions[i0 * 4]!, ay = positions[i0 * 4 + 1]!, az = positions[i0 * 4 + 2]!;
-    const bx = positions[i1 * 4]!, by = positions[i1 * 4 + 1]!, bz = positions[i1 * 4 + 2]!;
-    const cx0 = positions[i2 * 4]!, cy0 = positions[i2 * 4 + 1]!, cz0 = positions[i2 * 4 + 2]!;
+    const ax = positions[i0 * 4]!,
+      ay = positions[i0 * 4 + 1]!,
+      az = positions[i0 * 4 + 2]!;
+    const bx = positions[i1 * 4]!,
+      by = positions[i1 * 4 + 1]!,
+      bz = positions[i1 * 4 + 2]!;
+    const cx0 = positions[i2 * 4]!,
+      cy0 = positions[i2 * 4 + 1]!,
+      cz0 = positions[i2 * 4 + 2]!;
 
     const parentA: [number, number, number] = [ax, ay, az];
     const parentB: [number, number, number] = [bx, by, bz];
@@ -505,7 +424,7 @@ function buildEmitterListCore(
       if (areaMeasure.reason === 'degenerate') continue;
       throw new RangeError(
         `@vitrum/walkaround-hybrid: emitter triangle ${t} has ` +
-        `${areaMeasure.reason.replaceAll('-', ' ')} geometry.`,
+          `${areaMeasure.reason.replaceAll('-', ' ')} geometry.`,
       );
     }
     const area = areaMeasure.area;
@@ -513,14 +432,24 @@ function buildEmitterListCore(
     const n0x = normals[i0 * 4]!;
     const n0y = normals[i0 * 4 + 1]!;
     const n0z = normals[i0 * 4 + 2]!;
-    const hasNormals = (n0x !== 0 || n0y !== 0 || n0z !== 0);
+    const hasNormals = n0x !== 0 || n0y !== 0 || n0z !== 0;
     if (hasNormals) {
-      const n1x = normals[i1 * 4]!, n1y = normals[i1 * 4 + 1]!, n1z = normals[i1 * 4 + 2]!;
-      const n2x = normals[i2 * 4]!, n2y = normals[i2 * 4 + 1]!, n2z = normals[i2 * 4 + 2]!;
+      const n1x = normals[i1 * 4]!,
+        n1y = normals[i1 * 4 + 1]!,
+        n1z = normals[i1 * 4 + 2]!;
+      const n2x = normals[i2 * 4]!,
+        n2y = normals[i2 * 4 + 1]!,
+        n2z = normals[i2 * 4 + 2]!;
       const normalScale = Math.max(
-        Math.abs(n0x), Math.abs(n0y), Math.abs(n0z),
-        Math.abs(n1x), Math.abs(n1y), Math.abs(n1z),
-        Math.abs(n2x), Math.abs(n2y), Math.abs(n2z),
+        Math.abs(n0x),
+        Math.abs(n0y),
+        Math.abs(n0z),
+        Math.abs(n1x),
+        Math.abs(n1y),
+        Math.abs(n1z),
+        Math.abs(n2x),
+        Math.abs(n2y),
+        Math.abs(n2z),
       );
       if (normalScale > 0 && Number.isFinite(normalScale)) {
         const averaged = normalizeDirectionF32([
@@ -562,7 +491,7 @@ function buildEmitterListCore(
         if (geometryMeasure.reason === 'degenerate') continue;
         throw new RangeError(
           '@vitrum/walkaround-hybrid: extra emitter has ' +
-          `${geometryMeasure.reason.replaceAll('-', ' ')} geometry.`,
+            `${geometryMeasure.reason.replaceAll('-', ' ')} geometry.`,
         );
       }
       const publishedArea = Math.fround(ex.area);
@@ -571,7 +500,7 @@ function buildEmitterListCore(
       if (!(publishedArea > 0) || !Number.isFinite(publishedArea) || normal == null) {
         throw new RangeError(
           '@vitrum/walkaround-hybrid: extra emitter area and normal must retain ' +
-          'finite non-degenerate Float32 values.',
+            'finite non-degenerate Float32 values.',
         );
       }
       pushEmitter({
@@ -579,13 +508,12 @@ function buildEmitterListCore(
         sourceTriIndex: -1,
         sourceSubdivLevel: 1,
         sourceSubdivOrdinal: 0,
-        vA: ex.vA, vB: ex.vB, vC: ex.vC,
+        vA: ex.vA,
+        vB: ex.vB,
+        vC: ex.vC,
         normal,
         area,
-        color: packNonNegativeRadianceRgbF32(
-          ex.Le,
-          'extra emitter radiance',
-        ),
+        color: packNonNegativeRadianceRgbF32(ex.Le, 'extra emitter radiance'),
         castShadowDisabled: ex.castShadow === false,
         twoSided: ex.twoSided === true,
       });
@@ -608,13 +536,15 @@ function buildEmitterListCore(
       sourceTriIndex: -1,
       sourceSubdivLevel: 1,
       sourceSubdivOrdinal: 0,
-      vA: [0, 10, 0], vB: [1, 10, 0], vC: [0.5, 10, 1],
+      vA: [0, 10, 0],
+      vB: [1, 10, 0],
+      vC: [0.5, 10, 1],
       normal: [0, -1, 0],
       area: 0.5,
-      color: [0, 0, 0],  // zero Le → pHat = 0 → inert (H22)
+      color: [0, 0, 0], // zero Le → pHat = 0 → inert (H22)
       castShadowDisabled: false,
       twoSided: false,
-      power: 0,          // power = 0 → excluded from CDF (totalEmissivePower = 0)
+      power: 0, // power = 0 → excluded from CDF (totalEmissivePower = 0)
     });
   }
 
@@ -625,17 +555,36 @@ function buildEmitterListCore(
   // Light-tree build inputs, aligned 1:1 with the emitter list (leaf
   // emitterIndex == emitter array index). Powers are populated below from the
   // exact represented CDF intervals so every selection structure agrees.
-  const treeInput: EmitterTreeInput = { powers: [], centroids: [], aabbs: [] };
+  const treeInput: EmitterTreeInput = {
+    powers: [],
+    centroids: [],
+    aabbs: [],
+    cones: [],
+  };
 
   for (let i = 0; i < emitterCount; i++) {
     const e = emitterData[i]!;
     const base = i * EMITTER_FLOATS;
     const sourceTriIndex = options.packSourceTriIndex === true ? e.sourceTriIndex : -1;
-    emitterFloats[base + 0] = e.vA[0]; emitterFloats[base + 1] = e.vA[1]; emitterFloats[base + 2] = e.vA[2]; emitterFloats[base + 3] = sourceTriIndex;
-    emitterFloats[base + 4] = e.vB[0]; emitterFloats[base + 5] = e.vB[1]; emitterFloats[base + 6] = e.vB[2]; emitterFloats[base + 7] = sourceTriIndex !== -1 ? e.sourceSubdivLevel : 1;
-    emitterFloats[base + 8] = e.vC[0]; emitterFloats[base + 9] = e.vC[1]; emitterFloats[base + 10] = e.vC[2]; emitterFloats[base + 11] = sourceTriIndex !== -1 ? e.sourceSubdivOrdinal : 0;
-    emitterFloats[base + 12] = e.normal[0]; emitterFloats[base + 13] = e.normal[1]; emitterFloats[base + 14] = e.normal[2]; emitterFloats[base + 15] = e.area;
-    emitterFloats[base + 16] = e.color[0]; emitterFloats[base + 17] = e.color[1]; emitterFloats[base + 18] = e.color[2];
+    emitterFloats[base + 0] = e.vA[0];
+    emitterFloats[base + 1] = e.vA[1];
+    emitterFloats[base + 2] = e.vA[2];
+    emitterFloats[base + 3] = sourceTriIndex;
+    emitterFloats[base + 4] = e.vB[0];
+    emitterFloats[base + 5] = e.vB[1];
+    emitterFloats[base + 6] = e.vB[2];
+    emitterFloats[base + 7] = sourceTriIndex !== -1 ? e.sourceSubdivLevel : 1;
+    emitterFloats[base + 8] = e.vC[0];
+    emitterFloats[base + 9] = e.vC[1];
+    emitterFloats[base + 10] = e.vC[2];
+    emitterFloats[base + 11] = sourceTriIndex !== -1 ? e.sourceSubdivOrdinal : 0;
+    emitterFloats[base + 12] = e.normal[0];
+    emitterFloats[base + 13] = e.normal[1];
+    emitterFloats[base + 14] = e.normal[2];
+    emitterFloats[base + 15] = e.area;
+    emitterFloats[base + 16] = e.color[0];
+    emitterFloats[base + 17] = e.color[1];
+    emitterFloats[base + 18] = e.color[2];
     emitterFloats[base + 19] =
       (e.castShadowDisabled ? EMITTER_TRI_CAST_SHADOW_DISABLED_FLAG : 0) |
       (e.twoSided ? EMITTER_TRI_TWO_SIDED_FLAG : 0);
@@ -661,15 +610,27 @@ function buildEmitterListCore(
         Math.max(e.vA[2], e.vB[2], e.vC[2]),
       ],
     });
+    const normalScale = Math.max(
+      Math.abs(e.normal[0]),
+      Math.abs(e.normal[1]),
+      Math.abs(e.normal[2]),
+    );
+    // A one-sided triangle emits into the hemisphere around its published
+    // normal. Two-sided emitters, the zero-power structural placeholder, and
+    // any defensively encountered degenerate normal must never become a
+    // zero-axis *oriented* cone: use the canonical full-sphere sentinel.
+    treeInput.cones.push(
+      e.power > 0 && !e.twoSided && Number.isFinite(normalScale) && normalScale > 0
+        ? { axis: e.normal, thetaO: 0, thetaE: Math.PI / 2 }
+        : FULL_SPHERE_CONE,
+    );
   }
 
   // The light tree and alias table consume the same represented CDF intervals
   // rather than re-normalizing ideal binary64 weights. This keeps every
   // proposal's stored power finite and preserves support for arbitrarily dim
   // positive emitters beside much brighter ones.
-  const represented = buildRepresentedEmitterCdfF32(
-    emitterData.map((emitter) => emitter.power),
-  );
+  const represented = buildRepresentedEmitterCdfF32(emitterData.map((emitter) => emitter.power));
   const cdfArray = represented.cdf;
   treeInput.powers.push(...represented.representedPmf);
 

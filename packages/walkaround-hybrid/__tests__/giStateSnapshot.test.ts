@@ -48,7 +48,7 @@ const RESTIR_GI_COMPACT_STRIDE = 20; // legacy snapshot-only Sprint-16/17 stride
 const COMPAT_EXTENSION_BYTES =
   32 + GI_STATE_COMPATIBILITY_WORDS * Uint32Array.BYTES_PER_ELEMENT;
 const RESTIR_BASE_FLOAT_LANES = [
-  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
+  0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
 ] as const;
 const RESTIR_GRIS_FLOAT_LANES = [20, 21, 22, 23, 26] as const;
 
@@ -59,7 +59,7 @@ function makeRestirSection(strideU32 = RESTIR_GI_GRIS_STRIDE): RestirGISnapshot 
     const a = new Uint32Array(bufU32Len);
     const f = new Float32Array(a.buffer);
     const baseFloatLanes = [
-      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
+      0, 1, 2, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18,
     ];
     for (let record = 0; record < halfW * halfH; record += 1) {
       const base = record * strideU32;
@@ -67,7 +67,7 @@ function makeRestirSection(strideU32 = RESTIR_GI_GRIS_STRIDE): RestirGISnapshot 
         f[base + lane] = (salt + record + lane) * 0.001;
       }
       a[base + 15] = (salt + record) >>> 0;
-      a[base + 19] = (salt * 17 + record) >>> 0;
+      a[base + 19] = 0; // current representation: known sampleFlags only
       if (strideU32 === RESTIR_GI_GRIS_STRIDE) {
         for (const lane of [20, 21, 22, 23, 26]) {
           f[base + lane] = (salt + record + lane) * 0.0001;
@@ -80,6 +80,7 @@ function makeRestirSection(strideU32 = RESTIR_GI_GRIS_STRIDE): RestirGISnapshot 
     return a;
   };
   return {
+    representationVersion: 1,
     halfW, halfH, strideU32,
     current: mk(1), previous: mk(2), spatial: mk(3),
   };
@@ -239,17 +240,45 @@ describe('GI state snapshot serialization', () => {
     const restirGI = makeRestirSection(RESTIR_GI_COMPACT_STRIDE);
     expect(() =>
       serializeGIState({ ...snapshot, restirGI }),
-    ).toThrow(/cannot publish retired 20-u32/);
+    ).toThrow(/does not match the live reservoir ABI/);
     const back = deserializeGIState(
       makeLegacyCompactV6Buffer(snapshot, restirGI),
     );
     expect(back.restirGI).toBeDefined();
     const r = back.restirGI!;
-    expect(r.strideU32).toBe(RESTIR_GI_COMPACT_STRIDE);
-    expect(r.current.length).toBe(restirGI.halfW * restirGI.halfH * RESTIR_GI_COMPACT_STRIDE);
-    expect(Array.from(r.current)).toEqual(Array.from(restirGI.current));
-    expect(Array.from(r.previous)).toEqual(Array.from(restirGI.previous));
-    expect(Array.from(r.spatial)).toEqual(Array.from(restirGI.spatial));
+    expect(r.representationVersion).toBe(1);
+    expect(r.strideU32).toBe(RESTIR_GI_GRIS_STRIDE);
+    expect(r.current.length).toBe(restirGI.halfW * restirGI.halfH * RESTIR_GI_GRIS_STRIDE);
+    expect(r.current.every((word) => word === 0)).toBe(true);
+    expect(r.previous.every((word) => word === 0)).toBe(true);
+    expect(r.spatial.every((word) => word === 0)).toBe(true);
+  });
+
+  it('cold-migrates a v8 same-stride linear reservoir instead of reinterpreting it', () => {
+    const source = { ...makeSnapshot(), restirGI: makeRestirSection() };
+    const buffer = serializeGIState(source);
+    const view = new DataView(buffer);
+    view.setUint32(4, 8, true);
+    const restirOffset =
+      64 +
+      source.irrData.byteLength +
+      source.visData.byteLength +
+      source.probeStateData.byteLength;
+    view.setUint32(restirOffset + 16, 0, true);
+    const extensionOffset =
+      restirOffset +
+      20 +
+      source.restirGI.current.byteLength +
+      source.restirGI.previous.byteLength +
+      source.restirGI.spatial.byteLength;
+    view.setUint32(extensionOffset + 4, 1, true);
+
+    const decoded = deserializeGIState(buffer);
+    expect(decoded.restirGI?.representationVersion).toBe(1);
+    expect(decoded.restirGI?.strideU32).toBe(RESTIR_GI_GRIS_STRIDE);
+    expect(decoded.restirGI?.current.every((word) => word === 0)).toBe(true);
+    expect(decoded.restirGI?.previous.every((word) => word === 0)).toBe(true);
+    expect(decoded.restirGI?.spatial.every((word) => word === 0)).toBe(true);
   });
 
   it('sizes the buffer for header + atlases + reservoir sub-block when reservoirs are present', () => {
@@ -428,7 +457,7 @@ describe('GI state snapshot serialization', () => {
           spatial: new Uint32Array(5 * 7 * 30),
         },
       }),
-    ).toThrow(/recognized reservoir ABI/);
+    ).toThrow(/live reservoir ABI/);
   });
 
   it.each(
@@ -462,15 +491,17 @@ describe('GI state snapshot serialization', () => {
     },
   );
 
-  it('accepts full-domain u32 counters/IDs but rejects an unknown GRIS sampleKind', () => {
+  it('validates local-estimator and local-technique flags plus unknown flags/kinds', () => {
     const restirGI = makeRestirSection();
     for (const data of [
       restirGI.current,
       restirGI.previous,
       restirGI.spatial,
     ]) {
+      // receiverMaterialKey is an opaque u32 hash; this legitimate bit pattern
+      // happens to be a NaN if incorrectly interpreted as f32.
+      data[3] = 0x7fc0_0000;
       data[15] = 0xffff_ffff;
-      data[19] = 0xffff_ffff;
       data[24] = 2;
       data[25] = 1;
       data[27] = 0xffff_ffff;
@@ -478,6 +509,56 @@ describe('GI state snapshot serialization', () => {
     expect(() =>
       serializeGIState({ ...makeSnapshot(), restirGI }),
     ).not.toThrow();
+
+    // Bit 2 is a selected native-only estimator and is valid only with an
+    // actual selected occurrence on reconnectable prefix support.
+    restirGI.previous[24] = 1;
+    restirGI.previous[19] = 2;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).not.toThrow();
+
+    restirGI.previous[19] = 1;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).not.toThrow();
+
+    restirGI.previous[19] = 3;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).toThrow(/invalid logical reservoir/);
+
+    restirGI.previous[19] = 4;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).not.toThrow();
+
+    restirGI.previous[19] = 8;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).toThrow(/invalid logical reservoir/);
+
+    const previousFloats = new Float32Array(
+      restirGI.previous.buffer,
+      restirGI.previous.byteOffset,
+      restirGI.previous.length,
+    );
+    const savedSelected = [
+      previousFloats[7]!,
+      previousFloats[11]!,
+      previousFloats[26]!,
+    ] as const;
+    previousFloats[7] = -3.402823466e38;
+    previousFloats[11] = -3.402823466e38;
+    previousFloats[26] = -3.402823466e38;
+    restirGI.previous[19] = 2;
+    expect(() =>
+      serializeGIState({ ...makeSnapshot(), restirGI }),
+    ).toThrow(/invalid logical reservoir/);
+    previousFloats[7] = savedSelected[0];
+    previousFloats[11] = savedSelected[1];
+    previousFloats[26] = savedSelected[2];
+    restirGI.previous[19] = 0;
 
     restirGI.previous[25] = 2;
     expect(() =>
@@ -488,6 +569,7 @@ describe('GI state snapshot serialization', () => {
   it('requires zero floor-padding tail words while ignoring them as float records', () => {
     const makeFloorBuffer = (): Uint32Array => new Uint32Array(64);
     const restirGI: RestirGISnapshot = {
+      representationVersion: 1,
       halfW: 1,
       halfH: 1,
       strideU32: RESTIR_GI_GRIS_STRIDE,
@@ -505,7 +587,7 @@ describe('GI state snapshot serialization', () => {
     ).toThrow(/invalid logical reservoir/);
   });
 
-  it('rejects a non-zero ReSTIR reserved sub-header word', () => {
+  it('rejects an unknown ReSTIR representation marker', () => {
     const s = { ...makeSnapshot(), restirGI: makeRestirSection() };
     const buf = serializeGIState(s);
     const restirOffset =
@@ -513,8 +595,8 @@ describe('GI state snapshot serialization', () => {
       s.irrData.byteLength +
       s.visData.byteLength +
       s.probeStateData.byteLength;
-    new DataView(buf).setUint32(restirOffset + 16, 1, true);
-    expect(() => deserializeGIState(buf)).toThrow(/reserved sub-header/);
+    new DataView(buf).setUint32(restirOffset + 16, 2, true);
+    expect(() => deserializeGIState(buf)).toThrow(/representation marker/);
   });
 
   it.each([

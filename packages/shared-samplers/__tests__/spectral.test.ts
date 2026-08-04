@@ -55,6 +55,7 @@ import {
   _sampleCmfCdfInverseForTest,
   sampleHeroWavelength,
   sampleHeroWavelengthMIS,
+  heroWavelengthMisMixturePdf,
   wavelengthToRGB,
   Y_CMF_INTEGRAL,
   X_CMF_INTEGRAL,
@@ -62,6 +63,9 @@ import {
   X_CMF_CDF,
   Y_CMF_CDF,
   Z_CMF_CDF,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT,
+  HERO_WAVELENGTH_MIS_STRATEGY_PMF,
   HERO_LAMBDA_MIN,
   HERO_LAMBDA_MAX,
 } from '../src/wavelengthSampling.js';
@@ -601,10 +605,8 @@ describe('wavelength PDF normalization and reconstruction', () => {
     const step = 0.125;
     let integral = 0;
     for (let lambda = HERO_LAMBDA_MIN; lambda < HERO_LAMBDA_MAX; lambda += step) {
-      const [x0, y0, z0] = sampleCMF(lambda);
-      const [x1, y1, z1] = sampleCMF(lambda + step);
-      const p0 = (x0 / X_CMF_INTEGRAL + y0 / Y_CMF_INTEGRAL + z0 / Z_CMF_INTEGRAL) / 3;
-      const p1 = (x1 / X_CMF_INTEGRAL + y1 / Y_CMF_INTEGRAL + z1 / Z_CMF_INTEGRAL) / 3;
+      const p0 = heroWavelengthMisMixturePdf(lambda);
+      const p1 = heroWavelengthMisMixturePdf(lambda + step);
       integral += 0.5 * (p0 + p1) * step;
     }
     expect(integral).toBeCloseTo(1, 6);
@@ -634,6 +636,45 @@ describe('wavelength PDF normalization and reconstruction', () => {
 });
 
 describe('sampleHeroWavelengthMIS', () => {
+  it('uses the exact three-way strategy distribution represented by the 24-bit shader RNG', () => {
+    const [xBuckets, yBuckets, zBuckets] = HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS;
+    const bucketCount = HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT;
+    expect(xBuckets + yBuckets + zBuckets).toBe(bucketCount);
+    expect(HERO_WAVELENGTH_MIS_STRATEGY_PMF).toEqual([
+      xBuckets / bucketCount,
+      yBuckets / bucketCount,
+      zBuckets / bucketCount,
+    ]);
+
+    const uLambda = 0.5;
+    const expectedX = _sampleCmfCdfInverseForTest(
+      uLambda, CIE_X_TABLE, X_CMF_CDF, X_CMF_INTEGRAL,
+    ).lambdaNm;
+    const expectedY = _sampleCmfCdfInverseForTest(
+      uLambda, CIE_Y_TABLE, Y_CMF_CDF, Y_CMF_INTEGRAL,
+    ).lambdaNm;
+    const expectedZ = _sampleCmfCdfInverseForTest(
+      uLambda, CIE_Z_TABLE, Z_CMF_CDF, Z_CMF_INTEGRAL,
+    ).lambdaNm;
+    const yCutoffBucket = xBuckets + yBuckets;
+    expect(sampleHeroWavelengthMIS((xBuckets - 1) / bucketCount, uLambda).lambdaNm)
+      .toBe(expectedX);
+    expect(sampleHeroWavelengthMIS(xBuckets / bucketCount, uLambda).lambdaNm)
+      .toBe(expectedY);
+    expect(sampleHeroWavelengthMIS((yCutoffBucket - 1) / bucketCount, uLambda).lambdaNm)
+      .toBe(expectedY);
+    expect(sampleHeroWavelengthMIS(yCutoffBucket / bucketCount, uLambda).lambdaNm)
+      .toBe(expectedZ);
+
+    const sample = sampleHeroWavelengthMIS(0, uLambda);
+    const [x, y, z] = sampleCMF(sample.lambdaNm);
+    expect(sample.pdf).toBe(
+      HERO_WAVELENGTH_MIS_STRATEGY_PMF[0] * x / X_CMF_INTEGRAL +
+      HERO_WAVELENGTH_MIS_STRATEGY_PMF[1] * y / Y_CMF_INTEGRAL +
+      HERO_WAVELENGTH_MIS_STRATEGY_PMF[2] * z / Z_CMF_INTEGRAL,
+    );
+  });
+
   it('returns wavelength in [380, 780] for any (uStrategy, uLambda) ∈ [0,1]×[0,1]', () => {
     for (let i = 0; i < 100; i++) {
       const us = (i % 10) / 10;

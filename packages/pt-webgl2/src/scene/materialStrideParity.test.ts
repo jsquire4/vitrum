@@ -109,19 +109,23 @@ describe('material stride parity (packer ↔ composed GLSL)', () => {
     expect(shader.replace(/\s+/g, ' ')).toContain(
       'material.anisotropyMap, 95u, 119u, MAP_UV( 19u )',
     );
-    expect(shader).toContain('anisotropy *= anisotropyTexel.b;');
-    expect(shader).toContain('anisotropyRotation += atan( rg.y, rg.x );');
+    expect(shader).toContain('anisotropy *= anisotropySample.b;');
+    expect(shader).toContain('anisotropyRotation = rotation;');
     expect(shader.replace(/\s+/g, ' ')).toContain(
-      'material.thicknessMap, 98u, 120u, MAP_UV( 20u )',
+      'int uvLayer = readMaterialMapUvLayer( materials, materialIndex, 20u );',
     );
-    expect(shader).toContain('attenuationThickness *= MAP_SAMPLE(');
-    expect(shader).toContain('attenuationDist = min( attenuationDist, max( surf.attenuationThickness, 0.0 ) );');
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'sampleMappedMaterialTexture( materials, textures, materialIndex, material.thicknessMap, 98u, 120u, uv, thicknessSample ) ) attenuationThickness *= thicknessSample.g;',
+    );
+    expect(shader.replace(/\s+/g, ' ')).toContain(
+      'if ( stack.hasAttenuationThicknesses[ top ] ) { attenuationDist = min( attenuationDist, max( stack.attenuationThicknesses[ top ], 0.0 ) );',
+    );
     expect(shader).toContain('surf.anisotropy = clamp( anisotropy, 0.0, 1.0 );');
     expect(shader).toContain('mat3 getBasisFromNormalAndTangent( vec3 normal, vec4 tangentSample )');
     expect(shader).toContain('vec3 tangent = tangentSample.xyz - n * dot( tangentSample.xyz, n );');
     expect(shader).toContain('vec4 bsdfTangentSample = textureSampleBarycoord(');
     expect(shader.replace(/\s+/g, ' ')).toContain(
-      'int bsdfBasisUvLayer = material.anisotropyMap != - 1 ? readMaterialMapUvLayer( materials, materialIndex, 19u ) : ATTR_UV;',
+      'int bsdfBasisUvLayer = anisotropyMapApplied ? readMaterialMapUvLayer( materials, materialIndex, 19u ) : ATTR_UV;',
     );
     expect(shader.replace(/\s+/g, ' ')).toContain(
       'surf.normalBasis = getBasisFromSelectedUv( bvh.position, attributesArray, bsdfBasisUvLayer, surfaceHit.faceIndices.xyz, surf.normal, bsdfTangentSample );',

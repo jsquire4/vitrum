@@ -49,7 +49,9 @@ describe('analytic primitive castShadow traversal', () => {
 
   it('keeps lite mesh shadow filtering without advertising unsupported analytics', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('fn materialShadowCastDisabled(matId: u32) -> bool');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain('return materialShadowCastDisabled(triMaterialIds[triIdx]);');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
+      'return materialShadowCastDisabled(triMaterialIds[triIdx].x);',
+    );
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('fn traceAnalyticShapes(');
   });
 });

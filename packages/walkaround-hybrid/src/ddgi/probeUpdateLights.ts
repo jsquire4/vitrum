@@ -9,6 +9,7 @@
 import { buildAliasTable, luminance } from '@vitrum/shared-samplers';
 import type { DDGILight } from './types.js';
 import {
+  assertDdgiU32,
   assertNonNegativeDdgiNumber,
   assertValidDdgiLights,
 } from './inputValidation.js';
@@ -78,13 +79,11 @@ function ddgiAliasProposalWeight(
 
 /** Exact byte length of a packed DDGI light buffer. */
 export function ddgiProbeLightsBufferByteLength(count: number): number {
-  if (!Number.isSafeInteger(count) || count < 0 || count > 0xffff_ffff) {
-    throw new RangeError('[DDGI] active probe-light count must fit in u32.');
-  }
-  const bytes = (
-    HEADER_FLOATS + count * (LIGHT_STRIDE_FLOATS + ALIAS_STRIDE_FLOATS)
-  )
-    * Float32Array.BYTES_PER_ELEMENT;
+  assertDdgiU32(count, '[DDGI] active probe-light count');
+  const wordCount =
+    HEADER_FLOATS + count * (LIGHT_STRIDE_FLOATS + ALIAS_STRIDE_FLOATS);
+  assertDdgiU32(wordCount, '[DDGI] probe-light record/alias word count');
+  const bytes = wordCount * Float32Array.BYTES_PER_ELEMENT;
   if (!Number.isSafeInteger(bytes)) {
     throw new RangeError('[DDGI] probe-light buffer byte length is not safe.');
   }
@@ -185,7 +184,7 @@ export function packDDGIProbeLights(
         (l.spotCosInner != null || l.spotCosOuter != null);
       const packedSpot = isSpot
         ? packLightDirection(
-            spot!,
+            spot,
             `packDDGIProbeLights lights[${i}].spotAxis`,
           )
         : [0, 0, 0] as [number, number, number];
@@ -242,12 +241,9 @@ export function packDDGIProbeLights(
       data[base + 7]!,
       `packDDGIProbeLights lights[${index}]`,
     ).scaled;
-    const emittedLuminance = packNonNegativeLightingFloat32(
-      luminance(
-        emitted[0],
-        emitted[1],
-        emitted[2],
-      ),
+    const emittedLuminance = ddgiAliasProposalWeight(
+      luminance(emitted[0], emitted[1], emitted[2]),
+      1,
       `packDDGIProbeLights lights[${index}] emitted luminance`,
     );
     if ((udata[base]! & DDGI_LIGHT_KIND_MASK) === DDGI_LIGHT_KIND_SUN) {

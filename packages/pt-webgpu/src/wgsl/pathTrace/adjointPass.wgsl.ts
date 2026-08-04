@@ -61,7 +61,7 @@ ${MOLLER_TRUMBORE_WGSL}
 @group(0) @binding(0) var<uniform> params: AdjointParams;
 @group(0) @binding(1) var<storage, read> positions: array<vec4f>;
 @group(0) @binding(2) var<storage, read> indices: array<vec4u>;
-@group(0) @binding(3) var<storage, read> triMaterialIds: array<u32>;
+@group(0) @binding(3) var<storage, read> triMaterialIds: array<vec2u>;
 @group(0) @binding(4) var<storage, read> materials: array<vec4f>;
 @group(0) @binding(5) var<storage, read> dLossDRendered: array<f32>;
 @group(0) @binding(6) var<storage, read_write> gradAccum: array<atomic<i32>>;
@@ -130,11 +130,27 @@ fn generatePrimaryRay(px: u32, py: u32, jitter: vec2f) -> Ray {
 }
 
 fn materialDoubleSided(materialId: u32) -> bool {
-  let flagsIndex = materialId * MATERIAL_VEC4_STRIDE + 26u;
-  if (flagsIndex >= arrayLength(&materials)) {
+  if (materialId > 0xffffffffu / MATERIAL_VEC4_STRIDE) {
     return false;
   }
-  let flags = u32(max(materials[flagsIndex].w, 0.0));
+  let materialBase = materialId * MATERIAL_VEC4_STRIDE;
+  if (
+    materialBase > arrayLength(&materials) ||
+    MATERIAL_VEC4_STRIDE > arrayLength(&materials) - materialBase
+  ) {
+    return false;
+  }
+  let flagsValue = materials[materialBase + 26u].w;
+  if (
+    flagsValue != flagsValue ||
+    abs(flagsValue) > 3.402823466e38 ||
+    flagsValue < 0.0 ||
+    flagsValue != floor(flagsValue) ||
+    flagsValue >= 8.0
+  ) {
+    return false;
+  }
+  let flags = u32(flagsValue);
   return (flags & 4u) != 0u;
 }
 
@@ -175,7 +191,7 @@ fn closestOpaqueTriangleHit(ray: Ray) -> Hit {
 
     // Forward traversal ignores opaque single-sided back faces. Transmissive
     // back faces are outside the certified domain and rejected on the CPU.
-    let materialId = triMaterialIds[triangle];
+    let materialId = triMaterialIds[triangle].x;
     if (triHit.det < 0.0 && !materialDoubleSided(materialId)) {
       continue;
     }
@@ -197,7 +213,16 @@ fn adjointScatter(index: u32, value: f32) {
   ) {
     return;
   }
-  atomicAdd(&gradAccum[index], i32(round(value * params.gradientScale)));
+  let scaled = value * params.gradientScale;
+  let rounded = round(scaled);
+  if (
+    rounded != rounded ||
+    rounded < -2147483648.0 ||
+    rounded > 2147483520.0
+  ) {
+    return;
+  }
+  atomicAdd(&gradAccum[index], i32(rounded));
 }
 
 @compute @workgroup_size(8, 8)
@@ -243,7 +268,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       let hit = closestOpaqueTriangleHit(ray);
       if (
         hit.valid &&
-        triMaterialIds[hit.triangle] == descriptor.x
+        triMaterialIds[hit.triangle].x == descriptor.x
       ) {
         matchingHitCount += 1u;
       }
@@ -254,6 +279,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     let hitFraction = f32(matchingHitCount) * invReplaySamples;
     let gradient = dLoss * emissiveIntensity * hitFraction;
     let gradientOffset = descriptor.z;
+    if (gradientOffset > 0xfffffffdu) { continue; }
     adjointScatter(gradientOffset, gradient.x);
     adjointScatter(gradientOffset + 1u, gradient.y);
     adjointScatter(gradientOffset + 2u, gradient.z);

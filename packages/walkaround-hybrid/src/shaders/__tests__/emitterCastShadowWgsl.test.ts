@@ -8,6 +8,7 @@ import { SHADE_MODULE } from '../shade.wgsl.js';
 import { RIS_WGSL } from '../ris.wgsl.js';
 import { RIS_GI_WGSL } from '../risGi.wgsl.js';
 import { RESTIR_GI_MATERIAL_WGSL } from '../restirGiMaterial.wgsl.js';
+import { REFRACTIVE_CAUSTICS_WGSL } from '../refractiveCaustics.wgsl.js';
 import { RIS_GI_NRC_BODY } from '../risGiNrc.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shadingTerms.wgsl.js';
 import { TRANSPARENT_OIT_MODULE } from '../transparentOit.wgsl.js';
@@ -24,7 +25,7 @@ describe('emitter castShadow:false shader gates', () => {
     expect(RIS_WGSL).not.toContain('luminance(emitters[lid].Le) * emitters[lid].area) / totalPower');
   });
 
-  it('threads the shared EmitterTri flag lane through ReSTIR-DI visibility', () => {
+  it('threads the shared EmitterTri flag lane through target ReSTIR-DI visibility', () => {
     expect(SCENE_STORAGE_ARENA_WGSL).toContain('sourceTriIndex: f32');
     expect(SCENE_STORAGE_ARENA_WGSL).toContain('sourceSubdivLevel: f32');
     expect(SCENE_STORAGE_ARENA_WGSL).toContain('sourceSubdivOrdinal: f32');
@@ -32,13 +33,13 @@ describe('emitter castShadow:false shader gates', () => {
     expect(SCENE_STORAGE_ARENA_WGSL).toContain('fn emitterTriCastShadowDisabled(');
     expect(SCENE_STORAGE_ARENA_WGSL).toContain('fn emitterTriIsTwoSided(');
     expect(SCENE_STORAGE_ARENA_WGSL).toContain('fn emitterTriCosineTowardReceiver(');
-    expect(RIS_WGSL).toContain('if (!emitterTriCastShadowDisabled(e))');
     expect(SHADING_TERMS_WGSL).toContain('if (!emitterTriCastShadowDisabled(e))');
-    expect(RIS_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
-    expect(RIS_WGSL).toContain('traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
-    expect(RIS_WGSL).toContain('restirDirectVisibilityScalar(shadowTint)');
+    expect(RIS_WGSL).not.toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
+    expect(RIS_WGSL).not.toContain('traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
     expect(RIS_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
-    expect(SHADING_TERMS_WGSL).toContain('traceSceneAlphaTintTransmittanceTexturedWithOwnership(');
+    expect(SHADING_TERMS_WGSL).toContain(
+      'traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(',
+    );
   });
 
   it('maps micro-emitter samples back to parent-triangle UV barycentrics', () => {
@@ -52,7 +53,11 @@ describe('emitter castShadow:false shader gates', () => {
 
     const ddgi = makeProbeUpdateRaysWGSL(4);
     expect(ddgi).toContain('fn ddgiEmitterParentBarycentricFromLocal(localBary: vec3f, levelF: f32, ordinalF: f32) -> vec3f');
-    expect(ddgi).toContain('let encodedSourceTri = i32(round(ddgiEmitterTris[base + 0u].w));');
+    expect(ddgi).toContain('let encodedSourceTriF = ddgiEmitterTris[base + 0u].w;');
+    expect(ddgi).toContain('!ddgiFiniteF32(encodedSourceTriF)');
+    expect(ddgi).toContain('encodedSourceTriF != round(encodedSourceTriF)');
+    expect(ddgi).toContain('abs(encodedSourceTriF) > 16777216.0');
+    expect(ddgi).toContain('let encodedSourceTri = i32(encodedSourceTriF);');
     expect(ddgi).toContain('ddgiEmitterTris[base + 1u].w');
     expect(ddgi).toContain('ddgiEmitterTris[base + 2u].w');
     expect(ddgi).toContain('bary = vec3f(bary.z, bary.y, bary.x);');
@@ -104,17 +109,26 @@ describe('emitter castShadow:false shader gates', () => {
     expect(ddgi).toContain('fn ddgiTraceShadowVisibility(');
     expect(ddgi).toContain('shadowVisibility = ddgiTraceShadowVisibility(shadowOrig, lightDir, dist - normalBias_p)');
     expect(ddgi).toContain('shadowT = ddgiTraceShadowVisibility(hitPos + n * normalBias, wi, dist - normalBias)');
-    expect(ddgi).toContain('visibility = visibility * alphaT');
-    expect(ddgi).toContain('let boundaryTransmission = clamp(');
-    expect(ddgi).toContain('ddgiSampleTransmissionMapForHit(hit, mat.transmission),');
-    expect(ddgi).toContain('mediumMaterial[mediumDepth] = matId;');
-    expect(ddgi).toContain('mediumInstance[mediumDepth] = hit.instanceIndex;');
+    expect(ddgi).toContain('visibility = visibility * vec3f(alphaT);');
+    expect(ddgi).toContain('let mappedTransmission = clamp(');
+    expect(ddgi).toContain('ddgiSampleTransmissionMapForHit(hit, entry.transmission),');
+    expect(ddgi).toContain('mediumState.boundaryId[depth] = boundaryId;');
+    expect(ddgi).toContain('mediumState.representedId[depth] = representedId;');
     expect(ddgi).not.toContain('fn bvhTraceAnyCastShadow(');
 
-    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
+    expect(RIS_GI_WGSL).toContain(
+      'traceSceneFirstHitAlphaMaskTexturedWithMetadata(',
+    );
+    expect(RIS_GI_WGSL).toContain('bounceTrace.requiresNativeEstimator');
+    expect(RIS_GI_WGSL).toContain('let candidateVisibility: f32 = 1.0;');
+    expect(RIS_GI_WGSL).not.toContain(
+      'traceSceneAlphaTintTransmittanceTextured(',
+    );
+
+    for (const src of [RIS_GI_NRC_BODY]) {
       expect(src).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
-      expect(src).toContain('traceSceneAlphaTintTransmittanceTextured(');
-      expect(src).toContain('clamp(luminance(shadowTint');
+      expect(src).toContain('traceSceneAlphaTintTransmittanceTexturedWithState(');
+      expect(src).toContain('nrcTeacherMax3(visibility)');
       expect(src).not.toContain('traceSceneAlphaTransmittanceTextured(');
       expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
     }
@@ -127,5 +141,35 @@ describe('emitter castShadow:false shader gates', () => {
       expect(src).not.toContain('traceSceneAnyAlphaMaskTextured(');
       expect(src).toContain('BVH_MATERIAL_TEX_WIDTH');
     }
+  });
+
+  it('removes nonshadow geometry from both generic-caustic first-hit walks', () => {
+    const candidates = [
+      { kind: 'glass', castShadow: false },
+      { kind: 'opaque', castShadow: false },
+      { kind: 'glass', castShadow: true },
+    ] as const;
+    expect(candidates.find((candidate) => candidate.castShadow)?.kind).toBe('glass');
+
+    expect(MATERIAL_ATLAS_MODULE.source).toContain(
+      'fn materialAlphaOrCastShadowDisabledForHit(',
+    );
+    expect(MATERIAL_ATLAS_MODULE.source).toContain(
+      'if ((materialWord & 1u) != 0u)',
+    );
+    expect(MATERIAL_ATLAS_MODULE.source).toContain(
+      'fn traceSceneFirstHitAlphaMaskTexturedCastShadow(',
+    );
+    expect(
+      REFRACTIVE_CAUSTICS_WGSL.match(
+        /traceSceneFirstHitAlphaMaskTexturedCastShadow\(/g,
+      ),
+    ).toHaveLength(1);
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain(
+      'let containingMedia = materialShadowClassifyContainingMedia(',
+    );
+    expect(REFRACTIVE_CAUSTICS_WGSL).not.toContain(
+      'traceSceneFirstHitAlphaMaskTextured(',
+    );
   });
 });

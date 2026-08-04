@@ -18,7 +18,7 @@ import type { ProbeUpdateBvhGpuBuffers } from './probeUpdateBvhBuffers.js';
  * the drift-bug class this file documented.
  *
  * Slots (id → keyed on):
- *  - `raysG0`       BVH buffers (11 entries) — keyed on all eleven identities;
+ *  - `raysG0`       BVH buffers (13 entries) — keyed on all thirteen identities;
  *                     a TLAS capacity-growing refit can replace only a subset.
  *  - `raysG1`       materials/lights/emitters/atlas/tangent/color — keyed on all seven identities.
  *  - `raysG2`       per-frame — keyed on irrReadTex + rayResultsBuf +
@@ -103,7 +103,6 @@ export interface ProbeUpdateGpuState extends ProbeUpdateBvhGpuBuffers {
   borderVisUboBuf: GPUBuffer;
   rayResultsBuf: GPUBuffer;
   activeProbesBuf: GPUBuffer;
-  linearSampler: GPUSampler;
   /**
    * Wave 4 — HDRI into DDGI probe misses (2026-06-10).
    *

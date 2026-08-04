@@ -13,6 +13,11 @@ bool attenuateHit(
   int transmissiveTraversals = state.transmissiveTraversals;
   FogMaterial fogMaterial = state.fogMaterial;
   MediumStack mediumStack = state.mediumStack;
+  if ( state.isShadowRay ) {
+    filterShadowMediumStack(
+      state.mediumStack, materials, mediumStack, fogMaterial
+    );
+  }
   bool finiteRayDistance = ! vitrumIsInfiniteDistance( rayDist );
   float traveledDistance = 0.0;
   SurfaceHit surfaceHit;
@@ -23,24 +28,39 @@ bool attenuateHit(
     if ( remainingTraversals <= 0 ) break;
     remainingTraversals --;
     sobolBounceIndex ++;
-    bool surfaceFound = bvhIntersectFirstHit(
-      bvh, ray.origin, ray.direction,
-      surfaceHit.faceIndices, surfaceHit.faceNormal,
-      surfaceHit.barycoord, surfaceHit.side, surfaceHit.dist
-    );
+    bool invalidRange = false;
+    bool surfaceFound = ray.minimumDistanceExclusive >= 0.0
+      ? bvhIntersectExactRangeFirstHit( ray, surfaceHit, invalidRange )
+      : bvhIntersectCanonicalInitialFirstHit(
+          ray, surfaceHit, invalidRange
+        );
+    if ( invalidRange ) {
+      result = true;
+      break;
+    }
     float remainingDistance = finiteRayDistance
       ? max( rayDist - traveledDistance, 0.0 )
       : INFINITY;
     float segmentDistance = surfaceFound
       ? min( max( surfaceHit.dist, 0.0 ), remainingDistance )
       : remainingDistance;
-    #if FEATURE_FOG
-    if ( fogMaterial.fogVolume ) {
-      color *= fogSegmentTransmittance(
-        materials, fogMaterial, segmentDistance, state.wavelength
-      );
+    float effectiveSegmentDistance = mediumEffectiveSegmentDistance(
+      mediumStack, segmentDistance
+    );
+    if ( effectiveSegmentDistance < 0.0 ) {
+      result = true;
+      break;
     }
-    #endif
+    color *= opticalVisibilitySegmentTransmittance(
+      materials, mediumStack, fogMaterial,
+      effectiveSegmentDistance, state.wavelength
+    );
+    if ( ! consumeMediumSegmentDistance(
+      mediumStack, segmentDistance, materials, fogMaterial
+    ) ) {
+      result = true;
+      break;
+    }
     if ( ! surfaceFound ) {
       result = false;
       break;
@@ -65,19 +85,47 @@ bool attenuateHit(
     ).r;
     Material material;
     readMaterialInfo( materials, materialIndex, material );
-    bool isEntering = surfaceHit.side == 1.0;
+    vec4 albedo = vec4( material.color, material.opacity );
+    if ( material.vertexColors ) {
+      albedo *= textureSampleBarycoord(
+        attributesArray, ATTR_COLOR, surfaceHit.barycoord, surfaceHit.faceIndices.xyz
+      );
+    }
+    bool useAlphaTest = material.alphaTest != 0.0;
+    bool skipSurface =
+      material.side != 0.0 && surfaceHit.side != material.side ||
+      useAlphaTest && albedo.a < material.alphaTest ||
+      material.transparent && ! useAlphaTest &&
+        rand( 10 ) >= representedBernoulliProbabilityF32( albedo.a );
+
     if ( finiteRayDistance ) {
       traveledDistance += max( surfaceHit.dist, 0.0 );
     }
-    ray.origin = stepRayOrigin(
-      ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
-    );
-    #if FEATURE_FOG
-    if ( material.fogVolume ) {
-      bool stackValid = surfaceHit.side == 1.0
-        ? enterMedium( mediumStack, materialIndex, materials, fogMaterial )
-        : leaveMedium( mediumStack, materialIndex, materials, fogMaterial );
-      if ( ! stackValid ) {
+    // Sidedness and alpha describe whether a surface exists for this visibility
+    // trial. A rejected surface is a null event and must not mutate medium state.
+    if ( skipSurface ) {
+      if ( transmissiveTraversals > 0 ) {
+        remainingTraversals ++;
+        transmissiveTraversals --;
+      }
+      if ( ray.minimumDistanceExclusive >= 0.0 ) {
+        if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+          result = true;
+          break;
+        }
+      } else {
+        ray.origin = stepRayOrigin(
+          ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
+        );
+        setOrdinaryRayRange( ray );
+      }
+      continue;
+    }
+
+    if ( ! material.castShadow && state.isShadowRay ) {
+      // The filtered shadow stack omits this material's volume extinction too.
+      // Its boundary is therefore a null event for the visibility query.
+      if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
         result = true;
         break;
       }
@@ -87,51 +135,54 @@ bool attenuateHit(
       }
       continue;
     }
-    #endif
-    if ( ! material.castShadow && state.isShadowRay ) continue;
 
-    vec4 albedo = vec4( material.color, material.opacity );
-    if ( material.vertexColors ) {
-      albedo *= textureSampleBarycoord(
-        attributesArray, ATTR_COLOR, surfaceHit.barycoord, surfaceHit.faceIndices.xyz
-      );
-    }
-    bool useAlphaTest = material.alphaTest != 0.0;
-    float transmissionFactor = ( 1.0 - material.metalness ) * material.transmission;
+    bool exactBaseRoughness = material.roughness == 0.0;
+    bool exactFrontRoughness =
+      ! material.hasFrontLayer ||
+      material.frontLayerRoughness < 0.0 ||
+      material.frontLayerRoughness == 0.0;
+    bool exactBackRoughness =
+      ! material.hasBackLayer ||
+      material.backLayerRoughness < 0.0 ||
+      material.backLayerRoughness == 0.0;
     if (
-      transmissionFactor < rand( 9 ) && ! (
-        material.side != 0.0 && surfaceHit.side == material.side ||
-        useAlphaTest && albedo.a < material.alphaTest ||
-        material.transparent && ! useAlphaTest && albedo.a < rand( 10 )
-      )
+      material.thinFilm && material.transmission > 0.0 &&
+      exactBaseRoughness && exactFrontRoughness && exactBackRoughness
     ) {
-      result = true;
-      break;
-    }
-
-    if ( surfaceHit.side == 1.0 && isEntering ) {
-      vec3 surfaceTransmission = mix(
-        vec3( 1.0 ), albedo.rgb, transmissionFactor
+      SurfaceRecord sheetSurface;
+      int sheetStatus = getSurfaceRecord(
+        materialIndex, surfaceHit, attributesArray,
+        0.0, 0, state.wavelength, true, sheetSurface
       );
-      color *= pathThroughputFromRgb( surfaceTransmission, state.wavelength );
-    } else if ( surfaceHit.side == -1.0 ) {
-      float attenuationDist = surfaceHit.dist;
-      if ( material.thickness > 0.0 ) {
-        attenuationDist = min( attenuationDist, material.thickness );
+      vec3 sheetAttenuation;
+      bool sheetConnectable =
+        sheetStatus == HIT_SURFACE &&
+        thinSheetExactVisibilityTransmission(
+          - ray.direction, ray.direction,
+          sheetSurface, state.wavelength, sheetAttenuation
+        );
+      if ( ! sheetConnectable ) {
+        result = true;
+        break;
       }
-      color *= transmissionAttenuationThroughput(
-        materials, attenuationDist, material.attenuationColor,
-        material.attenuationDistance, material.hasSpectralAttenuation,
-        materialIndex, state.wavelength
-      );
+      color *= sheetAttenuation;
+      if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+        result = true;
+        break;
+      }
+      if ( transmissiveTraversals > 0 ) {
+        remainingTraversals ++;
+        transmissiveTraversals --;
+      }
+      continue;
     }
 
-    bool isTransmissiveRay =
-      dot( ray.direction, surfaceHit.faceNormal * surfaceHit.side ) < 0.0;
-    if ( ( isTransmissiveRay || isEntering ) && transmissiveTraversals > 0 ) {
-      remainingTraversals ++;
-      transmissiveTraversals --;
-    }
+    // Material.transmission is a BSDF event, not an alpha/null event. A straight
+    // NEE/BDPT connection cannot silently collapse the interface because that
+    // omits refraction, Fresnel, roughness, Jacobians, and the corresponding MIS
+    // vertex. Every accepted physical surface therefore occludes this segment.
+    result = true;
+    break;
   }
 
   sobolBounceIndex = originalBounceIndex;

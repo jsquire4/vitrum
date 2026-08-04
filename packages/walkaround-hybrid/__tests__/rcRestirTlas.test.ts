@@ -22,6 +22,16 @@ function tlasBuffers(): SceneBVHBuffers {
     bvhNodes: { cpuData: new ArrayBuffer(32), byteLength: 32, count: 1 },
     bvhIndex: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     bvhPositions: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
+    opticalTriangleIdentity: {
+      cpuData: new Uint32Array([0, 1]).buffer,
+      byteLength: 8,
+      count: 1,
+    },
+    opticalInstanceBoundaryIdBasePlusOne: {
+      cpuData: new Uint32Array([1]).buffer,
+      byteLength: 4,
+      count: 1,
+    },
     triangleMaterialIds: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhBeerColors: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhEmissiveLe: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
@@ -186,7 +196,8 @@ describe('RCSubsystem TLAS sync (C2)', () => {
       'invalidateBindings',
     );
     rc.syncRestirBvhBuffers(bumped);
-    expect(createBuffer.mock.calls.length).toBe(createCallsAfterFirst + 5);
+    // Five TLAS streams plus the per-instance optical boundary-base stream.
+    expect(createBuffer.mock.calls.length).toBe(createCallsAfterFirst + 6);
     expect(writeBuffer).not.toHaveBeenCalled();
     expect((rc as unknown as { _dispatcher: unknown })._dispatcher).toBe(dispatcherBefore);
     // The dispatcher refreshes same-sized scene-arena copy sources on its next
@@ -233,10 +244,14 @@ describe('RCSubsystem TLAS sync (C2)', () => {
     const previousVersion = internal._lastBvhVersion;
     const previousEntries = Object.entries(previousBvh ?? {});
     const previousTlasDestroySpies = previousEntries
-      .filter(([key]) => key.startsWith('tlas'))
+      .filter(([key]) =>
+        key.startsWith('tlas') ||
+        key === 'opticalInstanceBoundaryIdBasePlusOneBuf')
       .map(([, buffer]) => buffer.destroy as ReturnType<typeof vi.fn>);
     const previousBlasDestroySpies = previousEntries
-      .filter(([key]) => !key.startsWith('tlas'))
+      .filter(([key]) =>
+        !key.startsWith('tlas') &&
+        key !== 'opticalInstanceBoundaryIdBasePlusOneBuf')
       .map(([, buffer]) => buffer.destroy as ReturnType<typeof vi.fn>);
     const previousDestroySpies = [
       ...previousBlasDestroySpies,
@@ -258,7 +273,7 @@ describe('RCSubsystem TLAS sync (C2)', () => {
       },
     };
 
-    for (let stage = 1; stage <= 5; stage += 1) {
+    for (let stage = 1; stage <= 6; stage += 1) {
       allocation = 0;
       failAt = stage;
       created = [];
@@ -296,7 +311,7 @@ describe('RCSubsystem TLAS sync (C2)', () => {
       },
     };
 
-    for (let stage = 1; stage <= 11; stage += 1) {
+    for (let stage = 1; stage <= 13; stage += 1) {
       allocation = 0;
       failAt = stage;
       created = [];

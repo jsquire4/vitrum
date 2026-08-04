@@ -13,11 +13,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
-import {
-  buildLightTreeBuffer,
-  type EmitterTreeInput,
-} from '../src/restir/emitterList.js';
+import { FULL_SPHERE_CONE, LIGHT_TREE_FLOATS_PER_NODE } from '@vitrum/shared-samplers';
+import { buildLightTreeBuffer, type EmitterTreeInput } from '../src/restir/emitterList.js';
 import { RIS_WGSL } from '../src/shaders/ris.wgsl.js';
 import { WALKAROUND_UBO_WGSL } from '../src/shaders/walkaroundUbo.wgsl.js';
 import { LIGHT_TREE_WGSL } from '../src/shaders/lightTree.wgsl.js';
@@ -30,6 +27,7 @@ function makeTreeInput(powers: number[]): EmitterTreeInput {
       min: [i * 2 - 0.5, -0.5, -0.5] as [number, number, number],
       max: [i * 2 + 0.5, 0.5, 0.5] as [number, number, number],
     })),
+    cones: powers.map(() => FULL_SPHERE_CONE),
   };
 }
 
@@ -66,7 +64,12 @@ describe('buildLightTreeBuffer — gate + packed layout', () => {
   });
 
   it('0 emitters → disabled placeholder', () => {
-    const buf = buildLightTreeBuffer({ powers: [], centroids: [], aabbs: [] });
+    const buf = buildLightTreeBuffer({
+      powers: [],
+      centroids: [],
+      aabbs: [],
+      cones: [],
+    });
     expect(buf.enabled).toBe(false);
     expect(buf.nodeCount).toBe(0);
   });
@@ -75,6 +78,35 @@ describe('buildLightTreeBuffer — gate + packed layout', () => {
     const buf = buildLightTreeBuffer(makeTreeInput([0, 0, 0]));
     expect(buf.enabled).toBe(false);
   });
+
+  it('forwards one-sided and two-sided emitter cones into packed leaves', () => {
+    const input = makeTreeInput([1, 1]);
+    input.cones[0] = { axis: [0, 1, 0], thetaO: 0, thetaE: Math.PI / 2 };
+    input.cones[1] = FULL_SPHERE_CONE;
+    const buf = buildLightTreeBuffer(input);
+
+    const leafBase = (emitterIndex: number): number => {
+      for (let node = 0; node < buf.nodeCount; node += 1) {
+        const base = node * LIGHT_TREE_FLOATS_PER_NODE;
+        if (buf.nodes[base] === emitterIndex && buf.nodes[base + 2]! < 0) {
+          return base;
+        }
+      }
+      throw new Error(`missing light-tree leaf ${emitterIndex}`);
+    };
+
+    const oneSided = leafBase(0);
+    expect(Array.from(buf.nodes.slice(oneSided + 10, oneSided + 13))).toEqual([0, 1, 0]);
+    expect(buf.nodes[oneSided + 13]).toBeLessThan(1);
+    expect(buf.nodes[oneSided + 13]).toBeGreaterThan(0.99);
+    expect(buf.nodes[oneSided + 14]).toBeLessThan(0);
+    expect(buf.nodes[oneSided + 14]).toBeGreaterThan(-0.001);
+
+    const twoSided = leafBase(1);
+    expect(Array.from(buf.nodes.slice(twoSided + 10, twoSided + 13))).toEqual([0, 0, 0]);
+    expect(buf.nodes[twoSided + 13]).toBe(-1);
+    expect(buf.nodes[twoSided + 14]).toBe(-1);
+  });
 });
 
 describe('RIS WGSL — selection pdf enters the WRS source weight', () => {
@@ -82,23 +114,21 @@ describe('RIS WGSL — selection pdf enters the WRS source weight', () => {
     expect(RIS_WGSL).toContain('ubo.lightTreeEnabled == 1u');
   });
 
-  it('the tree path uses sampleLightTree and records its selection pdf', () => {
+  it('the tree path records the represented selection PMF in log space', () => {
     expect(RIS_WGSL).toContain('sampleLightTree(pos, ubo.emitterDist2Floor');
-    // The selection pmf the tree returns is captured into emitterSelPmf.
-    expect(RIS_WGSL).toContain('emitterSelPmf = lt.pdf');
+    expect(RIS_WGSL).toContain('emitterLogSelectionPmf = reservoirDiPositiveLog2(lt.pdf);');
   });
 
   it('the flat-CDF fallback path uses the actual sampled CDF segment as pmf', () => {
     expect(RIS_WGSL).toContain('sampleEmitterIdx(emCount, xiEm)');
-    expect(RIS_WGSL).toContain('emitterSelPmf = emitterCdfPmf(emCount, lid);');
+    expect(RIS_WGSL).toContain('emitterCdfPmf(emCount, lid),');
   });
 
-  it('the WRS source pdf pX multiplies the chosen selection pmf by the area pdf', () => {
-    // pX = emitterSelPmf × ls.pdfArea — the SAME emitterSelPmf the selection
-    // drew from (tree pdf OR flat-CDF pmf), times the uniform-area triangle
-    // pdf. This is the divisor in w = p̂ / pX, so it must be the exact source.
-    expect(RIS_WGSL).toContain('emitterSelPmf * ls.pdfArea');
-    expect(RIS_WGSL).toContain('if (pHat > 0.0 && pX > 0.0) { w = pHat / pX; }');
+  it('combines selection and area densities without a linear ratio endpoint', () => {
+    expect(RIS_WGSL).toContain('let logWeight = reservoirDiInitialCandidateLogWeight(');
+    expect(RIS_WGSL).toContain('emitterLogSelectionPmf,');
+    expect(RIS_WGSL).toContain('ls.pdfArea,');
+    expect(RIS_WGSL).not.toContain('emitterSelPmf * ls.pdfArea');
   });
 });
 
@@ -113,7 +143,10 @@ describe('UBO + WGSL light-tree contract', () => {
     expect(LIGHT_TREE_WGSL).toContain('fn sampleLightTree(');
     // The descent bound is the UBO node count (matches the CPU loop bound).
     expect(LIGHT_TREE_WGSL).toContain('nodeCount + 1u');
-    // Importance metric = power / max(dist², floor) — distance-weighted.
-    expect(LIGHT_TREE_WGSL).toContain('power / d2');
+    // Importance is evaluated in log space, then the represented leaf interval
+    // provides the exact source PMF without a deep product.
+    expect(LIGHT_TREE_WGSL).toContain('log2(power) - log2(d2)');
+    expect(LIGHT_TREE_WGSL).toContain('u32(lightTree[leftBase + 15u])');
+    expect(LIGHT_TREE_WGSL).toContain('result.pdf = f32(currentBuckets) / f32(lt_ROOT_BUCKETS)');
   });
 });

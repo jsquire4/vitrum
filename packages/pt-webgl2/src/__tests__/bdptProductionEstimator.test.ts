@@ -5,20 +5,10 @@ import {
   composeTraceGlsl,
 } from '../glsl/composeTraceGlsl.js';
 import { DEFAULT_TRACE_FEATURES } from '../featureTypes.js';
+import { buildRepresentedPmfF32 } from '@vitrum/shared-samplers';
 
 function finiteEmitterPmf(powers: readonly number[]): number[] {
-  const logs = powers.map((power) =>
-    Number.isFinite(power) && power > 0
-      ? Math.log2(power)
-      : Number.NEGATIVE_INFINITY,
-  );
-  const maxLog = Math.max(...logs);
-  if (!Number.isFinite(maxLog)) return powers.map(() => 0);
-  const weights = logs.map((logPower) =>
-    Number.isFinite(logPower) ? 2 ** (logPower - maxLog) : 0,
-  );
-  const total = weights.reduce((sum, weight) => sum + weight, 0);
-  return weights.map((weight) => weight / total);
+  return Array.from(buildRepresentedPmfF32(powers));
 }
 
 function powerWeights(densities: readonly number[]): number[] {
@@ -48,19 +38,29 @@ describe('production general BDPT estimator', () => {
 
     expect(pmf.reduce((sum, probability) => sum + probability, 0)).toBeCloseTo(1, 14);
     powers.forEach((power, index) => {
-      expect(power / pmf[index]!).toBeCloseTo(total, 14);
+      // One bucket is reserved for each positive source before Hamilton
+      // allocation. The bounded perturbation buys exact support at every
+      // shader-reachable endpoint.
+      expect(Math.abs(pmf[index]! - power / total)).toBeLessThan(
+        powers.length * 2 ** -24,
+      );
     });
     expect(finiteEmitterPmf([0, 1e-25])).toEqual([0, 1]);
-    expect(finiteEmitterPmf([1e-300, 1e300])).toEqual([0, 1]);
+    expect(finiteEmitterPmf([1e-300, 1e300])).toEqual([
+      2 ** -24,
+      1 - 2 ** -24,
+    ]);
 
-    expect(source).toContain('bdptAnalyticEmitterLogPower( i )');
-    expect(source).toContain('bdptMeshEmitterLogPower( i )');
-    expect(source).toContain('bdptEnvironmentEmitterLogPower()');
-    expect(source).toContain('bdptTotalEmitterScaledWeight');
-    expect(source).toContain('exp2( logPower - maxLogPower )');
-    expect(candidateSource).toContain('bdptCandidateTotalScaledWeight');
+    expect(source).toContain('readLightInfo( lights.tex, i ).bdptProposalPmf');
+    expect(source).toContain('readMeshTriLight( uMeshLights, i ).bdptProposalPmf');
+    expect(source).toContain('bdptEnvironmentEmitterProposalPmf()');
+    expect(source).toContain('if ( totalRepresentedPmf != 1.0 )');
+    expect(source).toContain('float selectedProposalPmf = 0.0;');
+    expect(source).toContain('float discretePdf = selectedProposalPmf;');
     expect(candidateSource).toContain('bdptCandidateEmitterDiscretePdf');
-    expect(source).toContain('finitePositiveLightPower');
+    expect(candidateSource).toContain('selectedEmitterProposalPmf');
+    expect(source).not.toContain('bdptAnalyticEmitterLogPower');
+    expect(source).not.toContain('bdptMeshEmitterLogPower');
     expect(source).not.toContain('max( tmpLight.power, 1e-20 )');
     expect(source).not.toContain('sumPower > 1e-30');
     expect(source).toContain('selectedFamily = 2');
@@ -81,6 +81,8 @@ describe('production general BDPT estimator', () => {
   it('extends real BSDF subpaths and patches predecessor reverse densities', () => {
     expect(source).toContain('ScatterRecord rec = bsdfSample');
     expect(source).toContain('bdptLoadSurfaceRecord');
+    expect(source).toContain('hit.faceNormal = hit.side * faceMeasure.normal;');
+    expect(source).not.toContain('hit.faceNormal = faceMeasure.normal;');
     expect(source).toContain('bdptSampledSurfaceEventIsDelta');
     expect(source).toContain('bdptPredecessor0');
     expect(source).toContain('bdptPredecessor2');
@@ -102,10 +104,12 @@ describe('production general BDPT estimator', () => {
       'bdptCol == uBdptVertexCol - 1 && bdptRow == 2',
     );
     expect(source).toContain('bdptEyeSegmentReverseDensity');
-    expect(source).toContain('reverseScatterPdf = bsdfResult(');
-    expect(source).toContain('float bdptSwappedRev = bsdfPdfResult(');
+    expect(source).toContain('scatterReversePdf = rec.pdfRev;');
+    expect(source).toContain('float reverseScatterPdf = scatterReversePdf;');
+    expect(source).not.toContain('reverseScatterPdf = bsdfResult(');
+    expect(source).toContain('scatterRec.pdfRev *');
     expect(source.replace(/\s+/g, ' ')).toContain(
-      'bdptSwappedRev * bdptEyeSegmentReverseDensity',
+      'scatterRec.pdfRev * bdptEyeSegmentReverseDensity',
     );
     expect(source).toContain('lightVtxIdx - 1, 0');
     expect(source).toContain('mRev[ i ] = l2.w;');
@@ -182,8 +186,12 @@ describe('production general BDPT estimator', () => {
   });
 
   it('uses one power-heuristic denominator for distant s=0, s=1, and bounded s>=2', () => {
+    const sampleStart = candidateSource.indexOf(
+      'DirectLightSample sampleDirectLight(',
+    );
     const ownedBranchStart = candidateSource.indexOf(
-      'float distantDenom = bdptDistantNeeDenom();',
+      '#if FEATURE_BDPT',
+      sampleStart,
     );
     const ownedBranchEnd = candidateSource.indexOf('#else', ownedBranchStart);
     const ownedBranch = candidateSource.slice(ownedBranchStart, ownedBranchEnd);
@@ -193,6 +201,11 @@ describe('production general BDPT estimator', () => {
     expect(ownedBranch).toContain('sampleEquirectProbability');
     expect(ownedBranch).not.toContain('randomLightSample');
     expect(ownedBranch).not.toContain('sampleMeshAreaLight');
+    expect(ownedBranch).toContain(
+      'representedBdptDistantStrategyProbabilities(',
+    );
+    expect(ownedBranch).toContain('directionalStrategyProbability');
+    expect(ownedBranch).toContain('environmentStrategyProbability');
     expect(candidateSource).toContain('bdptInfiniteEyeFamilyWeight(');
     expect(candidateSource).toContain('neeCrossFamilyMisWeight');
     expect(candidateSource).toContain('bdptEyePos[ BDPT_MAX_EYE_DEPTH ]');
@@ -267,7 +280,8 @@ describe('production general BDPT estimator', () => {
     expect(source).toContain('segmentForwardDensity');
     expect(source).toContain('segmentReverseDensity');
     expect(source).toContain('segmentRatioWeight');
-    expect(source).toContain('fogFreeFlightRatioWeight');
+    expect(source).toContain('fogFreeFlightCollisionWeight');
+    expect(source).toContain('fogProposalCollisionDensity');
     expect(source).toContain('fogSegmentTransmittance');
     expect(source).toContain('mediumPhasePdf');
     expect(source).toContain('sampleMediumPhase');
@@ -292,7 +306,7 @@ describe('production general BDPT estimator', () => {
     expect(insideSphere(sampledEndpoint, translatedCenter, 2)).toBe(true);
     expect(source).toContain('vec3 endpointLaunchOrigin =');
     expect(source.replace(/\s+/g, ' ')).toContain(
-      'stepRayOrigin( p0.xyz, vec3( 0.0 ), endpointLaunchDirection, 0.0 )',
+      'vec3 endpointLaunchOrigin = p0.xyz;',
     );
     expect(source).not.toContain(
       'p0.xyz + endpointLaunchDirection * RAY_OFFSET',

@@ -33,10 +33,16 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).not.toContain('restir_gi_has_rich_suffix_payload');
     expect(RESTIR_GI_MATERIAL_WGSL).not.toContain('incomingIrradiance * brdf');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain(
-      'let diffuseLo = incomingIrradiance * payload.albedo * INV_PI;',
+      'let bakedDiffuse = payload.albedo * INV_PI * sampleLightMap(hit);',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'let diffuseLo = (bakedDiffuse +\n    incomingIrradiance * payload.albedo * INV_PI) *',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      '(1.0 - clamp(transmission, 0.0, 1.0));',
     );
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('out.Lo = applyHomogeneousVolumeSingleScatter(');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('(surfaceSource + diffuseLo) * payload.layerTransmission');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain('(surfaceEmission + diffuseLo) * payload.layerTransmission');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.volumeScattering,');
   });
 
@@ -47,21 +53,35 @@ describe('ReSTIR-GI material parity', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('hit.indices.w % BVH_MATERIAL_TEX_WIDTH');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('sampleEmissiveMap(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('materialAtlasUv1ForHit(hit)');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('let surfaceSource = restir_gi_surface_source_for_hit(hit, payload.albedo);');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('sampleLightMap(hit)');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'let surfaceEmission = restir_gi_surface_emission_for_hit(hit);',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'let bakedDiffuse = payload.albedo * INV_PI * sampleLightMap(hit);',
+    );
   });
 
   it('defines receiver-lobe p-hat helpers for rich-material GI reuse', () => {
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_receiver_phat_from_payload(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('fn restir_gi_receiver_phat_from_surface_or_geometry(');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution = contribution + Lo * specBrdf;');
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'contribution = contribution + Lo * specBrdf *\n      payload.reflectionLayerTransmission;',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'cosTheta * INV_PI *\n    payload.layerTransmission;',
+    );
+    expect(RESTIR_GI_MATERIAL_WGSL).toContain(
+      'payload.reflectionLayerTransmission = surf.reflectionLayerTransmission;',
+    );
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.volumeScattering = surf.volumeScattering;');
     expect(RESTIR_GI_MATERIAL_WGSL).toContain(
       'return applyHomogeneousVolumeSingleScatterDirectional(',
     );
     expect(RESTIR_GI_MATERIAL_WGSL).toContain('payload.bulkThickness,');
-    expect(RESTIR_GI_MATERIAL_WGSL).toContain('contribution * payload.layerTransmission');
+    expect(RESTIR_GI_MATERIAL_WGSL).not.toContain(
+      'contribution * payload.layerTransmission',
+    );
   });
 
   it('wires default risGi bounce hits through mapped material payloads', () => {
@@ -74,9 +94,14 @@ describe('ReSTIR-GI material parity', () => {
     expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
     expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
-    expect(RIS_GI_WGSL).toContain('pHat = restir_gi_receiver_phat_from_payload(');
-    expect(RIS_GI_WGSL).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
-    expect(RIS_GI_WGSL).toContain('candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(RIS_GI_WGSL).toContain('let receiverPHat = restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain(
+      'let logPHat = reservoirGiLogPositiveProduct(receiverPHat, candidateVisibility);',
+    );
+    expect(RIS_GI_WGSL).toContain('traceSceneFirstHitAlphaMaskTexturedWithMetadata(');
+    expect(RIS_GI_WGSL).toContain('bounceTrace.requiresNativeEstimator');
+    expect(RIS_GI_WGSL).toContain('let candidateVisibility: f32 = 1.0;');
+    expect(RIS_GI_WGSL).not.toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
     expect(RIS_GI_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(RIS_GI_WGSL).not.toContain('Lo = irrAtXs * xsMat.rgb * INV_PI;');
   });
@@ -95,21 +120,26 @@ describe('ReSTIR-GI material parity', () => {
     expect(body).toContain('let xsAlbedo = xsPayload.albedo;');
     expect(body).toContain('let xsRough = xsPayload.rough;');
     expect(body).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
-    expect(body).toContain('pHat = restir_gi_receiver_phat_from_payload(');
-    expect(body).toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
-    expect(body).toContain('candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);');
+    expect(body).toContain('let receiverPHat = restir_gi_receiver_phat_from_payload(');
+    expect(body).toContain(
+      'let logPHat = reservoirGiLogPositiveProduct(receiverPHat, candidateVisibility);',
+    );
+    expect(body).toContain('let candidateVisibility: f32 = 1.0;');
+    expect(body).not.toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
     expect(body).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(body).not.toContain('let ddgiLo = irrAtXs * xsMat.rgb * INV_PI;');
   });
 
-  it('keeps primary-glass GI branches on the same PPG defensive mixture as opaque GI', () => {
+  it('keeps camera-prefix glass out of reusable GI while retaining the ordinary PPG mixture', () => {
     for (const body of [RIS_GI_WGSL, nrcModule.source]) {
-      expect(body).toContain('let ppgGuidedOn_g = ubo.ppgEnabled == 1u;');
-      expect(body).toContain('let alpha_g = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn_g);');
-      expect(body).toContain('wi = ppgSampleGuidedDir(walkHitPos, &rng);');
-      expect(body).toContain('let pGuide_g = ppgEvalPdf(walkHitPos, wi);');
-      expect(body).toContain('let pSrc_g = alpha_g * pGuide_g + (1.0 - alpha_g) * pCos_g;');
-      expect(body).not.toContain('PPG is off for glass pixels');
+      expect(body).toContain('let ppgGuidedOn = ubo.ppgEnabled == 1u;');
+      expect(body).toContain('let alpha = represented_bernoulli_probability_f32(');
+      expect(body).toContain('select(0.0, ubo.ppgMixAlpha, ppgGuidedOn),');
+      expect(body).toContain(
+        'logPSrc = reservoirGiLogProposalMixture(alpha, pGuide, pCos);',
+      );
+      expect(body).not.toContain('ppgGuidedOn_g');
+      expect(body).not.toContain('walkHitPos');
     }
   });
 
@@ -125,9 +155,11 @@ describe('ReSTIR-GI material parity', () => {
       const composed = composeWgsl(module, WGSL_MODULES);
       expect(composed).toContain('@group(1) @binding(0) var<storage, read> bvhSceneGeometryArena');
       expect(composed).toContain('fn bvhLoadNode(');
-      expect(shader).toContain('grisMaterialPHatAt(');
-      expect(shader).toContain('grisMaterialTargetAt(');
-      expect(shader).toContain('grisFinaliseLogScaledReservoir(');
+      expect(shader).toContain('grisLogMaterialPHatAt(');
+      expect(shader).not.toContain('grisMaterialTargetAt(');
+      expect(shader).toContain('grisFinaliseRepresentedReservoir(');
+      expect(shader).toContain('candidate.H,');
+      expect(shader).toContain('GI_SAMPLE_FLAG_RECAST_TINT');
       expect(composed).toContain('restir_gi_receiver_phat_from_surface_or_geometry(');
     }
   });

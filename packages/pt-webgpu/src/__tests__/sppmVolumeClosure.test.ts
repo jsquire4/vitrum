@@ -164,9 +164,11 @@ describe('SPPM homogeneous-volume production closure', () => {
   });
 
   it('samples photon free flight over the full alpha-skipped segment before surface handling', () => {
-    const restore = SPPM_PHOTON_PASS_WGSL.indexOf('ray.origin = alphaTraceOrigin;');
-    const fullDistance = SPPM_PHOTON_PASS_WGSL.indexOf(
-      'hit.dist = hit.dist + alphaAdvance',
+    const alphaCursor = SPPM_PHOTON_PASS_WGSL.indexOf(
+      'var alphaCursor = ptRayTMin();',
+    );
+    const cursorAdvance = SPPM_PHOTON_PASS_WGSL.indexOf(
+      'alphaCursor = nextAlphaCursor;',
     );
     const sourceAttenuation = SPPM_PHOTON_PASS_WGSL.indexOf(
       'pointSpotPathMeasureScale(',
@@ -179,9 +181,9 @@ describe('SPPM homogeneous-volume production closure', () => {
       'SPPM_PHOTON_KIND_VOLUME,',
       flight,
     );
-    expect(restore).toBeGreaterThanOrEqual(0);
-    expect(restore).toBeLessThan(fullDistance);
-    expect(fullDistance).toBeLessThan(sourceAttenuation);
+    expect(alphaCursor).toBeGreaterThanOrEqual(0);
+    expect(alphaCursor).toBeLessThan(cursorAdvance);
+    expect(cursorAdvance).toBeLessThan(sourceAttenuation);
     expect(sourceAttenuation).toBeLessThan(flight);
     expect(flight).toBeLessThan(volumeDeposit);
     expect(volumeDeposit).toBeLessThan(surfaceMaterial);
@@ -189,7 +191,7 @@ describe('SPPM homogeneous-volume production closure', () => {
       'if (hadDeltaChainEvent &&',
     );
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
-      'flux = flux * photonSigmaS * transmittance / max(pdfHero, 1e-9)',
+      'flux = flux * photonSigmaS * trueTransmittance / collisionPdf',
     );
   });
 

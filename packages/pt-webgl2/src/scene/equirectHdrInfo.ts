@@ -26,6 +26,7 @@
 import type { EngineWarning, SceneEnvironment } from '@vitrum/core';
 import {
   bakePreethamSkyEquirect,
+  buildRepresentedDistributionF32,
   readEnvironmentMapPixels,
   type EnvironmentMapHandleHint,
   type EnvironmentMapPixels,
@@ -322,15 +323,20 @@ export function buildEquirectInfo(
   // integrator's GL upload converts to the runtime format).
   const map = new Float32Array(pixelCount * 4);
 
-  // PBRT 2D distribution scratch (mirrors the fork's pdf/cdf arrays).
+  // Represented 2D distribution scratch. Every positive row and texel receives
+  // at least one of the same 2^24 buckets reachable by GLSL rand(), so sampling
+  // support and the published map-alpha density cannot diverge.
   const cdfConditional = new Float32Array(pixelCount);
   const cdfMarginal = new Float32Array(height);
+  const rowWeights = new Float64Array(height);
 
   let totalSumValue = 0.0;
-  let cumulativeWeightMarginal = 0.0;
+  let totalSumCompensation = 0.0;
 
   for (let y = 0; y < height; y += 1) {
-    let cumulativeRowWeight = 0.0;
+    const conditionalWeights = new Float64Array(width);
+    let rowWeight = 0.0;
+    let rowWeightCompensation = 0.0;
     for (let x = 0; x < width; x += 1) {
       const i = y * width + x;
       const base = i * 4;
@@ -362,36 +368,31 @@ export function buildEquirectInfo(
       map[i * 4 + 3] = 0;
 
       const weight = colorToLuminance(r, g, b) * equirectTexelSolidAngle(y, width, height);
-      cumulativeRowWeight += weight;
-      totalSumValue += weight;
-
-      cdfConditional[i] = cumulativeRowWeight;
+      conditionalWeights[x] = weight;
+      const correctedRowWeight = weight - rowWeightCompensation;
+      const nextRowWeight = rowWeight + correctedRowWeight;
+      rowWeightCompensation = (nextRowWeight - rowWeight) - correctedRowWeight;
+      rowWeight = nextRowWeight;
+      const correctedTotalWeight = weight - totalSumCompensation;
+      const nextTotalWeight = totalSumValue + correctedTotalWeight;
+      totalSumCompensation = (nextTotalWeight - totalSumValue) - correctedTotalWeight;
+      totalSumValue = nextTotalWeight;
     }
 
-    // Row-normalize the conditional CDF to [0, 1] (skip all-black rows).
-    if (cumulativeRowWeight !== 0) {
-      for (let i = y * width, lEnd = y * width + width; i < lEnd; i += 1) {
-        cdfConditional[i] = cdfConditional[i]! / cumulativeRowWeight;
-      }
-      cdfConditional[y * width + width - 1] = 1;
-    } else {
-      // A zero-probability row is skipped by the marginal search. Keep its
-      // conditional table total for synthetic boundary/debug callers.
-      for (let x = 0; x < width; x += 1) {
-        cdfConditional[y * width + x] = (x + 1) / width;
-      }
+    const representedRow = buildRepresentedDistributionF32(conditionalWeights, {
+      zeroWeightFallback: 'uniform',
+    });
+    for (let x = 0; x < width; x += 1) {
+      cdfConditional[y * width + x] = representedRow.cdf[x + 1]!;
     }
-
-    cumulativeWeightMarginal += cumulativeRowWeight;
-    cdfMarginal[y] = cumulativeWeightMarginal;
+    rowWeights[y] = rowWeight;
   }
 
-  // Total-normalize the marginal CDF to [0, 1] (skip an all-black map).
-  if (cumulativeWeightMarginal !== 0) {
-    for (let i = 0, lEnd = cdfMarginal.length; i < lEnd; i += 1) {
-      cdfMarginal[i] = cdfMarginal[i]! / cumulativeWeightMarginal;
-    }
-    cdfMarginal[height - 1] = 1;
+  const representedMarginal = buildRepresentedDistributionF32(rowWeights, {
+    zeroWeightFallback: 'uniform',
+  });
+  for (let y = 0; y < height; y += 1) {
+    cdfMarginal[y] = representedMarginal.cdf[y + 1]!;
   }
 
   // Forward marginal CDF, packed RGBA32F for the CPU/public staging shape.
@@ -414,10 +415,10 @@ export function buildEquirectInfo(
     }
   }
 
-  // The shader samples the uploaded Float32 CDFs. Derive map alpha from those
-  // exact adjacent intervals so flattened bins are both unsampleable and
-  // reported with zero density. Each selected cell is sampled uniformly in
-  // solid angle by the GLSL inversion residuals.
+  // Derive map alpha from the exact represented adjacent intervals. Each
+  // selected cell is sampled uniformly in solid angle by the GLSL inversion
+  // residuals, so this is the realized proposal density rather than an ideal
+  // pre-quantization density.
   const deltaPhi = (2 * Math.PI) / width;
   for (let y = 0; y < height; y += 1) {
     const theta0 = (y / height) * Math.PI;

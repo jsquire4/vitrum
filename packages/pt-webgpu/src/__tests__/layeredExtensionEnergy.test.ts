@@ -190,7 +190,7 @@ describe('pt-webgpu layered clearcoat and sheen energy', () => {
     );
 
     const clearcoatNormalIndex = PT_WEBGPU_PATH_TRACE_KERNEL_WGSL.indexOf(
-      'var clearcoatNormal = normal;',
+      'var clearcoatNormal = interfaceBaseNormal;',
     );
     const emissionAttenuationIndex = PT_WEBGPU_PATH_TRACE_KERNEL_WGSL.indexOf(
       '1.0 - clearcoatLayerWeight(mat.clearcoat, clearcoatNormal, -ray.direction)',
@@ -243,7 +243,7 @@ describe('pt-webgpu layered clearcoat and sheen energy', () => {
       'microfacetInterface.reflectance * sheenAttenuation *',
     );
     expect(smoothReflection).toContain(
-      'clearcoatAttenuation * lobeWeightSum /',
+      'clearcoatAttenuation / max(result.sampledEventPdf, 1e-10)',
     );
 
     const smoothTransmissionStart = sampler.indexOf(

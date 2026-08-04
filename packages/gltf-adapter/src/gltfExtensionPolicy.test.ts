@@ -803,16 +803,9 @@ describe('glTF common extension policy', () => {
     expect(evaluateGltfBackendCompatibility(report, 'pt-webgl2').issues.some(
       (issue) => issue.name === 'baseColorMap.samplerPolicy',
     )).toBe(false);
-    expect(evaluateGltfBackendCompatibility(report, 'walkaround-hybrid').issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          category: 'material',
-          name: 'baseColorMap.samplerPolicy',
-          support: 'approximate',
-          path: 'samplers[0].minFilter',
-        }),
-      ]),
-    );
+    expect(evaluateGltfBackendCompatibility(report, 'walkaround-hybrid').issues.some(
+      (issue) => issue.name === 'baseColorMap.samplerPolicy',
+    )).toBe(false);
   });
 
   it('treats pt-webgpu linear mag/min sampler policies with none or nearest mip filters as native', () => {

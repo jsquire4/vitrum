@@ -54,9 +54,6 @@ const GLASS: MaterialSpec = {
   roughness: 0,
   metallic: 0,
   transmission: 0.8,
-  attenuationColor: [0.8, 0.95, 1.0],
-  attenuationDistance: 2,
-  thickness: 0.1,
 };
 
 /** One quad (two tris) as a core MeshPrimitive (winding mirrors the RC

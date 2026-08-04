@@ -17,7 +17,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MockInstance } from 'vitest';
 import {
+  analyticPrimitiveToMesh,
   asMat4,
+  type AnalyticPrimitive,
   type EngineWarning,
   type MeshPrimitive,
   type Scene,
@@ -144,6 +146,64 @@ function skinnedScene(): Scene {
   };
 }
 
+function analyticScene(transmission: number): Scene {
+  return {
+    primitives: [{
+      kind: 'analytic',
+      id: 'analytic-a',
+      shape: 'sphere',
+      params: new Float32Array([0, 0, 0, 1]),
+      material: {
+        baseColor: [0.95, 0.98, 1],
+        roughness: 0.05,
+        metallic: 0,
+        transmission,
+        ...(transmission > 0 ? { thickness: 1, ior: 1.5 } : {}),
+      },
+      // Deliberately open and topologically different from the canonical
+      // generated sphere. It is legal for opaque rendering but may never be
+      // retained when a material mutation activates optical transmission.
+      fallbackMesh: {
+        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
+        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+      },
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
+const OUTWARD_CUBE_INDICES = new Uint32Array([
+  0, 2, 1, 0, 3, 2,
+  4, 5, 6, 4, 6, 7,
+  0, 1, 5, 0, 5, 4,
+  3, 7, 6, 3, 6, 2,
+  0, 4, 7, 0, 7, 3,
+  1, 2, 6, 1, 6, 5,
+]);
+
+function opticalCubeScene(thickness: number): Scene {
+  return {
+    primitives: [{
+      kind: 'mesh',
+      id: 'optical-cube',
+      positions: new Float32Array([
+        -1, -1, -1, 1, -1, -1, 1, 1, -1, -1, 1, -1,
+        -1, -1, 1, 1, -1, 1, 1, 1, 1, -1, 1, 1,
+      ]),
+      normals: new Float32Array(24).fill(1),
+      indices: OUTWARD_CUBE_INDICES,
+      material: {
+        baseColor: [1, 1, 1], roughness: 0, metallic: 0,
+        transmission: 1,
+        thickness,
+      },
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function makePipeline() {
   const prepareSceneMutation = vi.fn((_mutation: CollectedBvhMutation) => ({
     commit: vi.fn(), rollback: vi.fn(), finalize: vi.fn(),
@@ -169,6 +229,7 @@ function makePipeline() {
     requestAccumReset: vi.fn(),
     prepareSceneMutation,
     resize: vi.fn(),
+    setCameraPrefixFullRateRequired: vi.fn(),
   };
 }
 
@@ -214,6 +275,22 @@ function seedEngine(scene: Scene, bvhMode: ReSTIRBvhMode = 'tlas') {
   internals._ddgi = ddgi;
   internals._rc = null;
   return { engine, pipeline, ddgi, warnings };
+}
+
+function seedAnalyticEngine(transmission: number) {
+  const scene = analyticScene(transmission);
+  const authored = scene.primitives[0] as AnalyticPrimitive;
+  const rendered: Scene = {
+    ...scene,
+    primitives: [analyticPrimitiveToMesh(authored, {
+      preferFallbackMesh: transmission <= 0,
+    })],
+  };
+  const seeded = seedEngine(rendered, 'merged');
+  const internals = seeded.engine as unknown as HybridEngineInternals;
+  internals._lastScene = scene;
+  internals._renderScene = rendered;
+  return seeded;
 }
 
 /** The four routing markers — exactly ONE (or the specified combination) fires
@@ -381,6 +458,93 @@ describe('HybridEngine _routePrimitiveUpdate (patch shape → routed path) matri
       engine.dispose();
     }
   });
+
+  it('opaque analytic activation regenerates the canonical transmissive mesh before publication', () => {
+    const { engine, pipeline } = seedAnalyticEngine(0);
+    try {
+      expect(() => engine.updatePrimitive('analytic-a', {
+        material: { transmission: 1, thickness: 1, ior: 1.5 },
+      })).not.toThrow();
+
+      const internals = engine as unknown as HybridEngineInternals;
+      const rendered = internals._renderScene!.primitives[0];
+      expect(rendered?.kind).toBe('mesh');
+      if (rendered == null || rendered.kind !== 'mesh') {
+        throw new Error('expected generated analytic mesh');
+      }
+      expect(rendered.positions.length).toBeGreaterThan(9);
+      expect(internals._bvhBuffers!.bvhBeerColors.count).toBeGreaterThan(1);
+      const optical = new Uint32Array(
+        internals._bvhBuffers!.opticalTriangleIdentity.cpuData,
+      );
+      expect(optical.some((value, lane) => lane % 2 === 0 && value > 0)).toBe(true);
+      expect(routeMarkers(pipeline).topologyRebuild).toBe(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('transmissive analytic deactivation restores the authored opaque fallback mesh', () => {
+    const { engine, pipeline } = seedAnalyticEngine(1);
+    try {
+      engine.updatePrimitive('analytic-a', {
+        material: { transmission: 0, thickness: 0 },
+      });
+
+      const internals = engine as unknown as HybridEngineInternals;
+      const rendered = internals._renderScene!.primitives[0];
+      expect(rendered?.kind).toBe('mesh');
+      if (rendered == null || rendered.kind !== 'mesh') {
+        throw new Error('expected authored fallback mesh');
+      }
+      expect(rendered.positions.length).toBe(9);
+      expect(internals._bvhBuffers!.bvhBeerColors.count).toBe(1);
+      const optical = new Uint32Array(
+        internals._bvhBuffers!.opticalTriangleIdentity.cpuData,
+      );
+      expect(optical.filter((_value, lane) => lane % 2 === 0)).toEqual(
+        new Uint32Array([0]),
+      );
+      expect(routeMarkers(pipeline).topologyRebuild).toBe(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it.each([
+    ['thin-to-bulk', 0, 1, true],
+    ['bulk-to-thin', 1, 0, false],
+  ] as const)(
+    '%s material mutation republishes optical component identity through geometry replacement',
+    (_label, initialThickness, nextThickness, expectsBulkIdentity) => {
+      const { engine, pipeline } = seedEngine(
+        opticalCubeScene(initialThickness),
+        'tlas',
+      );
+      try {
+        engine.updatePrimitive('optical-cube', {
+          material: { thickness: nextThickness },
+        });
+
+        expect(routeMarkers(pipeline)).toEqual({
+          transformRefit: 0,
+          positionsRefit: 0,
+          topologyRebuild: 1,
+          materialPatch: 0,
+        });
+        const state = engine as unknown as HybridEngineInternals;
+        const identities = new Uint32Array(
+          state._bvhBuffers!.opticalTriangleIdentity.cpuData,
+        );
+        for (let lane = 0; lane < identities.length; lane += 2) {
+          expect(identities[lane]! > 0).toBe(expectsBulkIdentity);
+          expect(identities[lane + 1]).toBeGreaterThan(0);
+        }
+      } finally {
+        engine.dispose();
+      }
+    },
+  );
 
   it('transform + material → topologyRebuild (mixed patch beats transform refit)', () => {
     const { engine, pipeline } = seedEngine(baseScene());

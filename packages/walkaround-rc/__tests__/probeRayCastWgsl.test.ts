@@ -13,7 +13,32 @@ function numberFrom(source: string, re: RegExp, label: string): number {
   return Number(match[1]);
 }
 
+function functionBody(source: string, name: string): string {
+  const marker = `fn ${name}(`;
+  const start = source.indexOf(marker);
+  if (start < 0) throw new Error(`Missing ${name}`);
+  const brace = source.indexOf('{', start);
+  if (brace < 0) throw new Error(`Missing ${name} body`);
+  let depth = 0;
+  for (let i = brace; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch === '{') depth += 1;
+    if (ch === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(brace + 1, i);
+    }
+  }
+  throw new Error(`Unterminated ${name} body`);
+}
+
 describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
+  it('converts only the top 24 RNG bits into a reachable f32 value below one', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'return f32(seed >> 8u) / 16777216.0;',
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toContain('/ 4294967296.0');
+  });
+
   it('matches walkaround f16 UV packing in vec4.w lanes', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain('fn rcPackedUvFromVec4(v: vec4f) -> vec2f');
     expect(PROBE_RAY_CAST_WGSL).toContain('unpack2x16float(bitcast<u32>(v.w))');
@@ -51,10 +76,10 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
     expect(rcShaderStride).toBe(hostStride);
     expect(rcShaderStride).toBe(mainShaderStride);
     expect(PROBE_RAY_CAST_WGSL).toContain(
-      'let idTableTexel = triangleMaterialBase + triIndex / 4u;',
+      'let idTableTexel = triangleMaterialBase + idTableOffset;',
     );
     expect(PROBE_RAY_CAST_WGSL).toContain(
-      '+ materialId * RC_MATERIAL_MAP_META_TEXELS_PER_TRI',
+      'let materialOffset = materialId * RC_MATERIAL_MAP_META_TEXELS_PER_TRI;',
     );
     expect(PROBE_RAY_CAST_WGSL).not.toContain(
       'triIndex * RC_MATERIAL_MAP_META_TEXELS_PER_TRI + metaOffset',
@@ -63,7 +88,7 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
 
   it('multiplies scalar roughness/metallic maps by the authored scalar fallback', () => {
     expect(PROBE_RAY_CAST_WGSL).toContain(
-      'return clamp(fallback * rcMaterialMapChannel(texel, channel), 0.0, 1.0);',
+      'return clamp(fallback * rcMaterialMapChannel(texel.value, channel), 0.0, 1.0);',
     );
     expect(PROBE_RAY_CAST_WGSL).not.toContain(
       'return clamp(rcMaterialMapChannel(texel, channel), 0.0, 1.0);',
@@ -78,7 +103,152 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
       'return vec4f(1.0, 1.0, 1.0, -1.0);',
     );
     expect(PROBE_RAY_CAST_WGSL).toContain(
-      'out.layerTransmission = clamp(layerControls.rgb, vec3f(0.0), vec3f(1.0));',
+      'out.dielectricLayerTransmission = clamp(',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'out.reflectionLayerTransmission = out.dielectricLayerTransmission;',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'out.layerTransmission = out.reflectionLayerTransmission;',
+    );
+  });
+
+  it('rejects non-finite selected UVs before every wrap, filter, LOD, and texel cast path', () => {
+    const body = functionBody(
+      PROBE_RAY_CAST_WGSL,
+      'rcSampleMaterialAtlasRawAtOffsetDelta',
+    );
+    const guard = body.indexOf('if (!rcMaterialAtlasFiniteVec2(uv))');
+    const affine = body.indexOf('let scaled = uv * meta1.xy;');
+    const wrap = body.indexOf('let wrapped = rcWrapMaterialUv(');
+    const lod = body.indexOf('let lodCandidate = log2(');
+
+    expect(guard).toBeGreaterThan(0);
+    expect(body.slice(guard, affine)).toContain(
+      'return rcMaterialAtlasInvalidSample();',
+    );
+    expect(guard).toBeLessThan(affine);
+    expect(guard).toBeLessThan(wrap);
+    expect(guard).toBeLessThan(lod);
+    expect(PROBE_RAY_CAST_WGSL).toContain('if (mode == 2u) {');
+    expect(PROBE_RAY_CAST_WGSL).toContain('if (mipFilter == 1u) {');
+    expect(PROBE_RAY_CAST_WGSL).toContain('let finiteLod = select(0.0, lod, rcMaterialAtlasFiniteF32(lod));');
+
+    for (const uvLane of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      for (const wrapMode of ['repeat', 'mirrored-repeat'] as const) {
+        for (const filter of ['nearest', 'linear'] as const) {
+          const sampled = Number.isFinite(uvLane)
+            ? `${wrapMode}:${filter}`
+            : -1;
+          expect(sampled).toBe(-1);
+        }
+      }
+    }
+  });
+
+  it('propagates explicit finite sample validity through taps and mips', () => {
+    const validSample = (value: readonly number[]): boolean =>
+      value.every((lane) => Number.isFinite(lane) && Math.abs(lane) <= 3.402823466e38);
+
+    expect(validSample([-1, -0.5, 0, 1])).toBe(true);
+    expect(validSample([Number.NEGATIVE_INFINITY, 0, 0, 1])).toBe(false);
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'struct RCMaterialAtlasSampleResult {',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain('encoding: u32,');
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'c00.valid == 0u || c10.valid == 0u || c01.valid == 0u || c11.valid == 0u',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'if (c0.valid == 0u || c1.valid == 0u)',
+    );
+    const decodedFinite = PROBE_RAY_CAST_WGSL.indexOf(
+      'let decoded = rcMaterialAtlasValidSample(value, address.encoding);',
+    );
+    const srgbDecode = PROBE_RAY_CAST_WGSL.indexOf(
+      'if (address.decodeSrgb != 0u)',
+      decodedFinite,
+    );
+    expect(decodedFinite).toBeGreaterThan(0);
+    expect(decodedFinite).toBeLessThan(srgbDecode);
+  });
+
+  it('uses source encoding for SNORM normal decode and degenerate fallback', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'texelColor.encoding == RC_MATERIAL_ATLAS_ENCODING_RGBA8_SNORM',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'texelColor.encoding == RC_MATERIAL_ATLAS_ENCODING_RGBA16_SNORM',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'if (!rcCanNormalize(tangentSampleRaw))',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let perturbed = rcSafeNormalizeOr(perturbedRaw, fallbackNormal);',
+    );
+  });
+
+  it('uses source encoding for anisotropy direction decode', () => {
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'anisoMap.encoding == RC_MATERIAL_ATLAS_ENCODING_RGBA8_SNORM',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'anisoMap.encoding == RC_MATERIAL_ATLAS_ENCODING_RGBA16_SNORM',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'clamp(anisoMap.value.rg, vec2f(0.0), vec2f(1.0)) * 2.0 - vec2f(1.0)',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'clamp(anisoMap.value.rg, vec2f(-1.0), vec2f(1.0))',
+    );
+  });
+
+  it('validates emitter float metadata before every integer conversion', () => {
+    const exactF32IntegerInRange = (
+      value: number,
+      minimum: number,
+      maximum: number,
+    ): boolean => {
+      const represented = Math.fround(value);
+      return Number.isFinite(represented) &&
+        Number.isInteger(represented) &&
+        represented >= minimum &&
+        represented <= maximum;
+    };
+
+    expect(exactF32IntegerInRange(3, 0, 3)).toBe(true);
+    expect(exactF32IntegerInRange(4, 0, 3)).toBe(false);
+    expect(exactF32IntegerInRange(Number.NaN, 0, 3)).toBe(false);
+    expect(exactF32IntegerInRange(16, 1, 16)).toBe(true);
+    expect(exactF32IntegerInRange(16.5, 1, 16)).toBe(false);
+    expect(exactF32IntegerInRange(Number.MAX_VALUE, -16_777_216, 16_777_216)).toBe(false);
+
+    expect(PROBE_RAY_CAST_WGSL).not.toContain(
+      'u32(max(emitter.emitterFlags, 0.0))',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      '!rcMaterialAtlasFiniteF32(flags)',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'flags > 3.0 ||\n    floor(flags) != flags',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      '!rcMaterialAtlasFiniteF32(e._padA)',
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toContain(
+      'i32(round(e._padA))',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'e._padA > 16777216.0 ||\n    floor(e._padA) != e._padA',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let subdivOrdinalCount = subdivLevel * subdivLevel;',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'if (e._padC >= f32(subdivOrdinalCount))',
+    );
+    expect(PROBE_RAY_CAST_WGSL).not.toContain(
+      'u32(round(max(levelF, 1.0)))',
     );
   });
 
@@ -91,7 +261,44 @@ describe('PROBE_RAY_CAST_WGSL material UV decode', () => {
     );
     expect(
       PROBE_RAY_CAST_WGSL.match(/rcSampleSurfaceEmissiveMap\(hit,/g),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
+  });
+
+  it('keeps partial transmission, visible volume, suffix transport, and unlit ownership distinct', () => {
+    const directResponse = functionBody(
+      PROBE_RAY_CAST_WGSL,
+      'rcEvaluateProbeDirectResponse',
+    );
+    expect(directResponse).toContain(
+      '(1.0 - clamp(mat.transmission, 0.0, 1.0)) * RC_INV_PI',
+    );
+    const sources = functionBody(
+      PROBE_RAY_CAST_WGSL,
+      'rcShadeTransmissionInterfaceSources',
+    );
+    const suffix = functionBody(
+      PROBE_RAY_CAST_WGSL,
+      'rcTraceDielectricSuffixChannel',
+    );
+    const kernel = functionBody(PROBE_RAY_CAST_WGSL, 'probeRayCastKernel');
+    expect(sources).toContain(
+      'rcSampleLightMapIrradiance(hit) * probeMat.layerTransmission;',
+    );
+    expect(sources).toContain('out.localSurface = rcApplyHomogeneousVolumeSingleScatter(');
+    expect(sources).toContain('if (!suppressOpaqueSubstrate && !explicitBulkSegment)');
+    expect(sources).toContain('out.emission = select(');
+    expect(suffix).toContain(
+      'rcSuffixTransferredChannel(throughput, localSurfaceSource, channel);',
+    );
+    expect(suffix).not.toContain('opaquePhysicalWeight');
+    expect(kernel).toContain('let firstSources = rcShadeTransmissionInterfaceSources(');
+    expect(kernel).toContain('if (firstSources.unlit != 0u)');
+    expect(suffix).toContain(
+      'if (interfaceUnlit != 0u) {',
+    );
+    expect(suffix).toContain('(mat.flags & MATERIAL_FLAG_SKIP_EMITTER) != 0u;');
+    expect(kernel).toContain('rcTraceDielectricSuffixChannel(');
+    expect(kernel).not.toContain('localSurfaceRadiance + transContrib');
   });
 });
 

@@ -40,7 +40,7 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 						h ^= h >> 15u;
 						h *= 0x846ca68bu;
 						h ^= h >> 16u;
-						return float( h ) * ( 1.0 / 4294967296.0 );
+						return float( h >> 8u ) * ( 1.0 / 16777216.0 );
 
 					}
 
@@ -61,20 +61,22 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
 							// column), 2026-06-10 — RENDER-CHANGING for bdpt:true only; off-path
 							// byte-identical.
 							//
-                                                        // The texture is 8 rows × 8 columns. Eight fragments (one per row)
+											// The texture is 12 rows × 8 columns. Twelve fragments (one per row)
 							// cooperate to write one vertex: row 0 = position|kind, row 1 =
 							// normal|pdfFwd, row 2 = throughput|pdfRev, row 3 = BSDF state,
-                                                        // row 4 = hit/material payload, rows 5..7 = medium stack
+											// row 4 = hit/material payload, rows 5..7 = medium stack,
+											// rows 8..9 = per-entry attenuation-thickness caps, and
+											// rows 10..11 = exact optical boundary ids
 							// (see bdpt_light_subpath.glsl.js).
 							// The original rng_initialize(gl_FragCoord.xy, seed) seeded with the
 							// Y coordinate, so each of the five fragments at column C traced a
 							// *different* random subpath and stored ONE row from that path — the
 							// assembled "vertex" mixed position, normal/pdf, and throughput from
-							// five independent random subpaths, making BDPT connections garbage.
+							// independent random subpaths, making BDPT connections garbage.
 							//
-							// Fix: re-initialize with a y-flattened coordinate so all five
+							// Fix: re-initialize with a y-flattened coordinate so all row
 							// fragments at the same column trace the identical subpath. The row
-							// routing (bdptRow == 0/1/2/3 below) then writes consistent rows from
+							// routing below then writes consistent rows from
 							// the same path. The main-entry rng_initialize(gl_FragCoord.xy, seed)
 							// above is left untouched — the eye pass still seeds with the full
 							// (x,y) pixel coordinate as before.
@@ -109,6 +111,12 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
                                                         vec4 bdptV5;
                                                         vec4 bdptV6;
                                                         vec4 bdptV7;
+							vec4 bdptV8;
+							vec4 bdptV9;
+							vec4 bdptV10;
+							vec4 bdptV11;
+							vec4 bdptV12;
+							vec4 bdptV13;
 							vec4 bdptPredecessor0;
 							vec4 bdptPredecessor2;
 							writeLightSubpathVertex(
@@ -126,6 +134,12 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
                                                                 bdptV5,
                                                                 bdptV6,
                                                                 bdptV7,
+								bdptV8,
+								bdptV9,
+								bdptV10,
+								bdptV11,
+								bdptV12,
+								bdptV13,
 								bdptPredecessor0,
 								bdptPredecessor2
 							);
@@ -156,8 +170,20 @@ const RENDER_MAIN_BDPT_SUBPATH = /* glsl */ `
                                                                 pc_fragColor = bdptV5;
                                                         } else if ( bdptRow == 6 ) {
                                                                 pc_fragColor = bdptV6;
-                                                        } else {
+							} else if ( bdptRow == 7 ) {
                                                                 pc_fragColor = bdptV7;
+							} else if ( bdptRow == 8 ) {
+								pc_fragColor = bdptV8;
+							} else if ( bdptRow == 9 ) {
+								pc_fragColor = bdptV9;
+							} else if ( bdptRow == 10 ) {
+								pc_fragColor = bdptV10;
+							} else if ( bdptRow == 11 ) {
+								pc_fragColor = bdptV11;
+							} else if ( bdptRow == 12 ) {
+								pc_fragColor = bdptV12;
+							} else {
+								pc_fragColor = bdptV13;
                                                         }
 							gNormalDepth = vec4( 0.5, 1.0, 0.5, 0.0 );
 							gAlbedo = vec4( 0.0 );
@@ -182,8 +208,9 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						invEnvRotation3x3 = inverse( envRotation3x3 );
 						// B4: the NEE-strategy slot count = analytic lights + mesh-area triangle
 						// lights (counted as ONE strategy slot — area-proportional triangle pick)
-						// + 1 env slot when an environment is present. Each strategy is chosen
-						// with probability 1/lightsDenom. Mesh-only/no-env scenes must not reserve
+						// + 1 env slot when an environment is present. Each family starts from
+						// its slot-count/lightsDenom weight, then uses the nearest exact 2^24-lattice
+						// probability in both selection and MIS. Mesh-only/no-env scenes must not reserve
 						// a dead environment slot; that stays unbiased but doubles direct-light variance.
 						lightsDenom = float(
 							lights.count +
@@ -222,9 +249,12 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						ScatterRecord scatterRec;
                                                 scatterRec.specularPdf = 0.0;
                                                 scatterRec.pdf = 0.0;
+                                                scatterRec.pdfRev = 0.0;
                                                 scatterRec.direction = vec3( 0.0 );
                                                 scatterRec.throughput = vec3( 0.0 );
                                                 scatterRec.sampledDelta = false;
+                                                scatterRec.sampledNonConnectable = false;
+                                                scatterRec.sampledRoughness = 0.0;
 
                                                 #if FEATURE_BDPT
 						// BDPT eye-subpath scratch stack (per-invocation local arrays — the
@@ -248,6 +278,7 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						vec3  bdptPrevPos = ( cameraWorldMatrix * vec4( 0.0, 0.0, 0.0, 1.0 ) ).xyz;
                                                 float bdptEyeSegmentDensity = 1.0;
                                                 float bdptEyeSegmentReverseDensity = 1.0;
+                                                bool bdptEyeReverseMediumPending = false;
                                                 float bdptPendingEnvironmentMisWeight = 1.0;
                                                 #endif
 
@@ -270,11 +301,12 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
 						state.wavelength = sampleHeroWavelengthMIS( rand( 30 ), rand( 31 ), state.wavelengthPdf );
 						#endif
 						state.transmissiveTraversals = transmissiveBounces;
-						#if FEATURE_FOG
+						#if ADVANCED_OPTICAL_TRANSPORT
 
                                                 bool initialMediumStackValid = bvhBuildMediumStack(
-                                                        ray.origin, - ray.direction,
+                                                        ray.origin, ray.direction,
                                                         materialIndexAttribute, materials,
+								attributesArray,
                                                         state.mediumStack,
                                                         state.fogMaterial
                                                 );
@@ -289,6 +321,7 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
                                                 }
 
 						#endif
+						float pendingSolidOpticalDistance = 0.0;
 
                                                 // bounces is a validated uniform, but several WebGL2 drivers only
                                                 // accept trace loops whose maximum trip count is statically visible.
@@ -316,32 +349,11 @@ const RENDER_MAIN_GBUFFER = /* glsl */ `
                                                         state.traversals = bounces - i;
                                                         state.firstRay = i == 0 && state.transmissiveTraversals == transmissiveBounces;
 
-                                                        int hitType = traceScene( ray, state.fogMaterial, surfaceHit );
-                                                        #if FEATURE_FOG
-                                                        if ( state.fogMaterial.fogVolume && hitType != NO_HIT ) {
-                                                                state.throughput *= fogFreeFlightRatioWeight(
-                                                                        materials,
-                                                                        state.fogMaterial,
-                                                                        max( surfaceHit.dist, 0.0 ),
-                                                                        state.wavelength
-                                                                );
-                                                        }
-                                                        #endif
-                                                        #if FEATURE_BDPT
-                                                        if ( state.fogMaterial.fogVolume && hitType != NO_HIT ) {
-                                                                float bdptSigmaT = max( state.fogMaterial.opacity, 0.0 );
-                                                                float bdptSurvival = exp( - bdptSigmaT * max( surfaceHit.dist, 0.0 ) );
-                                                                bdptEyeSegmentDensity *= hitType == FOG_HIT
-                                                                        ? bdptSigmaT * bdptSurvival
-                                                                        : bdptSurvival;
-                                                                // Reverse collision density belongs at
-                                                                // the edge origin, so it is seeded after
-                                                                // accepting that origin vertex.  Every
-                                                                // traversed segment contributes only its
-                                                                // symmetric survival factor here.
-                                                                bdptEyeSegmentReverseDensity *= bdptSurvival;
-							}
-							#endif
+							int hitType = traceScene(
+								ray, state.mediumStack,
+								state.fogMaterial, state.wavelength, surfaceHit
+							);
+							if ( hitType == INVALID_HIT ) break;
 `;
 
 // ── Section 3: forward analytic-light hit + NO_HIT/env + surface setup ────
@@ -353,19 +365,9 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 							bool forwardAreaLightHit = false;
 							uint forwardAreaLightIndex = 0u;
 							float forwardAreaLightDist = hitType == NO_HIT ? INFINITY : surfaceHit.dist;
-							// H4 FIX (2026-06-09): the forward-hit MIS light pdf must MATCH the
-							// power-weighted discrete selection NEE actually performs in
-							// randomLightSample:  p_light = lightRec.pdf / lightsDenom * count *
-							// (power_i / sumPower). The previous  lightRec.pdf / lightsDenom
-							// silently assumed UNIFORM selection (count * discretePdf == 1) — exact
-							// only for a single light or equal powers; with >=2 unequal-power area
-							// lights it biased the MIS weight. Latent until H1 uploaded lights.count.
-                                                        float sumLightPower = 0.0;
-                                                        for ( uint pi = 0u; pi < lights.count; pi ++ ) {
-                                                                sumLightPower += finitePositiveLightPower(
-                                                                        readLightInfo( lights.tex, pi ).power
-                                                                );
-							}
+							// Forward-hit MIS reads the exact represented categorical PMF
+							// consumed by randomLightSample. The shader never independently
+							// renormalizes physical powers.
 							for ( uint i = 0u; i < lights.count; i ++ ) {
 
 								LightRecord lightRec;
@@ -382,6 +384,95 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 								}
 
 							}
+							float opticalSegmentDistance = forwardAreaLightHit
+								? max( forwardAreaLightDist, 0.0 )
+								: hitType == NO_HIT
+									? INFINITY
+									: max( surfaceHit.dist, 0.0 );
+							bool opticalSegmentDeferredToSurface = false;
+							float resolvedOpticalGeometricDistance =
+								opticalSegmentDistance;
+							float effectiveOpticalSegmentDistance =
+								opticalSegmentDistance;
+							#if ADVANCED_OPTICAL_TRANSPORT
+							// The current stack top owns the complete incoming edge. For a
+							// solid-medium surface arrival, defer Beer until reconstruction so
+							// the entry/classification-time cap owns the whole segment. Fog keeps
+							// the free-flight ratio weight, while finite lights and environment
+							// escapes have no destination surface and are resolved immediately.
+							opticalSegmentDeferredToSurface =
+								state.mediumStack.count > 0 &&
+								! state.fogMaterial.fogVolume &&
+								! forwardAreaLightHit &&
+								hitType == SURFACE_HIT;
+							if (
+								state.mediumStack.count > 0 &&
+								! state.fogMaterial.fogVolume
+							) {
+								resolvedOpticalGeometricDistance +=
+									pendingSolidOpticalDistance;
+							}
+							effectiveOpticalSegmentDistance =
+								mediumEffectiveSegmentDistance(
+									state.mediumStack,
+									resolvedOpticalGeometricDistance
+								);
+							if ( effectiveOpticalSegmentDistance < 0.0 ) break;
+							if ( ! opticalSegmentDeferredToSurface ) {
+								state.throughput *=
+									state.fogMaterial.fogVolume && hitType == FOG_HIT
+									? fogFreeFlightCollisionWeight(
+										materials,
+										state.fogMaterial,
+										effectiveOpticalSegmentDistance,
+										state.wavelength
+									)
+									: opticalPathSegmentThroughput(
+										materials,
+										state.mediumStack,
+										state.fogMaterial,
+										effectiveOpticalSegmentDistance,
+										state.wavelength
+									);
+							}
+							#endif
+							#if FEATURE_BDPT
+							if ( state.fogMaterial.fogVolume ) {
+								float bdptSurvival = fogProposalSurvival(
+									materials, state.fogMaterial,
+									effectiveOpticalSegmentDistance, state.wavelength
+								);
+								float bdptCollisionDensity =
+									fogProposalCollisionDensity(
+										materials, state.fogMaterial,
+										effectiveOpticalSegmentDistance, state.wavelength
+									);
+								bool bdptFogCollision =
+									! forwardAreaLightHit && hitType == FOG_HIT;
+								bdptEyeSegmentDensity *= bdptFogCollision
+									? bdptCollisionDensity
+									: bdptSurvival;
+								// In reverse, a medium collision belongs only to the first
+								// segment leaving the previous accepted volume vertex. Later
+								// alpha-null segments contribute survival marginals.
+								bdptEyeSegmentReverseDensity *=
+									bdptEyeReverseMediumPending
+									? bdptCollisionDensity
+									: bdptSurvival;
+								bdptEyeReverseMediumPending = false;
+							}
+							#endif
+							#if ADVANCED_OPTICAL_TRANSPORT
+							if ( ! opticalSegmentDeferredToSurface ) {
+								if ( ! consumeMediumSegmentDistance(
+									state.mediumStack,
+									resolvedOpticalGeometricDistance,
+									materials,
+									state.fogMaterial
+								) ) break;
+								pendingSolidOpticalDistance = 0.0;
+							}
+							#endif
                                                         if ( forwardAreaLightHit ) {
 
                                                                 Light forwardAreaLight =
@@ -427,6 +518,7 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
                                                                         forwardAreaLightRec.castShadowDisabled > 0.5 &&
                                                                         ! state.firstRay &&
                                                                         ! scatterRec.sampledDelta &&
+                                                                        ! scatterRec.sampledNonConnectable &&
                                                                         ! state.transmissiveRay;
 
                                                                 #if FEATURE_BDPT
@@ -434,7 +526,11 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
                                                                 // Finite-emitter paths are a single BDPT family. The c=0
                                                                 // endpoint connection owns non-delta arrivals; only camera
                                                                 // and delta-chain hits are unique forward strategies.
-                                                                if ( state.firstRay || scatterRec.sampledDelta ) {
+                                                                if (
+                                                                        state.firstRay ||
+                                                                        scatterRec.sampledDelta ||
+                                                                        scatterRec.sampledNonConnectable
+                                                                ) {
                                                                         pc_fragColor.rgb += forwardAreaLightRgb;
                                                                 }
                                                                 break;
@@ -452,12 +548,26 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 								// Camera-visible and transmissive paths have no matching NEE strategy at the
 								// previous vertex, so they keep full emission.
 								if ( ! state.firstRay && ! state.transmissiveRay ) {
-                                                                        float discreteSelectPdf = sumLightPower > 0.0
-                                                                                ? finitePositiveLightPower(
-                                                                                        readLightInfo( lights.tex, forwardAreaLightIndex ).power
-                                                                                ) / sumLightPower
-                                                                                : 0.0;
-										float lightSamplePdf = fullForwardLightPdf / lightsDenom * float( lights.count ) * discreteSelectPdf;
+										float discreteSelectPdf =
+											readLightInfo( lights.tex, forwardAreaLightIndex ).proposalPmf;
+										float forwardAnalyticStrategyProbability;
+										float forwardMeshStrategyProbability;
+										float forwardEnvironmentStrategyProbability;
+										representedThreeSlotStrategyProbabilitiesF32(
+											lightsDenom,
+											float( lights.count ),
+											uMeshLightCount > 0u ? 1.0 : 0.0,
+											environmentIntensity > 0.0 && envMapInfo.totalSum > 0.0
+												? 1.0
+												: 0.0,
+											forwardAnalyticStrategyProbability,
+											forwardMeshStrategyProbability,
+											forwardEnvironmentStrategyProbability
+										);
+										float lightSamplePdf =
+											fullForwardLightPdf *
+											forwardAnalyticStrategyProbability *
+											discreteSelectPdf;
 									float misWeight = misHeuristic( scatterRec.pdf, lightSamplePdf );
 									forwardAreaLightRgb *= misWeight;
 								}
@@ -472,9 +582,19 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
                                                         }
 
 							if ( hitType == NO_HIT ) {
+								#if ADVANCED_OPTICAL_TRANSPORT
+								// Every stack entry is a closed bulk region. Reaching the
+								// environment before its paired exit is malformed geometry;
+								// do not let a zero-extinction/open shell leak background light.
+								if ( state.mediumStack.count > 0 ) break;
+								#endif
 
                                                                 #if FEATURE_BDPT
-                                                                if ( state.firstRay || scatterRec.sampledDelta ) {
+                                                                if (
+                                                                        state.firstRay ||
+                                                                        scatterRec.sampledDelta ||
+                                                                        scatterRec.sampledNonConnectable
+                                                                ) {
                                                                 #else
                                                                 if ( state.firstRay || state.transmissiveRay ) {
                                                                 #endif
@@ -502,7 +622,21 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
                                                                         vec3 envColor;
                                                                         float envPdf = sampleEquirect( envRotation3x3 * ray.direction, envColor );
                                                                         #if ! FEATURE_BDPT
-                                                                        envPdf /= lightsDenom;
+                                                                        float escapeAnalyticStrategyProbability;
+                                                                        float escapeMeshStrategyProbability;
+                                                                        float escapeEnvironmentStrategyProbability;
+                                                                        representedThreeSlotStrategyProbabilitiesF32(
+                                                                                lightsDenom,
+                                                                                float( lights.count ),
+                                                                                uMeshLightCount > 0u ? 1.0 : 0.0,
+                                                                                environmentIntensity > 0.0 && envMapInfo.totalSum > 0.0
+                                                                                        ? 1.0
+                                                                                        : 0.0,
+                                                                                escapeAnalyticStrategyProbability,
+                                                                                escapeMeshStrategyProbability,
+                                                                                escapeEnvironmentStrategyProbability
+                                                                        );
+                                                                        envPdf *= escapeEnvironmentStrategyProbability;
                                                                         #endif
 
 									// and weight the contribution
@@ -539,66 +673,48 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 
 							}
 
-							uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.w ).r;
-							MaterialControl materialControl;
-							readMaterialControl( materials, materialIndex, materialControl );
-							bool activeMaterialMatte = materialControl.matte;
-							bool activeMaterialCastShadow = materialControl.castShadow;
-							bool activeMaterialUnlit = materialControl.unlit;
-							bool activeMaterialMeshEmitterCastShadowDisabled = materialControl.meshEmitterCastShadowDisabled;
-							uint activeMaterialFlags = materialControl.flags;
+								uint materialIndex = 0u;
+								uint materialBoundaryId = 0u;
+								bool activeMaterialMatte;
+								bool activeMaterialUnlit;
+								bool activeMaterialMeshEmitterCastShadowDisabled;
+								uint activeMaterialFlags;
+								MaterialControl materialControl;
+								materialControl.opticalVolume = false;
 
 							#if FEATURE_FOG
 
 							if ( hitType == FOG_HIT ) {
 
 								activeMaterialMatte = state.fogMaterial.matte;
-								activeMaterialCastShadow = state.fogMaterial.castShadow;
 								activeMaterialUnlit = state.fogMaterial.unlit;
 								activeMaterialMeshEmitterCastShadowDisabled = state.fogMaterial.meshEmitterCastShadowDisabled;
 								activeMaterialFlags = state.fogMaterial.flags;
 								state.accumulatedRoughness += 0.2;
 
-                                                        } else if ( materialControl.fogVolume ) {
-                                                                bool mediumStackValid = surfaceHit.side == 1.0
-                                                                        ? enterMedium(
-                                                                                state.mediumStack, materialIndex,
-                                                                                materials, state.fogMaterial
-                                                                        )
-                                                                        : leaveMedium(
-                                                                                state.mediumStack, materialIndex,
-                                                                                materials, state.fogMaterial
-                                                                        );
-                                                                if ( ! mediumStackValid ) break;
+								} else
 
-								ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
+								#endif
+								{
 
-								i -= sign( state.transmissiveTraversals );
-								state.transmissiveTraversals -= sign( state.transmissiveTraversals );
-								continue;
+									// FOG_HIT has no guaranteed triangle payload. Decode controls only
+									// for a real surface, and keep a participating boundary in the
+									// ordinary path so its dielectric interface remains explicit.
+									uvec4 materialIdentity = uTexelFetch1D(
+										materialIndexAttribute, surfaceHit.faceIndices.w
+									);
+									materialIndex = materialIdentity.r;
+									materialBoundaryId = materialIdentity.g;
+									readMaterialControl( materials, materialIndex, materialControl );
+									activeMaterialMatte = materialControl.matte;
+									activeMaterialUnlit = materialControl.unlit;
+									activeMaterialMeshEmitterCastShadowDisabled =
+										materialControl.meshEmitterCastShadowDisabled;
+									activeMaterialFlags = materialControl.flags;
 
-							}
-
-							#endif
+								}
 							bool activeMaterialMeshEmitterNeeDisabled = bool( activeMaterialFlags & 0x80u );
 							bool activeMaterialDoubleSided = bool( activeMaterialFlags & 0x02u );
-
-							// early out if this is a matte material
-							if ( activeMaterialMatte && state.firstRay ) {
-
-								pc_fragColor = vec4( 0.0 );
-								break;
-
-							}
-
-							// if we've determined that this is a shadow ray and we've hit an item with no shadow casting
-							// then skip it
-							if ( ! activeMaterialCastShadow && state.isShadowRay ) {
-
-								ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
-								continue;
-
-							}
 
 							SurfaceRecord surf;
 							int surfaceStatus = HIT_SURFACE;
@@ -615,17 +731,69 @@ const RENDER_MAIN_BDPT_EYE = /* glsl */ `
 								);
 
 							}
-							if ( surfaceStatus == SKIP_SURFACE ) {
+								if ( surfaceStatus == SKIP_SURFACE ) {
+
+								#if ADVANCED_OPTICAL_TRANSPORT
+								if ( opticalSegmentDeferredToSurface ) {
+									// Alpha/sidedness rejection is a null event, so retain the
+									// distance until a real optical edge endpoint is accepted.
+									pendingSolidOpticalDistance += opticalSegmentDistance;
+								}
+								#endif
 
 								// only allow a limited number of transparency discards otherwise we could
 								// crash the context with too long a loop.
 								i -= sign( state.transmissiveTraversals );
 								state.transmissiveTraversals -= sign( state.transmissiveTraversals );
 
-								ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
-								continue;
+								if ( ray.minimumDistanceExclusive >= 0.0 ) {
+									if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) break;
+								} else {
+									ray.origin = stepRayOrigin(
+										ray.origin, ray.direction,
+										- surfaceHit.faceNormal, surfaceHit.dist
+									);
+									setOrdinaryRayRange( ray );
+								}
+									continue;
 
-							}
+								}
+
+								#if ADVANCED_OPTICAL_TRANSPORT
+								if (
+									! surf.volumeParticle &&
+									! configureSurfaceOpticalInterface(
+										state.mediumStack,
+										materialBoundaryId,
+										materialControl,
+										state.wavelength,
+										surf
+									)
+								) break;
+								if ( opticalSegmentDeferredToSurface ) {
+									state.throughput *= opticalPathSegmentThroughput(
+										materials,
+										state.mediumStack,
+										state.fogMaterial,
+										effectiveOpticalSegmentDistance,
+										state.wavelength
+									);
+									if ( ! consumeMediumSegmentDistance(
+										state.mediumStack,
+										resolvedOpticalGeometricDistance,
+										materials,
+										state.fogMaterial
+									) ) break;
+									pendingSolidOpticalDistance = 0.0;
+								}
+								#endif
+
+								// Local termination and visibility policy is evaluated only after
+								// the complete incoming optical edge has updated throughput.
+								if ( activeMaterialMatte && state.firstRay ) {
+									pc_fragColor = vec4( 0.0 );
+									break;
+								}
 `;
 
 // ── Section 5: G-buffer capture + surface shading + NEE + BDPT connection ─
@@ -674,7 +842,9 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 							// On the primary hit there is no prior scatter (camera) → handled by
 							// the firstRay branch at the emission site.
 							float incomingBsdfPdf = scatterRec.pdf;
-                                                        bool incomingWasDelta = scatterRec.sampledDelta;
+										bool incomingWasDelta =
+											scatterRec.sampledDelta ||
+											scatterRec.sampledNonConnectable;
 
 							// Emission belongs to the path that already arrived at this surface,
 							// so it is accumulated before selecting local NEE versus continuation.
@@ -699,7 +869,6 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 								if (
 									! activeMaterialMeshEmitterNeeDisabled &&
 									uMeshLightCount != 0u &&
-                                                                        uTotalEmissivePower > 0.0 &&
                                                                         ! state.firstRay &&
                                                                         ! incomingWasDelta &&
 									surf.emission != vec3( 0.0 )
@@ -709,11 +878,28 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 											incomingAcceptedVertexDirection
 										);
 										float neePdf = meshAreaLightForwardPdf(
+											uMeshLights,
+											uMeshLightCount,
+											surfaceHit.faceIndices.w,
+											geometricHitPoint,
 											incomingAcceptedVertexDistance,
-										cosLight,
-										uTotalEmissivePower,
-										surf.emission
-									) / lightsDenom;
+											cosLight
+									);
+									float meshHitAnalyticStrategyProbability;
+									float meshHitStrategyProbability;
+									float meshHitEnvironmentStrategyProbability;
+									representedThreeSlotStrategyProbabilitiesF32(
+										lightsDenom,
+										float( lights.count ),
+										uMeshLightCount > 0u ? 1.0 : 0.0,
+										environmentIntensity > 0.0 && envMapInfo.totalSum > 0.0
+											? 1.0
+											: 0.0,
+										meshHitAnalyticStrategyProbability,
+										meshHitStrategyProbability,
+										meshHitEnvironmentStrategyProbability
+									);
+									neePdf *= meshHitStrategyProbability;
 									float emisMisWeight = misHeuristic( incomingBsdfPdf, neePdf );
 									pc_fragColor.rgb += wavelengthToRGB(
 										state.wavelength,
@@ -732,32 +918,21 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 									);
 								}
 							}
-							// Sprint 7: gate SSS by per-material TRANSLUCENT_BIT and back-face traversal.
-							// Falls back to standard BSDF sampling for non-translucent materials.
-							bool canUseSss =
-								surf.sssSigmaT > 0.0 &&
-								( ( activeMaterialFlags & TRANSLUCENT_BIT ) != 0u ) &&
-								! surf.frontFace;
-							if ( canUseSss ) {
-
-								scatterRec = sssSample( - ray.direction, surf, state.wavelength );
-								scatterRec.throughput *= activeLayerThroughput( surf, state.wavelength );
-
-							} else {
-
-								scatterRec = bsdfSample( - ray.direction, surf, state.wavelength );
-
-							}
-								state.isShadowRay = scatterRec.specularPdf < rand( 4 );
+							// Positive scattering is represented by explicit free-flight and HG
+							// medium vertices. The former back-face surface shortcut was
+							// unreachable for well-formed packed materials and would double-own
+							// the same transport if enabled alongside the bulk medium path.
+							scatterRec = bsdfSample( - ray.direction, surf, state.wavelength );
 
 								bool isBelowSurface = ! surf.volumeParticle && dot( scatterRec.direction, surf.faceNormal ) < 0.0;
-                                                        vec3 hitPoint = stepRayOrigin( ray.origin, ray.direction, isBelowSurface ? - surf.faceNormal : surf.faceNormal, surfaceHit.dist );
 
                                                         #if FEATURE_BDPT
                                                         // Both the radiance draw and the NEE replay need the
                                                         // same eye stack so s=0/s=1 can share the explicit
                                                         // s>=2 power-heuristic denominator.
-                                                        bool bdptEyeIsSpec = scatterRec.sampledDelta;
+                                                        bool bdptEyeIsSpec =
+                                                                scatterRec.sampledDelta ||
+                                                                scatterRec.sampledNonConnectable;
                                                         if ( bdptEyeDepth < BDPT_MAX_EYE_DEPTH ) {
                                                                 bdptEyePos[ bdptEyeDepth ] = geometricHitPoint;
                                                                 bdptEyeNrm[ bdptEyeDepth ] = surf.volumeParticle
@@ -799,7 +974,8 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
                                                                                 surf, geometricHitPoint
                                                                         );
                                                                         neeLightSample = prepareDirectLightSample(
-                                                                        surf, state, geometricHitPoint, neeLightSample
+                                                                        surf, state, geometricHitPoint,
+										materialBoundaryId, neeLightSample
                                                                 );
 
 								WHITE_NOISE_SEED = neeSavedWhiteNoiseSeed;
@@ -958,6 +1134,7 @@ const RENDER_MAIN_SURFACE_BDPT_EYE = /* glsl */ `
 										state.throughput,
 										surf,
 										state,
+										materialBoundaryId,
 										bdptEyeDepth,
 											bdptEyePos, bdptEyeNrm, bdptEyePdfFwd, bdptEyePdfRev,
 											bdptEyeSpec, bdptEyeMedium,
@@ -982,11 +1159,19 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 									( isBelowSurface || dot( scatterRec.direction, surf.faceNormal * surfaceHit.side ) < 0.0 );
 								if ( sampledTransmissionLobe ) {
 
-									mat3 transmissionInvBasis = transpose( surf.normalBasis );
-									vec3 transmissionWo = normalize( transmissionInvBasis * - ray.direction );
-									vec3 transmissionWi = normalize( transmissionInvBasis * scatterRec.direction );
-									vec3 transmissionHalf = getHalfVector( transmissionWi, transmissionWo, surf.eta );
-									state.accumulatedRoughness += sin( acosApprox( clamp( abs( transmissionHalf.z ), 0.0, 1.0 ) ) );
+									if ( scatterRec.sampledNonConnectable ) {
+										// A compound sheet event has two latent Walter normals and
+										// no meaningful external half vector. The sampler carries
+										// their exact roughness contribution explicitly.
+										state.accumulatedRoughness +=
+											max( scatterRec.sampledRoughness, 0.0 );
+									} else {
+										mat3 transmissionInvBasis = transpose( surf.normalBasis );
+										vec3 transmissionWo = normalize( transmissionInvBasis * - ray.direction );
+										vec3 transmissionWi = normalize( transmissionInvBasis * scatterRec.direction );
+										vec3 transmissionHalf = getHalfVector( transmissionWi, transmissionWo, surf.eta );
+										state.accumulatedRoughness += sin( acosApprox( clamp( abs( transmissionHalf.z ), 0.0, 1.0 ) ) );
+									}
 
 								} else if ( ! isBelowSurface ) {
 
@@ -1010,6 +1195,32 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 
 							}
 
+							#if ADVANCED_OPTICAL_TRANSPORT
+							// The incident medium owns the edge that just completed. Mutate the
+							// shared bulk-optical stack only after the boundary BSDF selected a
+							// true hemisphere crossing; reflection and thin sheets leave it intact.
+							if (
+								! surf.volumeParticle &&
+								materialControl.opticalVolume &&
+								isBelowSurface
+							) {
+
+								bool mediumStackValid = surf.frontFace
+									? enterMedium(
+										state.mediumStack, materialBoundaryId, materialIndex,
+										surf.hasAttenuationThickness,
+										surf.attenuationThickness,
+										materials, state.fogMaterial
+									)
+									: leaveMedium(
+										state.mediumStack, materialBoundaryId, materialIndex,
+										materials, state.fogMaterial
+									);
+								if ( ! mediumStackValid ) break;
+
+							}
+							#endif
+
 							// if we're bouncing around the inside a transmissive material then decrement
 							// perform this separate from a bounce
 							bool isTransmissiveRay = ! surf.volumeParticle && dot( scatterRec.direction, surf.faceNormal * surfaceHit.side ) < 0.0;
@@ -1022,27 +1233,7 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 
 							//
 
-							// handle throughput color transformation
-							// attenuate the throughput color by the medium color
-							if ( ! surf.frontFace ) {
-
-								float attenuationDist = surfaceHit.dist;
-								if ( surf.hasAttenuationThickness ) {
-									attenuationDist = min( attenuationDist, max( surf.attenuationThickness, 0.0 ) );
-								}
-								state.throughput *= transmissionAttenuationThroughput(
-									materials,
-									attenuationDist,
-									surf.attenuationColor,
-									surf.attenuationDistance,
-									surf.hasSpectralAttenuation,
-									surf.materialIndex,
-									state.wavelength
-								);
-
-							}
-
-							// Fixed-depth BDPT keeps q=1 on the eye path: the reverse strategies do
+								// Fixed-depth BDPT keeps q=1 on the eye path: the reverse strategies do
 							// not carry camera-throughput-dependent roulette survival probabilities.
 							#if FEATURE_RUSSIAN_ROULETTE && ! FEATURE_BDPT
 
@@ -1058,7 +1249,8 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 							rrProb = sqrt( rrProb );
 							rrProb = max( rrProb, depthProb );
 							rrProb = min( rrProb, 1.0 );
-                                                        if ( rrProb <= 0.0 || rand( 8 ) > rrProb ) {
+                                                        rrProb = representedBernoulliProbabilityF32( rrProb );
+                                                        if ( rrProb <= 0.0 || rand( 8 ) >= rrProb ) {
 
 								break;
 
@@ -1092,39 +1284,19 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
 										// fails, zero that density without terminating the
 										// sampled eye path or corrupting adjacent strategies.
 										float bdptPatchedReverseDensity = 0.0;
-										vec3 bdptToPrevEdge =
-											bdptPrevPos - geometricHitPoint;
+										float candidateReverseDensity =
+											scatterRec.pdfRev *
+											bdptEyeSegmentReverseDensity;
 										if (
-											! any( isnan( bdptToPrevEdge ) ) &&
-											! any( isinf( bdptToPrevEdge ) ) &&
-											vitrumFiniteNonZeroVec3( bdptToPrevEdge )
+											scatterRec.pdfRev >= 0.0 &&
+											! isnan( scatterRec.pdfRev ) &&
+											! isinf( scatterRec.pdfRev ) &&
+											candidateReverseDensity >= 0.0 &&
+											! isnan( candidateReverseDensity ) &&
+											! isinf( candidateReverseDensity )
 										) {
-											vec3 bdptToPrev = vitrumNormalizeVec3(
-												bdptToPrevEdge, vec3( 0.0 )
-											);
-	                                                                                bool bdptSwappedDelta;
-	                                                                                float bdptSwappedRev = bsdfPdfResult(
-	                                                                                        scatterRec.direction,
-	                                                                                        bdptToPrev,
-	                                                                                        surf,
-	                                                                                        state.wavelength,
-	                                                                                        bdptSwappedDelta
-	                                                                                );
-											float candidateReverseDensity =
-												bdptSwappedRev *
-												bdptEyeSegmentReverseDensity;
-											if (
-												! bdptSwappedDelta &&
-												bdptSwappedRev >= 0.0 &&
-												! isnan( bdptSwappedRev ) &&
-												! isinf( bdptSwappedRev ) &&
-												candidateReverseDensity >= 0.0 &&
-												! isnan( candidateReverseDensity ) &&
-												! isinf( candidateReverseDensity )
-											) {
-												bdptPatchedReverseDensity =
-													candidateReverseDensity;
-											}
+											bdptPatchedReverseDensity =
+												candidateReverseDensity;
 										}
 	                                                                        bdptEyePdfFwd[ bdptEyeDepth - 1 ] =
 											bdptPatchedReverseDensity;
@@ -1154,8 +1326,8 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
                                                                                         PI
                                                                                 );
                                                                         float environmentDiscretePdf =
-                                                                                bdptEmitterDiscretePdf(
-                                                                                        bdptEnvironmentEmitterLogPower()
+														bdptEmitterDiscretePdf(
+																bdptEnvironmentEmitterProposalPmf()
                                                                                 );
                                                                         float pendingLaunchPdf =
                                                                                 launchArea.valid &&
@@ -1168,7 +1340,8 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
                                                                                 bdptInfiniteEyeFamilyWeight(
                                                                                         0,
                                                                                         true,
-                                                                                        scatterRec.sampledDelta,
+                                                                                        scatterRec.sampledDelta ||
+                                                                                                scatterRec.sampledNonConnectable,
                                                                                         pendingNeePdf,
                                                                                         pendingLaunchPdf,
                                                                                         scatterRec.direction,
@@ -1191,16 +1364,30 @@ const RENDER_MAIN_SCATTER = /* glsl */ `
                                                                 bdptPrevScatterPdf = max( scatterRec.pdf, 0.0 );
                                                             bdptPrevPos = geometricHitPoint;
                                                             bdptEyeSegmentDensity = 1.0;
-                                                            bdptEyeSegmentReverseDensity = surf.volumeParticle
-                                                                    ? max( state.fogMaterial.opacity, 0.0 )
-                                                                    : 1.0;
+                                                            bdptEyeSegmentReverseDensity = 1.0;
+                                                            bdptEyeReverseMediumPending =
+													surf.volumeParticle;
                                                             bdptEyeDepth ++;
 							}
 							#endif
 
-								// prepare for next ray
+								// Accepted bulk and compound-sheet transmission launch from the
+								// canonical geometric hit with an exact source-feature token. No
+								// normal/direction bias may jump a distinct nearby boundary.
+								bool exactTransmissionContinuation =
+									! surf.volumeParticle && isBelowSurface &&
+									( materialControl.opticalVolume || surf.thinFilm );
+								if ( exactTransmissionContinuation ) {
+									if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) break;
+								} else {
+									ray.origin = stepRayOrigin(
+										ray.origin, ray.direction,
+										isBelowSurface ? - surf.faceNormal : surf.faceNormal,
+										surfaceHit.dist
+									);
+									setOrdinaryRayRange( ray );
+								}
 								ray.direction = scatterRec.direction;
-								ray.origin = hitPoint;
 								incomingAcceptedVertexPoint = geometricHitPoint;
 
 						}

@@ -93,6 +93,7 @@ function hostHarness(id: string | readonly string[]) {
     getMeshVertexRanges: () => ranges, getBvhMode: () => 'merged',
     getPrimitiveTlasBindings: () => null, updatePrimitive: vi.fn(),
     applyGpuSkinnedRefit: vi.fn(), applySkinningBatch,
+    preflightOpticalMediumTopology: vi.fn(),
   };
   return {
     host,

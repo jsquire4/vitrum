@@ -392,16 +392,21 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
     );
   });
 
-  it('GLSL MAP_UV macro reads the baseColorMap selector at map index 0', () => {
-    // Map index 0 addresses the baseColorMap layer selector.
-    const sr = get_surface_record_function;
-    expect(sr).toContain('MAP_UV( 0u )');
+  it('GLSL coverage evaluation reads the baseColorMap selector at map index 0', () => {
+    expect(compactSurface).toContain(
+      'int uvLayer = readMaterialMapUvLayer( materials, materialIndex, 0u );',
+    );
+    expect(compactSurface).toContain(
+      'materials, textures, materialIndex, material.map, 55u, 100u, uv',
+    );
   });
 
   it('GLSL alphaMap sampling consumes its transform in surface and attenuation paths', () => {
     expect(material_struct).toContain('mat3 readMaterialMapTransform(');
     expect(material_struct).not.toContain('mat3 alphaMapTransform');
-    expect(compactSurface).toContain('material.alphaMap, 93u, 106u, MAP_UV( 6u )');
+    expect(compactSurface).toContain(
+      'materials, textures, materialIndex, material.alphaMap, 93u, 106u, uv',
+    );
     expect(compactAttenuation).toContain(
       'material.alphaMap, 93u, 106u, ATTENUATE_MAP_UV( 6u )',
     );
@@ -414,20 +419,27 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
   });
 
   it('material_struct lazily decodes per-map policies and exposes the wrap-aware sample helper', () => {
-    expect(material_struct).toContain('vec4 sampleMaterialTexture(');
+    expect(material_struct).toContain('bool sampleMaterialTexture(');
     expect(material_struct).toContain('sampler2DArray tex, vec2 uv, int layer, vec4 policy');
+    expect(material_struct).toContain('bool srgbRgb, out vec4 value');
     expect(material_struct).toContain('sampleMaterialTextureLinearLevel');
     expect(material_struct).toContain('vec4 readMaterialMapPolicy(');
     expect(material_struct).not.toContain('vec4 mapWrap;');
-    expect(compactSurface).toContain('material.map, 55u, 100u, MAP_UV( 0u )');
+    expect(compactSurface).toContain(
+      'materials, textures, materialIndex, material.map, 55u, 100u, uv',
+    );
     expect(compactSurface).toContain('material.metalnessMap, 57u, 101u, MAP_UV( 1u )');
     expect(get_surface_record_function).toContain('MAP_POLICY( 118u )');
   });
 
   it('GLSL material fetches use wrap-aware sampling instead of raw texture2D calls', () => {
     const sr = get_surface_record_function;
-    expect(compactSurface).toContain('material.map, 55u, 100u, MAP_UV( 0u )');
-    expect(compactSurface).toContain('material.alphaMap, 93u, 106u, MAP_UV( 6u )');
+    expect(compactSurface).toContain(
+      'materials, textures, materialIndex, material.map, 55u, 100u, uv',
+    );
+    expect(compactSurface).toContain(
+      'materials, textures, materialIndex, material.alphaMap, 93u, 106u, uv',
+    );
     expect(sr).toContain('vec4 bumpMapPolicy = MAP_POLICY( 118u );');
     expect(sr).toContain('material.specularIntensityMap,');
     expect(compactSurface).toContain(
@@ -436,7 +448,7 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
     expect(sr).not.toContain('texture2D( textures');
   });
 
-  it('attenuation path uses dynamic UV-layer selection and wrap-aware material sampling', () => {
+  it('attenuation path uses dynamic UV-layer selection for alpha/null coverage only', () => {
     const ah = attenuate_hit_function;
     expect(ah).toContain('readMaterialMapUvLayer( materials, materialIndex, mapIndex )');
     expect(ah).toContain('ATTENUATE_MAP_UV( 0u )');
@@ -447,9 +459,8 @@ describe('pt-webgl2 texCoord — scalable UV-layer selection', () => {
     expect(compactAttenuation).toContain(
       'material.alphaMap, 93u, 106u, ATTENUATE_MAP_UV( 6u )',
     );
-    expect(compactAttenuation).toContain(
-      'material.transmissionMap, 61u, 103u, ATTENUATE_MAP_UV( 3u )',
-    );
+    expect(ah).not.toContain('material.transmissionMap');
+    expect(ah).toContain('Physical transmission is not a null-opacity event.');
     expect(ah).not.toContain('texture2D( textures');
   });
 });

@@ -44,7 +44,7 @@ export const FrameParamsSlot = {
   sceneRadius: 88,
   directLightingMode: 89,
   rayOriginBias: 90,
-  environmentDistantPower: 91,
+  environmentDistantProposalPmf: 91,
 } as const;
 
 export const FRAME_PARAMS_WGSL_FIELDS = [
@@ -89,5 +89,5 @@ export const FRAME_PARAMS_WGSL_FIELDS = [
   'sceneRadius: f32',
   'directLightingMode: u32',
   'rayOriginBias: f32',
-  'environmentDistantPower: f32',
+  'environmentDistantProposalPmf: f32',
 ] as const;

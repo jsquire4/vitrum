@@ -6,7 +6,10 @@ import type {
   ScenePrimitive,
   ScenePrimitivePatch,
 } from '@vitrum/core';
-import type { WorldSpaceMergeResult } from '@vitrum/shared-bvh';
+import {
+  materialDefinesBulkOpticalMedium,
+  type WorldSpaceMergeResult,
+} from '@vitrum/shared-bvh';
 import { packMaterialsTexture } from './materialsTexture.js';
 import { LIGHT_PIXELS, packLightsTexture } from './lightsTexture.js';
 import { hasMeshAreaLightForPrimitive, packMeshAreaLights, TRI_LIGHT_PIXELS } from './meshAreaLights.js';
@@ -149,6 +152,10 @@ export interface WebGl2MutationSwap {
 }
 
 type RectFloatTextureData = { readonly data: Float32Array; readonly width: number; readonly height: number };
+
+function requiresFullRepresentedEmitterProposalTransaction(): boolean {
+  return true;
+}
 
 function isMeshLikePrimitive(p: ScenePrimitive | undefined): p is Extract<
   ScenePrimitive,
@@ -636,6 +643,18 @@ export function tryFastPathMaterialMutation(
     nextGeoPack = { ...geoPack, materials: nextMaterials };
   }
 
+  // materialIndex.y stores validated optical-component identity. A mutation
+  // that activates or deactivates bulk transport changes that identity texture
+  // as well as the scalar material payload, so the material-only transaction
+  // cannot publish it safely. Defer to the complete staged scene rebuild where
+  // materials and materialIndex are replaced atomically.
+  if (
+    materialDefinesBulkOpticalMedium(geoPack.materials[slot]!) !==
+    materialDefinesBulkOpticalMedium(nextMaterials[slot]!)
+  ) {
+    return null;
+  }
+
   if (atlasRefreshNeeded) {
     // Decode and validate both candidate atlases under the user-visible mutation
     // operation before returning to setScene's staged GPU transaction. This
@@ -658,6 +677,14 @@ export function tryFastPathMaterialMutation(
     || (current.meshLightCount ?? 0) > 0
     ? packMeshAreaLights(nextScene, nextGeoPack)
     : null;
+  if (
+    (current.meshLightCount ?? 0) > 0 ||
+    (meshLightsData?.triLightCount ?? 0) > 0
+  ) {
+    // A mesh-family PMF change also changes every analytic/environment global
+    // BDPT PMF lane. Let the complete scene transaction repack them together.
+    return null;
+  }
   const meshLightStorageMatches = meshLightsData == null
     || meshLightsData.data == null
     || (
@@ -732,6 +759,12 @@ export function tryFastPathGeometryMutation(
       warningMethod: 'updatePrimitive',
     });
     if (refit != null) {
+      if (
+        (current.meshLightCount ?? 0) > 0 ||
+        refit.meshLightsData.triLightCount > 0
+      ) {
+        return null;
+      }
       computeWebgl2TransportBounds(refit.merged, nextScene, options);
       const structuredWarnings: EngineWarning[] = [...refit.structuredWarnings];
       if (
@@ -855,6 +888,12 @@ export function tryFastPathGeometryMutation(
       warningPhase: 'mutation',
       warningMethod: 'updatePrimitive',
     });
+    if (
+      (current.meshLightCount ?? 0) > 0 ||
+      built.meshLightsData.triLightCount > 0
+    ) {
+      return null;
+    }
     computeWebgl2TransportBounds(built.merged, nextScene, options);
     const vertexColorMaterialIdsChanged = !sameNumberSet(
       current.vertexColorMaterialIds,
@@ -1007,6 +1046,12 @@ export function tryFastPathPrimitiveListMutation(
     warningPhase: 'mutation',
     warningMethod: opts.method,
   });
+  if (
+    (current.meshLightCount ?? 0) > 0 ||
+    built.meshLightsData.triLightCount > 0
+  ) {
+    return null;
+  }
   computeWebgl2TransportBounds(built.merged, mutationScene, opts);
   const structuredWarnings: EngineWarning[] = [...built.structuredWarnings];
   for (const warning of [...analyticExpansion.warnings, ...built.warnings]) {
@@ -1177,6 +1222,9 @@ export function tryFastPathEmitterMutation(
   options: { readonly bdpt?: boolean } = {},
 ): WebGl2MutationSwap | null {
   if (current == null || geoPack == null) return null;
+  // Global BDPT PMFs span analytic, mesh, and environment candidates. An
+  // emitter-only texture swap would leave the other domains stale.
+  if (requiresFullRepresentedEmitterProposalTransaction()) return null;
   const changed = nextScene.emitters.find((e) => String(e.id) === emitterId);
   const isMeshAreaMutation = changed?.kind === 'mesh-area';
   const lightsData = packLightsTexture(nextScene.emitters);
@@ -1251,6 +1299,9 @@ export function fastPathEnvironmentMutation(
   nextScene: Scene,
 ): WebGl2MutationSwap | null {
   if (current == null) return null;
+  // See tryFastPathEmitterMutation: environment changes must repack all global
+  // emitter PMF lanes in one complete scene transaction.
+  if (requiresFullRepresentedEmitterProposalTransaction()) return null;
   const structuredWarnings: EngineWarning[] = [];
   const env = buildEquirectInfo(nextScene.environment, {
     onWarning: (warning) => structuredWarnings.push(warning),

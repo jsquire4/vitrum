@@ -37,15 +37,12 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   let epoch = grisHistoryEpoch();
   let rCenter = loadReservoirGI_ro(pixelIdx);
   if (rCenter.M == 0u
-   || !reservoirGiFinite(rCenter.W) || !(rCenter.W > 0.0)
    || rCenter.historyEpoch != epoch
-   || !reservoirGiFinite(rCenter.nativePHat) || !(rCenter.nativePHat > 0.0)
-   || !reservoirGiFinite(rCenter.sampleVisibility) || !(rCenter.sampleVisibility > 0.0)
-   || !grisSampleKindValid(rCenter.sampleKind)) {
+   || !reservoirGiFiniteReceiver(rCenter)) {
     storeReservoirGI_rw(pixelIdx, emptyReservoirGI());
     return;
   }
-  if (rCenter.prefixVertexCount != GI_PREFIX_RECONNECTABLE) {
+  if (!reservoirGiHasShiftableTechnique(rCenter)) {
     storeReservoirGI_rw(pixelIdx, rCenter);
     return;
   }
@@ -92,12 +89,8 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
 
     let q = loadReservoirGI_ro(qIdx);
     if (q.M == 0u
-     || !reservoirGiFinite(q.W) || !(q.W > 0.0)
      || q.historyEpoch != epoch
-     || !reservoirGiFinite(q.nativePHat) || !(q.nativePHat > 0.0)
-     || !reservoirGiFinite(q.sampleVisibility) || !(q.sampleVisibility > 0.0)
-     || !grisSampleKindValid(q.sampleKind)
-     || q.prefixVertexCount != GI_PREFIX_RECONNECTABLE) {
+     || !reservoirGiHasShiftableTechnique(q)) {
       continue;
     }
     if (
@@ -111,30 +104,17 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
         > ubo.restirGiSpatialCoplanarTol) {
       continue;
     }
-    let Jq = grisDomainToCanonicalJacobian(
-      q.xv,
-      rCenter.xv,
-      q.sampleKind,
-      q.xs,
-      q.ns,
-    );
-    if (Jq <= 0.0) { continue; }
+    // Technique membership depends only on receiver/domain compatibility, not
+    // on whether this technique's selected sample happens to map to a valid
+    // canonical contribution. The complete matrix below may assign that one
+    // candidate a zero entry while this technique still contributes density to
+    // another candidate's Eq. 7 denominator.
     let qSurface = castPrimary(
       restirGiFullPixel(vec2u(u32(qx), u32(qy))),
       fullDims,
       ubo.cameraPos,
       invVP,
     );
-    let pCanonical = grisMaterialPHatAt(
-      domainSurface[0],
-      rCenter.xv,
-      rCenter.nv,
-      q.sampleKind,
-      q.xs,
-      q.wi_recon,
-      q.Lo,
-    );
-    if (!reservoirGiFinite(pCanonical) || !(pCanonical > 0.0)) { continue; }
     domains[domainCount] = q;
     domainM[domainCount] = min(q.M, M_CLAMP_SPATIAL);
     domainPixel[domainCount] = qIdx;
@@ -143,9 +123,8 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   var candidateLogWeight: array<f32, 6>;
-  var candidatePHat: array<f32, 6>;
+  var candidateLogPHat: array<f32, 6>;
   var candidateVisibility: array<f32, 6>;
-  var maxCandidateLogWeight = GRIS_LOG_ZERO;
   var totalAttempts = 0u;
 
   // Generalized balance heuristic (Lin et al. 2022, Eq. 7): M_j multiplies
@@ -154,14 +133,28 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
   // a second time. Common max-log scales preserve unequal finite ratios.
   for (var i: u32 = 0u; i < domainCount; i = i + 1u) {
     candidateLogWeight[i] = GRIS_LOG_ZERO;
-    candidatePHat[i] = 0.0;
+    candidateLogPHat[i] = GRIS_LOG_ZERO;
     candidateVisibility[i] = 0.0;
     let candidate = domains[i];
     totalAttempts = reservoirGiSaturatingAddU32(
       totalAttempts,
       domainM[i],
     );
-    let sourceJ = grisDomainToCanonicalJacobian(
+    // The canonical receiver may retain its own angular/local selected suffix
+    // as an identity-only row. Neighbour local representatives remain
+    // denominator-only techniques; treating the canonical selection as an
+    // early-return condition would make reuse depend on a WRS outcome and bias
+    // away all simultaneously available safe rows.
+    let canonicalLocal =
+      i == 0u && reservoirGiHasLocalEstimator(candidate);
+    if (canonicalLocal) {
+      candidateLogWeight[i] = candidate.H;
+      candidateLogPHat[i] = candidate.nativeLogPHat;
+      candidateVisibility[i] = candidate.sampleVisibility;
+      continue;
+    }
+    if (!reservoirGiHasShiftableCandidate(candidate)) { continue; }
+    let logSourceJ = grisLogDomainToCanonicalJacobian(
       candidate.xv,
       rCenter.xv,
       candidate.sampleKind,
@@ -173,18 +166,18 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
     var maxTechniqueLogMass = GRIS_LOG_ZERO;
     for (var j: u32 = 0u; j < domainCount; j = j + 1u) {
       let technique = domains[j];
-      let Jj = grisDomainToCanonicalJacobian(
+      let logJj = grisLogDomainToCanonicalJacobian(
         technique.xv,
         rCenter.xv,
         candidate.sampleKind,
         candidate.xs,
         candidate.ns,
       );
-      var pHatJ = 0.0;
+      var logPHatJ = GRIS_LOG_ZERO;
       if (j == i) {
-        pHatJ = candidate.nativePHat;
-      } else if (Jj > 0.0) {
-        pHatJ = grisMaterialPHatAt(
+        logPHatJ = candidate.nativeLogPHat;
+      } else if (reservoirGiValidLog(logJj)) {
+        logPHatJ = grisLogMaterialPHatAt(
           domainSurface[j],
           technique.xv,
           technique.nv,
@@ -196,14 +189,14 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
       }
       let logMass = grisLogWeightedTransformedDensity(
         domainM[j],
-        pHatJ,
-        Jj,
-        Jj > 0.0 && pHatJ > 0.0,
+        logPHatJ,
+        logJj,
+        reservoirGiValidLog(logJj) && reservoirGiValidLog(logPHatJ),
       );
       techniqueLogMass[j] = logMass;
       maxTechniqueLogMass = max(maxTechniqueLogMass, logMass);
     }
-    if (maxTechniqueLogMass == GRIS_LOG_ZERO) { continue; }
+    if (!reservoirGiValidLog(maxTechniqueLogMass)) { continue; }
 
     var scaledDenominator = 0.0;
     for (var j: u32 = 0u; j < domainCount; j = j + 1u) {
@@ -211,21 +204,24 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
         scaledDenominator
         + grisScaledMass(techniqueLogMass[j], maxTechniqueLogMass);
     }
-    let sourceScaledMass =
-      grisScaledMass(techniqueLogMass[i], maxTechniqueLogMass);
-    if (!reservoirGiFinite(scaledDenominator) || !(scaledDenominator > 0.0)
-     || !(sourceScaledMass > 0.0)) {
+    let logDenominator = grisLogTechniqueDenominator(
+      maxTechniqueLogMass,
+      scaledDenominator,
+    );
+    if (!reservoirGiValidLog(logDenominator)
+     || !reservoirGiValidLog(techniqueLogMass[i])) {
       continue;
     }
-    let m = sourceScaledMass / scaledDenominator;
-    let visibilityCanonical = grisProxyVisibilityAt(
+    let logMisWeight = techniqueLogMass[i] - logDenominator;
+    let tintCanonical = grisProxyTintAt(
       rCenter.xv,
       rCenter.nv,
+      domainSurface[0].geoNormal,
       candidate.sampleKind,
       candidate.xs,
       candidate.wi_recon,
     );
-    let pCanonical = grisMaterialTargetAt(
+    let canonicalContribution = grisMaterialContributionAt(
       domainSurface[0],
       rCenter.xv,
       rCenter.nv,
@@ -233,65 +229,80 @@ fn spatialGiMain(@builtin(global_invocation_id) gid: vec3u) {
       candidate.xs,
       candidate.wi_recon,
       candidate.Lo,
-    ) * visibilityCanonical;
-    let logWeight = grisLogCanonicalResamplingWeight(
-      m,
-      pCanonical,
-      candidate.W,
-      sourceJ,
     );
-    if (logWeight == GRIS_LOG_ZERO) { continue; }
+    let logCanonicalPHat = reservoirGiLogPositive(
+      luminance(canonicalContribution * tintCanonical),
+    );
+    let logWeight = grisLogCanonicalResamplingWeight(
+      logMisWeight,
+      logCanonicalPHat,
+      candidate.H,
+      candidate.nativeLogPHat,
+      logSourceJ,
+    );
+    if (!reservoirGiValidLog(logWeight)) { continue; }
     candidateLogWeight[i] = logWeight;
-    candidatePHat[i] = pCanonical;
-    candidateVisibility[i] = visibilityCanonical;
-    maxCandidateLogWeight = max(maxCandidateLogWeight, logWeight);
+    candidateLogPHat[i] = logCanonicalPHat;
+    candidateVisibility[i] = luminance(tintCanonical);
   }
 
   var out = emptyReservoirGI();
   out.xv = rCenter.xv;
   out.nv = rCenter.nv;
   out.receiverMaterialKey = rCenter.receiverMaterialKey;
-  if (maxCandidateLogWeight != GRIS_LOG_ZERO) {
-    for (var i: u32 = 0u; i < domainCount; i = i + 1u) {
+  out.historyEpoch = epoch;
+  out.prefixVertexCount = GI_PREFIX_RECONNECTABLE;
+  var reuseWrs = representedWrsInit();
+  let canonicalLocalParticipated =
+    reservoirGiHasLocalEstimator(domains[0]);
+  for (var i: u32 = 0u; i < domainCount; i = i + 1u) {
       let candidate = domains[i];
-      let weight = grisScaledMass(
-        candidateLogWeight[i],
-        maxCandidateLogWeight,
-      );
-      if (!(weight > 0.0)) { continue; }
-      let mappedXs = grisMappedXs(
-        candidate.sampleKind,
-        rCenter.xv,
+      if (!reservoirGiValidLog(candidateLogWeight[i])) { continue; }
+      let identityOnly = i == 0u && canonicalLocalParticipated;
+      let mappedXs = select(
+        grisMappedXs(
+          candidate.sampleKind,
+          rCenter.xv,
+          candidate.xs,
+          candidate.wi_recon,
+        ),
         candidate.xs,
-        candidate.wi_recon,
+        identityOnly,
       );
-      let mappedLo = grisMappedLo(
-        candidate.sampleKind,
-        candidate.wi_recon,
+      let mappedLo = select(
+        grisMappedLo(
+          candidate.sampleKind,
+          candidate.wi_recon,
+          candidate.Lo,
+        ),
         candidate.Lo,
+        identityOnly,
       );
       updateReservoirGIWithMetadata(
-        &out,
+        &out, &reuseWrs,
         mappedXs,
         candidate.ns,
         mappedLo,
         candidate.sampleKind,
         candidate.wi_recon,
-        candidatePHat[i],
+        select(
+          GI_SAMPLE_FLAG_RECAST_TINT,
+          candidate.sampleFlags,
+          identityOnly,
+        ),
+        candidateLogPHat[i],
         candidateVisibility[i],
         epoch,
-        weight,
+        candidateLogWeight[i],
         &rng,
       );
-    }
   }
   // Confidence is the saturating sum of the already per-domain-clamped source
   // attempt counts. Candidate selection adds no synthetic attempt.
   out.M = totalAttempts;
-  grisFinaliseLogScaledReservoir(
+  grisFinaliseRepresentedReservoir(
     &out,
-    maxCandidateLogWeight,
-    out.w_sum,
+    reuseWrs,
     ubo.restirGiWCap,
   );
   refreshGrisMetadata(&out);

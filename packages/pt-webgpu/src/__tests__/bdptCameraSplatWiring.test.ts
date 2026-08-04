@@ -19,9 +19,11 @@ import {
 import { PT_WEBGPU_FULL_SUPPORT_MANIFEST } from '../supportManifest.js';
 
 const BDPT_OFF_SOURCE_SHA256 =
-  // Re-pinned after canonical finite-f32 environment scaling. BDPT-off remains
-  // byte-identical to the canonical full trace assembled below.
-  '1d5dcb0b612968a93ad71d3fe9f00eab6f87bce227006b9ad0c1fd9ed952c6b6';
+  // Re-pinned after the checked material decoder, independent clearcoat frame,
+  // thin-sheet/opposite-interface closure, and conservative MNEE gate landed.
+  // Strict source staging is host-side and is pinned separately; BDPT-off still
+  // remains byte-identical to the canonical full trace.
+  '0c5ee33cb64770cfc9fb6aa2ff6feaa259106038d4e779371939601e027cddf4';
 
 function source(relative: string): string {
   return readFileSync(new URL(relative, import.meta.url), 'utf8');

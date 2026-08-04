@@ -216,11 +216,13 @@ describe('SPPM photon emission source normalization (PTWG-03)', () => {
 
   it('samples extinction/scattering free flight while photon chains travel inside media', () => {
     expect(SPPM_PHOTON_PASS_WGSL).toContain('var photonMediumDepth = 0u;');
-    expect(SPPM_PHOTON_PASS_WGSL).toContain('var photonMediumSigmaT: array<vec3f, 8>;');
+    expect(SPPM_PHOTON_PASS_WGSL).toContain(
+      'var photonMediumSigmaT: array<vec3f, OPTICAL_MEDIUM_STACK_LIMIT>;',
+    );
     expect(SPPM_PHOTON_PASS_WGSL).toContain('let freeFlightDist =');
     expect(SPPM_PHOTON_PASS_WGSL).toContain('if (freeFlightDist < mediumSegmentDistance)');
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
-      'flux = flux * photonSigmaS * transmittance / max(pdfHero, 1e-9);',
+      'flux = flux * photonSigmaS * trueTransmittance / collisionPdf;',
     );
     expect(SPPM_PHOTON_PASS_WGSL).toContain(
       'let sigmaA = sppmMaterialSigmaA(matId, mat, photonHeroLambda);',

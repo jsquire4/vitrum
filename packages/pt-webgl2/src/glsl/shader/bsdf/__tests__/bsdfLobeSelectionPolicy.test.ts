@@ -25,19 +25,25 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
       'getLobeWeights( wo, wo, vec3( 0, 0, 1 ), clearcoatWo, surf, heroWavelength',
     );
 
-    const result = sourceBetween('float bsdfResult', '// Sprint 7: SSS');
+    const result = sourceBetween('float bsdfResult', 'ScatterRecord bsdfSample');
     const sample = sourceFrom('ScatterRecord bsdfSample');
-    expect(result).toContain('getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength');
+    expect(result.replace(/\s+/g, ' ')).toContain(
+      'getSamplingLobeWeights( wo, clearcoatWo, orientedSurf, heroWavelength',
+    );
     expect(sample).toContain('getSamplingLobeWeights( wo, clearcoatWo, surf, heroWavelength');
   });
 
   it('does not recompute mixture probabilities from arbitrary light directions in bsdfResult', () => {
-    const result = sourceBetween('float bsdfResult', '// Sprint 7: SSS');
+    const result = sourceBetween('float bsdfResult', 'ScatterRecord bsdfSample');
     expect(result).not.toContain('getLobeWeights( wo, wi');
     expect(result).not.toContain('getHalfVector( wo, wi');
   });
 
   it('keeps spectral dispersion transmission on the same anisotropic GGX sampler as ordinary transmission', () => {
+    const interfaceSampler = sourceBetween(
+      'vec3 sampleTransmissionInterfaceDirection',
+      'vec3 transmissionDirection',
+    );
     const ordinaryTransmission = sourceBetween(
       'vec3 transmissionDirection',
       '// ── Sprint 8: Chromatic dispersion',
@@ -47,8 +53,19 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
       '// clearcoat',
     );
 
-    expect(ordinaryTransmission).toContain('ggxDirectionForSurface( wo, surf, rand2( 13 ) )');
-    expect(dispersionTransmission).toContain('ggxDirectionForSurface( wo, surf, rand2( 13 ) )');
+    expect(interfaceSampler).toContain(
+      'vec3 halfVector = ggxDirectionForSurface( canonicalWo, surf, uv );',
+    );
+    expect(ordinaryTransmission).toContain(
+      'sampleTransmissionInterfaceDirection(',
+    );
+    expect(ordinaryTransmission).toContain('wo, surf, 0.0, rand2( 13 )');
+    expect(dispersionTransmission).toContain(
+      'sampleTransmissionInterfaceDirection(',
+    );
+    expect(dispersionTransmission).toContain(
+      'wo, surf, heroWavelength, rand2( 13 )',
+    );
     expect(dispersionTransmission).not.toMatch(/vec3\s+halfVector\s*=\s*ggxDirection\s*\(/);
   });
 
@@ -74,20 +91,25 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
       'vec3 dispersionTransmissionDirection',
       '// clearcoat',
     );
+    const interfaceSampler = sourceBetween(
+      'vec3 sampleTransmissionInterfaceDirection',
+      'vec3 transmissionDirection',
+    );
     const sample = sourceFrom('ScatterRecord bsdfSample');
 
     expect(bsdf_functions).toContain(
-      'float transmissionEtaAtHero( const in SurfaceRecord surf, float heroWavelength )',
+      'float transmissionEtaAtHero(',
     );
     expect(transmissionEval).toContain(
-      'float eta = transmissionEtaAtHero( surf, heroWavelength );',
+      'float eta = transmissionEtaAtHero( surf, heroWavelength, wo );',
     );
     expect(bsdfEval.replace(/\s+/g, ' ')).toContain(
-      'getHalfVector( wi, wo, transmissionEtaAtHero( surf, heroWavelength ) )',
+      'getHalfVector( wi, wo, transmissionEtaAtHero( surf, heroWavelength, wo ) )',
     );
-    expect(dispersionTransmission).toContain(
-      'float eta = transmissionEtaAtHero( surf, heroWavelength );',
+    expect(interfaceSampler).toContain(
+      'float eta = transmissionEtaAtHero( surf, heroWavelength, wo );',
     );
+    expect(dispersionTransmission).toContain('heroWavelength, rand2( 13 )');
     expect(sample.replace(/\s+/g, ' ')).toContain(
       'wi = cauchyDispersionEnabled( surf ) ? dispersionTransmissionDirection( wo, surf, heroWavelength ) : transmissionDirection( wo, surf );',
     );
@@ -99,7 +121,10 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
       'float cauchyIORFromDLine',
       'float transmissionEtaAtHero',
     ).replace(/\s+/g, ' ');
-    const sss = sourceBetween('ScatterRecord sssSample', 'ScatterRecord bsdfSample');
+    const mediumExtinction = sourceBetween(
+      'vec3 fogTrueExtinction',
+      'vec3 fogSegmentTransmittance',
+    );
 
     expect(dispersion).toContain(
       'bNm2 * ( 1.0 / lambda2 - 1.0 / dLine2 )',
@@ -113,22 +138,22 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     expect(dispersion).not.toContain('dispersionBasis');
     expect(dispersion).not.toContain('dispersionScale');
     expect(dispersion).not.toContain('dispersionStrength > 1e-5');
-    expect(sss).toContain('sigmaT.x > 0.0 ? sigmaS.x / sigmaT.x : 0.0');
-    expect(sss).not.toContain('sigmaT.x > 1e-6');
+    expect(mediumExtinction).toContain('return sigmaA + fog.sigmaS;');
+    expect(mediumExtinction).toContain('float sigmaSHero = heroScalarFromRgb(');
+    expect(mediumExtinction).not.toContain('sigmaSHero > 1e-6');
 
     const sigmaT = 1e-12;
     const sigmaS = 0.5e-12;
     expect(sigmaS / sigmaT).toBe(0.5);
   });
 
-  it('includes the sampled HG phase value in the SSS estimator numerator', () => {
-    const sss = sourceBetween(
-      'ScatterRecord sssSample',
-      'ScatterRecord bsdfSample',
-    ).replace(/\s+/g, ' ');
-    expect(sss).toContain(
-      'mediumAlbedoThroughput( mediumAlbedo, heroWavelength ) * ( beerLambert * sssRec.pdf )',
+  it('includes the sampled HG phase value in the explicit medium-vertex numerator', () => {
+    const mediumSample = sourceFrom('ScatterRecord bsdfSample').replace(/\s+/g, ' ');
+    expect(mediumSample).toContain('if ( surf.volumeParticle )');
+    expect(mediumSample).toContain(
+      'sampleRec.throughput = pathThroughputFromRgb( surf.color * sampleRec.pdf, heroWavelength );',
     );
+    expect(bsdf_functions).not.toContain('sssSample(');
 
     // Isotropic HG has f = pdf = 1/(4π), so f/pdf is exactly one.
     const isotropicHg = 1 / (4 * Math.PI);
@@ -138,7 +163,7 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
   it('represents exact-zero roughness as a discrete event without a PDF threshold', () => {
     const deltaPdf = sourceBetween('float bsdfDeltaPdfLocal', 'float bsdfPdfLocal');
     const continuousEval = sourceBetween('float bsdfEval', 'float bsdfResult');
-    const result = sourceBetween('float bsdfResult', '// Sprint 7: SSS');
+    const result = sourceBetween('float bsdfResult', 'ScatterRecord bsdfSample');
     const sample = sourceFrom('ScatterRecord bsdfSample');
 
     expect(bsdf_functions).toContain(
@@ -163,9 +188,8 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     );
     const hgInverse = sourceBetween(
       'float sampleHgCosTheta',
-      'vec3 sampleHG_glsl',
+      '// diffuse',
     );
-    const hg = sourceBetween('vec3 sampleHG_glsl', '// diffuse');
     const volumeHg = sourceBetween('vec3 sampleMediumPhase', '// Sprint 12');
     const volumePdf = sourceBetween(
       'float mediumPhasePdf',
@@ -182,7 +206,6 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     expect(hgInverse).toContain('gg * gg * gg * ( q * q - 1.0 )');
     expect(hgInverse).toContain('( 1.0 - gg * gg ) /');
     expect(hgInverse).toContain('( 1.0 + gg * q )');
-    expect(hg).toContain('float cosTheta = sampleHgCosTheta( u2, g );');
     expect(bsdf_functions).toContain(
       'oneMinusA * oneMinusA +',
     );
@@ -252,6 +275,10 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
   });
 
   it('rejects entry and thin-exit TIR with finite zero-weight scatter records', () => {
+    const interfaceSampler = sourceBetween(
+      'vec3 sampleTransmissionInterfaceDirection',
+      'vec3 transmissionDirection',
+    );
     const ordinaryTransmission = sourceBetween(
       'vec3 transmissionDirection',
       '// ── Sprint 8: Chromatic dispersion',
@@ -266,13 +293,24 @@ describe('pt-webgl2 BSDF lobe-selection PDF policy', () => {
     );
     const sample = sourceFrom('ScatterRecord bsdfSample');
 
+    expect(interfaceSampler).toContain(
+      'dot( canonicalWi, canonicalWi ) > 1e-16',
+    );
+    expect(interfaceSampler).toContain('return vec3( 0.0 );');
     for (const transmission of [ordinaryTransmission, dispersionTransmission]) {
-      expect(transmission).toContain('dot( lightDirection, lightDirection ) > 1e-16');
-      expect(transmission).toContain('dot( exitDirection, exitDirection ) > 1e-16');
-      expect(transmission).toContain('return vec3( 0.0 );');
+      expect(transmission).toContain('sampleTransmissionInterfaceDirection(');
     }
-    expect(deltaTransmission).toContain('dot( direction, direction ) > 1e-16');
-    expect(deltaTransmission).toContain('dot( exitDirection, exitDirection ) > 1e-16');
+    expect(deltaTransmission).toContain(
+      'dot( canonicalDirection, canonicalDirection ) > 1e-16',
+    );
+    expect(deltaTransmission).toContain('return vec3( 0.0 );');
+    const thinSheet = sourceBetween(
+      'ThinSheetTransmissionSample sampleThinSheetTransmission',
+      'float bsdfDeltaPdfLocal',
+    );
+    expect(thinSheet.match(/sampleThinSheetInterface\(/g)).toHaveLength(2);
+    expect(thinSheet).toContain('return result;');
+    expect(thinSheet).toContain('result.valid =');
     expect(sample).toContain('bool rejectedTransmission = false;');
     expect(sample).toContain('result.pdf = 0.0;');
     expect(sample).toContain('result.specularPdf = 0.0;');

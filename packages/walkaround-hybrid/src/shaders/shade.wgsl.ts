@@ -88,11 +88,9 @@ ${reservoirGiAccessorsWgsl({ loadReadWriteBinding: 'reservoirGiCurrent' })}
 // tri / BVH_BEER_TEX_WIDTH); the width constant matches host bvhBeerTexture.ts.
 @group(1) @binding(5) var bvh_beer: texture_2d<u32>;
 // WS1 — per-vertex world-space normals for the smooth shading-normal blend.
-// Camera-visible emitters (2026-05-30) — per-triangle HDR emissive radiance Le
-// (rgba32float texture). Read by lo_emitterGlow on a primary hit so emissive-mesh
-// surfaces glow to the camera (the ReSTIR-DI emitter list only lights RECEIVERS;
-// without this the emitter's own pixels render black). Shade-only binding.
-@group(1) @binding(12) var bvh_emissive: texture_2d<f32>;
+// Camera-visible emission uses the canonical restir_gi_bvh_emissive binding
+// declared by restirGiMaterial at group(1), binding(12). Keeping one global
+// declaration also lets the native glass suffix expose hidden emitters.
 @group(1) @binding(13) var analytic_lights: texture_2d<f32>;
 // B1 — per-triangle roughness+metalness (r32uint texture, binding 14). Decoded
 // into the real GGX roughness/metal that feed lo_direct / lo_analyticNEE and the
@@ -109,6 +107,10 @@ ${reservoirGiAccessorsWgsl({ loadReadWriteBinding: 'reservoirGiCurrent' })}
 // per-channel basis. Sky-miss and emissive light sources bypass this
 // multiplier.
 @group(2) @binding(1) var aoFullTexture: texture_2d<f32>;
+// Adaptive sampling also controls the number of native full-resolution glass
+// GI candidates. This slot already belongs to the shared UBO bind-group
+// contract and was previously inert in shade.
+@group(2) @binding(2) var gi_tier: texture_2d<u32>;
 
 // DDGI bind group (group 3). Atlas + sampler + grid params UBO bound here
 // so the pipeline layout matches risGi.wgsl (which is the real consumer of
@@ -123,7 +125,6 @@ ${reservoirGiAccessorsWgsl({ loadReadWriteBinding: 'reservoirGiCurrent' })}
 // Cross-reference: ddgiGridUbo → ddgiSampleWgsl.ts (canonical source).
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
-@group(3) @binding(2) var ddgiSampler:    sampler;
 
 // RESERVOIR_DI_STRIDE / loadReservoirDI_rw live in COMMON_WGSL.
 
@@ -283,7 +284,8 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   let uv1 = interpolateUv1FromNormalW(primaryHit, n0, n1, n2);
   let vertexColor = sampleVertexColorForHit(primaryHit);
   let layerControls = sampleFaceLayerControls(primaryHit.indices.w, primaryHit.side >= 0.0);
-  let layerTransmission = faceLayerTransmission(layerControls);
+  let reflectionLayerTransmission = faceLayerTransmission(layerControls);
+  var layerTransmission = reflectionLayerTransmission;
   let albedo   = sampleBaseColorMap(primaryHit, matColor.rgb * vertexColor.rgb);
   // B1 — real authored roughness/metalness from the per-tri bvh_material texture
   // (was hardcoded rough=select(0.85,0.05,isGlass)/metal=0). The diffuse-default
@@ -298,16 +300,31 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     layerControls,
   );
   let metal    = sampleMaterialScalarMap(primaryHit, MATERIAL_MAP_SLOT_METALLIC, 2u, rm.y);
-  let specular = sampleSpecularControls(primaryHit);
+  var specular = sampleSpecularControls(primaryHit);
   let clearcoat = sampleClearcoatControls(primaryHit);
   let sheen = sampleSheenControls(primaryHit);
   let sheenRoughness = sampleSheenRoughness(primaryHit);
   let anisotropy = sampleAnisotropyControls(primaryHit);
   let anisotropyFrame = materialTangentFrameForHit(primaryHit, normal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);
-  let iridescence = sampleIridescenceControls(primaryHit);
+  var iridescence = sampleIridescenceControls(primaryHit);
   let envMapIntensity = sampleEnvMapIntensity(primaryHit.indices.w);
   let volumeScattering = sampleVolumeScatteringControls(primaryHit.indices.w);
+  let bulkThickness = materialOpticalThickness(primaryHit.indices.w);
   let authoredAo = sampleAoMapFactor(primaryHit, materialWord);
+  // Match sampleRestirDIMaterialPayloadForHit exactly. GI RIS, temporal, and
+  // spatial all target this preintegrated angular film response; shade must use
+  // the same specular/transmission payload and hash or the selected target and
+  // final consumer describe different materials.
+  let primaryFilm = materialThinFilmResponse(
+    primaryHit.indices.w,
+    primaryHit.side >= 0.0,
+    abs(dot(normal, safe_normalize(wo))),
+  );
+  if (primaryFilm.present != 0u) {
+    specular = vec4f(primaryFilm.reflectance, 1.0);
+    iridescence = vec4f(0.0);
+    layerTransmission = layerTransmission * primaryFilm.transmittance;
+  }
   var receiverDomainPayload: RestirDIMaterialPayload;
   receiverDomainPayload.albedo = albedo;
   receiverDomainPayload.rough = rough;
@@ -322,15 +339,17 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   receiverDomainPayload.clearcoat = clearcoat;
   receiverDomainPayload.sheen = sheen;
   receiverDomainPayload.sheenRoughness = sheenRoughness;
+  receiverDomainPayload.reflectionLayerTransmission = reflectionLayerTransmission;
   receiverDomainPayload.layerTransmission = layerTransmission;
   receiverDomainPayload.volumeScattering = volumeScattering;
-  receiverDomainPayload.bulkThickness = materialOpticalThickness(primaryHit.indices.w);
+  receiverDomainPayload.bulkThickness = bulkThickness;
   let receiverMaterialKey = restir_gi_receiver_domain_key(
     primaryHit.matColorPacked,
     materialWord,
     primaryHit.indices.w,
     select(0u, primaryHit.instanceIndex, ubo.bvhMode == 1u),
     receiverDomainPayload,
+    matColor.a,
   );
 
   // GLTF-unlit — approximate KHR_materials_unlit support for walkaround:
@@ -352,6 +371,17 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Locals are named identically to their helper outputs (Lo_emit, Lo_direct,
   // Lo_sunCaustic, Lo_skyAperture, Lo_indirect) so the structural-contract
   // tests in sprint18-indirectCombine.test.ts continue to match.
+  let directShadowOrigin = pos + geoNormal * walkaroundRayOriginBias();
+  let directShadowContainingMedia = materialShadowClassifyContainingMedia(
+    ubo.bvhMode,
+    ubo.tlasNodeCount,
+    directShadowOrigin,
+    wo,
+    ubo.triIntersectEpsilon,
+    bvh_material,
+    BVH_MATERIAL_TEX_WIDTH,
+    bvh_beer,
+  );
   let Lo_emit       = lo_emit(matColor, normal, isGlass, primaryHit.uv, uv1, primaryHit.matColorPacked, primaryHit.indices.w);
   // Camera-visible emitters — emissive-mesh self-emission on the primary hit.
   let Lo_emitterGlow = select(
@@ -368,15 +398,16 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // Convert E to Lambertian outgoing radiance exactly once: Lo = albedo/pi * E.
   // It remains first-hit only and never enters emitter PDFs or GI propagation.
   let lightMapIrradiance = sampleLightMap(primaryHit);
-  let Lo_lightMap = albedo * INV_PI * lightMapIrradiance;
-  let Lo_direct     = lo_direct(restirDiIndexForFullPixel(pix), pos, normal, clearcoatNormal, geoNormal, wo, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, envMapIntensity, isGlass, isMetal, &rng);
+  let Lo_lightMap = albedo * INV_PI * lightMapIrradiance *
+    (1.0 - clamp(matColor.a, 0.0, 1.0));
+  let Lo_direct     = lo_direct(restirDiIndexForFullPixel(pix), pos, normal, clearcoatNormal, geoNormal, directShadowContainingMedia, wo, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, envMapIntensity, matColor.a, layerTransmission, reflectionLayerTransmission, volumeScattering, bulkThickness, isMetal, &rng);
   // H41 — analytic point/spot NEE: additive, separate from the RIS area-emitter pool.
   // No PDF contamination: these are disjoint from the emitters[] stream.
-  let Lo_analyticNEE = lo_analyticNEE(pos, normal, clearcoatNormal, geoNormal, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, wo, isGlass, isMetal);
+  let Lo_analyticNEE = lo_analyticNEE(pos, normal, clearcoatNormal, geoNormal, directShadowContainingMedia, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, wo, matColor.a, layerTransmission, reflectionLayerTransmission, volumeScattering, bulkThickness, isMetal);
   // item 4 (2026-06-10) — direct sun NEE: deterministic shadow ray toward the sun,
   // full BRDF for opaque receivers and reflection-only for glass.
   // See lo_sunNEE above for the no-double-count argument re: DDGI indirect vs direct.
-  let Lo_sunNEE = lo_sunNEE(pix, pos, normal, clearcoatNormal, geoNormal, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, wo, isGlass);
+  let Lo_sunNEE = lo_sunNEE(pix, pos, normal, clearcoatNormal, geoNormal, directShadowContainingMedia, albedo, rough, metal, specular, anisotropy, anisotropyFrame.tangent, anisotropyFrame.bitangent, iridescence, clearcoat, sheen, sheenRoughness, wo, matColor.a, layerTransmission, reflectionLayerTransmission, volumeScattering, bulkThickness);
   // The bounded generic refractive estimator is controlled by the explicit
   // construction-time strategy gate. The stained-glass aperture remains a
   // separate flag-gated presentation term.
@@ -393,19 +424,37 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     dims,
     pos,
     normal,
+    geoNormal,
+    wo,
+    albedo,
+    layerTransmission,
+    volumeScattering,
+    bulkThickness,
     receiverMaterialKey,
     envMapIntensity,
-    isGlass,
+    matColor.a,
     metal,
   );
-  // B1 tail (2026-06-10) — glass refracted GI: consumption of the post-glass
-  // diffuse reservoir built by risGi's bounded dielectric-prefix walk. Returns vec3f(0)
-  // for non-glass surfaces (isGlass gate). The producer has already folded its
-  // exact per-interface Fresnel and actual-segment Beer throughput into g.Lo.
-  // Joins the DIRECT channel (see directRadiance below) —
-  // it is not albedo-demodulated because its tint is the glass transmittance,
-  // not the diffuse wall's baseColor (which was already folded into Lo by risGi).
-  let Lo_transmittedGI = lo_transmittedGI(pix, dims, isGlass);
+  // Camera-prefix glass GI is native to this exact primary pixel. A private RNG
+  // keeps its rough-interface and suffix draws independent of DI sampling.
+  var glassGiRng = pcgInit(
+    pix.x ^ 0x474c4153u,
+    pix.y ^ 0x53554658u,
+    ubo.frameSeed ^ 0x4e415449u,
+  );
+  let Lo_transmittedGI = lo_transmittedGI(
+    pix,
+    isGlass,
+    primaryHit,
+    primaryRay,
+    pos,
+    smoothNormal,
+    normal,
+    geoNormal,
+    matColor.a,
+    albedo,
+    &glassGiRng,
+  );
   // B1 — glossy/metal specular indirect: GGX specular lobe × the SAME ReSTIR-GI
   // reservoir sample. UN-demodulated (joins the direct channel below); fires only
   // for metal/glossy surfaces (zero on default-diffuse → invariant preserved).
@@ -414,6 +463,7 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     dims,
     pos,
     normal,
+    geoNormal,
     clearcoatNormal,
     wo,
     albedo,
@@ -429,7 +479,10 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     sheenRoughness,
     receiverMaterialKey,
     envMapIntensity,
-    isGlass,
+    matColor.a,
+    reflectionLayerTransmission,
+    volumeScattering,
+    bulkThickness,
   );
 
   // Active terms (current pipeline state):
@@ -498,22 +551,26 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
   // transmission from risGiGlassWalk. Apply the primary face layer only to
   // terms evaluated locally at this visible surface; multiplying the whole sum
   // would attenuate refracted GI by the authored face layer a second time.
-  let directRadiance = applyHomogeneousVolumeSingleScatter(
-    (Lo_emit + Lo_emitterGlow + Lo_lightMap + Lo_indirectSpec + (Lo_direct + Lo_analyticNEE + Lo_sunNEE + Lo_refractiveCaustic + Lo_skyAperture) * ao) * layerTransmission + Lo_transmittedGI,
+  let aggregateSurfaceDirect = applyHomogeneousVolumeSingleScatter(
+    (Lo_emit + Lo_emitterGlow + Lo_lightMap +
+      (Lo_refractiveCaustic + Lo_skyAperture) * ao) * layerTransmission,
     albedo,
     volumeScattering,
-    materialOpticalThickness(primaryHit.indices.w),
+    bulkThickness,
     normal,
     wo,
   );
-  let indirectRadiance = applyHomogeneousVolumeSingleScatter(
-    Lo_indirect * ao * layerTransmission,
-    albedo,
-    volumeScattering,
-    materialOpticalThickness(primaryHit.indices.w),
-    normal,
-    wo,
-  );
+  let visiblePrimaryDirect = aggregateSurfaceDirect + Lo_indirectSpec +
+    (Lo_direct + Lo_analyticNEE + Lo_sunNEE) * ao;
+  // The transmitted lane already integrated its exact rough refractive prefix,
+  // actual bulk distances, receiver layer, and receiver volume. Running it
+  // through the visible primary's straight-view volume approximation would
+  // apply a second, geometrically different medium response.
+  let directRadiance = visiblePrimaryDirect + Lo_transmittedGI;
+  // lo_indirect already processed each ReSTIR direction before bilinear
+  // accumulation; its RC/DDGI fallbacks own one aggregate volume response.
+  // The returned signal is safely albedo-demodulated for indirectCombine.
+  let indirectRadiance = Lo_indirect * ao;
 
   // Firefly clamp — ReSTIR-DI + glancing-angle BRDF evaluations occasionally
   // produce singular radiance values (cos(θ_v) → 0 at the grazing edge of

@@ -1,8 +1,9 @@
 /**
  * Bounded general-BDPT light-subpath construction for the native WebGL2 PT.
  *
- * One 8x8 RGBA32F texture stores up to eight vertices:
- *   row 0: position.xyz | kind (0=ordinary, 1=delta, 3=invalid)
+ * One 8x14 RGBA32F texture stores up to eight vertices:
+ *   row 0: position.xyz | kind (0=ordinary, 1=delta,
+ *          2=continuous augmented/non-connectable, 3=invalid)
  *   row 1: shading normal / emitter axis | forward directional density
  *   row 2: throughput.rgb | reverse directional density
  *   row 3: direction toward predecessor | material id / endpoint sentinel
@@ -11,12 +12,19 @@
  *   row 6: medium-stack material ids 3..6
  *   row 7: medium-stack material id 7 | scattering-medium id |
  *          exact surface face index as two u16 float words
+ *   row 8: persisted remaining attenuation-thickness caps for slots 0..3
+ *   row 9: persisted remaining attenuation-thickness caps for slots 4..7
+ *          (-1 means that the entry has no authored or sampled cap)
+ *   row 10: exact optical boundary ids for medium slots 0..3
+ *   row 11: exact optical boundary ids for medium slots 4..7
+ *   row 12: immutable entry-sampled thickness caps for medium slots 0..3
+ *   row 13: immutable entry-sampled thickness caps for medium slots 4..7
  *
  * Columns are built sequentially with ping-pong render targets. Extension k
- * patches k-1 row 0 (the sampled event's real delta classification). Its
- * swapped reverse BSDF times the intermediate incoming-edge distance factor
- * belongs to k-2 row 2; this is the reverse density that becomes known only
- * after the successor exists.
+ * patches k-1 row 0 (the sampled event's real delta/non-connectable
+ * classification). Its exact sampled reverse density times the intermediate
+ * incoming-edge distance factor belongs to k-2 row 2; this value becomes known
+ * only after the successor exists.
  *
  * References: Veach 1997, chapter 10; PBRT-v4, section 16.3.
  */
@@ -24,6 +32,7 @@ export const bdpt_light_subpath = /* glsl */`
 
 	const float BDPT_KIND_LIGHT = 0.0;
 	const float BDPT_KIND_DELTA = 1.0;
+	const float BDPT_KIND_NON_CONNECTABLE = 2.0;
 	const float BDPT_KIND_INVALID = 3.0;
 
 	const float BDPT_LV_AREA_EMITTER_MATID = -2.0;
@@ -61,18 +70,61 @@ export const bdpt_light_subpath = /* glsl */`
 			);
 		}
 
+		bool bdptStoredThicknessRowsValid(
+			vec4 remaining0, vec4 remaining1,
+			vec4 initial0, vec4 initial1,
+			float count
+		) {
+			for ( int i = 0; i < MEDIUM_STACK_CAPACITY; i ++ ) {
+				float remaining = i < 4
+					? remaining0[ i ] : remaining1[ i - 4 ];
+				float initial = i < 4
+					? initial0[ i ] : initial1[ i - 4 ];
+				if ( float( i ) < count ) {
+					bool unbounded = remaining == -1.0 && initial == -1.0;
+					bool bounded =
+						remaining >= 0.0 && initial >= remaining;
+					if ( ! unbounded && ! bounded ) return false;
+				} else if ( remaining != -1.0 || initial != -1.0 ) {
+					return false;
+				}
+			}
+			return true;
+		}
+
+		bool bdptStoredBoundaryRowsValid( vec4 row10, vec4 row11, float count ) {
+			for ( int i = 0; i < MEDIUM_STACK_CAPACITY; i ++ ) {
+				float boundaryId = i < 4 ? row10[ i ] : row11[ i - 4 ];
+				if ( float( i ) < count ) {
+					if (
+						! ( boundaryId > 0.0 ) ||
+						boundaryId != round( boundaryId )
+					) return false;
+				} else if ( boundaryId != -1.0 ) {
+					return false;
+				}
+			}
+			return true;
+		}
+
 		bool bdptStoredVertexRowsValid(
 		vec4 v0, vec4 v1, vec4 v2, vec4 v3,
-		vec4 v4, vec4 v5, vec4 v6, vec4 v7
+		vec4 v4, vec4 v5, vec4 v6, vec4 v7,
+		vec4 v8, vec4 v9, vec4 v10, vec4 v11,
+		vec4 v12, vec4 v13
 	) {
 		bool knownKind =
 			v0.w == BDPT_KIND_LIGHT ||
-			v0.w == BDPT_KIND_DELTA;
+			v0.w == BDPT_KIND_DELTA ||
+			v0.w == BDPT_KIND_NON_CONNECTABLE;
 		bool finiteRows =
 			bdptFiniteVec4( v0 ) && bdptFiniteVec4( v1 ) &&
 			bdptFiniteVec4( v2 ) && bdptFiniteVec4( v3 ) &&
 			bdptFiniteVec4( v4 ) && bdptFiniteVec4( v5 ) &&
-			bdptFiniteVec4( v6 ) && bdptFiniteVec4( v7 );
+			bdptFiniteVec4( v6 ) && bdptFiniteVec4( v7 ) &&
+			bdptFiniteVec4( v8 ) && bdptFiniteVec4( v9 ) &&
+			bdptFiniteVec4( v10 ) && bdptFiniteVec4( v11 ) &&
+			bdptFiniteVec4( v12 ) && bdptFiniteVec4( v13 );
 		bool finiteDensities =
 			v1.w > 0.0 && v2.w >= 0.0 &&
 			all( greaterThanEqual( v2.xyz, vec3( 0.0 ) ) );
@@ -83,7 +135,11 @@ export const bdpt_light_subpath = /* glsl */`
 			bool exactSurfaceFaceValid =
 				v3.w < 0.0 || meshLightSourceFaceWordsValid( v7.zw );
 			return knownKind && finiteRows && finiteDensities &&
-				stackCountValid && exactSurfaceFaceValid;
+				stackCountValid && exactSurfaceFaceValid &&
+				bdptStoredThicknessRowsValid(
+					v8, v9, v12, v13, round( v5.x )
+				) &&
+				bdptStoredBoundaryRowsValid( v10, v11, round( v5.x ) );
 	}
 
         float bdptConnectionInverseDistanceSquared( vec3 posX, vec3 posY ) {
@@ -101,6 +157,7 @@ export const bdpt_light_subpath = /* glsl */`
 			vec4 payload,
 			vec2 faceIndexWords,
 			float heroWavelength,
+			const in MediumStack incidentStack,
 			out SurfaceRecord surf
 		) {
 			if ( ! meshLightSourceFaceWordsValid( faceIndexWords ) ) return false;
@@ -118,14 +175,30 @@ export const bdpt_light_subpath = /* glsl */`
 			hit.barycoord = vec3(
 				payload.x, payload.y, max( 0.0, 1.0 - payload.x - payload.y )
 			);
-			hit.faceNormal = faceMeasure.normal;
 			hit.side = payload.z < 0.0 ? -1.0 : 1.0;
+			// BVH intersections expose the geometric normal oriented against the
+			// incoming ray. Reconstructed light-path vertices must preserve that
+			// convention; keeping the authored outward normal on a back-face replay
+			// corrupts offsets, hemisphere tests, and reverse PDFs.
+			hit.faceNormal = hit.side * faceMeasure.normal;
 		hit.dist = 0.0;
 		uint matIdx = uint( max( floor( materialId + 0.5 ), 0.0 ) );
 		// The stored hit already passed stochastic opacity when the path was built.
-		return getSurfaceRecord(
+		bool surfaceValid = getSurfaceRecord(
 			matIdx, hit, attributesArray, 0.0, 0, heroWavelength, true, surf
 		) == HIT_SURFACE;
+		if ( ! surfaceValid ) return false;
+		#if ADVANCED_OPTICAL_TRANSPORT
+		MaterialControl control;
+		readMaterialControl( materials, matIdx, control );
+		return configureSurfaceOpticalInterface(
+			incidentStack,
+			uTexelFetch1D( materialIndexAttribute, triIndex ).g,
+			control, heroWavelength, surf
+		);
+		#else
+		return true;
+		#endif
 	}
 
 	// Compatibility overload used by the connection kernel; the exact geometric
@@ -136,10 +209,12 @@ export const bdpt_light_subpath = /* glsl */`
 			vec2 faceIndexWords,
 			vec3 fallbackFaceNormal,
 			float heroWavelength,
+			const in MediumStack incidentStack,
 			out SurfaceRecord surf
 		) {
 	                return bdptLoadSurfaceRecord(
-				materialId, payload, faceIndexWords, heroWavelength, surf
+				materialId, payload, faceIndexWords, heroWavelength,
+				incidentStack, surf
 			);
 	        }
 
@@ -148,13 +223,25 @@ export const bdpt_light_subpath = /* glsl */`
                 float scatteringMediumId,
                 out vec4 row5,
                 out vec4 row6,
-                out vec4 row7
+                out vec4 row7,
+                out vec4 row8,
+                out vec4 row9,
+				out vec4 row10,
+				out vec4 row11,
+				out vec4 row12,
+				out vec4 row13
         ) {
                 // Preserve outer-to-inner order exactly; leaveMedium requires
                 // the current innermost material at count-1 on unpack.
                 row5 = vec4( float( stack.count ), -1.0, -1.0, -1.0 );
                 row6 = vec4( -1.0 );
 	                row7 = vec4( -1.0, scatteringMediumId, -1.0, -1.0 );
+				row8 = vec4( -1.0 );
+				row9 = vec4( -1.0 );
+				row10 = vec4( -1.0 );
+				row11 = vec4( -1.0 );
+				row12 = vec4( -1.0 );
+				row13 = vec4( -1.0 );
                 for ( int i = 0; i < MEDIUM_STACK_CAPACITY; i ++ ) {
                         if ( i >= stack.count ) break;
                         float materialId = float( stack.materialIds[ i ] );
@@ -166,6 +253,26 @@ export const bdpt_light_subpath = /* glsl */`
                         else if ( i == 5 ) row6.z = materialId;
                         else if ( i == 6 ) row6.w = materialId;
                         else row7.x = materialId;
+						float thicknessCap = stack.hasAttenuationThicknesses[ i ]
+							? stack.attenuationThicknesses[ i ]
+							: -1.0;
+						if ( i < 4 ) row8[ i ] = thicknessCap;
+						else row9[ i - 4 ] = thicknessCap;
+						float initialThicknessCap =
+							stack.hasAttenuationThicknesses[ i ]
+								? stack.initialAttenuationThicknesses[ i ]
+								: -1.0;
+						if ( i < 4 ) row12[ i ] = initialThicknessCap;
+						else row13[ i - 4 ] = initialThicknessCap;
+						float boundaryId = float( stack.boundaryIds[ i ] );
+						// RGBA32F stores integer payloads exactly only through 2^24. A
+						// larger component id invalidates this BDPT vertex instead of
+						// silently aliasing a distinct nested boundary.
+						if ( uint( boundaryId ) != stack.boundaryIds[ i ] ) {
+							boundaryId = -1.0;
+						}
+						if ( i < 4 ) row10[ i ] = boundaryId;
+						else row11[ i - 4 ] = boundaryId;
                 }
         }
 
@@ -173,6 +280,12 @@ export const bdpt_light_subpath = /* glsl */`
                 vec4 row5,
                 vec4 row6,
                 vec4 row7,
+                vec4 row8,
+                vec4 row9,
+				vec4 row10,
+				vec4 row11,
+				vec4 row12,
+				vec4 row13,
                 out MediumStack stack,
                 inout FogMaterial fog
         ) {
@@ -180,7 +293,13 @@ export const bdpt_light_subpath = /* glsl */`
                 if (
                         ! bdptFiniteVec4( row5 ) ||
                         ! bdptFiniteVec4( row6 ) ||
-                        ! bdptFiniteVec4( row7 )
+                        ! bdptFiniteVec4( row7 ) ||
+                        ! bdptFiniteVec4( row8 ) ||
+						! bdptFiniteVec4( row9 ) ||
+						! bdptFiniteVec4( row10 ) ||
+						! bdptFiniteVec4( row11 ) ||
+						! bdptFiniteVec4( row12 ) ||
+						! bdptFiniteVec4( row13 )
                 ) return false;
                 int count = int( round( row5.x ) );
                 if (
@@ -188,6 +307,10 @@ export const bdpt_light_subpath = /* glsl */`
                         count > MEDIUM_STACK_CAPACITY ||
                         row5.x != float( count )
                 ) return false;
+				if ( ! bdptStoredThicknessRowsValid(
+					row8, row9, row12, row13, float( count )
+				) ) return false;
+				if ( ! bdptStoredBoundaryRowsValid( row10, row11, float( count ) ) ) return false;
                 float packedIds[ MEDIUM_STACK_CAPACITY ];
                 packedIds[ 0 ] = row5.y;
                 packedIds[ 1 ] = row5.z;
@@ -201,6 +324,15 @@ export const bdpt_light_subpath = /* glsl */`
                         if ( i >= count ) break;
                         if ( packedIds[ i ] < 0.0 ) return false;
                         stack.materialIds[ i ] = uint( round( packedIds[ i ] ) );
+						float packedBoundaryId = i < 4 ? row10[ i ] : row11[ i - 4 ];
+						stack.boundaryIds[ i ] = uint( packedBoundaryId );
+						float thicknessCap = i < 4 ? row8[ i ] : row9[ i - 4 ];
+						stack.hasAttenuationThicknesses[ i ] = thicknessCap >= 0.0;
+						stack.attenuationThicknesses[ i ] = max( thicknessCap, 0.0 );
+						float initialThicknessCap = i < 4
+							? row12[ i ] : row13[ i - 4 ];
+						stack.initialAttenuationThicknesses[ i ] =
+							max( initialThicknessCap, 0.0 );
                         stack.count ++;
                 }
                 // The final packed id remains the top/innermost medium. Do not
@@ -224,83 +356,19 @@ export const bdpt_light_subpath = /* glsl */`
                 v7 = vec4( -1.0 );
 	}
 
-        float bdptAnalyticEmitterPower( uint index ) {
-                return finitePositiveLightPower(
-                        readLightInfo( lights.tex, index ).power
-                );
-        }
-
-        float bdptMeshEmitterPower( uint index ) {
-                return finitePositiveLightPower(
-                        readMeshTriLight( uMeshLights, index ).power
-                );
-	}
-
-	float bdptEmitterLogPower( float power ) {
-		return power > 0.0 && ! isnan( power ) && ! isinf( power )
-			? log2( power )
-			: - INFINITY;
-	}
-
-	float bdptAnalyticEmitterLogPower( uint index ) {
-		return bdptEmitterLogPower( bdptAnalyticEmitterPower( index ) );
-	}
-
-	float bdptMeshEmitterLogPower( uint index ) {
-		return bdptEmitterLogPower( bdptMeshEmitterPower( index ) );
-	}
-
-	float bdptEnvironmentEmitterLogPower() {
+	float bdptEnvironmentEmitterProposalPmf() {
 		if (
 			! ( environmentIntensity > 0.0 ) ||
 			! ( envMapInfo.totalSum > 0.0 ) ||
 			isnan( environmentIntensity ) || isinf( environmentIntensity ) ||
 			isnan( envMapInfo.totalSum ) || isinf( envMapInfo.totalSum )
-		) return - INFINITY;
-		return log2( environmentIntensity ) + log2( envMapInfo.totalSum );
+		) return 0.0;
+		return max( texelFetch( envMapInfo.distributionWeights, ivec2( 0 ), 0 ).b, 0.0 );
 	}
 
-	float bdptEmitterMaxLogPower() {
-		float maxLogPower = bdptEnvironmentEmitterLogPower();
-		for ( uint i = 0u; i < lights.count; i ++ ) {
-			maxLogPower = max( maxLogPower, bdptAnalyticEmitterLogPower( i ) );
-		}
-		for ( uint i = 0u; i < uMeshLightCount; i ++ ) {
-			maxLogPower = max( maxLogPower, bdptMeshEmitterLogPower( i ) );
-		}
-		return maxLogPower;
-	}
-
-	float bdptEmitterScaledWeight( float logPower, float maxLogPower ) {
-		return logPower > - INFINITY && maxLogPower > - INFINITY
-			? exp2( logPower - maxLogPower )
-			: 0.0;
-	}
-
-	float bdptTotalEmitterScaledWeight( float maxLogPower ) {
-		if ( ! ( maxLogPower > - INFINITY ) ) return 0.0;
-		float total = bdptEmitterScaledWeight(
-			bdptEnvironmentEmitterLogPower(), maxLogPower
-		);
-		for ( uint i = 0u; i < lights.count; i ++ ) {
-			total += bdptEmitterScaledWeight(
-				bdptAnalyticEmitterLogPower( i ), maxLogPower
-			);
-		}
-		for ( uint i = 0u; i < uMeshLightCount; i ++ ) {
-			total += bdptEmitterScaledWeight(
-				bdptMeshEmitterLogPower( i ), maxLogPower
-			);
-		}
-		return total;
-	}
-
-	float bdptEmitterDiscretePdf( float logPower ) {
-		float maxLogPower = bdptEmitterMaxLogPower();
-		float total = bdptTotalEmitterScaledWeight( maxLogPower );
-		return total > 0.0
-			? bdptEmitterScaledWeight( logPower, maxLogPower ) / total
-			: 0.0;
+	float bdptEmitterDiscretePdf( float representedPmf ) {
+		return representedPmf > 0.0 && ! isnan( representedPmf ) &&
+			! isinf( representedPmf ) ? representedPmf : 0.0;
 	}
 
         // The main eye pass does not include the candidate-pass direct-light
@@ -311,7 +379,7 @@ export const bdpt_light_subpath = /* glsl */`
                 for ( uint i = 0u; i < lights.count; i ++ ) {
                         Light light = readLightInfo( lights.tex, i );
                         if ( light.type == DIR_LIGHT_TYPE ) {
-                                total += finitePositiveLightPower( light.power );
+                                total += light.directionalProposalPmf;
                         }
                 }
                 return total;
@@ -355,7 +423,11 @@ export const bdpt_light_subpath = /* glsl */`
 		MeshTriLight tri, vec2 uv,
 		out vec3 pos, out vec3 normal, out vec3 radiance, out float pdfArea
 	) {
-                if ( tri.area <= 0.0 || tri.power <= 0.0 ) return false;
+				if (
+					tri.area <= 0.0 || tri.bdptProposalPmf <= 0.0 ||
+					! bdptFiniteVec3( tri.radiance ) ||
+					any( lessThan( tri.radiance, vec3( 0.0 ) ) )
+				) return false;
 		float su = sqrt( max( uv.x, 0.0 ) );
 		float b0 = 1.0 - su;
 		float b1 = uv.y * su;
@@ -386,9 +458,9 @@ export const bdpt_light_subpath = /* glsl */`
 		vec3 pos, vec3 axis, vec3 data, vec3 radiance,
 		float pdfPosition, float sentinel, float kind,
                 vec4 payload,
-                out vec4 v0, out vec4 v1, out vec4 v2,
-                out vec4 v3, out vec4 v4, out vec4 v5,
-                out vec4 v6, out vec4 v7
+		out vec4 v0, out vec4 v1, out vec4 v2,
+		out vec4 v3, out vec4 v4, out vec4 v5,
+		out vec4 v6, out vec4 v7
 	) {
 		bool requiresAxis = sentinel != BDPT_LV_POINT_EMITTER_MATID;
 		if (
@@ -414,8 +486,24 @@ export const bdpt_light_subpath = /* glsl */`
                 v4 = payload;
                 MediumStack emptyStack;
                 initMediumStack( emptyStack );
-                bdptPackMediumStack( emptyStack, -1.0, v5, v6, v7 );
-		if ( ! bdptStoredVertexRowsValid( v0, v1, v2, v3, v4, v5, v6, v7 ) ) {
+		vec4 emptyThickness0;
+		vec4 emptyThickness1;
+		vec4 emptyBoundary0;
+		vec4 emptyBoundary1;
+		vec4 emptyInitialThickness0;
+		vec4 emptyInitialThickness1;
+                bdptPackMediumStack(
+			emptyStack, -1.0, v5, v6, v7,
+			emptyThickness0, emptyThickness1,
+			emptyBoundary0, emptyBoundary1,
+			emptyInitialThickness0, emptyInitialThickness1
+		);
+		if ( ! bdptStoredVertexRowsValid(
+			v0, v1, v2, v3, v4, v5, v6, v7,
+			emptyThickness0, emptyThickness1,
+			emptyBoundary0, emptyBoundary1,
+			emptyInitialThickness0, emptyInitialThickness1
+		) ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
 		}
 	}
@@ -423,55 +511,61 @@ export const bdpt_light_subpath = /* glsl */`
         void bdptWriteBounce0(
                 out vec4 v0, out vec4 v1, out vec4 v2,
                 out vec4 v3, out vec4 v4, out vec4 v5,
-                out vec4 v6, out vec4 v7
+                out vec4 v6, out vec4 v7, out vec4 v8,
+				out vec4 v9, out vec4 v10, out vec4 v11,
+				out vec4 v12, out vec4 v13
 	) {
-		float maxLogPower = bdptEmitterMaxLogPower();
-		float totalScaledWeight =
-			bdptTotalEmitterScaledWeight( maxLogPower );
-		if ( totalScaledWeight <= 0.0 ) {
+		v8 = vec4( -1.0 );
+		v9 = vec4( -1.0 );
+		v10 = vec4( -1.0 );
+		v11 = vec4( -1.0 );
+		v12 = vec4( -1.0 );
+		v13 = vec4( -1.0 );
+		float totalRepresentedPmf = bdptEnvironmentEmitterProposalPmf();
+		for ( uint i = 0u; i < lights.count; i ++ ) {
+			totalRepresentedPmf += readLightInfo( lights.tex, i ).bdptProposalPmf;
+		}
+		for ( uint i = 0u; i < uMeshLightCount; i ++ ) {
+			totalRepresentedPmf += readMeshTriLight( uMeshLights, i ).bdptProposalPmf;
+		}
+		if ( totalRepresentedPmf != 1.0 ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
 			return;
 		}
 
-		float pick = rand( 50 ) * totalScaledWeight;
+		float pick = rand( 50 );
 		float cumulative = 0.0;
-		float selectedScaledWeight = 0.0;
+		float selectedProposalPmf = 0.0;
 		int selectedFamily = -1; // 0 analytic, 1 mesh, 2 environment
 		uint selectedIndex = 0u;
 		for ( uint i = 0u; i < lights.count; i ++ ) {
-			float p = bdptEmitterScaledWeight(
-				bdptAnalyticEmitterLogPower( i ), maxLogPower
-			);
+			float p = readLightInfo( lights.tex, i ).bdptProposalPmf;
 			cumulative += p;
 			if ( selectedFamily < 0 && p > 0.0 && pick < cumulative ) {
 				selectedFamily = 0;
 				selectedIndex = i;
-				selectedScaledWeight = p;
+				selectedProposalPmf = p;
 			}
 		}
 		for ( uint i = 0u; i < uMeshLightCount; i ++ ) {
-			float p = bdptEmitterScaledWeight(
-				bdptMeshEmitterLogPower( i ), maxLogPower
-			);
+			float p = readMeshTriLight( uMeshLights, i ).bdptProposalPmf;
 			cumulative += p;
 			if ( selectedFamily < 0 && p > 0.0 && pick < cumulative ) {
 				selectedFamily = 1;
 				selectedIndex = i;
-				selectedScaledWeight = p;
+				selectedProposalPmf = p;
 			}
 		}
-		float environmentScaledWeight = bdptEmitterScaledWeight(
-			bdptEnvironmentEmitterLogPower(), maxLogPower
-		);
-		if ( selectedFamily < 0 && environmentScaledWeight > 0.0 ) {
+		float environmentProposalPmf = bdptEnvironmentEmitterProposalPmf();
+		if ( selectedFamily < 0 && environmentProposalPmf > 0.0 ) {
 			selectedFamily = 2;
-			selectedScaledWeight = environmentScaledWeight;
+			selectedProposalPmf = environmentProposalPmf;
 		}
-		if ( selectedFamily < 0 || selectedScaledWeight <= 0.0 ) {
+		if ( selectedFamily < 0 || selectedProposalPmf <= 0.0 ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
 			return;
 		}
-		float discretePdf = selectedScaledWeight / totalScaledWeight;
+		float discretePdf = selectedProposalPmf;
 
 		if ( selectedFamily == 1 ) {
 			MeshTriLight tri = readMeshTriLight( uMeshLights, selectedIndex );
@@ -582,8 +676,7 @@ export const bdpt_light_subpath = /* glsl */`
 			// the extension's division by p_dir preserves authored irradiance.
                         vec3 weightedRadiance = radiance * ( isDelta ? 1.0 : directionPdf );
                         float directionalNeePdf =
-                                bdptAnalyticEmitterPower( selectedIndex ) /
-                                bdptDirectionalNeePower() *
+                                light.directionalProposalPmf *
                                 directionPdf /
                                 bdptDistantNeeDenom();
                         bdptWriteEndpoint(
@@ -612,6 +705,12 @@ export const bdpt_light_subpath = /* glsl */`
         ) {
                 return rec.sampledDelta;
         }
+
+	bool bdptSampledSurfaceEventIsNonConnectable(
+		SurfaceRecord surf, vec3 wo, ScatterRecord rec
+	) {
+		return rec.sampledNonConnectable;
+	}
 
 	bool bdptSampleEndpointDirection(
 		float sentinel, vec3 axis, vec3 endpointData, vec4 payload, int seedBase,
@@ -673,16 +772,28 @@ export const bdpt_light_subpath = /* glsl */`
                 float heroWavelength,
                 out vec4 v0, out vec4 v1, out vec4 v2,
                 out vec4 v3, out vec4 v4, out vec4 v5,
-                out vec4 v6, out vec4 v7,
+                out vec4 v6, out vec4 v7, out vec4 v8,
+				out vec4 v9, out vec4 v10, out vec4 v11,
+				out vec4 v12, out vec4 v13,
                 out vec4 predecessor0, out vec4 predecessor2
 	) {
+		v8 = vec4( -1.0 );
+		v9 = vec4( -1.0 );
+		v10 = vec4( -1.0 );
+		v11 = vec4( -1.0 );
+		v12 = vec4( -1.0 );
+		v13 = vec4( -1.0 );
 		predecessor0 = vec4( 0.0 );
 		predecessor2 = vec4( 0.0 );
 		if ( vertexCol < 0 || vertexCol >= maxLightBounces || vertexCol >= 8 ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
 		}
 		if ( vertexCol == 0 ) {
-			bdptWriteBounce0( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
+			bdptWriteBounce0(
+				v0, v1, v2, v3, v4, v5, v6, v7,
+				v8, v9, v10, v11, v12, v13
+			);
+			return;
 		}
 
 		int prevCol = vertexCol - 1;
@@ -694,6 +805,12 @@ export const bdpt_light_subpath = /* glsl */`
 		vec4 p5 = texelFetch( lightPathTex, ivec2( prevCol, 5 ), 0 );
 		vec4 p6 = texelFetch( lightPathTex, ivec2( prevCol, 6 ), 0 );
 		vec4 p7 = texelFetch( lightPathTex, ivec2( prevCol, 7 ), 0 );
+		vec4 p8 = texelFetch( lightPathTex, ivec2( prevCol, 8 ), 0 );
+		vec4 p9 = texelFetch( lightPathTex, ivec2( prevCol, 9 ), 0 );
+		vec4 p10 = texelFetch( lightPathTex, ivec2( prevCol, 10 ), 0 );
+		vec4 p11 = texelFetch( lightPathTex, ivec2( prevCol, 11 ), 0 );
+		vec4 p12 = texelFetch( lightPathTex, ivec2( prevCol, 12 ), 0 );
+		vec4 p13 = texelFetch( lightPathTex, ivec2( prevCol, 13 ), 0 );
 		predecessor0 = p0;
 		// The reverse-density patch belongs to vertexCol-2, not prevCol.
 		// Preserve that target vertex's throughput xyz while replacing only its
@@ -708,22 +825,36 @@ export const bdpt_light_subpath = /* glsl */`
 		if ( p0.w == BDPT_KIND_INVALID ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
                 }
-		if ( ! bdptStoredVertexRowsValid( p0, p1, p2, p3, p4, p5, p6, p7 ) ) {
+		if ( ! bdptStoredVertexRowsValid(
+			p0, p1, p2, p3, p4, p5, p6, p7,
+			p8, p9, p10, p11, p12, p13
+		) ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
 			return;
 		}
 
                 FogMaterial fogMat = initialFogMat;
                 MediumStack mediumStack;
-                if ( ! bdptUnpackMediumStack( p5, p6, p7, mediumStack, fogMat ) ) {
+                if ( ! bdptUnpackMediumStack(
+					p5, p6, p7, p8, p9, p10, p11, p12, p13,
+					mediumStack, fogMat
+				) ) {
                         writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
                         return;
                 }
+		MediumStack previousIncidentStack = mediumStack;
 
 		vec3 scatterDir = vec3( 0.0 );
 		float scatterPdf = 0.0;
+		float scatterReversePdf = 0.0;
 		vec3 scatterThroughput = vec3( 0.0 );
 		bool eventDelta = false;
+		bool eventNonConnectable = false;
+		bool crossedPreviousOpticalBoundary = false;
+		bool enteringPreviousOpticalBoundary = false;
+		uint previousOpticalBoundaryId = 0u;
+		uint previousOpticalBoundaryMaterialIndex = 0u;
+		SurfaceRecord prevSurf;
 		float prevMatId = p3.w;
 		int seedBase = 53 + vertexCol * 5;
 		if ( prevMatId < 0.0 && prevMatId != BDPT_LV_MEDIUM_MATID ) {
@@ -734,19 +865,29 @@ export const bdpt_light_subpath = /* glsl */`
 				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
 			}
 			eventDelta = p0.w == BDPT_KIND_DELTA;
+			eventNonConnectable = p0.w == BDPT_KIND_NON_CONNECTABLE;
+			scatterReversePdf = scatterPdf;
 		} else {
-                        SurfaceRecord prevSurf;
-                        if ( prevMatId == BDPT_LV_MEDIUM_MATID ) {
+			if ( prevMatId == BDPT_LV_MEDIUM_MATID ) {
                                 if ( p7.y < 0.0 ) {
                                         writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
                                 }
                                 FogMaterial scatteringFog = readFogMaterialInfo(
                                         materials, uint( round( p7.y ) )
                                 );
-                                scatteringFog.fogVolume = true;
+				if (
+					! scatteringFog.fogVolume ||
+					mediumStack.count <= 0 ||
+					mediumStack.materialIds[ mediumStack.count - 1 ] !=
+						uint( round( p7.y ) )
+				) {
+					writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+					return;
+				}
                                 setFogSurfaceRecord( scatteringFog, prevSurf );
 			} else if ( ! bdptLoadSurfaceRecord(
-				prevMatId, p4, p7.zw, heroWavelength, prevSurf
+				prevMatId, p4, p7.zw, heroWavelength,
+				previousIncidentStack, prevSurf
 			) ) {
 				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 ); return;
 			}
@@ -761,14 +902,44 @@ export const bdpt_light_subpath = /* glsl */`
 			);
 			scatterDir = rec.direction;
 			scatterPdf = rec.pdf;
+			scatterReversePdf = rec.pdfRev;
 			scatterThroughput = rec.throughput;
 			eventDelta = bdptSampledSurfaceEventIsDelta(
 				prevSurf, directionToPredecessor, rec
 			);
+			eventNonConnectable =
+				bdptSampledSurfaceEventIsNonConnectable(
+					prevSurf, directionToPredecessor, rec
+				);
+			#if ADVANCED_OPTICAL_TRANSPORT
+			if ( prevMatId >= 0.0 ) {
+				uint prevMatIdx = uint( max( floor( prevMatId + 0.5 ), 0.0 ) );
+				uint prevFaceIndex = meshLightSourceFaceIndex( p7.zw );
+				uvec4 previousIdentity = uTexelFetch1D(
+					materialIndexAttribute, prevFaceIndex
+				);
+				if ( previousIdentity.r != prevMatIdx ) {
+					writeBdptInvalidVertex(
+						v0, v1, v2, v3, v4, v5, v6, v7
+					);
+					return;
+				}
+				MaterialControl prevControl;
+				readMaterialControl( materials, prevMatIdx, prevControl );
+				crossedPreviousOpticalBoundary =
+					prevControl.opticalVolume &&
+					dot( rec.direction, prevSurf.faceNormal ) < 0.0;
+				enteringPreviousOpticalBoundary = prevSurf.frontFace;
+				previousOpticalBoundaryId = previousIdentity.g;
+				previousOpticalBoundaryMaterialIndex = prevMatIdx;
+			}
+			#endif
 		}
                 if (
 			! ( scatterPdf > 0.0 ) ||
 			! bdptFiniteFloat( scatterPdf ) ||
+			! ( scatterReversePdf >= 0.0 ) ||
+			! bdptFiniteFloat( scatterReversePdf ) ||
 			! vitrumFiniteNonZeroVec3( scatterDir ) ||
 			! bdptFiniteVec3( scatterThroughput ) ||
 			any( lessThan( scatterThroughput, vec3( 0.0 ) ) )
@@ -778,24 +949,55 @@ export const bdpt_light_subpath = /* glsl */`
 
 		vec3 unitScatterDirection =
 			vitrumNormalizeVec3( scatterDir, vec3( 0.0 ) );
-                vec3 rayOrigin = stepRayOrigin(
-			p0.xyz, vec3( 0.0 ), unitScatterDirection, 0.0
-		);
-                #if FEATURE_FOG
+		bool exactPreviousTransmission =
+			crossedPreviousOpticalBoundary ||
+			(
+				prevMatId >= 0.0 && prevSurf.thinFilm &&
+				dot( unitScatterDirection, prevSurf.faceNormal ) < 0.0
+			);
+		#if ADVANCED_OPTICAL_TRANSPORT
+		// A bulk-optical boundary is a real dielectric vertex. Its incident stack is
+		// stored with the vertex; only a sampled transmission changes the stack
+		// used by the outgoing edge. Reflection retains the incident medium.
+		if ( crossedPreviousOpticalBoundary ) {
+			bool stackValid = enteringPreviousOpticalBoundary
+				? enterMedium(
+					mediumStack, previousOpticalBoundaryId,
+					previousOpticalBoundaryMaterialIndex,
+					prevSurf.hasAttenuationThickness,
+					prevSurf.attenuationThickness,
+					materials, fogMat
+				)
+				: leaveMedium(
+					mediumStack, previousOpticalBoundaryId,
+					previousOpticalBoundaryMaterialIndex,
+					materials, fogMat
+				);
+			if ( ! stackValid ) {
+				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+				return;
+			}
+		}
+		#endif
+		vec3 rayOrigin = exactPreviousTransmission
+			? p0.xyz
+			: stepRayOrigin(
+				p0.xyz, vec3( 0.0 ), unitScatterDirection, 0.0
+			);
+		#if ADVANCED_OPTICAL_TRANSPORT
                 if ( prevMatId < 0.0 && prevMatId != BDPT_LV_MEDIUM_MATID ) {
                         // Column 1 is the first segment out of the sampled emitter.
                         // Reconstruct its medium at the actual launch point and along
                         // the sampled launch ray. A world-origin probe is wrong for
                         // translated volumes and for an emitter on a volume boundary.
                         vec3 endpointLaunchDirection = unitScatterDirection;
-                        vec3 endpointLaunchOrigin = stepRayOrigin(
-				p0.xyz, vec3( 0.0 ), endpointLaunchDirection, 0.0
-			);
-                        if ( ! bvhBuildMediumStack(
-                                endpointLaunchOrigin,
-                                - endpointLaunchDirection,
+			vec3 endpointLaunchOrigin = p0.xyz;
+			if ( ! bvhBuildMediumStack(
+				endpointLaunchOrigin,
+				endpointLaunchDirection,
                                 materialIndexAttribute,
                                 materials,
+				attributesArray,
                                 mediumStack,
                                 fogMat
                         ) ) {
@@ -803,11 +1005,12 @@ export const bdpt_light_subpath = /* glsl */`
                                 return;
                         }
                 }
-                #endif
-                if ( prevMatId >= 0.0 ) {
+		#endif
+		if ( prevMatId >= 0.0 && ! exactPreviousTransmission ) {
 			SurfaceRecord offsetSurf;
 			if ( bdptLoadSurfaceRecord(
-				prevMatId, p4, p7.zw, heroWavelength, offsetSurf
+				prevMatId, p4, p7.zw, heroWavelength,
+				previousIncidentStack, offsetSurf
 			) ) {
 				float side = dot( scatterDir, offsetSurf.faceNormal ) < 0.0 ? -1.0 : 1.0;
 				rayOrigin = stepRayOrigin(
@@ -825,6 +1028,20 @@ export const bdpt_light_subpath = /* glsl */`
 		Ray scatterRay;
 		scatterRay.origin = rayOrigin;
 		scatterRay.direction = unitScatterDirection;
+		setOrdinaryRayRange( scatterRay );
+		if ( exactPreviousTransmission ) {
+			if ( ! meshLightSourceFaceWordsValid( p7.zw ) ) {
+				writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+				return;
+			}
+			uint previousFaceIndex = meshLightSourceFaceIndex( p7.zw );
+			vec3 previousBarycoord = vec3(
+				p4.x, p4.y, max( 0.0, 1.0 - p4.x - p4.y )
+			);
+			setExactRaySourceFeature(
+				scatterRay, p0.xyz, previousFaceIndex, previousBarycoord
+			);
+		}
 
 		SurfaceHit hit;
 		SurfaceRecord newSurf;
@@ -833,34 +1050,61 @@ export const bdpt_light_subpath = /* glsl */`
                 float scatteringMediumId = -1.0;
                 uint newMatIdx = 0u;
                 vec3 newPos = vec3( 0.0 );
-                float segmentSurvival = 1.0;
                 vec3 segmentRatioWeight = vec3( 1.0 );
-                float forwardCollisionDensity = 1.0;
-                float reverseCollisionDensity = 1.0;
-                if ( prevMatId == BDPT_LV_MEDIUM_MATID && p7.y >= 0.0 ) {
-                        reverseCollisionDensity = max(
-                                readFogMaterialInfo(
-                                        materials, uint( round( p7.y ) )
-                                ).opacity,
-                                0.0
-                        );
-                }
+		float pendingSolidMediumDistance = 0.0;
+                float segmentForwardDensity = 1.0;
+                float segmentReverseDensity = 1.0;
+		bool reverseMediumPending =
+			prevMatId == BDPT_LV_MEDIUM_MATID && p7.y >= 0.0;
                 for ( int traversal = 0; traversal < 32; traversal ++ ) {
-			int hitType = traceScene( scatterRay, fogMat, hit );
-			if ( hitType == NO_HIT ) break;
+			int hitType = traceScene(
+				scatterRay, mediumStack, fogMat, heroWavelength, hit
+			);
+			if ( hitType == INVALID_HIT ) break;
+			if ( hitType == NO_HIT ) {
+				// A light random walk may escape only after every closed medium
+				// boundary has been paired. foundVertex remains false so the new
+				// column is invalidated without corrupting the usable prefix.
+				if ( mediumStack.count > 0 ) break;
+				break;
+			}
 			if ( ! bdptFiniteFloat( hit.dist ) || hit.dist < 0.0 ) break;
+			if (
+				hitType == SURFACE_HIT &&
+				! canonicalizeSelectedSurfaceHit( scatterRay, hit )
+			) break;
+			float mediumDistance = max( hit.dist, 0.0 );
+			float effectiveMediumDistance = mediumEffectiveSegmentDistance(
+				mediumStack, mediumDistance
+			);
+			if ( effectiveMediumDistance < 0.0 ) break;
                         if ( fogMat.fogVolume ) {
-                                float sigmaT = max( fogMat.opacity, 0.0 );
-                                float mediumDistance = max( hit.dist, 0.0 );
-                                float survival = exp( - sigmaT * mediumDistance );
-                                segmentSurvival *= survival;
-                                segmentRatioWeight *= fogFreeFlightRatioWeight(
-                                        materials,
-                                        fogMat,
-                                        mediumDistance,
-                                        heroWavelength
-                                );
-                                if ( hitType == FOG_HIT ) forwardCollisionDensity = sigmaT;
+				float survival = fogProposalSurvival(
+					materials, fogMat, effectiveMediumDistance, heroWavelength
+				);
+				float collisionDensity = fogProposalCollisionDensity(
+					materials, fogMat, effectiveMediumDistance, heroWavelength
+				);
+				bool forwardMediumCollision = hitType == FOG_HIT;
+				segmentForwardDensity *= forwardMediumCollision
+					? collisionDensity
+					: survival;
+				segmentReverseDensity *= reverseMediumPending
+					? collisionDensity
+					: survival;
+				reverseMediumPending = false;
+				segmentRatioWeight *= forwardMediumCollision
+					? fogFreeFlightCollisionWeight(
+						materials, fogMat, effectiveMediumDistance, heroWavelength
+					)
+					: fogFreeFlightSurvivalWeight(
+						materials, fogMat, effectiveMediumDistance, heroWavelength
+					);
+				if ( ! consumeMediumSegmentDistance(
+					mediumStack, mediumDistance, materials, fogMat
+				) ) break;
+			} else if ( mediumStack.count > 0 ) {
+				pendingSolidMediumDistance += mediumDistance;
 			}
 			newPos = scatterRay.origin + scatterRay.direction * hit.dist;
 			if ( ! bdptFiniteVec3( newPos ) ) break;
@@ -872,39 +1116,85 @@ export const bdpt_light_subpath = /* glsl */`
                                 break;
 			}
 
-			newMatIdx = uTexelFetch1D( materialIndexAttribute, hit.faceIndices.w ).r;
-			MaterialControl control;
-                        readMaterialControl( materials, newMatIdx, control );
-                        if ( control.fogVolume ) {
-                                bool stackValid = hit.side == 1.0
-                                        ? enterMedium(
-                                                mediumStack, newMatIdx,
-                                                materials, fogMat
-                                        )
-                                        : leaveMedium(
-                                                mediumStack, newMatIdx,
-                                                materials, fogMat
-                                        );
-                                if ( ! stackValid ) break;
-                                scatterRay.origin = stepRayOrigin(
-					scatterRay.origin, scatterRay.direction, - hit.faceNormal, hit.dist
+				uvec4 newMaterialIdentity = uTexelFetch1D(
+					materialIndexAttribute, hit.faceIndices.w
 				);
-				continue;
-			}
-			int status = getSurfaceRecord(
+				newMatIdx = newMaterialIdentity.r;
+				MaterialControl newMaterialControl;
+				readMaterialControl(
+					materials, newMatIdx, newMaterialControl
+				);
+				int status = getSurfaceRecord(
 				newMatIdx, hit, attributesArray, 0.0, vertexCol, heroWavelength, newSurf
 			);
-			if ( status == SKIP_SURFACE ) {
-				scatterRay.origin = stepRayOrigin(
-					scatterRay.origin, scatterRay.direction, - hit.faceNormal, hit.dist
-				);
-				continue;
-			}
-			foundVertex = true;
+				if ( status == SKIP_SURFACE ) {
+					if ( scatterRay.minimumDistanceExclusive >= 0.0 ) {
+						if ( ! setExactRayRangeFromSurfaceHit( scatterRay, hit ) ) break;
+					} else {
+						scatterRay.origin = stepRayOrigin(
+							scatterRay.origin, scatterRay.direction,
+							- hit.faceNormal, hit.dist
+						);
+						setOrdinaryRayRange( scatterRay );
+					}
+					continue;
+				}
+				#if ADVANCED_OPTICAL_TRANSPORT
+				if (
+					! configureSurfaceOpticalInterface(
+						mediumStack,
+						newMaterialIdentity.g,
+						newMaterialControl,
+						heroWavelength,
+						newSurf
+					)
+				) {
+					writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+					return;
+				}
+				if ( mediumStack.count > 0 && ! fogMat.fogVolume ) {
+					float effectiveSolidMediumDistance =
+						mediumEffectiveSegmentDistance(
+							mediumStack, pendingSolidMediumDistance
+						);
+					if ( effectiveSolidMediumDistance < 0.0 ) {
+						writeBdptInvalidVertex(
+							v0, v1, v2, v3, v4, v5, v6, v7
+						);
+						return;
+					}
+					segmentRatioWeight *= opticalPathSegmentThroughput(
+						materials,
+						mediumStack,
+						fogMat,
+						effectiveSolidMediumDistance,
+						heroWavelength
+					);
+					if ( ! consumeMediumSegmentDistance(
+						mediumStack,
+						pendingSolidMediumDistance,
+						materials,
+						fogMat
+					) ) {
+						writeBdptInvalidVertex(
+							v0, v1, v2, v3, v4, v5, v6, v7
+						);
+						return;
+					}
+					pendingSolidMediumDistance = 0.0;
+				}
+				#endif
+				// Unlit is a terminal eye-side source contract, not a scattering
+				// material. Do not publish a light-subpath vertex that later BDPT
+				// code would incorrectly evaluate and extend as an ordinary BSDF.
+				// Explicit mesh-emitter endpoints are written separately at column 0.
+				if ( newMaterialControl.unlit ) {
+					writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
+					return;
+				}
+				foundVertex = true;
 			break;
 		}
-                float segmentForwardDensity = segmentSurvival * forwardCollisionDensity;
-                float segmentReverseDensity = segmentSurvival * reverseCollisionDensity;
                 if (
 			! foundVertex ||
 			! ( segmentForwardDensity > 0.0 ) ||
@@ -925,7 +1215,7 @@ export const bdpt_light_subpath = /* glsl */`
 			if ( prevMatId == BDPT_LV_POINT_EMITTER_MATID || prevMatId == BDPT_LV_SPOT_EMITTER_MATID ) {
 				scatterThroughput *= getDistanceAttenuation( edgeDistance, p4.y, p4.z );
 			}
-			vec3 incomingPathThroughput = p2.xyz;
+				vec3 incomingPathThroughput = p2.xyz;
 			if ( prevMatId == BDPT_LV_ENVIRONMENT_EMITTER_MATID ) {
 				// Match direct-environment NEE: the first real receiver's
 				// per-material environment scale is a radiance factor, not a PDF.
@@ -933,27 +1223,13 @@ export const bdpt_light_subpath = /* glsl */`
 				// the canonical guard before the extension product is formed.
 				incomingPathThroughput = finiteEquirectScaledColor(
 					incomingPathThroughput, newSurf.envMapIntensity
-				);
-			}
+					);
+				}
                         vec3 newThroughput =
                                 incomingPathThroughput * segmentRatioWeight *
                                 scatterThroughput / scatterPdf;
-                float edgePdf = scatterPdf * segmentForwardDensity;
-                float reverseScatterPdf = scatterPdf;
-                if ( prevMatId >= 0.0 && ! eventDelta ) {
-                        SurfaceRecord reverseSurf;
-                        if ( bdptLoadSurfaceRecord(
-				prevMatId, p4, p7.zw, heroWavelength, reverseSurf
-			) ) {
-                                vec3 reverseColor;
-                                reverseScatterPdf = bsdfResult(
-                                        unitScatterDirection,
-					vitrumNormalizeVec3( p3.xyz, vec3( 0.0 ) ),
-					reverseSurf,
-                                        heroWavelength, reverseColor
-                                );
-                        }
-                }
+		float edgePdf = scatterPdf * segmentForwardDensity;
+		float reverseScatterPdf = scatterReversePdf;
 		if (
 			! ( reverseScatterPdf >= 0.0 ) ||
 			! bdptFiniteFloat( reverseScatterPdf )
@@ -996,19 +1272,26 @@ export const bdpt_light_subpath = /* glsl */`
                 v3 = vec4( woToPrev, mediumVertex ? BDPT_LV_MEDIUM_MATID : float( newMatIdx ) );
                 v4 = mediumVertex ? vec4( 0.0 ) : bdptSurfacePayload( hit );
 	                bdptPackMediumStack(
-	                        mediumStack, scatteringMediumId, v5, v6, v7
+	                        mediumStack, scatteringMediumId, v5, v6, v7,
+						v8, v9, v10, v11, v12, v13
 	                );
 			if ( ! mediumVertex ) {
 				v7.zw = bdptPackFaceIndexWords( hit.faceIndices.w );
 			}
-		if ( ! bdptStoredVertexRowsValid( v0, v1, v2, v3, v4, v5, v6, v7 ) ) {
+		if ( ! bdptStoredVertexRowsValid(
+			v0, v1, v2, v3, v4, v5, v6, v7,
+			v8, v9, v10, v11, v12, v13
+		) ) {
 			writeBdptInvalidVertex( v0, v1, v2, v3, v4, v5, v6, v7 );
 			return;
 		}
 		// Publish predecessor patches only after the new record is proven valid,
 		// so a failed extension cannot corrupt an otherwise usable prefix.
-                predecessor0.w =
-			eventDelta ? BDPT_KIND_DELTA : BDPT_KIND_LIGHT;
+                predecessor0.w = eventDelta
+			? BDPT_KIND_DELTA
+			: ( eventNonConnectable
+				? BDPT_KIND_NON_CONNECTABLE
+				: BDPT_KIND_LIGHT );
                 predecessor2.w = predecessorReverseDensity;
 	}
 

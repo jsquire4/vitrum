@@ -33,6 +33,66 @@ import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
 export const PT_WEBGPU_PATH_TRACE_KERNEL_LITE_WGSL = /* wgsl */ `
 ${PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL}
 
+const LITE_MEDIUM_STACK_LIMIT = 8u;
+
+struct LiteMediumLayer {
+  matId: u32,
+  boundary: vec3u,
+  ior: f32,
+  sigmaA: vec3f,
+  remainingDistance: f32,
+};
+
+fn liteMediumSigmaA(matId: u32, mat: DecodedMaterial, heroLambda: f32) -> vec3f {
+  var spectralMu = vec3f(mat.spectralAvgMu);
+  if (mat.spectralSampleCount > 0u) {
+    if (params.spectralEnabled != 0u) {
+      spectralMu = vec3f(
+        sampleMaterialSpectralMu(matId, heroLambdaTo01(heroLambda)),
+      );
+    } else {
+      spectralMu = vec3f(
+        sampleMaterialSpectralMu(matId, 0.15),
+        sampleMaterialSpectralMu(matId, 0.50),
+        sampleMaterialSpectralMu(matId, 0.85),
+      );
+    }
+  }
+  var sigmaA = select(
+    vec3f(0.0), max(spectralMu, vec3f(0.0)), mat.hasSpectralAttenuation,
+  );
+  if (!mat.hasSpectralAttenuation && mat.hasSigmaA) {
+    sigmaA = max(mat.sigmaA, vec3f(0.0));
+  }
+  if (params.spectralEnabled != 0u && !mat.hasSpectralAttenuation) {
+    sigmaA = vec3f(spectralRgbFactorAtHero(sigmaA, heroLambda));
+  }
+  return sigmaA;
+}
+
+fn liteMediumLayer(
+  matId: u32,
+  mat: DecodedMaterial,
+  heroLambda: f32,
+  boundary: vec3u,
+) -> LiteMediumLayer {
+  return LiteMediumLayer(
+    matId,
+    boundary,
+    max(mat.ior, 1e-4),
+    liteMediumSigmaA(matId, mat, heroLambda),
+    materialAttenuationDistance(INFINITY, mat),
+  );
+}
+
+fn liteMediumLayerMatches(
+  layer: LiteMediumLayer,
+  matId: u32,
+  boundary: vec3u,
+) -> bool {
+  return layer.matId == matId && all(layer.boundary == boundary);
+}
+
 fn accumulateFrame(
   gid: vec3u,
   radiance: vec3f,
@@ -95,9 +155,55 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
   // directly-viewed emitter glows.
   var prevSampleAllowsAreaMis = false;
 
+  // Reconstruct the ordered authored-bulk state at the exact camera origin.
+  // The live nesting limit is eight; traversal itself has no crossing ceiling.
+  var mediumStack: array<LiteMediumLayer, LITE_MEDIUM_STACK_LIMIT>;
+  let cameraContainment = opticalContainmentAlongRay(ray.origin, ray.direction);
+  var mediumDepth = cameraContainment.depth;
+  if (!cameraContainment.valid) {
+    accumulateFrame(
+      gid, vec3f(0.0), false, vec3f(0.0), vec3f(0.0, 1.0, 0.0),
+      vec3f(0.0), 0.0,
+    );
+    return;
+  }
+  for (var mediumIndex = 0u; mediumIndex < mediumDepth; mediumIndex = mediumIndex + 1u) {
+    let initialMatId = cameraContainment.matIds[mediumIndex];
+    mediumStack[mediumIndex] = liteMediumLayer(
+      initialMatId,
+      decodeMaterial(initialMatId),
+      heroLambda,
+      cameraContainment.boundaries[mediumIndex],
+    );
+    if (!(mediumStack[mediumIndex].remainingDistance >= 0.0)) {
+      accumulateFrame(
+        gid, vec3f(0.0), false, vec3f(0.0), vec3f(0.0, 1.0, 0.0),
+        vec3f(0.0), 0.0,
+      );
+      return;
+    }
+  }
+
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
     let sppmOwnsCurrentEmission = false;
     let hit = traceClosest(ray, ptRayTMin(), INFINITY);
+    if (mediumDepth > 0u) {
+      let topIndex = mediumDepth - 1u;
+      let segmentDistance = select(INFINITY, hit.dist, hit.didHit);
+      let distanceInMedium = min(
+        segmentDistance, mediumStack[topIndex].remainingDistance,
+      );
+      if (!(distanceInMedium >= 0.0)) { break; }
+      throughput = throughput * materialBeer(
+        mediumStack[topIndex].sigmaA, distanceInMedium,
+      );
+      // Keep an unbounded medium unbounded: INFINITY - INFINITY is NaN.
+      if (mediumStack[topIndex].remainingDistance <= PT_F32_MAX) {
+        mediumStack[topIndex].remainingDistance = max(
+          mediumStack[topIndex].remainingDistance - distanceInMedium, 0.0,
+        );
+      }
+    }
     if (!hit.didHit) {
       // Diffuse/glossy BSDF environment paths were already added with their MIS
       // weight at the previous vertex. Only camera and delta/specular-transmission
@@ -114,42 +220,34 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
 ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
     let throughputAtVertex = throughput;
-    if (transmission > 0.0 && isTranslucent) {
-      var spectralMu = vec3f(spectralAvgMu);
-      if (spectralSampleCount > 0u) {
-        if (params.spectralEnabled != 0u) {
-          let mu = sampleMaterialSpectralMu(matId, heroLambdaTo01(heroLambda));
-          spectralMu = vec3f(mu);
-        } else {
-          let sampledMuR = sampleMaterialSpectralMu(matId, 0.15);
-          let sampledMuG = sampleMaterialSpectralMu(matId, 0.50);
-          let sampledMuB = sampleMaterialSpectralMu(matId, 0.85);
-          spectralMu = vec3f(sampledMuR, sampledMuG, sampledMuB);
-        }
+    let surfaceMediumBoundary = mediumBoundaryIdentity(
+      hit.triIndex, hit.instanceIndex,
+    );
+    let surfaceCrossesMedium = mat.isBulkMedium;
+    if (surfaceCrossesMedium && !mediumBoundaryIsValid(surfaceMediumBoundary)) {
+      break;
+    }
+    var incidentIor = 1.0;
+    if (mediumDepth > 0u) {
+      incidentIor = mediumStack[mediumDepth - 1u].ior;
+    }
+    var transmittedIor = max(ior, 1e-4);
+    if (surfaceCrossesMedium && !isFrontFace) {
+      if (
+        mediumDepth == 0u ||
+        !liteMediumLayerMatches(
+          mediumStack[mediumDepth - 1u], matId, surfaceMediumBoundary,
+        )
+      ) {
+        break;
       }
-      // Lite tier keeps the legacy Beer-Lambert absorption (no volumetric
-      // random walk — WS4 §4 degradation policy). Prefer the spectral
-      // attenuation curve; otherwise fall back to the host-derived σ_a
-      // (from attenuationColor/attenuationDistance) so that material data is
-      // not silently dead on the compatibility tier.
-      var sigmaA = select(vec3f(0.0), max(spectralMu, vec3f(0.0)), hasSpectralAttenuation);
-      if (!hasSpectralAttenuation && mat.hasSigmaA) {
-        sigmaA = max(mat.sigmaA, vec3f(0.0));
-      }
-      if (params.spectralEnabled != 0u) {
-        if (!hasSpectralAttenuation) {
-          sigmaA = vec3f(spectralRgbFactorAtHero(sigmaA, heroLambda));
-        }
-      }
-      // Lite is absorption-only. Applying sigma_s extinction without
-      // transporting scattered energy is non-conservative.
-      if (max(sigmaA.x, max(sigmaA.y, sigmaA.z)) > 0.0) {
-        throughput = throughput * exp(-sigmaA * materialAttenuationDistance(hit.dist, mat));
+      transmittedIor = 1.0;
+      if (mediumDepth > 1u) {
+        transmittedIor = mediumStack[mediumDepth - 2u].ior;
       }
     }
+    let surfaceEtaTOverI = transmittedIor / max(incidentIor, 1e-4);
     let cosThetaO = max(0.0, dot(normal, wo));
-    let surfaceEtaTOverI =
-      select(1.0 / max(ior, 1e-8), max(ior, 1e-8), isFrontFace);
     let f0Base = materialSpecularF0(
       baseColor, metallic, surfaceEtaTOverI,
       mat.specularColor, mat.specularIntensity,
@@ -190,7 +288,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
     }
     if (lightCount > 0u) {
       let sumDirectLighting = params.directLightingMode == 1u;
-      let picked = u32(min(floor(rand_f32(&rng) * f32(lightCount)), f32(lightCount - 1u)));
+      let picked = ptRandBoundedU32(&rng, lightCount);
       let directLightingScale = select(f32(lightCount), 1.0, sumDirectLighting);
       var current = 0u;
       var directLi = vec3f(0.0);
@@ -223,10 +321,14 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               hitPos + directOffsetNormal * ptRayOriginBias(),
               lightDir,
             );
-            if (
-              dirShadowDisabled ||
-              !traceAny(shadowRay, ptRayTMin(), INFINITY)
-            ) {
+            var visibility = SurfaceVisibility(vec3f(1.0), true);
+            if (!dirShadowDisabled) {
+              visibility = traceSurfaceVisibility(
+                shadowRay, ptRayTMin(), INFINITY,
+                heroLambda, incidentIor,
+              );
+            }
+            if (visibility.visible) {
               let nDotL = abs(dot(normal, lightDir));
               let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, normal, wo, lightDir,
                 mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
@@ -234,7 +336,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 mat.specularColor, mat.specularIntensity,
                 0.0, 0.0, thinFilm, false);
               let dirIrrOut = select(dIrrMean.rgb, spectralEmissionAtHero(dIrrMean.rgb, heroLambda), params.spectralEnabled != 0u);
-              directLi = directLi + throughput * brdf * nDotL * dirIrrOut;
+              directLi = directLi + throughput * brdf * nDotL * dirIrrOut *
+                visibility.transmittance;
             }
           }
         }
@@ -262,14 +365,17 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             wi,
           );
           // SHADOW-01 — extra.z carries the emitter castShadowDisabled flag.
-          if (
-            extra.z > 0.5 ||
-            !traceAny(
+          var visibility = SurfaceVisibility(vec3f(1.0), true);
+          if (!(extra.z > 0.5)) {
+            visibility = traceSurfaceVisibility(
               pointShadowRay,
               ptRayTMin(),
               ptFiniteSegmentTMax(dist),
-            )
-          ) {
+              heroLambda,
+              incidentIor,
+            );
+          }
+          if (visibility.visible) {
             let nDotL = abs(dot(normal, wi));
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, normal, wo, wi,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
@@ -278,7 +384,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               0.0, 0.0, thinFilm, false);
             let attenuation = pointSpotDistanceAttenuation(dist, ptMaxDist, ptDecay);
             let radOut = select(rad, spectralEmissionAtHero(rad, heroLambda), params.spectralEnabled != 0u);
-            directLi = directLi + throughput * brdf * nDotL * radOut * attenuation;
+            directLi = directLi + throughput * brdf * nDotL * radOut *
+              attenuation * visibility.transmittance;
           }
         }
         current = current + 1u;
@@ -312,14 +419,17 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               wi,
             );
             // SHADOW-01 — spExtra.z carries the emitter castShadowDisabled flag.
-            if (
-              spExtra.z > 0.5 ||
-              !traceAny(
+            var visibility = SurfaceVisibility(vec3f(1.0), true);
+            if (!(spExtra.z > 0.5)) {
+              visibility = traceSurfaceVisibility(
                 spotShadowRay,
                 ptRayTMin(),
                 ptFiniteSegmentTMax(dist),
-              )
-            ) {
+                heroLambda,
+                incidentIor,
+              );
+            }
+            if (visibility.visible) {
               let nDotL = abs(dot(normal, wi));
               let softness = smoothstep(cosOuter, max(cosInner, cosOuter + 1e-6), coneCos);
               let attenuation = pointSpotDistanceAttenuation(dist, spMaxDist, spDecay);
@@ -329,7 +439,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
                 mat.specularColor, mat.specularIntensity,
                 0.0, 0.0, thinFilm, false);
               let sradOut = select(srad, spectralEmissionAtHero(srad, heroLambda), params.spectralEnabled != 0u);
-              directLi = directLi + throughput * brdf * nDotL * softness * sradOut * attenuation;
+              directLi = directLi + throughput * brdf * nDotL * softness * sradOut *
+                attenuation * visibility.transmittance;
             }
           }
         }
@@ -402,16 +513,20 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               );
               // SHADOW-01 — rect record texel 0 .w carries castShadowDisabled.
               let rectShadowDisabledL = textureLoad(liteLightTex, vec2i(i32(rb2), 0), 0).w > 0.5;
-              if (
-                rectShadowDisabledL ||
-                !traceAny(
+              var visibility = SurfaceVisibility(vec3f(1.0), true);
+              if (!rectShadowDisabledL) {
+                visibility = traceSurfaceVisibility(
                   shadowRay,
                   ptRayTMin(),
                   ptFiniteSegmentTMax(dist),
-                )
-              ) {
+                  heroLambda,
+                  incidentIor,
+                );
+              }
+              if (visibility.visible) {
                 let rrOut = select(rr, spectralEmissionAtHero(rr, heroLambda), params.spectralEnabled != 0u);
-                directLi = directLi + throughput * brdf * nDotL * rrOut * misWeight / lightPdf;
+                directLi = directLi + throughput * brdf * nDotL * rrOut *
+                  visibility.transmittance * misWeight / lightPdf;
               }
             }
           }
@@ -439,7 +554,11 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
             hitPos + envOffsetNormal * ptRayOriginBias(),
             envDir,
           );
-          if (!traceAny(shadowRay, ptRayTMin(), INFINITY)) {
+          let visibility = traceSurfaceVisibility(
+            shadowRay, ptRayTMin(), INFINITY,
+            heroLambda, incidentIor,
+          );
+          if (visibility.visible) {
             let brdf = evaluateFiniteBsdfFullWithClearcoatNormal(baseColor, roughness, metallic, transmission, surfaceEtaTOverI, normal, normal, wo, envDir,
               mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness, mat.sheenColor,
               mat.iridescence, mat.iridescenceIor, mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
@@ -460,7 +579,8 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
               1.0,
             );
             let misWeight = powerHeuristic(envPdf, brdfPdf);
-            directLi = directLi + throughput * brdf * nDotL * envColorOut * misWeight / max(envPdf, 1e-8);
+            directLi = directLi + throughput * brdf * nDotL * envColorOut *
+              visibility.transmittance * misWeight / max(envPdf, 1e-8);
           }
         }
       }
@@ -472,6 +592,7 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       radiance = radiance + manifoldNeeContribution(
         &rng,
         hitPos,
+        normal,
         normal,
         wo,
         baseColor,
@@ -490,20 +611,42 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         mat.iridescenceThicknessMax,
         mat.specularColor,
         mat.specularIntensity,
+        0.0,
+        0.0,
+        thinFilm,
         heroLambda,
         throughputAtVertex,
       );
     } else if (caustic == 2u) {
-      radiance = radiance + photonMapContribution(
-        &rng,
+      photonMapUpdateProgressive(
+        0u,
         hitPos,
+        normal,
         normal,
         wo,
         baseColor,
         roughness,
         metallic,
         transmission,
+        surfaceEtaTOverI,
+        mat.clearcoat,
+        mat.clearcoatRoughness,
+        mat.sheen,
+        mat.sheenRoughness,
+        mat.sheenColor,
+        mat.iridescence,
+        mat.iridescenceIor,
+        mat.iridescenceThicknessMin,
+        mat.iridescenceThicknessMax,
+        mat.specularColor,
+        mat.specularIntensity,
+        0.0,
+        0.0,
+        thinFilm,
         throughputAtVertex,
+        heroLambda,
+        heroPdf,
+        1.0,
       );
     }
 
@@ -527,7 +670,11 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       mat.specularColor,
       mat.specularIntensity,
       thinFilm,
-      isTranslucent,
+      mat.isThinSheet,
+      oppositeNormal,
+      oppositeRoughness,
+      oppositeLayerW,
+      surfaceCrossesMedium,
       mat.clearcoat,
       mat.clearcoatRoughness,
       mat.sheen,
@@ -536,7 +683,28 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
       0.0, // anisotropy — lite tier has no aniso texture bindings; always isotropic
       0.0, // anisotropyRotation
     );
-    ray.origin = bs.newRayOrigin;
+    if (bs.enteredMedium) {
+      if (mediumDepth >= LITE_MEDIUM_STACK_LIMIT) { break; }
+      mediumStack[mediumDepth] = liteMediumLayer(
+        matId, mat, heroLambda, surfaceMediumBoundary,
+      );
+      if (!(mediumStack[mediumDepth].remainingDistance >= 0.0)) { break; }
+      mediumDepth = mediumDepth + 1u;
+    } else if (bs.exitedMedium) {
+      if (
+        mediumDepth == 0u ||
+        !liteMediumLayerMatches(
+          mediumStack[mediumDepth - 1u], matId, surfaceMediumBoundary,
+        )
+      ) {
+        break;
+      }
+      mediumDepth = mediumDepth - 1u;
+    }
+    let crossedTransmissiveInterface =
+      bs.sampledLobe == BSDF_LOBE_DELTA_TRANSMISSION ||
+      bs.sampledLobe == BSDF_LOBE_ROUGH_TRANSMISSION ||
+      bs.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION;
     ray.direction = bs.newRayDir;
     throughput = throughput * bs.throughputMul;
     let sampledDir = bs.sampledDir;
@@ -594,6 +762,17 @@ ${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
         throughputAtVertex,
         heroLambda,
       );
+    }
+
+    // Keep the exact source token scoped to one outgoing path query. All
+    // connection visibility queries above originate at this vertex and must
+    // not inherit continuation suppression from the sampled path edge.
+    if (crossedTransmissiveInterface) {
+      if (!opticalSetContinuationSourceFromHit(hit)) { break; }
+      ray.origin = hitPos;
+    } else {
+      opticalClearContinuationSource();
+      ray.origin = bs.newRayOrigin;
     }
 
     if (bounce > 2u) {

@@ -56,7 +56,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
   it('1a. reflected direction formula is present', () => {
     // reflect(dir, n) = dir - 2·(n·dir)·n; the WGSL encodes this explicitly.
     const src = wgsl();
-    expect(src).toContain('dir - 2.0 * dot(dir, probeNormal) * probeNormal');
+    expect(src).toContain('rayDirection - 2.0 * dot(rayDirection, probeNormal) * probeNormal');
   });
 
   it('1b. extension-aware specular weight formula is present', () => {
@@ -72,19 +72,22 @@ describe('B2 — WGSL structural pins: specular complement', () => {
   it('1c. specular branch uses canonical relocated visibility-aware DDGI feedback', () => {
     const src = wgsl();
     expect(src).toContain(
-      'let specularIrr = ddgiFeedbackAt(hitWorldPos, reflDir);',
+      'let specularIrradiance = ddgiFeedbackAt(',
     );
   });
 
-  it('1d. mix blend from Lambertian to specular is present', () => {
+  it('1d. base/reflection split preserves the former Lambertian-to-specular mix', () => {
     const src = wgsl();
-    expect(src).toContain('mix(lambertianIndirectLo, specularIndirectLo, extensionSpecularWeight)');
+    expect(src).toContain('baseIndirectRadiance = baseIndirectRadiance *');
+    expect(src).toContain('(1.0 - extensionSpecularWeight);');
+    expect(src).toContain('reflectionIndirectRadiance = specularIndirectLo *');
+    expect(src).toContain('extensionSpecularWeight;');
   });
 
   it('1e. Lambertian path is retained only when extension specular support is exactly absent', () => {
     const src = wgsl();
     // The else-branch writes the Lambertian indirect.
-    expect(src).toContain('indirectGated * probeMat.albedo * (1.0 / PI)');
+    expect(src).toContain('baseIndirectRadiance = indirectGated * probeMat.albedo * (1.0 / PI)');
     // The guard condition exists so rough surfaces stay Lambertian.
     expect(src).toContain('extensionSpecularWeight > 0.0');
     expect(src).not.toContain('extensionSpecularWeight > 1e-4');
@@ -93,13 +96,15 @@ describe('B2 — WGSL structural pins: specular complement', () => {
   it('1f. specular path is gated behind indirectFeedback', () => {
     const src = wgsl();
     // Both conditions must be present in the specular branch guard.
-    expect(src).toContain('extensionSpecularWeight > 0.0 && frameParams.indirectFeedback != 0u');
+    expect(src).toContain('extensionSpecularWeight > 0.0 &&');
+    expect(src).toContain('frameParams.indirectFeedback != 0u');
   });
 
   it('1g. mat.roughness and mat.metalness are accessed in the shader', () => {
     const src = wgsl();
     expect(src).toContain('hit, mat.baseColor, mat.roughness, mat.metalness, mat.transmission,');
-    expect(src).toContain('mat.ior, mat.attenuationColor, smoothNormal, probeNormal, -dir,');
+    expect(src).toContain('mat.ior, mat.attenuationColor, mat.attenuationDistance,');
+    expect(src).toContain('smoothNormal, probeNormal, -dir,');
     expect(src).toContain('mat.roughness');
     expect(src).toContain('mat.metalness');
   });
@@ -109,7 +114,7 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('const DDGI_MATERIAL_MAP_SLOT_ROUGHNESS: u32 = 1u;');
     expect(src).toContain('const DDGI_MATERIAL_MAP_SLOT_METALLIC: u32 = 2u;');
     expect(src).toContain('fn ddgiSampleProbeHitMaterial(');
-    expect(src).toContain('out.albedo = scalarBaseColor * baseColorTexel.rgb;');
+    expect(src).toContain('out.albedo = scalarBaseColor * baseColorTexel.value.rgb;');
     expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_ROUGHNESS');
     expect(src).toContain('DDGI_MATERIAL_MAP_SLOT_METALLIC');
     expect(src).toContain('const DDGI_MATERIAL_MAP_META_TEXELS_PER_TRI: u32 = 157u;');
@@ -118,13 +123,13 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('const DDGI_MATERIAL_MAP_VOLUME_SCATTERING_TEXEL_OFFSET: u32 = 55u;');
     expect(src).toContain('fn ddgiSampleFaceLayerControls(');
     expect(src).toContain('fn ddgiSampleVolumeScatteringControls(');
-    expect(src).toContain('fn ddgiApplyHomogeneousVolumeSingleScatter(');
+    expect(src).toContain('fn ddgiMediumSegmentTransfer(');
     expect(src).toContain('out.roughness = ddgiFaceLayerRoughness(out.roughness, layerControls);');
-    expect(src).toContain('out.layerTransmission = ddgiFaceLayerTransmission(layerControls);');
+    expect(src).toContain('out.reflectionLayerTransmission = ddgiFaceLayerTransmission(layerControls);');
+    expect(src).toContain('out.layerTransmission = out.reflectionLayerTransmission;');
     expect(src).toContain('out.volumeScattering = ddgiSampleVolumeScatteringControls(hit.indices.w);');
-    expect(src).toContain('radiance = radiance * probeMat.layerTransmission;');
-    expect(src).toContain('radiance = ddgiApplyHomogeneousVolumeSingleScatter(');
-    expect(src).toContain('probeMat.bulkThickness,');
+    expect(src).toContain('probeMat.layerTransmission;');
+    expect(src).toContain('fn ddgiMediumSegmentTransfer(');
     expect(src).toContain('let directRadiance = direct * probeMat.albedo * (1.0 / PI);');
   });
 
@@ -133,17 +138,17 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('const DDGI_MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET: u32 = 13u;');
     expect(src).toContain('const DDGI_MATERIAL_MAP_THICKNESS_TEXEL_OFFSET: u32 = 47u;');
     expect(src).toContain('fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32) -> f32');
-    expect(src).toContain('fn ddgiApplyThicknessMapToBeerTint(hit: IntersectionResult, beerTint: vec3f) -> vec3f');
     expect(src).toContain('transmission: f32,');
-    expect(src).toContain('beerTint: vec3f,');
+    expect(src).toContain('authoredThickness: f32,');
+    expect(src).toContain('thicknessMapScale: f32,');
     expect(src).toContain('out.transmission = ddgiSampleTransmissionMapForHit(hit, scalarTransmission);');
-    expect(src).toContain('ddgiApplyThicknessMapToBeerTint(hit, scalarBeerTint),');
-    expect(src).toContain('let transmitted = vec3f(');
+    expect(src).toContain('let thicknessMap = ddgiSampleThicknessMapFactorForHit(hit);');
+    expect(src).toContain('thicknessMap.y >= 0.5 && out.authoredThickness > 0.0,');
+    expect(src).toContain('let mappedCap = authoredThickness * clamp(thicknessMapScale, 0.0, 1.0);');
+    expect(src).toContain('radiance = vec3f(');
     expect(src).toContain('fn ddgiTraceGlassChannel(');
-    expect(src).toContain('sampleSkyColor(exitBtdf.direction)');
-    expect(src).toContain('radiance = mix(');
-    expect(src).toContain('            transmitted,');
-    expect(src).toContain('probeMat.transmission * frameParams.glassMixScale,');
+    expect(src).toContain('prefixTransfer, sampleSkyColor(rayDirection), channel,');
+    expect(src).toContain('currentMaterial.transmission * frameParams.glassMixScale,');
   });
 
   it('1i. atlas-backed normal and bump maps perturb DDGI probe-hit bounce normals', () => {
@@ -159,8 +164,8 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('fn ddgiApplyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f');
     expect(src).toContain('let normalMapped = ddgiApplyNormalMapForHit(hit, smoothNormal);');
     expect(src).toContain('let probeNormal = ddgiApplyBumpMapForHit(hit, normalMapped);');
-    expect(src).toContain('let direct_analytic = evalDirectLighting(');
-    expect(src).toContain('hitWorldPos, probeNormal, directSeed ^ 0xa511e9b3u,');
+    expect(src).toContain('let direct = evalDirectLighting(');
+    expect(src).toContain('hitWorldPos, probeNormal, seed ^ 0xa511e9b3u,');
     expect(src).toContain('let indirect = ddgiFeedbackAt(hitWorldPos, probeNormal);');
     expect(src).not.toContain('out.hitNormal');
   });
@@ -201,10 +206,83 @@ describe('B2 — WGSL structural pins: specular complement', () => {
     expect(src).toContain('out.sheen = ddgiSampleSheenControls(hit.indices.w, uvs.uv0, uvs.uv1);');
     expect(src).toContain('out.anisotropy = ddgiSampleAnisotropyControls(hit.indices.w, uvs.uv0, uvs.uv1);');
     expect(src).toContain('out.iridescence = ddgiSampleIridescenceControls(hit.indices.w, uvs.uv0, uvs.uv1);');
-    expect(src).toContain('let clearcoatReflDir = safe_normalize(dir - 2.0 * dot(dir, probeMat.clearcoatNormal) * probeMat.clearcoatNormal);');
+    expect(src).toContain('let clearcoatReflectedDirection = ddgiNormalizeOr(');
     expect(src).toContain('let extensionSpecularWeight = ddgiProbeExtensionSpecularWeight(probeMat);');
-    expect(src).toContain('let f0Tint = ddgiProbeSpecularTint(probeMat, max(0.0, dot(-dir, probeNormal)));');
-    expect(src).toContain('indirectRadiance = mix(lambertianIndirectLo, specularIndirectLo, extensionSpecularWeight);');
+    expect(src).toContain('let f0Tint = ddgiProbeSpecularTint(');
+    expect(src).toContain('reflectionIndirectRadiance = specularIndirectLo *');
+  });
+
+  it('1l. thin-film transmittance applies only to the base/source closure', () => {
+    const src = wgsl();
+    expect(src).toContain('reflectionLayerTransmission: vec3f,');
+    expect(src.match(
+      /out\.reflectionLayerTransmission = ddgiFaceLayerTransmission\(layerControls\);/g,
+    )).toHaveLength(2);
+    expect(src.match(
+      /out\.layerTransmission = out\.reflectionLayerTransmission;/g,
+    )).toHaveLength(2);
+    expect(src.match(
+      /out\.layerTransmission = out\.layerTransmission \* film\.transmittance;/g,
+    )).toHaveLength(2);
+    expect(src).not.toMatch(
+      /reflectionLayerTransmission\s*=.*film\.transmittance/,
+    );
+    expect(src).toContain(
+      'reflectionIndirectRadiance * probeMat.reflectionLayerTransmission;',
+    );
+  });
+
+  it('1m. splits deterministic emission, unpaid opaque response, and persistent extension reflection', () => {
+    const src = wgsl();
+    expect(src).toContain('struct DdgiProbeSurfaceSource {');
+    expect(src).toContain('emissionLo: vec3f,');
+    expect(src).toContain('opaqueLo: vec3f,');
+    expect(src).toContain('persistentReflectionLo: vec3f,');
+    expect(src).toContain('terminalLo: vec3f,');
+    expect(src).toContain(
+      'out.emissionLo = surfaceEmission * probeMat.layerTransmission;',
+    );
+    expect(src).toContain(
+      '(directRadiance + baseIndirectRadiance + bakedOutgoing) *',
+    );
+    expect(src).toContain(
+      'currentSurfaceSource.opaqueLo * opaqueWeight +',
+    );
+    expect(src).toContain(
+      'currentSurfaceSource.persistentReflectionLo,',
+    );
+
+    const persistentStart = src.indexOf(
+      'persistentReflectionIndirectRadiance =\n        (',
+    );
+    const persistentEnd = src.indexOf(';', persistentStart);
+    expect(persistentStart).toBeGreaterThan(0);
+    expect(persistentEnd).toBeGreaterThan(persistentStart);
+    const persistentAssignment = src.slice(persistentStart, persistentEnd);
+    expect(persistentAssignment).toContain('clearcoatLo * clearcoatWeight');
+    expect(persistentAssignment).toContain('sheenLo * sheenWeight');
+    expect(persistentAssignment).not.toContain('baseSpecularLo');
+  });
+
+  it('1n. terminates unlit glass as a deterministic source before dielectric branching', () => {
+    const src = wgsl();
+    const traceStart = src.indexOf('fn ddgiTraceGlassChannel(');
+    const unlit = src.indexOf(
+      'if ((currentEntry.flags & MATERIAL_FLAG_UNLIT) != 0u)',
+      traceStart,
+    );
+    const glassGate = src.indexOf('if (!hasTransmission)', traceStart);
+    const familyDraw = src.indexOf('let chooseTransmission =', traceStart);
+    expect(unlit).toBeGreaterThan(traceStart);
+    expect(glassGate).toBeGreaterThan(unlit);
+    expect(familyDraw).toBeGreaterThan(glassGate);
+    expect(src.slice(unlit, glassGate)).toContain(
+      'prefixTransfer, currentSurfaceSource.emissionLo, channel,',
+    );
+    expect(src).toContain(
+      'out.emissionLo = probeMat.albedo * probeMat.layerTransmission;',
+    );
+    expect(src).toContain('out.terminalLo = out.emissionLo;');
   });
 });
 
@@ -304,6 +382,60 @@ describe('B2 — energy argument: blend not add (CPU proxy)', () => {
     // Result must NOT exceed the max of the two (no additive energy injection).
     expect(result).toBeLessThanOrEqual(specularLo);
   });
+
+  it('thin film pays face T on reflection and face T × film T on the base', () => {
+    const faceTransmission = 0.8;
+    const filmReflectance = 0.3;
+    const filmTransmittance = 0.5;
+    const reflectedContribution = filmReflectance * faceTransmission;
+    const baseContribution = faceTransmission * filmTransmittance;
+
+    expect(reflectedContribution).toBeCloseTo(0.24, 12);
+    expect(reflectedContribution).not.toBeCloseTo(0.12, 12);
+    expect(baseContribution).toBeCloseTo(0.4, 12);
+  });
+});
+
+describe('DDGI glass local-source ownership oracle', () => {
+  function expectedLocalSource(
+    transmission: number,
+    emission: number,
+    opaque: number,
+    clearcoatAndSheen: number,
+  ): number {
+    const transmissionPdf = transmission / (1 + transmission);
+    const reflectionPdf = 1 - transmissionPdf;
+    const reflectedEstimate =
+      (opaque * (1 - transmission) + clearcoatAndSheen) / reflectionPdf;
+    return emission + reflectionPdf * reflectedEstimate;
+  }
+
+  it('retains emissive glass and persistent clearcoat/sheen at t=1', () => {
+    expect(expectedLocalSource(1, 2.25, 0.8, 0.35)).toBeCloseTo(2.6, 14);
+  });
+
+  it('charges a partial-transmission base response by exactly one unpaid (1-t)', () => {
+    expect(expectedLocalSource(0.4, 0.2, 1.5, 0.3)).toBeCloseTo(
+      0.2 + 1.5 * 0.6 + 0.3,
+      14,
+    );
+  });
+
+  it('keeps an unlit transmissive endpoint deterministic', () => {
+    const unlitSource = 3.75;
+    for (const transmission of [0, 0.25, 1]) {
+      void transmission;
+      expect(unlitSource).toBeCloseTo(3.75, 14);
+    }
+  });
+
+  it('excludes the base-specular proxy owned by the exact interface continuation', () => {
+    const baseSpecularProxy = 0.7;
+    const split = expectedLocalSource(0.65, 0.1, 0.9, 0.2);
+    const duplicated = split + baseSpecularProxy;
+    expect(split).toBeCloseTo(0.1 + 0.9 * 0.35 + 0.2, 14);
+    expect(split).not.toBeCloseTo(duplicated, 14);
+  });
 });
 
 // ── 4. indirectFeedback=0 gate ───────────────────────────────────────────────
@@ -315,30 +447,35 @@ describe('B2 — WGSL gate: specular complement is disabled when indirectFeedbac
     // In that regime the atlas is not fed multi-bounce data, so a reflected
     // atlas lookup would return stale/zero data — correctly skipped.
     const src = wgsl();
-    expect(src).toContain('extensionSpecularWeight > 0.0 && frameParams.indirectFeedback != 0u');
+    expect(src).toContain('extensionSpecularWeight > 0.0 &&');
+    expect(src).toContain('frameParams.indirectFeedback != 0u');
   });
 });
 
 // ── H18. Material-emissive direct probe hits ────────────────────────────────
 
 describe('H18 — material-emissive direct probe hits', () => {
-  it('adds packed surface emission after glass mix and before writing hit radiance', () => {
+  it('separates packed emission from baked/diffuse response before glass transport', () => {
     const src = wgsl();
-    expect(src).toContain('let scalarSurfaceEmission = vec3f(');
+    expect(src).toContain('let scalarSurfaceEmission = max(mat.emissive, vec3f(0.0));');
     expect(src).toContain('let surfaceEmission = select(');
     expect(src).toContain('ddgiSampleEmissiveMap(hit, scalarSurfaceEmission),');
-    expect(src).toContain('radiance = radiance + surfaceEmission + bakedOutgoing;');
-
-    const glassMix = src.indexOf('let transmitted = vec3f(');
-    const mapSample = src.indexOf('ddgiSampleEmissiveMap(hit, scalarSurfaceEmission),');
-    const emissionAdd = src.indexOf(
-      'radiance = radiance + surfaceEmission + bakedOutgoing;',
+    expect(src).toContain(
+      'out.emissionLo = surfaceEmission * probeMat.layerTransmission;',
     );
+    expect(src).toContain(
+      '(directRadiance + baseIndirectRadiance + bakedOutgoing) *',
+    );
+    expect(src).toContain('return accumulatedRadiance + ddgiTransferredChannel(');
+
+    const bakedAdd = src.indexOf('let bakedOutgoing =');
+    const mapSample = src.indexOf('ddgiSampleEmissiveMap(hit, scalarSurfaceEmission),');
+    const opaqueBranch = src.indexOf('return accumulatedRadiance + ddgiTransferredChannel(');
     const writeOut = src.indexOf('out.hitRadiance  = radiance;');
-    expect(glassMix).toBeGreaterThanOrEqual(0);
-    expect(mapSample).toBeGreaterThan(glassMix);
-    expect(emissionAdd).toBeGreaterThan(mapSample);
-    expect(writeOut).toBeGreaterThan(emissionAdd);
+    expect(bakedAdd).toBeGreaterThanOrEqual(0);
+    expect(mapSample).toBeGreaterThan(bakedAdd);
+    expect(opaqueBranch).toBeGreaterThan(mapSample);
+    expect(writeOut).toBeGreaterThan(opaqueBranch);
   });
 
   it('core-material DDGI packing folds emissiveIntensity into final radiance exactly once', () => {

@@ -20,6 +20,7 @@ import {
   normaliseCanonicalResamplingWeights,
   proxyPHatAt,
   reconnectionGeometryTerm,
+  surfaceSuffixReceiverSupported,
   transformedDensity,
   type GrisDomain,
   type GrisSample,
@@ -53,7 +54,7 @@ describe('GRIS reconnection geometry oracle', () => {
 
   it('matches the shared domain-to-canonical Jacobian', () => {
     const base = fixtures[1]!;
-    const canonicalXv: Vec3 = [-0.6, 0.9, 0.3];
+    const canonicalXv: Vec3 = [-0.6, -0.9, 0.3];
     const sample: GrisSample = {
       kind: 'surface',
       xs: base.x2,
@@ -66,6 +67,21 @@ describe('GRIS reconnection geometry oracle', () => {
       oracleJacobian(base, shifted),
       12,
     );
+  });
+
+  it('rejects a reconnection that crosses the stored suffix plane', () => {
+    const sample: GrisSample = {
+      kind: 'surface',
+      xs: [0, 2, 0],
+      ns: [0, -1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+    };
+    expect(surfaceSuffixReceiverSupported([0, 0, 0], sample.xs!, sample.ns!))
+      .toBe(true);
+    expect(surfaceSuffixReceiverSupported([0, 3, 0], sample.xs!, sample.ns!))
+      .toBe(false);
+    expect(domainToCanonicalJacobian([0, 0, 0], [0, 3, 0], sample)).toBe(0);
   });
 
   it('returns zero for degenerate surface mappings', () => {
@@ -125,7 +141,7 @@ describe('GRIS transformed technique densities', () => {
       ns: [0, -1, 0],
       Lo: [1, 1, 1],
       nativeDomainIndex: 1,
-      nativePHat: 1 / Math.PI,
+      nativeLogPHat: Math.log2(1 / Math.PI),
     };
     const matrix = evaluateTechniqueMatrix(domains, sample, 0);
 
@@ -152,7 +168,7 @@ describe('GRIS transformed technique densities', () => {
       ns: [0, -1, 0],
       Lo: [1, 1, 1],
       nativeDomainIndex: 1,
-      nativePHat: 99,
+      nativeLogPHat: Math.log2(99),
     };
     const matrix = evaluateTechniqueMatrix(domains, sample, 0);
     expect(matrix.transformedDensities[1]).toBe(0);
@@ -172,7 +188,7 @@ describe('GRIS transformed technique densities', () => {
       direction: [0, 1, 0],
       Lo: [1, 1, 1],
       nativeDomainIndex: 0,
-      nativePHat: 10,
+      nativeLogPHat: Math.log2(10),
     };
     expect(proxyPHatAt(domain, sample)).toBe(0);
     expect(evaluateTechniqueMatrix([domain], sample, 0).weights).toEqual([0]);
@@ -200,7 +216,7 @@ describe('GRIS transformed technique densities', () => {
       ns: [0, -1, 0],
       Lo: [1, 1, 1],
       nativeDomainIndex: 0,
-      nativePHat: 10,
+      nativeLogPHat: Math.log2(10),
     };
     const matrix = evaluateTechniqueMatrix(domains, sample, 0);
     expect(matrix.denominator).toBe(0);
@@ -218,7 +234,7 @@ describe('GRIS transformed technique densities', () => {
       direction: [0, 4, 0],
       Lo: [1, 1, 1],
       nativeDomainIndex: 2,
-      nativePHat: 1 / Math.PI,
+      nativeLogPHat: Math.log2(1 / Math.PI),
     };
     const matrix = evaluateTechniqueMatrix(domains, sample, 0);
     expect(matrix.jacobians).toEqual([1, 1, 1]);
@@ -268,7 +284,7 @@ describe('GRIS transformed technique densities', () => {
       direction: [0, 1, 0],
       Lo: [1, 1, 1],
       nativeDomainIndex: 0,
-      nativePHat: 3.402823466e38,
+      nativeLogPHat: Math.log2(3.402823466e38),
     };
     const matrix = evaluateTechniqueMatrix(domains, sample, 0);
     expect(Number.isFinite(matrix.numerators[0])).toBe(true);
@@ -279,10 +295,14 @@ describe('GRIS transformed technique densities', () => {
   it('preserves unequal extreme technique masses instead of independently capping them', () => {
     const high = logWeightedTransformedDensity(
       0xffff_ffff,
-      3.402823466e38,
-      1e-30,
+      Math.log2(3.402823466e38),
+      Math.log2(1e-30),
     );
-    const low = logWeightedTransformedDensity(1, 3.402823466e38, 1e30);
+    const low = logWeightedTransformedDensity(
+      1,
+      Math.log2(3.402823466e38),
+      Math.log2(1e30),
+    );
     const commonScale = Math.max(high, low);
     const scaled = [2 ** (high - commonScale), 2 ** (low - commonScale)];
     expect(scaled[0]).toBe(1);
@@ -293,6 +313,18 @@ describe('GRIS transformed technique densities', () => {
 });
 
 describe('GRIS reservoir accounting', () => {
+  it('keeps a canonical local estimator as an identity-only row without outcome bias', () => {
+    // Two identical one-attempt techniques each select safe/local support with
+    // probability 1/2.  Conditional represented-row sums are:
+    //   local/local = 2, local/safe = 3, safe/local = 1, safe/safe = 2.
+    // Their mean is the true integral 2. An early return on canonical-local
+    // would replace local/safe=3 with 2 and bias the mean to 1.75.
+    const identityAware = [2, 3, 1, 2] as const;
+    const earlyReturn = [2, 2, 1, 2] as const;
+    expect(sum(identityAware) / identityAware.length).toBe(2);
+    expect(sum(earlyReturn) / earlyReturn.length).toBe(1.75);
+  });
+
   it('includes zero-weight source attempts and never adds a selection attempt', () => {
     // Two useful reservoirs and an occluded 17-attempt reservoir still represent
     // exactly 4+17+9 attempts. Candidate selection does not turn that into 31.
@@ -333,16 +365,18 @@ describe('GRIS reservoir accounting', () => {
       direction: [0, 1, 0],
       Lo: [1, 1, 1],
       nativeDomainIndex,
-      nativePHat: 1 / Math.PI,
+      nativeLogPHat: Math.log2(1 / Math.PI),
     }));
     const sourceUcw = [7, 2] as const;
     const logWeights = samples.map((sample, index) => {
       const matrix = evaluateTechniqueMatrix(domains, sample, 0);
+      const nativeLogPHat = sample.nativeLogPHat!;
       return logCanonicalResamplingWeight(
-        matrix.weights[index]!,
-        1 / Math.PI,
-        sourceUcw[index]!,
-        1,
+        Math.log2(matrix.weights[index]!),
+        Math.log2(1 / Math.PI),
+        Math.log2(sourceUcw[index]!) + nativeLogPHat,
+        nativeLogPHat,
+        0,
       );
     });
     const normalized = normaliseCanonicalResamplingWeights(logWeights).weights;
@@ -355,8 +389,12 @@ describe('GRIS reservoir accounting', () => {
 
   it('normalizes WRS with a common scale and caps only the final estimator weight', () => {
     const logWeights = [
-      logCanonicalResamplingWeight(0.75, 4, 1e30, 2),
-      logCanonicalResamplingWeight(0.25, 4, 1e-20, 2),
+      logCanonicalResamplingWeight(
+        Math.log2(0.75), Math.log2(4), Math.log2(1e30), 0, Math.log2(2),
+      ),
+      logCanonicalResamplingWeight(
+        Math.log2(0.25), Math.log2(4), Math.log2(1e-20), 0, Math.log2(2),
+      ),
     ];
     const normalized = normaliseCanonicalResamplingWeights(logWeights);
     expect(normalized.weights[0]).toBe(1);
@@ -366,11 +404,50 @@ describe('GRIS reservoir accounting', () => {
     expect(finaliseLogScaledReservoirWeight(
       normalized.logScale,
       sum(normalized.weights),
-      4,
+      Math.log2(4),
       16,
     )).toBe(16);
-    expect(finaliseLogScaledReservoirWeight(Math.log2(6), 1.5, 3, 16))
+    expect(finaliseLogScaledReservoirWeight(Math.log2(6), 1.5, Math.log2(3), 16))
       .toBeCloseTo(3, 12);
+  });
+
+  it('keeps native log-pHat exact below the f32 linear range', () => {
+    const nativeLogPHat = -200;
+    const sourceH = -100;
+    const logWeight = logCanonicalResamplingWeight(
+      -1,
+      -5,
+      sourceH,
+      nativeLogPHat,
+      2,
+    );
+
+    // Exact arithmetic: -1 - 5 + (-100 - -200) + 2 = 96. Reconstructing
+    // word 26 through exp2(clamp(-200, -126, 127)) would instead yield 22.
+    expect(logWeight).toBe(96);
+    expect(logWeight).not.toBe(-1 - 5 + (sourceH - -126) + 2);
+    expect(finaliseLogScaledReservoirWeight(
+      sourceH,
+      1,
+      nativeLogPHat,
+      3.402823466e38,
+    )).toBeCloseTo(2 ** 100, 12);
+
+    const matrix = evaluateTechniqueMatrix([{
+      xv: [0, 0, 0],
+      nv: [0, 1, 0],
+      attempts: 4,
+    }], {
+      kind: 'environment',
+      direction: [0, 1, 0],
+      Lo: [1, 1, 1],
+      nativeDomainIndex: 0,
+      nativeLogPHat,
+    }, 0);
+    expect(matrix.logPHats).toEqual([nativeLogPHat]);
+    expect(matrix.logTransformedDensities).toEqual([nativeLogPHat]);
+    expect(matrix.logNumerators).toEqual([nativeLogPHat + 2]);
+    expect(matrix.weights).toEqual([1]);
   });
 
   it('selects common-scaled candidates with the expected Monte Carlo frequencies', () => {
@@ -396,7 +473,7 @@ describe('GRIS reservoir accounting', () => {
     }
   });
 
-  it('does not resurrect an invisible sample through a stored native pHat', () => {
+  it('does not resurrect an invisible sample through a stored native log-pHat', () => {
     const domain: GrisDomain = {
       xv: [0, 0, 0],
       nv: [0, 1, 0],
@@ -408,7 +485,7 @@ describe('GRIS reservoir accounting', () => {
       direction: [0, 1, 0],
       Lo: [10, 10, 10],
       nativeDomainIndex: 0,
-      nativePHat: 100,
+      nativeLogPHat: Math.log2(100),
     };
     expect(proxyPHatAt(domain, sample)).toBe(0);
     expect(evaluateTechniqueMatrix([domain], sample, 0).weights).toEqual([0]);

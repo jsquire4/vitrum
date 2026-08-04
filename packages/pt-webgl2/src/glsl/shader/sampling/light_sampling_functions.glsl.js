@@ -286,6 +286,8 @@ export const light_sampling_functions = /* glsl */`
 		vec3 radiance;
 		float area;
 		float power;
+		float proposalPmf;
+		float bdptProposalPmf;
 		float castShadowDisabled;
 		float twoSided;
 		vec2 sourceFaceWords;
@@ -307,6 +309,8 @@ export const light_sampling_functions = /* glsl */`
 		t.v2 = s3.xyz;
 		t.area = s3.a;
 		t.power = s4.r;
+		t.proposalPmf = max( s4.g, 0.0 );
+		t.bdptProposalPmf = max( s4.b, 0.0 );
 		t.castShadowDisabled = s5.g;
 		t.twoSided = s5.b;
 		t.sourceFaceWords = s5.ra;
@@ -314,12 +318,10 @@ export const light_sampling_functions = /* glsl */`
 		return t;
 	}
 
-	// Sample a point uniformly on the chosen emissive triangle, selecting triangles
-	// by emitted power (luminance(radiance) * area). The resulting area-density is
-	// luminance(radiance) / totalEmissivePower, which the forward emissive hit can
-	// recover from surf.emission without a triangle→index map.
+	// Sample a point uniformly on the chosen emissive triangle. The host converts
+	// physical f64 weights into the exact represented PMF stored in s4.g.
 	LightRecord sampleMeshAreaLight(
-		sampler2D meshLights, uint meshLightCount, float totalEmissivePower, vec3 rayOrigin, vec3 ruv
+		sampler2D meshLights, uint meshLightCount, vec3 rayOrigin, vec3 ruv
 	) {
 		LightRecord rec;
 		rec.point = vec3( 0.0 );
@@ -334,23 +336,26 @@ export const light_sampling_functions = /* glsl */`
 		rec.delta = 0.0;
 		rec.hasTargetFace = false;
 		rec.targetFaceIndex = 0u;
-		if ( meshLightCount == 0u || totalEmissivePower <= 0.0 ) return rec;
+		if ( meshLightCount == 0u ) return rec;
 
-		// Power-proportional triangle selection by cumulative emitted power.
-		float uPick = ruv.x * totalEmissivePower;
-		uint chosen = meshLightCount - 1u;
+		// The host stores an exact 24-bit represented PMF in s4.g.
+		float uPick = ruv.x;
+		uint chosen = 0u;
+		bool foundPositive = false;
 		float cum = 0.0;
 		for ( uint ii = 0u; ii < meshLightCount; ii ++ ) {
-                        cum += finitePositiveLightPower(
-                                readMeshTriLight( meshLights, ii ).power
-                        );
-			if ( uPick <= cum ) { chosen = ii; break; }
+			float representedPmf = readMeshTriLight( meshLights, ii ).proposalPmf;
+			if ( representedPmf <= 0.0 ) continue;
+			foundPositive = true;
+			chosen = ii;
+			cum += representedPmf;
+			if ( uPick < cum ) break;
 		}
+		if ( ! foundPositive ) return rec;
 
                 MeshTriLight tri = readMeshTriLight( meshLights, chosen );
                 rec.castShadowDisabled = tri.castShadowDisabled;
-                float triPower = finitePositiveLightPower( tri.power );
-                if ( triPower <= 0.0 || tri.area <= 0.0 ) return rec;
+                if ( tri.proposalPmf <= 0.0 || tri.area <= 0.0 ) return rec;
 		rec.hasTargetFace = true;
 		rec.targetFaceIndex = tri.sourceFaceIndex;
 
@@ -385,29 +390,62 @@ export const light_sampling_functions = /* glsl */`
 		rec.dist = dist;
 		rec.direction = direction;
 		rec.emission = tri.radiance;
-		float selectionPdf = triPower / totalEmissivePower;
+		float selectionPdf = tri.proposalPmf;
 		rec.pdf = selectionPdf * vitrumAreaToSolidAnglePdf(
 			dist, cosLight, areaMeasure
 		);
 		return rec;
 	}
 
-	// SOLID-ANGLE NEE pdf of a FORWARD emissive hit under the emitted-power mesh
-	// strategy. The area density is luminance(surface emission) / totalPower.
-	float meshAreaLightForwardPdf( float distance, float cosLight, float totalEmissivePower, vec3 emission ) {
-		if ( totalEmissivePower <= 0.0 ) return 0.0;
+	bool meshTriangleContainsPoint( MeshTriLight tri, vec3 point ) {
+		vec3 edge0 = tri.v1 - tri.v0;
+		vec3 edge1 = tri.v2 - tri.v0;
+		vec3 relative = point - tri.v0;
+		float d00 = dot( edge0, edge0 );
+		float d01 = dot( edge0, edge1 );
+		float d11 = dot( edge1, edge1 );
+		float d20 = dot( relative, edge0 );
+		float d21 = dot( relative, edge1 );
+		float denominator = d00 * d11 - d01 * d01;
+		if ( ! ( denominator > 0.0 ) || isnan( denominator ) || isinf( denominator ) ) {
+			return false;
+		}
+		float b1 = ( d11 * d20 - d01 * d21 ) / denominator;
+		float b2 = ( d00 * d21 - d01 * d20 ) / denominator;
+		float b0 = 1.0 - b1 - b2;
+		return b0 >= 0.0 && b1 >= 0.0 && b2 >= 0.0;
+	}
+
+	// SOLID-ANGLE NEE pdf of a forward emissive hit under the represented mesh
+	// proposal. Face identity plus point containment recovers the exact texel-cell
+	// sub-triangle PMF used by sampleMeshAreaLight.
+	float meshAreaLightForwardPdf(
+		sampler2D meshLights, uint meshLightCount, uint sourceFaceIndex,
+		vec3 hitPoint, float distance, float cosLight
+	) {
 		float cosine = abs( cosLight );
-		float emissionPower = finitePositiveLightPower( luminance( emission ) );
 		if (
-			! ( distance > 0.0 ) || cosine <= 0.0 || emissionPower <= 0.0 ||
+			meshLightCount == 0u || ! ( distance > 0.0 ) || cosine <= 0.0 ||
 			isnan( distance ) || isinf( distance )
 		) return 0.0;
-		// Evaluate the cancelled area-density expression in log space so neither
-		// distance² nor a compensating tiny emissionPower/totalPower ratio can
-		// overflow or underflow before the final, representable PDF is known.
-		float logPdf = log2( emissionPower ) +
+		float selectionPdf = 0.0;
+		float selectedArea = 0.0;
+		for ( uint i = 0u; i < meshLightCount; i ++ ) {
+			MeshTriLight tri = readMeshTriLight( meshLights, i );
+			if (
+				tri.sourceFaceIndex == sourceFaceIndex && tri.proposalPmf > 0.0 &&
+				tri.area > 0.0 && meshTriangleContainsPoint( tri, hitPoint )
+			) {
+				selectionPdf = tri.proposalPmf;
+				selectedArea = tri.area;
+				break;
+			}
+		}
+		if ( selectionPdf <= 0.0 || selectedArea <= 0.0 ) return 0.0;
+		// Evaluate the area-to-solid-angle density in log space so neither
+		// distance² nor a compensating tiny represented PMF can overflow early.
+		float logPdf = log2( selectionPdf ) - log2( selectedArea ) +
 			2.0 * log2( distance ) -
-			log2( totalEmissivePower ) -
 			log2( cosine );
 		float result = exp2( logPdf );
 		return result > 0.0 && ! isnan( result ) && ! isinf( result )
@@ -449,32 +487,24 @@ export const light_sampling_functions = /* glsl */`
 
 		LightRecord result;
 
-                float sumPower = 0.0;
-		for ( uint ii = 0u; ii < lightCount; ii ++ ) {
-
-			Light tmpLight = readLightInfo( lights, ii );
-                        sumPower += finitePositiveLightPower( tmpLight.power );
-
-		}
-
 		uint l = 0u;
                 float discretePdf = 0.0;
 
-                if ( lightCount > 0u && sumPower > 0.0 ) {
+                if ( lightCount > 0u ) {
 
-                        float uPick = ruv.x * sumPower;
+				float uPick = ruv.x;
                         float cum = 0.0;
                         for ( uint ii = 0u; ii < lightCount; ii ++ ) {
 
                                 Light tmpLight = readLightInfo( lights, ii );
-                                float w = finitePositiveLightPower( tmpLight.power );
+						float w = tmpLight.proposalPmf;
                                 if ( w <= 0.0 ) continue;
                                 // Also serves as the exact final-bin fallback
                                 // if a generator ever returns u == 1.
                                 l = ii;
-                                discretePdf = w / sumPower;
-                                cum += w;
-                                if ( uPick <= cum ) {
+						discretePdf = w;
+						cum += w;
+						if ( uPick < cum ) {
                                         break;
 
                                 }

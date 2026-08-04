@@ -214,8 +214,6 @@ export interface RestirGIFrameResources {
 export interface DDGIFrameResources {
   ddgiPlaceholderRgba16f: GPUTexture;
   ddgiPlaceholderVisRgba16f: GPUTexture;
-  /** Linear sampler used only by DDGI atlas receivers. */
-  ddgiSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
 }
 

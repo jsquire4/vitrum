@@ -34,9 +34,12 @@ import {
 /**
  * Directional light layout (2 vec4 = 8 floats, N-directional expansion):
  *   vec4 0: direction.xyz (normalized toward light), angularDiameter (radians)
- *   vec4 1: irradiance.rgb, mean_irradiance
+ *   vec4 1: irradiance.rgb, distant-direct represented PMF
  *   angularDiameter = 0 ⟹ perfect delta directional (historical exact path, byte-identical).
- *   mean_irradiance = (r+g+b)/3 — cached for storage/texture consumers.
+ *   The PMF lane is initialized from mean irradiance here, then overwritten by
+ *   `applyDistantDirectProposalPmf` once the optional environment candidate is
+ *   known. It remains positive exactly when this directional emitter has
+ *   represented support.
  *   SHADOW-01: emitter castShadow:false is SIGN-ENCODED into the angularDiameter
  *   lane (both vec4s are otherwise full): packed = -1 - angularDiameter when the
  *   flag is false; the kernel decodes shadowDisabled = (raw < 0) and
@@ -633,7 +636,9 @@ export function packEmitterArrays(
     );
     // vec4 0: towardLight.xyz, angularDiameter
     directionalLights.push(ndx, ndy, ndz, angularDiameter);
-    // vec4 1: irradiance.rgb, mean_irradiance
+    // vec4 1: irradiance.rgb, provisional positive-support sentinel. The full
+    // scene pack replaces .w with the represented distant-direct PMF once the
+    // environment candidate is known.
     directionalLights.push(irrR, irrG, irrB, meanIrr);
     directionalLightCount += 1;
   }

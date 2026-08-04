@@ -17,15 +17,21 @@ import {
 import {
   collapseIndicesToStride3,
   isLeafSplit,
+  analyzeOpticalMediumTopology,
+  lowerTransmissiveAnalyticPrimitives,
   materialSig,
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
+  packMergedOpticalMediumBoundaryIds,
+  packOpticalMediumBoundaryIds,
   packRadianceRgbScaleF32,
   packSceneFromCore,
   rebuildPrimitiveBlas,
   resolveDisplacedGeometry,
   toProductionEmissiveRadiance,
   type PrimitiveTlasBinding,
+  type OpticalMediumTopologyAnalysis,
+  type PackedOpticalMediumBoundaryIds,
   type ScenePackResult,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
@@ -164,6 +170,40 @@ function makeStorageHandle(
   };
 }
 
+function interleaveOpticalTriangleIdentity(
+  packed: PackedOpticalMediumBoundaryIds,
+): Uint32Array {
+  const triangleCount = packed.triangleComponentIndexPlusOne.length;
+  if (packed.triangleRepresentedPrimitiveInstanceIds.length !== triangleCount) {
+    throw new RangeError(
+      '[HybridEngine] optical triangle identity lanes must have equal lengths.',
+    );
+  }
+  const result = new Uint32Array(triangleCount * 2);
+  for (let triangle = 0; triangle < triangleCount; triangle += 1) {
+    result[triangle * 2] = packed.triangleComponentIndexPlusOne[triangle]!;
+    result[triangle * 2 + 1] =
+      packed.triangleRepresentedPrimitiveInstanceIds[triangle]!;
+  }
+  return result;
+}
+
+function analyzeSceneOpticalMediumTopology(
+  scene: Scene,
+  transformArithmetic:
+    | 'tlas-shader-f32'
+    | 'merged-world-f64-to-f32',
+): OpticalMediumTopologyAnalysis {
+  // The analyzer's represented-range pass covers thin and bulk transmission.
+  // It must run even when the scene has no closed medium: equal-t contacts
+  // between distinct transmissive sheets are ambiguous to the continuation
+  // source token and therefore cannot be published.
+  return analyzeOpticalMediumTopology(scene, {
+    analyticGeometry: 'generated-triangle',
+    transformArithmetic,
+  });
+}
+
 function applyMeshAreaLeOverride(material: MaterialSpec, override: MeshAreaLeOverride): MaterialSpec {
   const castShadowDisabled =
     override.castShadowDisabled ||
@@ -172,6 +212,13 @@ function applyMeshAreaLeOverride(material: MaterialSpec, override: MeshAreaLeOve
     ...material,
     emissive: [override.Le[0], override.Le[1], override.Le[2]] as const,
     emissiveIntensity: 1,
+    // An explicit mesh-area emitter is authoritative even when the underlying
+    // material suppressed implicit emitter discovery. This is a derived
+    // production material only; the authored core contract remains unchanged.
+    extensions: {
+      ...material.extensions,
+      skipEmitter: false,
+    },
     ...(castShadowDisabled ? { castShadow: false } : {}),
   };
 }
@@ -810,6 +857,7 @@ function buffersFromCoreScenePack(
   geo: ScenePackResult,
   coreMaterials: readonly MaterialSpec[],
   options: CoreBvhBuildOptions,
+  opticalAnalysis: OpticalMediumTopologyAnalysis,
 ): SceneBVHBuffers {
   const triCount = geo.triangleCount;
   const vertCount = geo.positions.length / 4;
@@ -833,6 +881,12 @@ function buffersFromCoreScenePack(
     triCount: b.triCount,
   }));
   const highUvSets = mergeHighUvSetsFromCore(scene, rawMeshVertexRanges, vertCount);
+  const opticalIds = packOpticalMediumBoundaryIds(
+    scene,
+    geo,
+    opticalAnalysis,
+  );
+  const opticalTriangleIdentity = interleaveOpticalTriangleIdentity(opticalIds);
 
   const indexBuf = packBVHIndexWFromCore(triIndices3, geo.triMaterialIds, coreMaterials, triCount);
   const beerBuf = packBVHBeerColorsFromCore(geo.triMaterialIds, coreMaterials, triCount);
@@ -867,6 +921,11 @@ function buffersFromCoreScenePack(
     bvhNodes: makeStorageHandle(geo.bvhNodes, 32),
     bvhIndex: makeStorageHandle(indexBuf, 16),
     bvhPositions: makeStorageHandle(positionsWithUV, 16),
+    opticalTriangleIdentity: makeStorageHandle(opticalTriangleIdentity, 8),
+    opticalInstanceBoundaryIdBasePlusOne: makeStorageHandle(
+      opticalIds.instanceBoundaryIdBasePlusOne,
+      4,
+    ),
     triangleMaterialIds: makeStorageHandle(geo.triMaterialIds, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
@@ -906,15 +965,23 @@ function buffersFromCoreScenePack(
 
 function buildReSTIRSceneBVHFromCoreTlas(
   scene: Scene,
+  opticalAnalysis: OpticalMediumTopologyAnalysis,
   options: CoreBvhBuildOptions = {},
 ): SceneBVHBuffers {
   const { coreMaterials, resolveMaterialId } = materialResolver(scene);
   const geo = packSceneFromCore(scene, { tlas: true, resolveMaterialId });
-  return buffersFromCoreScenePack(scene, geo, coreMaterials, options);
+  return buffersFromCoreScenePack(
+    scene,
+    geo,
+    coreMaterials,
+    options,
+    opticalAnalysis,
+  );
 }
 
 function buildReSTIRSceneBVHFromCoreMerged(
   scene: Scene,
+  opticalAnalysis: OpticalMediumTopologyAnalysis,
   options: CoreBvhBuildOptions = {},
 ): SceneBVHBuffers {
   // SHADOW-01 — split material slots by the primitive castShadow flag so
@@ -927,6 +994,12 @@ function buildReSTIRSceneBVHFromCoreMerged(
     materialDedupKey: primitiveMaterialOwnershipKey(scene),
   });
   const triCount = merged.indices.length / 3;
+  const opticalIds = packMergedOpticalMediumBoundaryIds(
+    scene,
+    merged,
+    opticalAnalysis,
+  );
+  const opticalTriangleIdentity = interleaveOpticalTriangleIdentity(opticalIds);
   const mneeFacetDomains = packMergedMneeFacetDomains(triCount);
   const vertCount = merged.positions.length / 4;
   // H15 — pass merged.uvs (stride-2, same vertex order as merged.positions) so
@@ -978,6 +1051,11 @@ function buildReSTIRSceneBVHFromCoreMerged(
     bvhNodes: makeStorageHandle(merged.bvhNodes, 32),
     bvhIndex: makeStorageHandle(indexBuf, 16),
     bvhPositions: makeStorageHandle(positionsWithUV, 16),
+    opticalTriangleIdentity: makeStorageHandle(opticalTriangleIdentity, 8),
+    opticalInstanceBoundaryIdBasePlusOne: makeStorageHandle(
+      opticalIds.instanceBoundaryIdBasePlusOne,
+      4,
+    ),
     triangleMaterialIds: makeStorageHandle(merged.triMaterialId, 4),
     bvhBeerColors: makeStorageHandle(beerBuf, 4),
     bvhEmissiveLe: makeStorageHandle(emissiveLeBuf, 16),
@@ -1011,15 +1089,22 @@ export function buildReSTIRSceneBVHForCoreScene(
   scene: Scene,
   options: CoreBvhBuildOptions = {},
 ): SceneBVHBuffers {
-  if (!sceneHasCoreMeshes(scene)) {
+  const renderScene = lowerTransmissiveAnalyticPrimitives(scene);
+  if (!sceneHasCoreMeshes(renderScene)) {
     throw new Error(
       '[HybridEngine] BVH source unavailable: concrete walkaround-hybrid requires a core Scene with mesh primitives.',
     );
   }
-  const mode = resolveReSTIRBvhMode(scene, options.bvhMode);
+  const mode = resolveReSTIRBvhMode(renderScene, options.bvhMode);
+  const opticalAnalysis = analyzeSceneOpticalMediumTopology(
+    renderScene,
+    mode === 'tlas'
+      ? 'tlas-shader-f32'
+      : 'merged-world-f64-to-f32',
+  );
   return mode === 'tlas'
-    ? buildReSTIRSceneBVHFromCoreTlas(scene, options)
-    : buildReSTIRSceneBVHFromCoreMerged(scene, options);
+    ? buildReSTIRSceneBVHFromCoreTlas(renderScene, opticalAnalysis, options)
+    : buildReSTIRSceneBVHFromCoreMerged(renderScene, opticalAnalysis, options);
 }
 
 export function rebuildReSTIRSceneBVHPrimitiveCore(
@@ -1031,6 +1116,12 @@ export function rebuildReSTIRSceneBVHPrimitiveCore(
   if (prev.scenePack == null) {
     return { ok: false, reason: 'previous buffers have no scenePack snapshot' };
   }
+  const opticalAnalysis = analyzeSceneOpticalMediumTopology(
+    scene,
+    prev.bvhMode === 'tlas'
+      ? 'tlas-shader-f32'
+      : 'merged-world-f64-to-f32',
+  );
   const { coreMaterials, resolveMaterialId } = materialResolver(scene);
   const rebuilt = rebuildPrimitiveBlas(scene, primitiveId, prev.scenePack, {
     tlas: true,
@@ -1039,7 +1130,13 @@ export function rebuildReSTIRSceneBVHPrimitiveCore(
   if (!rebuilt.ok) {
     return { ok: false, reason: rebuilt.reason };
   }
-  return buffersFromCoreScenePack(scene, rebuilt.pack, coreMaterials, options);
+  return buffersFromCoreScenePack(
+    scene,
+    rebuilt.pack,
+    coreMaterials,
+    options,
+    opticalAnalysis,
+  );
 }
 
 export function rebuildEmitterBuffersFromCoreScene(

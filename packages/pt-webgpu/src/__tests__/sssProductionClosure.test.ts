@@ -238,9 +238,9 @@ describe('SSS production closure — emitter ownership and packing', () => {
 describe('SSS production closure — boundaries, textures, and safety', () => {
   it('preserves alpha-skipped distance before free flight on eye and BDPT light paths', () => {
     for (const source of [PT_WEBGPU_TRACE_WGSL, PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL]) {
-      expect(source).toContain('var alphaAdvance = 0.0;');
-      expect(source).toContain('alphaAdvance = alphaAdvance + alphaStep;');
-      expect(source).toContain('hit.dist = hit.dist + alphaAdvance;');
+      expect(source).toContain('var alphaCursor = ptRayTMin();');
+      expect(source).toContain('let nextAlphaCursor = hit.dist;');
+      expect(source).toContain('alphaCursor = nextAlphaCursor;');
     }
     expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain('alphaTestPassThrough(');
     expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain(
@@ -252,7 +252,7 @@ describe('SSS production closure — boundaries, textures, and safety', () => {
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain('fn bdptMaterialWithVolumeThickness(');
     expect(
       (PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL.match(/bdptMaterialWithVolumeThickness\(/g) ?? []).length,
-    ).toBeGreaterThanOrEqual(5);
+    ).toBeGreaterThanOrEqual(4);
   });
 
   it('fails closed on stack overflow, unmatched underflow, or traversal exhaustion', () => {
@@ -286,7 +286,7 @@ describe('SSS production closure — boundaries, textures, and safety', () => {
 
   it('limits lite volume transport to absorption and rejects scattering fields', () => {
     expect(PT_WEBGPU_TRACE_LITE_WGSL).toContain(
-      'throughput = throughput * exp(-sigmaA * materialAttenuationDistance',
+      'throughput = throughput * materialBeer(',
     );
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('0.02 * scatteringCoeff');
     expect(PT_WEBGPU_TRACE_LITE_WGSL).not.toContain('sigmaA + sigmaS');

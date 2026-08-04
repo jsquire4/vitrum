@@ -315,7 +315,7 @@ describe('walkaround explicit WebGPU material texture sources', () => {
         layer: 0,
         source,
         encoding: 0,
-        mipLevelCount: 1,
+        mipLevelCount: 2,
         decodeSrgb: false,
       }),
     ]);
@@ -370,6 +370,232 @@ describe('walkaround explicit WebGPU material texture sources', () => {
     })).toThrow(/cpuMirror\.channels must match.*r8unorm \(1\)/);
   });
 
+  it('rejects float32 CPU mirrors that overflow or erase nonzero values', () => {
+    const device = {} as GPUDevice;
+    const { texture } = makeSourceTexture({
+      width: 1,
+      height: 1,
+      format: 'rgba32float',
+    });
+    const mirror = (value: number) => ({
+      width: 1,
+      height: 1,
+      channels: 4 as const,
+      dataType: 'float32' as const,
+      colorSpace: 'linear' as const,
+      data: [value, 0, 0, 1],
+    });
+
+    expect(() => createWalkaroundWebGpuTextureSource(device, texture, {
+      format: 'rgba32float',
+      colorSpace: 'linear',
+      cpuMirror: mirror(Number.MAX_VALUE),
+    })).toThrow(/representable as finite float32/);
+    expect(() => createWalkaroundWebGpuTextureSource(device, texture, {
+      format: 'rgba32float',
+      colorSpace: 'linear',
+      cpuMirror: mirror(Number.MIN_VALUE),
+    })).toThrow(/nonzero but underflows to zero in float32/);
+
+    const maxF32 = Math.fround(3.4028234663852886e38);
+    const minSubnormalF32 = Math.fround(2 ** -149);
+    const source = createWalkaroundWebGpuTextureSource(device, texture, {
+      format: 'rgba32float',
+      colorSpace: 'linear',
+      cpuMirror: mirror(maxF32),
+    });
+    expect(source.cpuMirror?.data[0]).toBe(maxF32);
+    const subnormal = createWalkaroundWebGpuTextureSource(device, texture, {
+      format: 'rgba32float',
+      colorSpace: 'linear',
+      cpuMirror: mirror(minSubnormalF32),
+    });
+    expect(subnormal.cpuMirror?.data[0]).toBe(minSubnormalF32);
+  });
+
+  it('reads hostile CPU-mirror array-like elements exactly once into the validated snapshot', () => {
+    const device = {} as GPUDevice;
+    const cases = [
+      { dataType: 'uint8', format: 'r8unorm', valid: 17, hostileSecond: 300 },
+      { dataType: 'uint16', format: 'r16float', valid: 19, hostileSecond: 70_000 },
+      { dataType: 'float16', format: 'r16float', valid: 0x3c00, hostileSecond: 70_000 },
+      { dataType: 'half-float', format: 'r16float', valid: 0x3c00, hostileSecond: 70_000 },
+      { dataType: 'float32', format: 'r32float', valid: 0.5, hostileSecond: Number.MAX_VALUE },
+    ] as const;
+
+    for (const { dataType, format, valid, hostileSecond } of cases) {
+      const { texture } = makeSourceTexture({ width: 1, height: 1, format });
+      let reads = 0;
+      const data = { length: 1 } as { readonly length: number; readonly 0?: number };
+      Object.defineProperty(data, '0', {
+        get() {
+          reads += 1;
+          return reads === 1 ? valid : hostileSecond;
+        },
+      });
+      const source = createWalkaroundWebGpuTextureSource(device, texture, {
+        format,
+        colorSpace: 'linear',
+        cpuMirror: {
+          width: 1,
+          height: 1,
+          channels: 1,
+          dataType,
+          colorSpace: 'linear',
+          data,
+        },
+      });
+
+      expect(reads).toBe(1);
+      expect(source.cpuMirror?.data[0]).toBe(valid);
+    }
+  });
+
+  it('reads hostile CPU-mirror descriptor properties exactly once', () => {
+    const device = {} as GPUDevice;
+    const { texture } = makeSourceTexture({ width: 1, height: 1, format: 'r32float' });
+    const reads = new Map<string, number>();
+    const once = <T>(name: string, value: T): (() => T) => () => {
+      reads.set(name, (reads.get(name) ?? 0) + 1);
+      return value;
+    };
+    const data = {} as ArrayLike<number>;
+    Object.defineProperties(data, {
+      length: { get: once('length', 1) },
+      0: { get: once('element', 0.5) },
+    });
+    const mirror = {} as Record<string, unknown>;
+    Object.defineProperties(mirror, {
+      width: { get: once('width', 1) },
+      height: { get: once('height', 1) },
+      channels: { get: once('channels', 1) },
+      dataType: { get: once('dataType', 'float32') },
+      colorSpace: { get: once('colorSpace', 'linear') },
+      data: { get: once('data', data) },
+    });
+    const options = {} as Record<string, unknown>;
+    Object.defineProperties(options, {
+      format: { get: once('format', 'r32float') },
+      colorSpace: { get: once('sourceColorSpace', 'linear') },
+      contentRevision: { get: once('contentRevision', 'hostile-getter-v1') },
+      baseMipLevel: { get: once('baseMipLevel', 0) },
+      arrayLayer: { get: once('arrayLayer', 0) },
+      cpuMirror: { get: once('cpuMirror', mirror) },
+    });
+
+    const source = createWalkaroundWebGpuTextureSource(
+      device,
+      texture,
+      options as unknown as Parameters<typeof createWalkaroundWebGpuTextureSource>[2],
+    );
+
+    expect(source.cpuMirror?.data[0]).toBe(0.5);
+    expect(Object.fromEntries(reads)).toEqual({
+      cpuMirror: 1,
+      format: 1,
+      sourceColorSpace: 1,
+      contentRevision: 1,
+      baseMipLevel: 1,
+      arrayLayer: 1,
+      width: 1,
+      height: 1,
+      channels: 1,
+      dataType: 1,
+      colorSpace: 1,
+      data: 1,
+      length: 1,
+      element: 1,
+    });
+  });
+
+  it('rejects low-channel GPU normal sources but accepts explicit RGBA SNORM', () => {
+    const device = {} as GPUDevice;
+    const material = (normalMap: unknown): MaterialSpec => ({
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      normalMap: { handle: normalMap },
+    });
+    for (const format of ['r8snorm', 'rg8snorm'] as const) {
+      const { texture } = makeSourceTexture({ width: 1, height: 1, format });
+      const source = createWalkaroundWebGpuTextureSource(device, texture, {
+        format,
+        colorSpace: 'linear',
+      });
+      expect(() => packMaterialTextureAtlas(
+        [material(source)],
+        new Uint32Array([0]),
+        1,
+      )).toThrow(/normalMap uses a [12]-channel source.*requires at least 3/);
+    }
+
+    const { texture } = makeSourceTexture({
+      width: 1,
+      height: 1,
+      format: 'rgba8snorm',
+    });
+    const source = createWalkaroundWebGpuTextureSource(device, texture, {
+      format: 'rgba8snorm',
+      colorSpace: 'linear',
+    });
+    expect(packMaterialTextureAtlas(
+      [material(source)],
+      new Uint32Array([0]),
+      1,
+    ).atlasLayers).toHaveLength(1);
+  });
+
+  it('rejects GPU sources missing consumed B or alpha-role channels', () => {
+    const device = {} as GPUDevice;
+    const cases = [
+      { field: 'anisotropyMap', format: 'rg8snorm', minimum: 3 },
+      { field: 'metallicMap', format: 'rg8unorm', minimum: 3 },
+      { field: 'specularIntensityMap', format: 'rg8unorm', minimum: 4 },
+      { field: 'sheenRoughnessMap', format: 'rg8unorm', minimum: 4 },
+    ] as const;
+
+    for (const { field, format, minimum } of cases) {
+      const { texture } = makeSourceTexture({ width: 1, height: 1, format });
+      const source = createWalkaroundWebGpuTextureSource(device, texture, {
+        format,
+        colorSpace: 'linear',
+      });
+      const material = {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        [field]: { handle: source },
+      } as unknown as MaterialSpec;
+      expect(() => packMaterialTextureAtlas(
+        [material],
+        new Uint32Array([0]),
+        1,
+      )).toThrow(new RegExp(`${field} uses a 2-channel source.*requires at least ${minimum}`));
+    }
+
+    const { texture } = makeSourceTexture({
+      width: 1,
+      height: 1,
+      format: 'rgba8unorm',
+    });
+    const source = createWalkaroundWebGpuTextureSource(device, texture, {
+      format: 'rgba8unorm',
+      colorSpace: 'linear',
+    });
+    const accepted = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      specularIntensityMap: { handle: source },
+      sheenRoughnessMap: { handle: source },
+    } as unknown as MaterialSpec;
+    expect(packMaterialTextureAtlas(
+      [accepted],
+      new Uint32Array([0]),
+      1,
+    ).atlasLayers).toHaveLength(1);
+  });
+
   it('rejects guessed formats, incompatible native-sRGB declarations, and invalid subresources', () => {
     const device = {} as GPUDevice;
     const linear = makeSourceTexture();
@@ -417,14 +643,14 @@ describe('walkaround explicit WebGPU material texture sources', () => {
         layer: 0,
         width: 2,
         height: 2,
-        mipLevelCount: 1,
+        mipLevelCount: 2,
       }),
       expect.objectContaining({
         kind: 'gpu',
         layer: 1,
         width: 4,
         height: 4,
-        mipLevelCount: 1,
+        mipLevelCount: 3,
       }),
     ]);
     expect(payload.readableBaseColorLayerCount).toBe(1);
@@ -434,7 +660,7 @@ describe('walkaround explicit WebGPU material texture sources', () => {
         layer: 1,
         source,
         encoding: 0,
-        mipLevelCount: 1,
+        mipLevelCount: 3,
         decodeSrgb: false,
       }),
     ]);
@@ -568,7 +794,7 @@ describe('walkaround explicit WebGPU material texture sources', () => {
 
     uploadMaterialTextureAtlas(harness.device, payload);
 
-    expect(harness.mappedRanges).toHaveLength(1);
+    expect(harness.mappedRanges).toHaveLength(3);
     expect(Array.from(new Uint32Array(harness.mappedRanges[0]!))).toEqual([
       4, 4, 0, 1, 1, 4, 0, 0,
     ]);
@@ -599,7 +825,7 @@ describe('walkaround explicit WebGPU material texture sources', () => {
 
       uploadMaterialTextureAtlas(harness.device, payload);
 
-      expect(harness.mappedRanges).toHaveLength(1);
+      expect(harness.mappedRanges).toHaveLength(3);
       expect(Array.from(new Uint32Array(harness.mappedRanges[0]!))).toEqual([
         4, 4, 0, 1, 0, expectedChannels, 0, 0,
       ]);
@@ -610,7 +836,7 @@ describe('walkaround explicit WebGPU material texture sources', () => {
     },
   );
 
-  it('reuses one scratch mip chain across five GPU-backed material maps', () => {
+  it('reuses one scratch mip chain across four GPU-backed maps and publishes mirrored emission from CPU bytes', () => {
     const harness = makeUploadHarness();
     const source = (
       colorSpace: 'srgb' | 'linear',
@@ -642,11 +868,11 @@ describe('walkaround explicit WebGPU material texture sources', () => {
       baseColor: [1, 1, 1],
       roughness: 0.5,
       metallic: 0,
-      baseColorMap: { handle: source('srgb') },
-      emissiveMap: { handle: source('srgb', true) },
-      specularColorMap: { handle: source('srgb') },
-      sheenColorMap: { handle: source('srgb') },
-      normalMap: { handle: source('linear') },
+      baseColorMap: { handle: source('srgb'), mipFilter: 'none' },
+      emissiveMap: { handle: source('srgb', true), mipFilter: 'none' },
+      specularColorMap: { handle: source('srgb'), mipFilter: 'none' },
+      sheenColorMap: { handle: source('srgb'), mipFilter: 'none' },
+      normalMap: { handle: source('linear'), mipFilter: 'none' },
     };
     const payload = packMaterialTextureAtlas(
       [material],
@@ -656,13 +882,14 @@ describe('walkaround explicit WebGPU material texture sources', () => {
 
     uploadMaterialTextureAtlas(harness.device, payload);
 
-    expect(payload.gpuSourceLayers).toHaveLength(5);
+    expect(payload.gpuSourceLayers).toHaveLength(4);
+    expect(payload.atlasLayers.filter((layer) => layer.kind === 'cpu')).toHaveLength(1);
     expect(harness.destinations).toHaveLength(3);
     expect(harness.destinations.filter(({ descriptor }) =>
       descriptor.label === 'vitrum.materialTextureAtlas.gpu-source.scratch',
     )).toHaveLength(1);
-    expect(harness.dispatchWorkgroups).toHaveBeenCalledTimes(5);
-    expect(harness.copyTextureToTexture).toHaveBeenCalledTimes(5);
+    expect(harness.dispatchWorkgroups).toHaveBeenCalledTimes(4);
+    expect(harness.copyTextureToTexture).toHaveBeenCalledTimes(4);
   });
 
   it('fails preflight before destination allocation for device, format, and usage mismatches', () => {

@@ -17,6 +17,12 @@ import {
   solvedSkinRenderPatch,
 } from './solvedSkinPatch.js';
 
+function materialDefinesOpticalTransmission(
+  material: SkinnedMeshPrimitive['material'],
+): boolean {
+  return (material.transmission ?? 0) > 0;
+}
+
 /**
  * Narrow back-reference the skinning subsystem needs from its host engine.
  *
@@ -55,6 +61,8 @@ export interface GpuSkinningHost {
     updates: readonly SkinningBatchUpdate[],
     skinCommands: GPUCommandBuffer | null,
   ): void;
+  /** Validate the authored current pose before bone uploads or compute encode. */
+  preflightOpticalMediumTopology(scene: Scene, method: string): void;
 }
 
 export interface SkinningBatchUpdate {
@@ -480,6 +488,7 @@ export class GpuSkinningSubsystem {
         bvhNormalBinding != null &&
         meshVertexRanges != null &&
         this.#preferGpu &&
+        !materialDefinesOpticalTransmission(primitive.material) &&
         !hasMorph &&
         !restoresRenderStreams &&
         primitive.tangents == null &&
@@ -497,6 +506,10 @@ export class GpuSkinningSubsystem {
     }
 
     if (dirtySkinned.length === 0) return;
+    host.preflightOpticalMediumTopology(
+      scene,
+      'HybridEngine.applySkinningBatch',
+    );
 
     const fallbackNeedsTopology = [...fallback.values()].some(
       (patch) =>
@@ -507,7 +520,10 @@ export class GpuSkinningSubsystem {
         patch.colors != null ||
         patch.colorSets != null,
     );
-    if (fallbackNeedsTopology) {
+    const fallbackTouchesTransmissiveGeometry = dirtySkinned.some((primitive) =>
+      materialDefinesOpticalTransmission(primitive.material)
+    );
+    if (fallbackNeedsTopology || fallbackTouchesTransmissiveGeometry) {
       // A topology candidate replaces the live BVH buffers, so commands encoded
       // against their old identities cannot join the transaction. Solve every
       // skinned primitive on CPU and publish one full candidate instead.

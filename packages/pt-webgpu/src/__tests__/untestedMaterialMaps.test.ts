@@ -108,7 +108,8 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
       // The accessor reads descriptor[base + 5u].z for the anisotropy map index.
       expect(wgsl).toContain('fn materialAnisotropy(matId: u32, triIndex: u32, baryVW: vec2f, instanceIndex: u32) -> f32');
       // The anisotropy map index is read from vec4[5].z (b+5u offset, .z channel).
-      expect(wgsl).toContain('let anisoIdx = i32(materialTexDescriptors[base + 5u].z)');
+      expect(wgsl).toContain('let anisoIdx = materialTextureLayerIndex(');
+      expect(wgsl).toContain('materialTexDescriptors[base + 5u].z,');
     });
 
     it('WGSL materialAnisotropyRotation reads vec4[5].z for the anisotropyMap index', () => {
@@ -126,7 +127,7 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
       expect(wgsl).toContain('materialTexDescriptors[base + 5u].x');
       // Map modulates strength via the B channel (KHR_materials_anisotropy spec).
       expect(wgsl).toContain(
-        'sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY, materialTexDescriptors[base + 11u].xy, materialTexDescriptors[base + 17u].xy, MATERIAL_TEX_MIP_ANISOTROPY).b',
+        'a = a * materialTextureValueOr(sample, vec4f(1.0)).b;',
       );
     });
 
@@ -135,7 +136,7 @@ describe('pt-webgpu anisotropyMap packer offset — UNTESTED-promise closure (it
       // Rotation scalar at vec4[5].y.
       expect(wgsl).toContain('materialTexDescriptors[base + 5u].y');
       // Map RG direction encoded in [0,1]→[-1,1]: atan2(rg.y, rg.x) offset.
-      expect(wgsl).toContain('atan2(rg.y, rg.x)');
+      expect(wgsl).toContain('rot = rot + atan2(safeRg.y, safeRg.x);');
     });
   });
 });

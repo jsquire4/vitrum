@@ -75,9 +75,9 @@ describe('walkaround materialTextureAtlas', () => {
           roughness: 1,
           metallic: 0,
           baseColorMap: makeMap(1, [0.25]),
-          normalMap: makeMap(2, [0.25, 0.5]),
-          roughnessMap: makeMap(3, [0.25, 0.5, 0.75]),
-          metallicMap: makeMap(4, [0.25, 0.5, 0.75, 0.125]),
+          roughnessMap: makeMap(2, [0.25, 0.5]),
+          metallicMap: makeMap(3, [0.25, 0.5, 0.75]),
+          aoMap: makeMap(4, [0.25, 0.5, 0.75, 0.125]),
         },
       ],
       new Uint32Array([0]),
@@ -90,6 +90,174 @@ describe('walkaround materialTextureAtlas', () => {
       0.25, 0.5, 0.75, 1,
       0.25, 0.5, 0.75, 0.125,
     ]);
+  });
+
+  it('reads hostile CPU raw-source descriptor and texels exactly once', () => {
+    const reads = new Map<string, number>();
+    const once = <T>(name: string, value: T): (() => T) => () => {
+      reads.set(name, (reads.get(name) ?? 0) + 1);
+      return value;
+    };
+    const data = {} as { readonly length?: number; readonly 0?: number };
+    Object.defineProperty(data, 'length', {
+      get: once('length', 1),
+    });
+    Object.defineProperty(data, '0', {
+      get() {
+        const count = (reads.get('element') ?? 0) + 1;
+        reads.set('element', count);
+        return count === 1 ? 0.25 : Number.MAX_VALUE;
+      },
+    });
+    const hint = {} as Record<string, unknown>;
+    Object.defineProperties(hint, {
+      channels: { get: once('hint.channels', 1) },
+      dataType: { get: once('hint.dataType', 'float32') },
+      colorSpace: { get: once('hint.colorSpace', 'linear') },
+    });
+    const image = {} as Record<string, unknown>;
+    Object.defineProperties(image, {
+      width: { get: once('image.width', 1) },
+      height: { get: once('image.height', 1) },
+      data: { get: once('image.data', data) },
+    });
+    const handle = {} as Record<string, unknown>;
+    Object.defineProperties(handle, {
+      image: { get: once('handle.image', image) },
+      data: { get: once('handle.data', undefined) },
+      width: { get: once('handle.width', undefined) },
+      height: { get: once('handle.height', undefined) },
+      __vitrum_hint__: { get: once('handle.hint', hint) },
+      channels: { get: once('handle.channels', undefined) },
+      dataType: { get: once('handle.dataType', undefined) },
+      colorSpace: { get: once('handle.colorSpace', undefined) },
+    });
+
+    const atlas = packMaterialTextureAtlas([{
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      roughnessMap: {
+        handle,
+      },
+    }], new Uint32Array([0]), 1);
+
+    expect([...reads.values()].every((count) => count === 1)).toBe(true);
+    expect([...reads.keys()].sort()).toEqual([
+      'element',
+      'handle.channels',
+      'handle.colorSpace',
+      'handle.data',
+      'handle.dataType',
+      'handle.height',
+      'handle.hint',
+      'handle.image',
+      'handle.width',
+      'hint.channels',
+      'hint.colorSpace',
+      'hint.dataType',
+      'image.data',
+      'image.height',
+      'image.width',
+      'length',
+    ]);
+    expect(decodedAtlasData(atlas)).toEqual([0.25, 0.25, 0.25, 1]);
+  });
+
+  it('rejects one/two-channel normal roles before generic channel expansion', () => {
+    const twoChannelHandle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([128, 128]),
+      __vitrum_hint__: {
+        channels: 2 as const,
+        dataType: 'uint8' as const,
+        colorSpace: 'linear' as const,
+      },
+    };
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      // The scalar field is collected first. The later normal-role reuse must
+      // still fail through the deduplicated-layer path.
+      roughnessMap: { handle: twoChannelHandle },
+      clearcoatNormalMap: { handle: twoChannelHandle },
+    };
+
+    expect(() => packMaterialTextureAtlas(
+      [material],
+      new Uint32Array([0]),
+      1,
+    )).toThrow(/clearcoatNormalMap uses a 2-channel source.*requires at least 3/);
+  });
+
+  it('rejects missing role-consumed channels before CPU decode traversal', () => {
+    const cases = [
+      { field: 'normalMap', channels: 2, minimum: 3 },
+      { field: 'clearcoatNormalMap', channels: 2, minimum: 3 },
+      { field: 'frontLayer.normalMap', channels: 2, minimum: 3 },
+      { field: 'backLayer.normalMap', channels: 2, minimum: 3 },
+      { field: 'anisotropyMap', channels: 2, minimum: 3 },
+      { field: 'metallicMap', channels: 2, minimum: 3 },
+      { field: 'specularIntensityMap', channels: 3, minimum: 4 },
+      { field: 'sheenRoughnessMap', channels: 3, minimum: 4 },
+    ] as const;
+
+    for (const { field, channels, minimum } of cases) {
+      const indexedRead = vi.fn(() => 128);
+      const data = { length: channels } as { length: number; 0?: number };
+      Object.defineProperty(data, '0', { get: indexedRead });
+      const textureRef = {
+        handle: {
+          width: 1,
+          height: 1,
+          data,
+          __vitrum_hint__: {
+            channels,
+            dataType: 'uint8',
+            colorSpace: 'linear',
+          },
+        },
+      };
+      const role = field === 'frontLayer.normalMap'
+        ? { frontLayer: { normalMap: textureRef } }
+        : field === 'backLayer.normalMap'
+          ? { backLayer: { normalMap: textureRef } }
+          : { [field]: textureRef };
+      const material = {
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        ...role,
+      } as unknown as MaterialSpec;
+
+      expect(() => packMaterialTextureAtlas(
+        [material],
+        new Uint32Array([0]),
+        1,
+      )).toThrow(new RegExp(`${field} uses a ${channels}-channel source.*requires at least ${minimum}`));
+      expect(indexedRead).not.toHaveBeenCalled();
+    }
+
+    const oneChannelMetallic = packMaterialTextureAtlas([{
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 1,
+      metallicMap: {
+        handle: {
+          width: 1,
+          height: 1,
+          data: new Uint8Array([128]),
+          __vitrum_hint__: {
+            channels: 1,
+            dataType: 'uint8',
+            colorSpace: 'linear',
+          },
+        },
+      },
+    }], new Uint32Array([0]), 1);
+    expect(decodedAtlasData(oneChannelMetallic)[2]).toBeCloseTo(128 / 255, 6);
   });
 
   it('rejects adversarial metadata dimensions before traversing material data', () => {
@@ -249,9 +417,9 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const pixels = decodedAtlasData(atlas);
 
     expect(atlas.readableBaseColorLayerCount).toBe(1);
-    const pixels = decodedAtlasData(atlas);
     expect(atlas.atlasLayers[0]).toMatchObject({ width: 1, height: 1 });
     expect(atlas.atlasLayers).toHaveLength(1);
     expect(pixels[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
@@ -498,7 +666,7 @@ describe('walkaround materialTextureAtlas', () => {
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
 
     expect(atlas.baseColorMetaData[0]).toBe(0);
-    expect(atlas.baseColorMetaData[1]).toBe(1 + 2 * 4);
+    expect(atlas.baseColorMetaData[1]).toBe(1 + 2 * 4 + 2 * 256);
     expect(atlas.baseColorMetaData[2]).toBeCloseTo(0.25, 5);
     expect(atlas.baseColorMetaData[3]).toBeCloseTo(0.5, 5);
     expect(atlas.baseColorMetaData[4]).toBeCloseTo(2, 5);
@@ -559,6 +727,217 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.diagnostics[0]?.message).toContain('offset.x, scale.y, rotation');
   });
 
+  it('sanitizes float32 overflow and underflow while preserving finite boundary transforms', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      data: new Uint8Array([255, 255, 255, 255]),
+      __vitrum_hint__: { channels: 4, dataType: 'uint8' },
+    };
+    const invalid: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle,
+        transform: {
+          offset: [Number.MAX_VALUE, 0.25],
+          scale: [2, -Number.MAX_VALUE],
+          rotation: Number.MIN_VALUE,
+        },
+      },
+    };
+
+    const invalidAtlas = packMaterialTextureAtlas([invalid], new Uint32Array([0]), 1);
+
+    expect(Array.from(invalidAtlas.baseColorMetaData.slice(0, 8))).toEqual([
+      0, 512, 0, 0.25, 2, 1, 1, 0,
+    ]);
+    expect(invalidAtlas.diagnostics).toEqual([
+      expect.objectContaining({
+        code: 'invalid-material-texture-transform',
+        transformComponents: ['offset.x', 'scale.y', 'rotation'],
+      }),
+    ]);
+    expect(Array.from(invalidAtlas.baseColorMetaData).every(Number.isFinite)).toBe(true);
+
+    const maxF32 = Math.fround(3.402823466e38);
+    const minF32 = Math.fround(2 ** -149);
+    const rotation = Math.PI / 3 + 1e-8;
+    const canonicalRotation = Math.fround(rotation);
+    const boundary: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle,
+        transform: {
+          offset: [maxF32, minF32],
+          scale: [-2, 3],
+          rotation,
+        },
+      },
+    };
+
+    const boundaryAtlas = packMaterialTextureAtlas([boundary], new Uint32Array([0]), 1);
+
+    expect(boundaryAtlas.diagnostics).toEqual([]);
+    expect(Array.from(boundaryAtlas.baseColorMetaData.slice(2, 6))).toEqual([
+      maxF32, minF32, -2, 3,
+    ]);
+    expect(boundaryAtlas.baseColorMetaData[6]).toBe(Math.fround(Math.cos(canonicalRotation)));
+    expect(boundaryAtlas.baseColorMetaData[7]).toBe(Math.fround(Math.sin(canonicalRotation)));
+  });
+
+  it('keeps every unbounded material metadata lane finite at float32 overflow inputs', () => {
+    const material = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      normalScale: Number.MAX_VALUE,
+      clearcoatNormalScale: Number.MAX_VALUE,
+      frontLayer: { normalScale: Number.MAX_VALUE },
+      backLayer: { normalScale: Number.MAX_VALUE },
+      specularColor: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE],
+      anisotropyRotation: Number.MAX_VALUE,
+      iridescenceIor: Number.MAX_VALUE,
+      iridescenceThicknessRange: [Number.MAX_VALUE, Number.MAX_VALUE],
+      bumpScale: Number.MAX_VALUE,
+      scatteringCoefficient: Number.MAX_VALUE,
+      scatteringCoefficientRGB: [Number.MAX_VALUE, Number.MAX_VALUE, Number.MAX_VALUE],
+    } as unknown as MaterialSpec;
+    const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
+    const lane = (texel: number, component = 0): number =>
+      atlas.baseColorMetaData[texel * 4 + component]!;
+
+    expect(Array.from(atlas.baseColorMetaData).every(Number.isFinite)).toBe(true);
+    expect(lane(MATERIAL_MAP_META_TEXEL_OFFSETS.NORMAL_SCALE)).toBe(1);
+    expect(lane(MATERIAL_MAP_META_TEXEL_OFFSETS.CLEARCOAT_NORMAL_SCALE)).toBe(1);
+    expect(lane(MATERIAL_MAP_META_TEXEL_OFFSETS.FRONT_LAYER_NORMAL_SCALE)).toBe(1);
+    expect(lane(MATERIAL_MAP_META_TEXEL_OFFSETS.BACK_LAYER_NORMAL_SCALE)).toBe(1);
+    expect(Array.from(atlas.baseColorMetaData.slice(
+      MATERIAL_MAP_META_TEXEL_OFFSETS.SPECULAR * 4,
+      MATERIAL_MAP_META_TEXEL_OFFSETS.SPECULAR * 4 + 3,
+    ))).toEqual([
+      Math.fround(0.04), Math.fround(0.04), Math.fround(0.04),
+    ]);
+    expect(lane(MATERIAL_MAP_META_TEXEL_OFFSETS.ANISOTROPY_SCALAR, 1)).toBe(0);
+    expect(Array.from(atlas.baseColorMetaData.slice(
+      MATERIAL_MAP_META_TEXEL_OFFSETS.IRIDESCENCE_SCALAR * 4 + 1,
+      MATERIAL_MAP_META_TEXEL_OFFSETS.IRIDESCENCE_SCALAR * 4 + 4,
+    ))).toEqual([Math.fround(1.3), 100, 400]);
+    expect(lane(MATERIAL_MAP_META_TEXEL_OFFSETS.BUMP_SCALE)).toBe(1);
+    expect(Array.from(atlas.baseColorMetaData.slice(
+      MATERIAL_MAP_META_TEXEL_OFFSETS.VOLUME_SCATTERING * 4,
+      MATERIAL_MAP_META_TEXEL_OFFSETS.VOLUME_SCATTERING * 4 + 3,
+    ))).toEqual([0, 0, 0]);
+  });
+
+  it('rejects non-finite selected UVs before every atlas wrap and filter path', () => {
+    const start = MATERIAL_ATLAS_WGSL.indexOf(
+      'fn sampleMaterialAtlasRawAtOffsetDeltaLod(',
+    );
+    const end = MATERIAL_ATLAS_WGSL.indexOf(
+      'fn sampleMaterialAtlasRawAtOffsetDelta(', start,
+    );
+    const body = MATERIAL_ATLAS_WGSL.slice(start, end);
+    const guard = body.indexOf('if (!materialAtlasFiniteVec2(uv))');
+
+    expect(guard).toBeGreaterThan(0);
+    expect(body.slice(guard, body.indexOf('let meta1 =', guard)))
+      .toContain('return materialAtlasInvalidSample();');
+    expect(guard).toBeLessThan(body.indexOf('let scaled = uv * meta1.xy;'));
+    expect(guard).toBeLessThan(body.indexOf('let wrapped = wrapMaterialUv('));
+    expect(MATERIAL_ATLAS_WGSL).toContain('if (mode == 2u) {');
+    expect(MATERIAL_ATLAS_WGSL).toContain('if (mipFilter == 1u) {');
+
+    for (const uvLane of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      for (const wrapMode of ['repeat', 'mirrored-repeat'] as const) {
+        for (const filter of ['nearest', 'linear'] as const) {
+          const sampled = Number.isFinite(uvLane)
+            ? `${wrapMode}:${filter}`
+            : -1;
+          expect(sampled).toBe(-1);
+        }
+      }
+    }
+  });
+
+  it('propagates explicit sample validity without reserving a legal texel value', () => {
+    const validSample = (value: readonly number[]): boolean =>
+      value.every((lane) => Number.isFinite(lane) && Math.abs(lane) <= 3.402823466e38);
+
+    expect(validSample([-1, -0.5, 0, 1])).toBe(true);
+    expect(validSample([Number.NaN, 0, 0, 1])).toBe(false);
+    expect(validSample([Number.POSITIVE_INFINITY, 0, 0, 1])).toBe(false);
+    expect(MATERIAL_ATLAS_WGSL).toContain('struct MaterialAtlasSampleResult {');
+    expect(MATERIAL_ATLAS_WGSL).toContain('encoding: u32,');
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'c00.valid == 0u || c10.valid == 0u || c01.valid == 0u || c11.valid == 0u',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'if (c0.valid == 0u || c1.valid == 0u)',
+    );
+    const decodedFinite = MATERIAL_ATLAS_WGSL.indexOf(
+      'let decoded = materialAtlasValidSample(value, address.encoding);',
+    );
+    const srgbDecode = MATERIAL_ATLAS_WGSL.indexOf(
+      'if (address.decodeSrgb != 0u)',
+      decodedFinite,
+    );
+    expect(decodedFinite).toBeGreaterThan(0);
+    expect(decodedFinite).toBeLessThan(srgbDecode);
+  });
+
+  it('decodes SNORM normal maps as signed values and rejects degenerate normals', () => {
+    const decode = (
+      value: readonly [number, number, number],
+      snorm: boolean,
+    ): [number, number, number] => snorm
+      ? value.map((lane) => Math.max(-1, Math.min(1, lane))) as [number, number, number]
+      : value.map((lane) => Math.max(0, Math.min(1, lane)) * 2 - 1) as [number, number, number];
+
+    expect(decode([0.5, 0.5, 1], false)).toEqual([0, 0, 1]);
+    expect(decode([0, 0, 1], true)).toEqual([0, 0, 1]);
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'texelColor.encoding == MATERIAL_ATLAS_ENCODING_RGBA8_SNORM',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'texelColor.encoding == MATERIAL_ATLAS_ENCODING_RGBA16_SNORM',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'if (!materialAtlasCanNormalize(tangentSampleRaw))',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'if (!materialAtlasCanNormalize(perturbedRaw))',
+    );
+  });
+
+  it('decodes anisotropy direction according to source encoding', () => {
+    const decode = (
+      value: readonly [number, number],
+      snorm: boolean,
+    ): [number, number] => snorm
+      ? value.map((lane) => Math.max(-1, Math.min(1, lane))) as [number, number]
+      : value.map((lane) => Math.max(0, Math.min(1, lane)) * 2 - 1) as [number, number];
+
+    expect(decode([0.75, 0.25], false)).toEqual([0.5, -0.5]);
+    expect(decode([0.5, -0.5], true)).toEqual([0.5, -0.5]);
+    expect(decode([2, -2], false)).toEqual([1, -1]);
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'anisoMap.encoding == MATERIAL_ATLAS_ENCODING_RGBA8_SNORM',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'anisoMap.encoding == MATERIAL_ATLAS_ENCODING_RGBA16_SNORM',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'clamp(anisoMap.value.rg, vec2f(0.0), vec2f(1.0)) * 2.0 - vec2f(1.0)',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'clamp(anisoMap.value.rg, vec2f(-1.0), vec2f(1.0))',
+    );
+  });
+
   it('keeps texCoord 1 baseColorMap layers readable and records the uv-set selector', () => {
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
@@ -579,7 +958,7 @@ describe('walkaround materialTextureAtlas', () => {
 
     expect(atlas.readableBaseColorLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[0]).toBe(0);
-    expect(atlas.baseColorMetaData[1]).toBe(16);
+    expect(atlas.baseColorMetaData[1]).toBe(16 + 2 * 256);
   });
 
   it('packs authored mag/min policy with mip filtering explicitly disabled', () => {
@@ -640,7 +1019,7 @@ describe('walkaround materialTextureAtlas', () => {
 
     expect(atlas.readableBaseColorLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[0]).toBe(0);
-    expect(atlas.baseColorMetaData[1]).toBe(2 * 16);
+    expect(atlas.baseColorMetaData[1]).toBe(2 * 16 + 2 * 256);
     const headerBase =
       atlas.baseColorMetaData.length / 4 - MATERIAL_META_HEADER_TEXELS;
     const affineBase =
@@ -795,6 +1174,33 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.diagnostics).toEqual([]);
   });
 
+  it('treats omitted mipFilter exactly like linear and explicit none as base-level only', () => {
+    const packWith = (mipFilter?: 'linear' | 'none') => packMaterialTextureAtlas([{
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle: {
+          width: 4,
+          height: 4,
+          data: new Uint8Array(4 * 4 * 4).fill(128),
+          __vitrum_hint__: { channels: 4 as const, dataType: 'uint8' as const },
+        },
+        ...(mipFilter !== undefined ? { mipFilter } : {}),
+      },
+    }], new Uint32Array([0]), 1);
+
+    const omitted = packWith();
+    const linear = packWith('linear');
+    const none = packWith('none');
+    expect(omitted.atlasLayers[0]?.mipLevelCount).toBe(3);
+    expect(linear.atlasLayers[0]?.mipLevelCount).toBe(3);
+    expect(none.atlasLayers[0]?.mipLevelCount).toBe(1);
+    expect(omitted.baseColorMetaData[1]).toBe(2 * 256);
+    expect(linear.baseColorMetaData[1]).toBe(2 * 256);
+    expect(none.baseColorMetaData[1]).toBe(0);
+  });
+
   it('certifies the packed 4K RGBA8 mip-chain footprint', () => {
     const packed = packMaterialTextureAtlas([{
       baseColor: [1, 1, 1],
@@ -914,9 +1320,9 @@ describe('walkaround materialTextureAtlas', () => {
     // lightMap=[18,19], lightMapIntensity=[20].
     expect(atlas.baseColorMetaData[0]).toBe(-1);
     expect(atlas.baseColorMetaData[8]).toBe(0);
-    expect(atlas.baseColorMetaData[9]).toBe(2 + 1 * 4);
+    expect(atlas.baseColorMetaData[9]).toBe(2 + 1 * 4 + 2 * 256);
     expect(atlas.baseColorMetaData[16]).toBe(0);
-    expect(atlas.baseColorMetaData[17]).toBe(16);
+    expect(atlas.baseColorMetaData[17]).toBe(16 + 2 * 256);
     expect(atlas.baseColorMetaData[18]).toBeCloseTo(0.125, 5);
     expect(atlas.baseColorMetaData[19]).toBeCloseTo(0.25, 5);
     expect(atlas.baseColorMetaData[20]).toBeCloseTo(2, 5);
@@ -962,7 +1368,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[8]).toBe(-1);
     expect(atlas.baseColorMetaData[16]).toBe(-1);
     expect(atlas.baseColorMetaData[24]).toBe(0);
-    expect(atlas.baseColorMetaData[25]).toBe(1 + 2 * 4);
+    expect(atlas.baseColorMetaData[25]).toBe(1 + 2 * 4 + 2 * 256);
   });
 
   it('packs alphaMap as a linear atlas slot with coverage metadata', () => {
@@ -996,7 +1402,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(pixels[1]).toBeCloseTo(128 / 255, 5);
     // alpha slot starts at texel 8, coverage scalars at texel 10.
     expect(atlas.baseColorMetaData[32]).toBe(0);
-    expect(atlas.baseColorMetaData[33]).toBe(2 + 1 * 4 + 16);
+    expect(atlas.baseColorMetaData[33]).toBe(2 + 1 * 4 + 16 + 2 * 256);
     expect(atlas.baseColorMetaData[40]).toBe(1);
     expect(atlas.baseColorMetaData[41]).toBeCloseTo(0.75, 5);
     expect(atlas.baseColorMetaData[42]).toBeCloseTo(0.4, 5);
@@ -1062,7 +1468,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(pixels[2]).toBeCloseTo(1, 5);
     // emissive slot starts at texel 11.
     expect(atlas.baseColorMetaData[44]).toBe(0);
-    expect(atlas.baseColorMetaData[45]).toBe(1 + 2 * 4 + 16);
+    expect(atlas.baseColorMetaData[45]).toBe(1 + 2 * 4 + 16 + 2 * 256);
   });
 
   it('packs transmissionMap as a linear R-channel atlas slot for glass gating', () => {
@@ -1094,7 +1500,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(pixels[1]).toBeCloseTo(64 / 255, 5);
     // transmission slot starts at texel 13.
     expect(atlas.baseColorMetaData[52]).toBe(0);
-    expect(atlas.baseColorMetaData[53]).toBe(2 + 1 * 4 + 16);
+    expect(atlas.baseColorMetaData[53]).toBe(2 + 1 * 4 + 16 + 2 * 256);
   });
 
   it('packs thicknessMap as a linear G-channel atlas slot for Beer-Lambert tinting', () => {
@@ -1128,7 +1534,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(pixels[1]).toBeCloseTo(192 / 255, 5);
     // thicknessMap metadata starts at texel 47.
     expect(atlas.baseColorMetaData[188]).toBe(0);
-    expect(atlas.baseColorMetaData[189]).toBe(1 + 2 * 4 + 16);
+    expect(atlas.baseColorMetaData[189]).toBe(1 + 2 * 4 + 16 + 2 * 256);
   });
 
   it('packs bumpMap as a linear height-field atlas slot with signed bumpScale metadata', () => {
@@ -1159,7 +1565,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(pixels[0]).toBeCloseTo(96 / 255, 5);
     // bumpMap metadata starts at texel 49; bumpScale metadata at texel 51.
     expect(atlas.baseColorMetaData[196]).toBe(0);
-    expect(atlas.baseColorMetaData[197]).toBe(2 + 1 * 4 + 16);
+    expect(atlas.baseColorMetaData[197]).toBe(2 + 1 * 4 + 16 + 2 * 256);
     expect(atlas.baseColorMetaData[204]).toBeCloseTo(-0.35, 5);
   });
 
@@ -1193,7 +1599,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(pixels[2]).toBeCloseTo(1, 5);
     // normal slot starts at texel 15; normalScale metadata at texel 17.
     expect(atlas.baseColorMetaData[60]).toBe(0);
-    expect(atlas.baseColorMetaData[61]).toBe(1 + 2 * 4 + 16);
+    expect(atlas.baseColorMetaData[61]).toBe(1 + 2 * 4 + 16 + 2 * 256);
     expect(atlas.baseColorMetaData[68]).toBeCloseTo(0.5, 5);
   });
 
@@ -1227,7 +1633,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(pixels[2]).toBeCloseTo(1, 5);
     // lightMap slot starts at texel 18; lightMapIntensity metadata at texel 20.
     expect(atlas.baseColorMetaData[72]).toBe(0);
-    expect(atlas.baseColorMetaData[73]).toBe(2 + 1 * 4 + 16);
+    expect(atlas.baseColorMetaData[73]).toBe(2 + 1 * 4 + 16 + 2 * 256);
     expect(atlas.baseColorMetaData[80]).toBeCloseTo(2.5, 5);
   });
 
@@ -1241,7 +1647,6 @@ describe('walkaround materialTextureAtlas', () => {
     };
 
     const atlas = packMaterialTextureAtlas([material], new Uint32Array([0]), 1);
-    const pixels = decodedAtlasData(atlas);
 
     // specular metadata lives at texel 21 (vec4 lanes 84..87).
     expect(atlas.baseColorMetaData[84]).toBeCloseTo(0.04 * 0.25, 5);
@@ -1295,7 +1700,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.readableSpecularIntensityLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[96]).toBe(0);  // specularColorMap layer
     expect(atlas.baseColorMetaData[104]).toBe(1); // specularIntensityMap layer
-    expect(atlas.baseColorMetaData[105]).toBe(16); // uv1 selector
+    expect(atlas.baseColorMetaData[105]).toBe(16 + 2 * 256); // uv1 selector + default linear mip
     expect(pixels[0]).toBeCloseTo(srgbToLinear(128 / 255), 5);
     expect(pixels[1]).toBeCloseTo(srgbToLinear(64 / 255), 5);
     expect(pixels[2]).toBeCloseTo(1, 5);
@@ -1356,12 +1761,12 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.readableSheenRoughnessLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[112]).toBe(0); // clearcoatMap layer
     expect(atlas.baseColorMetaData[120]).toBe(1); // clearcoatRoughnessMap layer
-    expect(atlas.baseColorMetaData[121]).toBe(16); // uv1 selector
+    expect(atlas.baseColorMetaData[121]).toBe(16 + 2 * 256); // uv1 selector + default linear mip
     expect(atlas.baseColorMetaData[144]).toBe(2); // clearcoatNormalMap layer
     expect(atlas.baseColorMetaData[152]).toBeCloseTo(0.25, 5); // clearcoatNormalScale
     expect(atlas.baseColorMetaData[128]).toBe(3); // sheenColorMap layer
     expect(atlas.baseColorMetaData[136]).toBe(4); // sheenRoughnessMap layer
-    expect(atlas.baseColorMetaData[137]).toBe(16); // uv1 selector
+    expect(atlas.baseColorMetaData[137]).toBe(16 + 2 * 256); // uv1 selector + default linear mip
     expect(pixels[0]).toBeCloseTo(128 / 255, 5);
     expect(pixels[4 + 1]).toBeCloseTo(192 / 255, 5);
     const clearcoatNormalLayerBase = 8;
@@ -1395,7 +1800,7 @@ describe('walkaround materialTextureAtlas', () => {
 
     expect(atlas.readableAnisotropyLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[156]).toBe(0); // anisotropyMap layer (texel 39)
-    expect(atlas.baseColorMetaData[157]).toBe(16); // uv1 selector
+    expect(atlas.baseColorMetaData[157]).toBe(16 + 2 * 256); // uv1 selector + default linear mip
     expect(atlas.baseColorMetaData[164]).toBeCloseTo(0.5, 5); // anisotropy scalar (texel 41)
     expect(atlas.baseColorMetaData[165]).toBeCloseTo(0.25, 5); // anisotropyRotation
     expect(pixels[0]).toBeCloseTo(1, 5); // direction.r
@@ -1434,7 +1839,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.readableIridescenceThicknessLayerCount).toBe(1);
     expect(atlas.baseColorMetaData[168]).toBe(0); // iridescenceMap layer (texel 42)
     expect(atlas.baseColorMetaData[176]).toBe(1); // iridescenceThicknessMap layer (texel 44)
-    expect(atlas.baseColorMetaData[177]).toBe(16); // uv1 selector
+    expect(atlas.baseColorMetaData[177]).toBe(16 + 2 * 256); // uv1 selector + default linear mip
     expect(atlas.baseColorMetaData[184]).toBeCloseTo(0.5, 5); // scalar factor
     expect(atlas.baseColorMetaData[185]).toBeCloseTo(2, 5); // iridescence IOR
     expect(atlas.baseColorMetaData[186]).toBeCloseTo(200, 5); // min thickness nm
@@ -1564,10 +1969,10 @@ describe('walkaround materialTextureAtlas', () => {
     expect(atlas.baseColorMetaData[back + 2]).toBe(0.75);
     expect(atlas.baseColorMetaData[back + 3]).toBe(-1);
     expect(atlas.baseColorMetaData[frontNormalMeta]).toBe(0);
-    expect(atlas.baseColorMetaData[frontNormalMeta + 1]).toBe(1 + 16);
+    expect(atlas.baseColorMetaData[frontNormalMeta + 1]).toBe(1 + 16 + 2 * 256);
     expect(atlas.baseColorMetaData[frontNormalScale]).toBeCloseTo(0.4, 5);
     expect(atlas.baseColorMetaData[backNormalMeta]).toBe(1);
-    expect(atlas.baseColorMetaData[backNormalMeta + 1]).toBe(2 * 4);
+    expect(atlas.baseColorMetaData[backNormalMeta + 1]).toBe(2 * 4 + 2 * 256);
     expect(atlas.baseColorMetaData[backNormalScale]).toBeCloseTo(0.75, 5);
   });
 
@@ -1678,7 +2083,9 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleEmissiveMap(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleTransmissionMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleLightMap(');
-    expect(MATERIAL_ATLAS_WGSL).toContain('fallback * materialMapChannel(texelColor, channel)');
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'fallback * materialMapChannel(texelColor.value, channel)',
+    );
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSpecularControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleClearcoatControls(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleSheenControls(');
@@ -1700,13 +2107,23 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('let bumpTexelStep = vec2f(');
     expect(MATERIAL_ATLAS_WGSL).toContain('1.0 / max(scaleMeta.y, 1.0)');
     expect(MATERIAL_ATLAS_WGSL).toContain('1.0 / max(scaleMeta.z, 1.0)');
-    expect(MATERIAL_ATLAS_WGSL).toContain('scaleMeta.y > 0.0 && scaleMeta.z > 0.0');
+    expect(MATERIAL_ATLAS_WGSL).toContain('let authoredDimensionsValid =');
     expect(MATERIAL_ATLAS_WGSL).not.toContain('1.0 / 512.0');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn applyClearcoatNormalMapForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAtlasLodForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('Bounded realtime footprint model');
     expect(MATERIAL_ATLAS_WGSL).toContain('propagated ray-differential model');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn sampleMaterialAtlasRawAtOffsetForHit(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAtlasFiniteVec2(value: vec2f) -> bool');
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'if (!materialAtlasFiniteVec2(uv)) {\n    return materialAtlasInvalidSample();',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'if (!materialAtlasFiniteVec2(transformedCandidate)) {\n    return materialAtlasInvalidSample();',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'let finiteLod = select(0.0, lod, materialAtlasFiniteF32(lod));',
+    );
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAtlasFilterMode(samplerPacked: u32, lod: f32)');
     expect(MATERIAL_ATLAS_WGSL).toContain('let lastLevel = address.mipLevelCount - 1u;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAtlasLevelDimensions(');
@@ -1720,6 +2137,8 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('struct MaterialAlphaCoverage');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAlphaCoverageForHit(');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTextured(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn traceSceneFirstHitAlphaMaskTexturedWithMetadata(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('requiresNativeEstimator: u32');
     expect(MATERIAL_ATLAS_WGSL).toContain('traceSceneFirstHitAlphaMaskTexturedOpaqueOnly(');
     expect(MATERIAL_ATLAS_WGSL).not.toContain('fn traceSceneAnyAlphaMaskTextured(');
     expect(MATERIAL_ATLAS_WGSL).not.toContain('fn materialShadowOccluderForHit(');
@@ -1737,12 +2156,21 @@ describe('walkaround materialTextureAtlas', () => {
     expect(MATERIAL_ATLAS_WGSL).toContain('return alpha.coverage < alpha.cutoff;');
     expect(MATERIAL_ATLAS_WGSL).toContain('fn materialAlphaBlendCoverageHash(');
     expect(MATERIAL_ATLAS_WGSL).toContain('sampleSeed: u32,');
-    expect(MATERIAL_ATLAS_WGSL).toContain('materialAlphaBlendCoverageHash(hit, ray, layer, sampleSeed) >= alpha.coverage;');
-    expect(MATERIAL_ATLAS_WGSL).toContain('return clamp(1.0 - alpha.coverage, 0.0, 1.0);');
+    expect(MATERIAL_ATLAS_WGSL).toContain('return f32(hash >> 8u) / 16777216.0;');
+    expect(MATERIAL_ATLAS_WGSL).not.toContain('/ 4294967296.0');
+    expect(MATERIAL_ATLAS_WGSL).toContain('fn materialRepresentedAlphaBlendCoverage(');
+    expect(MATERIAL_ATLAS_WGSL).toContain('ceil(c * 16777216.0) / 16777216.0');
+    expect(MATERIAL_ATLAS_WGSL).toContain('materialAlphaBlendCoverageHash(hit, ray, layer, sampleSeed) >= representedCoverage;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('return 1.0 - materialRepresentedAlphaBlendCoverage(alpha.coverage);');
     expect(MATERIAL_ATLAS_WGSL).not.toContain('tau <= 0.001');
     expect(SHADE_WGSL).toContain('let vertexColor = sampleVertexColorForHit(primaryHit);');
     expect(SHADE_WGSL).toContain('let layerControls = sampleFaceLayerControls(primaryHit.indices.w, primaryHit.side >= 0.0);');
-    expect(SHADE_WGSL).toContain('let layerTransmission = faceLayerTransmission(layerControls);');
+    expect(SHADE_WGSL).toContain(
+      'let reflectionLayerTransmission = faceLayerTransmission(layerControls);',
+    );
+    expect(SHADE_WGSL).toContain(
+      'var layerTransmission = reflectionLayerTransmission;',
+    );
     expect(SHADE_WGSL).toContain('let volumeScattering = sampleVolumeScatteringControls(primaryHit.indices.w);');
     expect(SHADE_WGSL).toContain(
       'let albedo   = sampleBaseColorMap(primaryHit, matColor.rgb * vertexColor.rgb);',
@@ -1752,7 +2180,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain(
       'let metal    = sampleMaterialScalarMap(primaryHit, MATERIAL_MAP_SLOT_METALLIC, 2u, rm.y);',
     );
-    expect(SHADE_WGSL).toContain('let specular = sampleSpecularControls(primaryHit);');
+    expect(SHADE_WGSL).toContain('var specular = sampleSpecularControls(primaryHit);');
     expect(SHADE_WGSL).toContain('let normalMapped = applyNormalMapForHit(primaryHit, smoothNormal);');
     expect(SHADE_WGSL).toContain('let normal = applyBumpMapForHit(primaryHit, normalMapped);');
     expect(SHADE_WGSL).toContain('let clearcoatNormal = applyClearcoatNormalMapForHit(primaryHit, smoothNormal, normal);');
@@ -1761,7 +2189,7 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain('let sheenRoughness = sampleSheenRoughness(primaryHit);');
     expect(SHADE_WGSL).toContain('let anisotropy = sampleAnisotropyControls(primaryHit);');
     expect(SHADE_WGSL).toContain('let anisotropyFrame = materialTangentFrameForHit(primaryHit, normal, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);');
-    expect(SHADE_WGSL).toContain('let iridescence = sampleIridescenceControls(primaryHit);');
+    expect(SHADE_WGSL).toContain('var iridescence = sampleIridescenceControls(primaryHit);');
     expect(SHADE_WGSL).toContain('let envMapIntensity = sampleEnvMapIntensity(primaryHit.indices.w);');
     expect(SHADE_WGSL).toContain(
       'let authoredAo = sampleAoMapFactor(primaryHit, materialWord);',
@@ -1771,11 +2199,19 @@ describe('walkaround materialTextureAtlas', () => {
     expect(SHADE_WGSL).toContain('sampleEmissiveMap(');
     expect(SHADE_WGSL).toContain('materialEmissionSideAdmittedForHit(primaryHit)');
     expect(SHADE_WGSL).toContain('let lightMapIrradiance = sampleLightMap(primaryHit);');
-    expect(SHADE_WGSL).toContain('let Lo_lightMap = albedo * INV_PI * lightMapIrradiance;');
-    expect(SHADE_WGSL).toContain('envMapIntensity, isGlass, isMetal, &rng)');
+    expect(SHADE_WGSL).toContain(
+      'let Lo_lightMap = albedo * INV_PI * lightMapIrradiance *',
+    );
+    expect(SHADE_WGSL).toContain(
+      '(1.0 - clamp(matColor.a, 0.0, 1.0));',
+    );
+    expect(SHADE_WGSL).toContain(
+      'envMapIntensity, matColor.a, layerTransmission, reflectionLayerTransmission, volumeScattering, bulkThickness, isMetal, &rng)',
+    );
     expect(SHADE_WGSL).toContain('sampleTransmissionMapForHit(primaryHit, scalarMatColor.a)');
     expect(SHADE_WGSL).toContain('lo_emit(matColor, normal, isGlass, primaryHit.uv, uv1');
-    expect(SHADE_WGSL).toContain('lo_transmittedGI(pix, dims, isGlass)');
+    expect(SHADE_WGSL).toContain('let Lo_transmittedGI = lo_transmittedGI(');
+    expect(SHADE_WGSL).toContain('matColor.a,\n    albedo,\n    &glassGiRng,');
     expect(SHADE_WGSL).toContain(') * authoredAo;');
   });
 

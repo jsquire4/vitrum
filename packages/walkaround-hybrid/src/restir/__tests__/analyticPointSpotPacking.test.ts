@@ -59,4 +59,58 @@ describe('packAnalyticPointSpotEmitters', () => {
     expect(packed.data[spotBase + 14]).toBeCloseTo(9);
     expect(packed.data[spotBase + 15]).toBeCloseTo(1.5);
   });
+
+  it('publishes exact f32 radiance products and scale-safe spot directions', () => {
+    const scene: Scene = {
+      primitives: [],
+      environment: { kind: 'none' },
+      emitters: [
+        {
+          kind: 'point',
+          id: 'point-f32',
+          position: [0, 0, 0],
+          color: [0.1, 0.2, 0.3],
+          intensity: 0.7,
+        },
+        {
+          kind: 'spot',
+          id: 'spot-huge-direction',
+          position: [0, 0, 0],
+          direction: [1e300, -2e300, 1e300],
+          angle: 0.5,
+          color: [1, 1, 1],
+          intensity: 1,
+        },
+      ],
+    };
+
+    const packed = packAnalyticPointSpotEmitters(scene);
+    expect(Array.from(packed.data.subarray(4, 7))).toEqual([
+      Math.fround(Math.fround(0.1) * Math.fround(0.7)),
+      Math.fround(Math.fround(0.2) * Math.fround(0.7)),
+      Math.fround(Math.fround(0.3) * Math.fround(0.7)),
+    ]);
+    const spotBase = 16;
+    const direction = Array.from(packed.data.subarray(spotBase + 8, spotBase + 11));
+    expect(direction.every(Number.isFinite)).toBe(true);
+    expect(Math.hypot(...direction)).toBeCloseTo(1, 6);
+  });
+
+  it('rejects analytic radiance that overflows or wholly collapses after f32 multiplication', () => {
+    const sceneFor = (color: [number, number, number], intensity: number): Scene => ({
+      primitives: [],
+      environment: { kind: 'none' },
+      emitters: [{
+        kind: 'point',
+        id: 'point-radiance-envelope',
+        position: [0, 0, 0],
+        color,
+        intensity,
+      }],
+    });
+    expect(() => packAnalyticPointSpotEmitters(sceneFor([3e38, 0, 0], 2)))
+      .toThrow(/must remain finite in Float32/);
+    expect(() => packAnalyticPointSpotEmitters(sceneFor([2 ** -149, 0, 0], 2 ** -149)))
+      .toThrow(/underflow completely to zero/);
+  });
 });

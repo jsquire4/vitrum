@@ -58,10 +58,11 @@ describe('ReSTIR-DI temporal correspondence', () => {
     expect(TEMPORAL_WGSL).toContain('if (previous.M == 0u)');
     expect(TEMPORAL_WGSL).not.toContain('if (current.M == 0u)');
     expect(TEMPORAL_WGSL).toContain(
-      'if (currentSupport > 0u && current.W > 0.0)',
+      'if (currentSupport > 0u && reservoirDiHasEstimatorNumerator(current))',
     );
     expect(TEMPORAL_WGSL).toContain(
-      'if (combined.w_sum > 0.0)',
+      'if (wrs.hasSelection)',
     );
+    expect(TEMPORAL_WGSL).not.toMatch(/current\.W\s*>\s*0\.0/);
   });
 });

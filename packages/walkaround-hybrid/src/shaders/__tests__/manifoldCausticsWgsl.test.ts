@@ -69,7 +69,12 @@ describe('walkaround bounded manifold caustics WGSL', () => {
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('SMS_EVENT_REFLECTION');
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('SMS_EVENT_TRANSMISSION');
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('geometry.events[index] == SMS_EVENT_TRANSMISSION');
-    expect(MANIFOLD_CAUSTICS_WGSL).toContain('eventPmf = 0.5;');
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'let transmissionEventPmf = represented_bernoulli_probability_f32(0.5);',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'rand_f32(&rng) < transmissionEventPmf',
+    );
     expect(MANIFOLD_CAUSTICS_WGSL).toContain(
       'eta * eta * (1.0 - cosIncident * cosIncident) >= 1.0',
     );
@@ -124,16 +129,55 @@ describe('walkaround bounded manifold caustics WGSL', () => {
     expect(MANIFOLD_CAUSTICS_WGSL.match(/sampleEmitterLeAtXi\(/g)).toHaveLength(1);
     expect(MANIFOLD_CAUSTICS_WGSL).toContain('materialThinFilmResponse(');
     expect(MANIFOLD_CAUSTICS_WGSL).toContain('faceLayerTransmission(');
-    expect(MANIFOLD_CAUSTICS_WGSL).toContain('materialSpectralAttenuation(');
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain('materialShadowBeerForSegment(');
     expect(MANIFOLD_CAUSTICS_WGSL).toContain('endpoint.castShadowDisabled == 0u');
     expect(MANIFOLD_CAUSTICS_WGSL).toContain(
-      'traceSceneAlphaTintTransmittanceTexturedWithOwnership(',
+      'fn smsTraceExternalAlphaFromOpticalSource(',
     );
     expect(MANIFOLD_CAUSTICS_WGSL).toContain(
-      'bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer, true',
+      'traceSceneFirstHitWithOpticalSourceExclusion(',
     );
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('(materialWord & 1u) != 0u');
     expect(MANIFOLD_SMS_SOLVER_WGSL).toContain('out.surfaceCoverage = select(');
+  });
+
+  it('uses component/range topology, endpoint containment, and fixed-origin continuation', () => {
+    expect(MANIFOLD_SMS_SOLVER_WGSL).toContain(
+      'facet.encodedBoundaryId = sceneOpticalEncodedBoundaryId(',
+    );
+    expect(MANIFOLD_SMS_SOLVER_WGSL).toContain(
+      'sceneOpticalRepresentedPrimitiveInstanceId(',
+    );
+    expect(MANIFOLD_SMS_SOLVER_WGSL).toContain(
+      'out.bulkMedium = select(0u, 1u, facet.encodedBoundaryId != 0u);',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'fn smsSourceContainingMedia(',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'fn smsReceiverContainingMedia(',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'mediumBoundaryId[depth - 1u] !=',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'mediumRepresentedId[depth - 1u] !=',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'fn smsTraceOpticalSourceReachesFacet(',
+    );
+    expect(MANIFOLD_CAUSTICS_WGSL).toContain(
+      'exclusiveMinT = hit.dist;',
+    );
+    const opticalWalk = MANIFOLD_CAUSTICS_WGSL.slice(
+      MANIFOLD_CAUSTICS_WGSL.indexOf(
+        'fn smsTraceOpticalSourceReachesFacet(',
+      ),
+      MANIFOLD_CAUSTICS_WGSL.indexOf(
+        'fn smsChainIdentityVisible(',
+      ),
+    );
+    expect(opticalWalk).not.toContain('origin + direction *');
   });
 
   it('gives manifold paths exclusive ownership of covered material transmission', () => {
@@ -142,12 +186,14 @@ describe('walkaround bounded manifold caustics WGSL', () => {
     );
     expect(SHADING_TERMS_WGSL).toContain('return ubo.sunAngular.z >= 1.5;');
     expect(SHADING_TERMS_WGSL.match(
-      /traceSceneAlphaTintTransmittanceTexturedWithOwnership\(/g,
-    )).toHaveLength(4);
-    expect(RIS_WGSL.match(
-      /traceSceneAlphaTintTransmittanceTexturedWithOwnership\(/g,
-    )).toHaveLength(2);
-    expect(RIS_WGSL.match(/ubo\.sunAngular\.z >= 1\.5/g)).toHaveLength(2);
+      /traceSceneAlphaTintTransmittanceTexturedWithContainingMedia\(/g,
+    )).toHaveLength(5);
+    // RIS builds an unoccluded proposal; the final receiver in shadingTerms
+    // owns visibility and material-transmission exclusivity exactly once.
+    expect(RIS_WGSL).not.toContain(
+      'traceSceneAlphaTintTransmittanceTexturedWithOwnership(',
+    );
+    expect(RIS_WGSL).not.toContain('ubo.sunAngular.z >= 1.5');
 
     // Disabled strategies retain the original walker, and no-glass/alpha-only
     // hits share the same alphaT path. Only material transmission enters the

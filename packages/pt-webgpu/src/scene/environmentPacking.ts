@@ -1,6 +1,7 @@
 import type { Scene } from '@vitrum/core';
 import {
   bakePreethamSkyEquirect,
+  buildRepresentedDistributionF32,
   luminance,
   readEnvironmentMapPixels,
 } from '@vitrum/shared-samplers';
@@ -331,7 +332,7 @@ export function environmentParams(scene: Scene): EnvironmentParams {
       );
     }
     const texels = new Float32Array(pixelCount * 4);
-    const cdf = new Float32Array(pixelCount + 1);
+    let cdf: Float32Array = new Float32Array(pixelCount + 1);
     const weights = new Float64Array(pixelCount);
     const deltaPhi = (2 * Math.PI) / width;
     let totalWeight = 0;
@@ -393,24 +394,15 @@ export function environmentParams(scene: Scene): EnvironmentParams {
             'intensity underflows entirely to zero in Float32.',
         );
       }
-      let cumulative = 0;
-      for (let i = 0; i < pixelCount; i += 1) {
-        const pmf = weights[i]! / totalWeight;
-        cumulative += pmf;
-        cdf[i + 1] = cumulative;
-      }
-      cdf[0] = 0;
-      cdf[pixelCount] = 1;
+      cdf = buildRepresentedDistributionF32(weights).cdf;
       for (let i = 0; i < pixelCount; i += 1) {
         const y = (i / width) | 0;
         const theta0 = (y / height) * Math.PI;
         const theta1 = ((y + 1) / height) * Math.PI;
         const texelSolidAngle = deltaPhi * (Math.cos(theta0) - Math.cos(theta1));
-        // The shader samples the uploaded Float32 CDF, not the ideal
-        // double-precision weights above.  Rounding may flatten tiny bins, so
-        // publish the density of the distribution the binary search actually
-        // implements.  In particular, an unsampleable flattened bin must
-        // report zero rather than a positive MIS density.
+        // Publish the density of the exact represented 24-bit proposal. Every
+        // positive source owns at least one reachable random bucket, including
+        // weights far below Float32 cumulative precision.
         const effectivePmf = cdf[i + 1]! - cdf[i]!;
         texels[i * 4 + 3] = effectivePmf / texelSolidAngle;
       }

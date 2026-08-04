@@ -14,6 +14,7 @@
  */
 
 import type { EngineWarning } from '@vitrum/core';
+import { quantizeOpenUnitProbabilityF32 } from '@vitrum/shared-samplers';
 import type { HybridEngineOptions } from './HybridEngineOptions.js';
 import { VALID_DENOISERS } from './HybridEngineOptions.js';
 import { ATROUS_DIRECT_SIGMAS, ATROUS_INDIRECT_SIGMAS } from './pipeline/constants.js';
@@ -55,7 +56,10 @@ import {
   validateCascadeDims,
 } from '@vitrum/walkaround-rc';
 import { assertValidDdgiLights } from './ddgi/inputValidation.js';
-import { resolveReGIRConfig } from './pipeline/ReGIRCoordinator.js';
+import {
+  REGIR_MAX_CANDIDATES_PER_CELL,
+  resolveReGIRConfig,
+} from './pipeline/ReGIRCoordinator.js';
 import {
   resolveNrcConfig,
   type NrcConfig,
@@ -678,7 +682,7 @@ function validateHybridOptionValueDomains(opts: HybridEngineOptions): void {
       opts.regir.candidatesPerCell,
       'options.regir.candidatesPerCell',
       1,
-      0xffff_ffff,
+      REGIR_MAX_CANDIDATES_PER_CELL,
     );
     assertSafeInteger(
       opts.regir.survivorsPerCell,
@@ -886,11 +890,17 @@ type WalkaroundHybridExt = {
 };
 
 function resolvePpgMixAlpha(value: number | undefined): number {
-  if (value === undefined) return PPG_MIS_ALPHA;
-  if (!Number.isFinite(value) || value <= 0 || value >= 1) {
-    throw new TypeError('[HybridEngine] ppgMixAlpha must be finite and strictly between 0 and 1.');
+  try {
+    return quantizeOpenUnitProbabilityF32(
+      value ?? PPG_MIS_ALPHA,
+      '[HybridEngine] ppgMixAlpha',
+    );
+  } catch (error) {
+    throw new TypeError(
+      '[HybridEngine] ppgMixAlpha must be finite and strictly between 0 and 1.',
+      { cause: error },
+    );
   }
-  return value;
 }
 
 /**

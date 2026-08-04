@@ -719,12 +719,14 @@ describe('Item 6 — importGIState grid-layout guard', () => {
 import { buildPpgUpdateWgsl } from '../src/ppg/ppgUpdate.wgsl.ts';
 
 describe('Item 7 — PPG atomic f32 accumulation', () => {
-  it('uses a bounded weak-CAS loop over IEEE-754 bits with finite-range guards', () => {
+  it('uses a no-drop lock-free weak-CAS loop over IEEE-754 bits with finite-range guards', () => {
     const wgsl = buildPpgUpdateWgsl(341);
     expect(wgsl).toContain('bitcast<f32>(oldBits)');
     expect(wgsl).toContain('atomicCompareExchangeWeak(');
     expect(wgsl).toContain('&ppgFluxAtomics[slot], oldBits');
-    expect(wgsl).toContain('MAX_FLUX_CAS_ATTEMPTS: u32 = 256u');
+    expect(wgsl).toMatch(/loop\s*\{/);
+    expect(wgsl).toContain('if (oldValue == MAX_FINITE_F32) { return; }');
+    expect(wgsl).not.toContain('MAX_FLUX_CAS_ATTEMPTS');
     expect(wgsl).toContain('nextValue = MAX_FINITE_F32');
     expect(wgsl).not.toContain('atomicAdd(&ppgFluxAtomics[slot]');
   });
@@ -733,7 +735,7 @@ describe('Item 7 — PPG atomic f32 accumulation', () => {
     for (const wgsl of [buildPpgUpdateWgsl(171), buildPpgUpdateWgsl(511)]) {
       expect(wgsl).toContain('atomicLoad(&ppgFluxAtomics[slot])');
       expect(wgsl).toContain('bitcast<u32>(nextValue)');
-      expect(wgsl).toContain('MAX_FLUX_CAS_ATTEMPTS');
+      expect(wgsl).not.toContain('MAX_FLUX_CAS_ATTEMPTS');
       expect(wgsl).not.toContain('0xFFFFFFFFu - increment');
     }
   });

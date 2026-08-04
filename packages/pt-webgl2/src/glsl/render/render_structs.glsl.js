@@ -4,14 +4,59 @@ export const render_structs = /* glsl */`
 
 		vec3 origin;
 		vec3 direction;
+		// Negative means ordinary production traversal. A non-negative value
+		// selects the canonical watertight range traversal and rejects every
+		// represented hit at or below this exact world-space t. The source face
+		// is excluded independently so roundoff cannot immediately re-hit it.
+		float minimumDistanceExclusive;
+		uint ignoredFaceIndex;
+		// 0 none, 1 face, 2 welded edge, 3 welded vertex. Edge/vertex tokens
+		// carry exact represented world coordinates so duplicate-index UV seams
+		// share the same one-segment self-exclusion without a new GPU binding.
+		uint sourceFeatureKind;
+		uint sourceBoundaryId;
+		uint sourcePrimitiveInstanceId;
+		vec3 sourceFeatureA;
+		vec3 sourceFeatureB;
 
 	};
+
+	void setOrdinaryRayRange( inout Ray ray ) {
+
+		ray.minimumDistanceExclusive = -1.0;
+		ray.ignoredFaceIndex = 0xffffffffu;
+		ray.sourceFeatureKind = 0u;
+		ray.sourceBoundaryId = 0u;
+		ray.sourcePrimitiveInstanceId = 0u;
+		ray.sourceFeatureA = vec3( 0.0 );
+		ray.sourceFeatureB = vec3( 0.0 );
+
+	}
+
+	void setExactRayRange(
+		inout Ray ray, vec3 exactOrigin, uint sourceFaceIndex
+	) {
+
+		ray.origin = exactOrigin;
+		ray.minimumDistanceExclusive = 0.0;
+		ray.ignoredFaceIndex = sourceFaceIndex;
+		ray.sourceFeatureKind = 1u;
+		ray.sourceBoundaryId = 0u;
+		ray.sourcePrimitiveInstanceId = 0u;
+		ray.sourceFeatureA = vec3( 0.0 );
+		ray.sourceFeatureB = vec3( 0.0 );
+
+	}
 
 	struct SurfaceHit {
 
 		uvec4 faceIndices;
 		vec3 barycoord;
 		vec3 faceNormal;
+		// Canonical represented-triangle point from the inclusive watertight
+		// solve. Exact optical continuation anchors here instead of independently
+		// rounding origin + direction * t across an adjacent one-ULP layer.
+		vec3 point;
 		float side;
 		float dist;
 
@@ -51,7 +96,7 @@ export const render_structs = /* glsl */`
 		result.wavelengthPdf = 1.0 / 400.0;
 		result.throughput = vec3( 1.0 );
                 result.depth = 0u;
-                result.fogMaterial.fogVolume = false;
+		initFogMaterial( result.fogMaterial );
                 initMediumStack( result.mediumStack );
 		result.envMapIntensity = 1.0;
 		return result;
@@ -67,19 +112,21 @@ export const render_structs = /* glsl */`
 		fogSurface.frontFace = true;
 		fogSurface.normal = normal;
 		fogSurface.normalBasis = getBasisFromNormal( normal );
+		fogSurface.oppositeNormal = - normal;
+		fogSurface.oppositeNormalBasis = getBasisFromNormal( - normal );
 		fogSurface.eta = 1.0;
 		fogSurface.f0 = 0.0;
 		fogSurface.roughness = 1.0;
 		fogSurface.filteredRoughness = 1.0;
+		fogSurface.oppositeRoughness = 1.0;
+		fogSurface.oppositeFilteredRoughness = 1.0;
 		fogSurface.metalness = 0.0;
 		fogSurface.color = material.color;
 		fogSurface.rgbColor = material.color;
-                // A medium vertex is sampled with density sigma_majorant. The
-                // source term carries its reciprocal; the free-flight ratio
-                // weight supplies the authored Beer law.
-                fogSurface.emission = material.opacity > 0.0
-                        ? material.emission / material.opacity
-                        : vec3( 0.0 );
+                // The incoming edge already divides by the exact RGB-mixture
+                // (or scalar hero) collision density. Keep source and scatter
+                // coefficients unfactored at the volume vertex.
+                fogSurface.emission = material.emission;
 		fogSurface.ior = 1.0;
 		fogSurface.transmission = 0.0;
 		fogSurface.thinFilm = false;
@@ -96,6 +143,8 @@ export const render_structs = /* glsl */`
 		fogSurface.hasSpectralAttenuation = material.hasSpectralAttenuation;
 		fogSurface.activeLayerTransmission = vec3( 1.0 );
 		fogSurface.hasActiveLayer = false;
+		fogSurface.oppositeLayerTransmission = vec3( 1.0 );
+		fogSurface.hasOppositeLayer = false;
 		fogSurface.materialIndex = material.materialIndex;
 		fogSurface.attenuationColor = material.attenuationColor;
 		fogSurface.attenuationDistance = material.attenuationDistance;

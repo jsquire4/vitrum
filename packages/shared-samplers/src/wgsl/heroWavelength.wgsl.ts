@@ -3,6 +3,10 @@
  * Tables: heroWavelengthTables.ts (from @vitrum/shared-samplers wavelengthSampling).
  */
 import { HERO_WAVELENGTH_TABLES_WGSL } from './heroWavelengthTables.js';
+import {
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS,
+} from '../wavelengthSampling.js';
 
 export const HERO_WAVELENGTH_WGSL = /* wgsl */ `
 ${HERO_WAVELENGTH_TABLES_WGSL}
@@ -42,7 +46,12 @@ fn heroMisMixturePdf(lambdaNm: f32) -> f32 {
   let x = heroSampleTable(lambdaNm, HERO_X_CMF) / HERO_X_CMF_INTEGRAL;
   let y = heroSampleTable(lambdaNm, HERO_Y_CMF) / HERO_Y_CMF_INTEGRAL;
   let z = heroSampleTable(lambdaNm, HERO_Z_CMF) / HERO_Z_CMF_INTEGRAL;
-  return (x + y + z) / 3.0;
+  let strategyProbability = vec3f(
+    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[0]}.0,
+    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[1]}.0,
+    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[2]}.0,
+  ) / ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT}.0;
+  return dot(strategyProbability, vec3f(x, y, z));
 }
 
 // cmfTable is one of the 81-entry CMF consts (HERO_X/Y/Z_CMF); cdfTable is the
@@ -110,10 +119,15 @@ fn heroSampleCmfCdfInverse(
 
 fn sampleHeroWavelengthMIS(uStrategy: f32, uLambda: f32) -> vec3f {
   let s = clamp(uStrategy, 0.0, 1.0 - 1e-7);
+  let strategyProbability = vec3f(
+    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[0]}.0,
+    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[1]}.0,
+    ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[2]}.0,
+  ) / ${HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT}.0;
   var heroLambda: f32;
-  if (s < 1.0 / 3.0) {
+  if (s < strategyProbability.x) {
     heroLambda = heroSampleCmfCdfInverse(uLambda, HERO_X_CMF, HERO_X_CMF_CDF, HERO_X_CMF_INTEGRAL).x;
-  } else if (s < 2.0 / 3.0) {
+  } else if (s < strategyProbability.x + strategyProbability.y) {
     heroLambda = heroSampleCmfCdfInverse(uLambda, HERO_Y_CMF, HERO_Y_CMF_CDF, HERO_Y_CMF_INTEGRAL).x;
   } else {
     heroLambda = heroSampleCmfCdfInverse(uLambda, HERO_Z_CMF, HERO_Z_CMF_CDF, HERO_Z_CMF_INTEGRAL).x;

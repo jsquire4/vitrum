@@ -89,43 +89,58 @@ describe('DDGI probe-ray Beer-Lambert glass transmittance (B5)', () => {
     expect(wgsl).toContain('fn ddgiSampleVertexColorForHit(hit: IntersectionResult) -> vec4f');
     expect(wgsl).toContain('fn ddgiSampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32) -> f32');
     expect(wgsl).toContain('fn ddgiSampleThicknessMapFactorForHit(hit: IntersectionResult) -> vec2f');
+    expect(wgsl).toContain('fn ddgiMaterialAtlasFiniteNonNegativeRadianceOrBlack(value: vec3f) -> vec3f');
+    expect(wgsl.match(/ddgiMaterialAtlasFiniteNonNegativeRadianceOrBlack\(/g)).toHaveLength(4);
+    expect(wgsl).toContain('scalarEmission * texel.value.rgb,');
+    expect(wgsl).toContain('max(texel.value.rgb, vec3f(0.0)) * max(intensity, 0.0),');
+    expect(wgsl).toContain('return f32(hash >> 8u) / 16777216.0;');
+    expect(wgsl).not.toContain('/ 4294967296.0');
     expect(wgsl).toContain('let baseColorTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_BASE_COLOR, uvs.uv0, uvs.uv1);');
     expect(wgsl).toContain('let alphaTexel = ddgiSampleMaterialAtlasRaw(hit.indices.w, DDGI_MATERIAL_MAP_SLOT_ALPHA, uvs.uv0, uvs.uv1);');
     expect(wgsl).toContain('let vertexColorAlpha = ddgiSampleVertexColorForHit(hit).a;');
     expect(wgsl).toContain('out.coverage = clamp(opacity * vertexColorAlpha * baseColorAlpha * alphaMapCoverage, 0.0, 1.0);');
     expect(wgsl).toContain('fn ddgiTraceShadowVisibility(origin: vec3f, dir: vec3f, tMax: f32) -> vec3f');
     expect(wgsl).toContain('let surfaceBudget = ddgiWorldSurfaceBudget();');
-    expect(wgsl).toContain('var mediumMaterial: array<u32, 16>;');
-    expect(wgsl).toContain('mediumInstance[mediumDepth] = hit.instanceIndex;');
+    expect(wgsl).toContain('var mediumState = containing.state;');
+    expect(wgsl).toContain('mediumState.boundaryId[depth] = boundaryId;');
+    expect(wgsl).toContain('mediumState.representedId[depth] = representedId;');
     expect(wgsl).toContain('let alphaT = ddgiAlphaShadowTransmittanceForHit(hit);');
-    expect(wgsl).toContain('visibility = visibility * alphaT;');
-    expect(wgsl).toContain('let coverage = clamp(1.0 - alphaT, 0.0, 1.0);');
+    expect(wgsl).toContain('visibility = visibility * vec3f(alphaT);');
+    expect(wgsl).toContain('let coverage = ddgiOpticalCoverageForHit(hit);');
     expect(wgsl).toContain(
       'visibility = visibility * mix(',
     );
     expect(wgsl).toContain(
-      'mediumMaterial[mediumDepth - 1u] == matId',
+      'mediumState.boundaryId[top] != boundaryId',
     );
     expect(wgsl).toContain(
-      'visibility = visibility * interfaceTransmission *',
+      'ddgiShadowFaceTransmission(hit, dir, true)',
     );
     expect(wgsl).toContain('let rgbBeer = beerLambertTransmittanceRgb(');
-    expect(wgsl).toContain('mediumMaterial[mediumDepth - 1u] == matId');
+    expect(wgsl).toContain('mediumState.representedId[top] != representedId');
     expect(wgsl).not.toContain('exp(-mat.attenuationColor');
     expect(wgsl).toContain('fn ddgiTraceFirstHitAlphaMaskTextured(ray: Ray) -> IntersectionResult');
     expect(wgsl).toContain('fn ddgiAlphaBlendCoverageHash(hit: IntersectionResult, ray: Ray, layer: u32) -> f32');
     expect(wgsl).toContain('fn ddgiMaterialAlphaDiscardedForProbeHit(hit: IntersectionResult, ray: Ray, layer: u32) -> bool');
-    expect(wgsl).toContain('ddgiAlphaBlendCoverageHash(hit, ray, layer) >= alpha.coverage');
+    expect(wgsl).toContain('ddgiAlphaBlendCoverageHash(hit, ray, layer) >= representedCoverage');
     expect(wgsl).toContain(
       'Conservative world-surface-budget overflow blocks instead of leaking.',
     );
     expect(wgsl).not.toContain('ddgiMaterialAlphaDiscardedForOpaqueProbeHit');
-    expect(wgsl).toContain('let hit = ddgiTraceFirstHitAlphaMaskTextured(ray);');
-    expect(wgsl).toContain('return ddgiTraceShadowVisibility(origin, sunDir, 1e15);');
+    expect(wgsl).toContain('let ordinaryHit = ddgiTraceFirstHitAlphaMaskTextured(ray);');
+    expect(wgsl).toContain('let unboundedShadowDistance = bitcast<f32>(0x7f800000u);');
+    expect(wgsl).toContain(
+      'return ddgiTraceShadowVisibility(origin, sunDir, unboundedShadowDistance);',
+    );
     expect(wgsl).toContain('shadowVisibility = ddgiTraceShadowVisibility(shadowOrig, lightDir, dist - normalBias_p);');
     expect(wgsl).toContain('shadowT = ddgiTraceShadowVisibility(hitPos + n * normalBias, wi, dist - normalBias);');
     expect(wgsl).toContain('fn ddgiTraceGlassChannel(');
-    expect(wgsl).toContain('let pathLength = boundaryStep + exitHit.dist;');
+    expect(wgsl).toContain('let nextRay = Ray(currentPos, rayDirection);');
+    expect(wgsl).toContain('nextRay, currentSourceFeature,');
+    expect(wgsl).toContain('&mediumState, accepted.hit.dist,');
+    expect(wgsl).toContain('fn ddgiMediumSegmentTransfer(');
+    expect(wgsl).toContain('let mappedCap = authoredThickness * clamp(thicknessMapScale, 0.0, 1.0);');
+    expect(wgsl).toContain('min(segmentLength, mappedCap),');
     expect(wgsl).toContain('return light.color * atten * nDotL * coneFalloff * shadowVisibility;');
     expect(wgsl).toContain('irradiance = irradiance + Le * G * area * shadowT /');
     expect(wgsl).toContain('let directRadiance = direct * probeMat.albedo * (1.0 / PI);');

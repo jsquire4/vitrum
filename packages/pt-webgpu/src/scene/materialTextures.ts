@@ -80,11 +80,11 @@ import { assertPtWebgpuEnvironmentScaleF32 } from '../environmentRadianceScale.j
  *
  * D3 (reserved-field consumption) bumped the stride 4 → 6:
  *   - vec4 #3.yzw + vec4 #4.xyz: aoMap / lightMap / bumpMap layer indices and
- *     their intensity / scale scalars. All three maps are LINEAR-space (occlusion,
- *     baked-radiance-as-data, height field) so they share the LINEAR texture array
- *     index space (materialTexturesLinear). A material lacking a given map carries
- *     index -1 (the WGSL sampler returns a no-op), so absent-field scenes stay
- *     byte-identical to the pre-D3 path.
+ *     their intensity / scale scalars. AO and bump are bounded LINEAR data in
+ *     `materialTexturesLinear`; lightMap is outgoing radiance and therefore uses
+ *     the dedicated linear-float radiance array shared with emissiveMap. A material
+ *     lacking a given map carries index -1 (the WGSL sampler returns a no-op), so
+ *     absent-field scenes stay byte-identical to the pre-D3 path.
  *   - vec4 #4.w: per-material envMapIntensity (default 1).
  *   - vec4 #5: anisotropy / anisotropyRotation scalars + the optional
  *     anisotropyMap layer index (KHR_materials_anisotropy: RG = tangent rotation
@@ -236,6 +236,18 @@ export const TEXTURE_MAP_SLOTS: readonly TextureMapSlot[] = [
   { name: 'backLayerNormal',  resolve: (m) => m.backLayer?.normalMap,  wrapFloatOffset: MATERIAL_TEX_LAYER_NORMAL_WRAP_VEC4_OFFSET * 4 + 2, uvMetaVec4Offset: MATERIAL_TEX_LAYER_NORMAL_UV_META_VEC4_OFFSET, uvMetaSlot: 1 },
 ];
 
+const TEXTURE_MAP_SLOT_INDEX_BY_NAME: ReadonlyMap<string, number> = new Map(
+  TEXTURE_MAP_SLOTS.map((slot, index) => [slot.name, index]),
+);
+
+export function stagedMapRef(
+  material: StagedMaterialTextureInputs,
+  name: string,
+): StagedTextureRef | undefined {
+  const index = TEXTURE_MAP_SLOT_INDEX_BY_NAME.get(name);
+  return index == null ? undefined : material.refs[index];
+}
+
 const ALPHA_MODE_INDEX: Readonly<Record<'opaque' | 'mask' | 'blend', number>> = {
   opaque: 0,
   mask: 1,
@@ -254,7 +266,43 @@ const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
   linear: 2,
 };
 
-function authoredTexCoord(ref: TextureRef | undefined): number {
+export interface StagedTextureRef {
+  readonly handle: unknown;
+  readonly texCoord: number;
+  readonly transform: PackedTextureTransform;
+  readonly wrapS: TextureWrapMode;
+  readonly wrapT: TextureWrapMode;
+  readonly magFilter: TextureFilterMode;
+  readonly minFilter: TextureFilterMode;
+  readonly mipFilter: TextureMipFilterMode;
+}
+
+export interface StagedMaterialTextureInputs {
+  readonly refs: readonly (StagedTextureRef | undefined)[];
+  readonly alphaMode: MaterialSpec['alphaMode'];
+  readonly alphaCutoff: MaterialSpec['alphaCutoff'];
+  readonly opacity: MaterialSpec['opacity'];
+  readonly aoMapIntensity: MaterialSpec['aoMapIntensity'];
+  readonly lightMapIntensity: MaterialSpec['lightMapIntensity'];
+  readonly bumpScale: MaterialSpec['bumpScale'];
+  readonly envMapIntensity: MaterialSpec['envMapIntensity'];
+  readonly anisotropy: MaterialSpec['anisotropy'];
+  readonly anisotropyRotation: MaterialSpec['anisotropyRotation'];
+  readonly normalScale: MaterialSpec['normalScale'];
+  readonly clearcoatNormalScale: MaterialSpec['clearcoatNormalScale'];
+  readonly transmission: MaterialSpec['transmission'];
+  readonly metallic: MaterialSpec['metallic'];
+  readonly roughness: MaterialSpec['roughness'];
+  readonly thinFilmStackPresent: boolean;
+  readonly clearcoat: MaterialSpec['clearcoat'];
+  readonly sheen: MaterialSpec['sheen'];
+  readonly frontLayerRoughness: number | undefined;
+  readonly backLayerRoughness: number | undefined;
+  readonly frontLayerNormalScale: number | undefined;
+  readonly backLayerNormalScale: number | undefined;
+}
+
+function authoredTexCoord(ref: StagedTextureRef | undefined): number {
   return ref?.texCoord ?? 0;
 }
 
@@ -265,16 +313,13 @@ interface MaterialUvSetLayout {
 }
 
 function materialUvSetLayout(
-  materials: ReadonlyArray<MaterialSpec>,
+  materials: readonly StagedMaterialTextureInputs[],
 ): MaterialUvSetLayout {
   const used = new Set<number>([0, 1]);
   materials.forEach((material, materialIndex) => {
-    const context: MaterialTextureResolveContext = {
-      roughnessMap: material.roughnessMap ?? material.metallicMap,
-      metallicMap: material.metallicMap ?? material.roughnessMap,
-    };
-    for (const slot of TEXTURE_MAP_SLOTS) {
-      const ref = slot.resolve(material, context);
+    for (let slotIndex = 0; slotIndex < TEXTURE_MAP_SLOTS.length; slotIndex += 1) {
+      const slot = TEXTURE_MAP_SLOTS[slotIndex]!;
+      const ref = material.refs[slotIndex];
       if (ref?.handle == null) continue;
       const texCoord = authoredTexCoord(ref);
       if (!Number.isSafeInteger(texCoord) || texCoord < 0) {
@@ -294,11 +339,319 @@ function materialUvSetLayout(
 }
 
 function packedUvSlot(
-  ref: TextureRef | undefined,
+  ref: StagedTextureRef | undefined,
   layout: MaterialUvSetLayout,
 ): number {
   if (ref?.handle == null) return 0;
   return layout.slotByTexCoord.get(authoredTexCoord(ref)) ?? 0;
+}
+
+interface PackedTextureTransform {
+  readonly offsetX: number;
+  readonly offsetY: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly rotation: number;
+}
+
+function requireTextureTransformFloat32(
+  value: number,
+  context: string,
+): number {
+  if (!Number.isFinite(value)) {
+    throw new RangeError(`${context} must be finite.`);
+  }
+  const packed = Math.fround(value);
+  if (!Number.isFinite(packed)) {
+    throw new RangeError(`${context} overflows WebGPU float32 storage.`);
+  }
+  if (value !== 0 && packed === 0) {
+    throw new RangeError(`${context} underflows WebGPU float32 storage.`);
+  }
+  return packed;
+}
+
+function snapshotPackedTextureTransform(
+  ref: TextureRef | undefined,
+  context: string,
+): PackedTextureTransform {
+  const transform = ref?.transform;
+  const offset = transform?.offset;
+  const scale = transform?.scale;
+  const offsetX = offset?.[0];
+  const offsetY = offset?.[1];
+  const scaleX = scale?.[0];
+  const scaleY = scale?.[1];
+  const rotation = transform?.rotation;
+  return {
+    offsetX: requireTextureTransformFloat32(
+      offsetX ?? 0,
+      `${context} offset.x`,
+    ),
+    offsetY: requireTextureTransformFloat32(
+      offsetY ?? 0,
+      `${context} offset.y`,
+    ),
+    scaleX: requireTextureTransformFloat32(
+      scaleX ?? 1,
+      `${context} scale.x`,
+    ),
+    scaleY: requireTextureTransformFloat32(
+      scaleY ?? 1,
+      `${context} scale.y`,
+    ),
+    rotation: requireTextureTransformFloat32(
+      rotation ?? 0,
+      `${context} rotation`,
+    ),
+  };
+}
+
+function packedTextureTransform(
+  ref: StagedTextureRef | undefined,
+  _context: string,
+): PackedTextureTransform {
+  return ref?.transform ?? {
+    offsetX: 0,
+    offsetY: 0,
+    scaleX: 1,
+    scaleY: 1,
+    rotation: 0,
+  };
+}
+
+function snapshotTextureRef(
+  input: TextureRef | undefined,
+  context: string,
+  cache: Map<unknown, StagedTextureRef>,
+): StagedTextureRef | undefined {
+  if (input == null) return undefined;
+  if (typeof input !== 'object') {
+    throw new TypeError(`${context} must be a TextureRef object.`);
+  }
+  const cached = cache.get(input);
+  if (cached != null) return cached;
+  const handle = input.handle;
+  const texCoordInput = input.texCoord;
+  const transform = snapshotPackedTextureTransform(input, `${context} transform`);
+  const wrapSInput = input.wrapS;
+  const wrapTInput = input.wrapT;
+  const magFilterInput = input.magFilter;
+  const minFilterInput = input.minFilter;
+  const mipFilterInput = input.mipFilter;
+  const texCoord = texCoordInput ?? 0;
+  const wrapS = wrapSInput ?? 'repeat';
+  const wrapT = wrapTInput ?? 'repeat';
+  const magFilter = magFilterInput ?? 'linear';
+  const minFilter = minFilterInput ?? 'linear';
+  const mipFilter = mipFilterInput ?? 'linear';
+  if (!Number.isSafeInteger(texCoord) || texCoord < 0) {
+    throw new RangeError(`${context}.texCoord must be a non-negative safe integer.`);
+  }
+  if (!Object.hasOwn(WRAP_MODE_INDEX, wrapS) || !Object.hasOwn(WRAP_MODE_INDEX, wrapT)) {
+    throw new RangeError(`${context} has an unsupported wrap mode.`);
+  }
+  if (
+    (magFilter !== 'nearest' && magFilter !== 'linear') ||
+    (minFilter !== 'nearest' && minFilter !== 'linear')
+  ) {
+    throw new RangeError(`${context} has an unsupported texture filter.`);
+  }
+  if (mipFilter !== 'none' && mipFilter !== 'nearest' && mipFilter !== 'linear') {
+    throw new RangeError(`${context} has an unsupported mip filter.`);
+  }
+  const snapshot = Object.freeze({
+    handle,
+    texCoord,
+    transform: Object.freeze(transform),
+    wrapS,
+    wrapT,
+    magFilter,
+    minFilter,
+    mipFilter,
+  });
+  cache.set(input, snapshot);
+  return snapshot;
+}
+
+interface MaterialInputSnapshotState {
+  readonly materialCache: Map<MaterialSpec, StagedMaterialTextureInputs>;
+  readonly refCache: Map<unknown, StagedTextureRef>;
+}
+
+/** Opaque operation-scoped token that makes every material/TextureRef accessor
+ * observation reusable by MNEE admission, descriptor collection, and atlas
+ * staging. The mutable identity caches remain module-private. */
+export interface MaterialInputSnapshotContext {
+  readonly kind: 'pt-webgpu-material-input-snapshot';
+}
+
+const MATERIAL_INPUT_SNAPSHOT_STATES = new WeakMap<
+  MaterialInputSnapshotContext,
+  MaterialInputSnapshotState
+>();
+
+export function createMaterialInputSnapshotContext(): MaterialInputSnapshotContext {
+  const context = Object.freeze({
+    kind: 'pt-webgpu-material-input-snapshot' as const,
+  });
+  MATERIAL_INPUT_SNAPSHOT_STATES.set(context, {
+    materialCache: new Map<MaterialSpec, StagedMaterialTextureInputs>(),
+    refCache: new Map<unknown, StagedTextureRef>(),
+  });
+  return context;
+}
+
+function materialInputSnapshotState(
+  context: MaterialInputSnapshotContext,
+): MaterialInputSnapshotState {
+  const state = MATERIAL_INPUT_SNAPSHOT_STATES.get(context);
+  if (state == null) {
+    throw new TypeError('collectMaterialTextures: invalid material snapshot context.');
+  }
+  return state;
+}
+
+export function snapshotMaterialTextureInputs(
+  materials: ReadonlyArray<MaterialSpec>,
+  context: MaterialInputSnapshotContext = createMaterialInputSnapshotContext(),
+): readonly StagedMaterialTextureInputs[] {
+  if (materials == null || typeof materials !== 'object') {
+    throw new TypeError('collectMaterialTextures: materials must be array-like.');
+  }
+  const materialCount = materials.length;
+  if (!Number.isSafeInteger(materialCount) || materialCount < 0) {
+    throw new RangeError('collectMaterialTextures: materials.length must be a non-negative safe integer.');
+  }
+  const descriptorLength = materialCount * MATERIAL_TEX_FLOAT_STRIDE;
+  if (!Number.isSafeInteger(descriptorLength)) {
+    throw new RangeError('collectMaterialTextures: descriptor length exceeds safe integer range.');
+  }
+  const state = materialInputSnapshotState(context);
+  const { refCache, materialCache } = state;
+  const snapshots = new Array<StagedMaterialTextureInputs>(materialCount);
+  for (let materialIndex = 0; materialIndex < materialCount; materialIndex += 1) {
+    const material = materials[materialIndex];
+    if (material == null || typeof material !== 'object') {
+      throw new TypeError(`collectMaterialTextures: material ${materialIndex} must be an object.`);
+    }
+    const cachedMaterial = materialCache.get(material);
+    if (cachedMaterial != null) {
+      snapshots[materialIndex] = cachedMaterial;
+      continue;
+    }
+    const ref = (value: TextureRef | undefined, field: string): StagedTextureRef | undefined =>
+      snapshotTextureRef(
+        value,
+        `collectMaterialTextures: material ${materialIndex} ${field}`,
+        refCache,
+      );
+    const baseColorMap = ref(material.baseColorMap, 'baseColorMap');
+    const emissiveMap = ref(material.emissiveMap, 'emissiveMap');
+    const normalMap = ref(material.normalMap, 'normalMap');
+    const roughnessMapAuthored = ref(material.roughnessMap, 'roughnessMap');
+    const metallicMapAuthored = ref(material.metallicMap, 'metallicMap');
+    const roughnessMap = roughnessMapAuthored ?? metallicMapAuthored;
+    const metallicMap = metallicMapAuthored ?? roughnessMapAuthored;
+    const aoMap = ref(material.aoMap, 'aoMap');
+    const lightMap = ref(material.lightMap, 'lightMap');
+    const bumpMap = ref(material.bumpMap, 'bumpMap');
+    const anisotropyMap = ref(material.anisotropyMap, 'anisotropyMap');
+    const alphaMap = ref(material.alphaMap, 'alphaMap');
+    const transmissionMap = ref(material.transmissionMap, 'transmissionMap');
+    const clearcoatMap = ref(material.clearcoatMap, 'clearcoatMap');
+    const clearcoatRoughnessMap = ref(
+      material.clearcoatRoughnessMap,
+      'clearcoatRoughnessMap',
+    );
+    const sheenColorMap = ref(material.sheenColorMap, 'sheenColorMap');
+    const sheenRoughnessMap = ref(material.sheenRoughnessMap, 'sheenRoughnessMap');
+    const iridescenceMap = ref(material.iridescenceMap, 'iridescenceMap');
+    const iridescenceThicknessMap = ref(
+      material.iridescenceThicknessMap,
+      'iridescenceThicknessMap',
+    );
+    const specularColorMap = ref(material.specularColorMap, 'specularColorMap');
+    const specularIntensityMap = ref(
+      material.specularIntensityMap,
+      'specularIntensityMap',
+    );
+    const clearcoatNormalMap = ref(material.clearcoatNormalMap, 'clearcoatNormalMap');
+    const thicknessMap = ref(material.thicknessMap, 'thicknessMap');
+    const frontLayer = material.frontLayer;
+    if (frontLayer != null && typeof frontLayer !== 'object') {
+      throw new TypeError(`collectMaterialTextures: material ${materialIndex} frontLayer must be an object.`);
+    }
+    const frontLayerNormalMap = ref(frontLayer?.normalMap, 'frontLayer.normalMap');
+    const frontLayerRoughness = frontLayer?.roughness;
+    const frontLayerNormalScale = frontLayer?.normalScale;
+    const backLayer = material.backLayer;
+    if (backLayer != null && typeof backLayer !== 'object') {
+      throw new TypeError(`collectMaterialTextures: material ${materialIndex} backLayer must be an object.`);
+    }
+    const backLayerNormalMap = ref(backLayer?.normalMap, 'backLayer.normalMap');
+    const backLayerRoughness = backLayer?.roughness;
+    const backLayerNormalScale = backLayer?.normalScale;
+    const refs = Object.freeze([
+      baseColorMap,
+      emissiveMap,
+      normalMap,
+      roughnessMap,
+      metallicMap,
+      aoMap,
+      lightMap,
+      bumpMap,
+      anisotropyMap,
+      alphaMap,
+      transmissionMap,
+      clearcoatMap,
+      clearcoatRoughnessMap,
+      sheenColorMap,
+      sheenRoughnessMap,
+      iridescenceMap,
+      iridescenceThicknessMap,
+      specularColorMap,
+      specularIntensityMap,
+      clearcoatNormalMap,
+      thicknessMap,
+      frontLayerNormalMap,
+      backLayerNormalMap,
+    ]);
+    const snapshot = Object.freeze({
+      refs,
+      alphaMode: material.alphaMode,
+      alphaCutoff: material.alphaCutoff,
+      opacity: material.opacity,
+      aoMapIntensity: material.aoMapIntensity,
+      lightMapIntensity: material.lightMapIntensity,
+      bumpScale: material.bumpScale,
+      envMapIntensity: material.envMapIntensity,
+      anisotropy: material.anisotropy,
+      anisotropyRotation: material.anisotropyRotation,
+      normalScale: material.normalScale,
+      clearcoatNormalScale: material.clearcoatNormalScale,
+      transmission: material.transmission,
+      metallic: material.metallic,
+      roughness: material.roughness,
+      thinFilmStackPresent: material.thinFilmStack != null,
+      clearcoat: material.clearcoat,
+      sheen: material.sheen,
+      frontLayerRoughness,
+      backLayerRoughness,
+      frontLayerNormalScale,
+      backLayerNormalScale,
+    });
+    materialCache.set(material, snapshot);
+    snapshots[materialIndex] = snapshot;
+  }
+  return Object.freeze(snapshots);
+}
+
+export function snapshotMaterialTextureInput(
+  material: MaterialSpec,
+  context: MaterialInputSnapshotContext,
+): StagedMaterialTextureInputs {
+  return snapshotMaterialTextureInputs([material], context)[0]!;
 }
 
 export interface CollectedTextures {
@@ -309,16 +662,17 @@ export interface CollectedTextures {
   /** Unique LINEAR texture sources (normal + scalar/data maps — must NOT be sRGB-decoded),
    *  a separate index space → its own texture_2d_array. */
   readonly linearSources: unknown[];
-  /** Unique EMISSIVE texture sources → a dedicated rgba16float texture_2d_array.
-   *  Own index space (emissiveIdx points here, not the sRGB array). Uploaded to a
-   *  linear-float target with a CPU sRGB→linear decode for LDR sources, so HDR
-   *  emissive texture values > 1.0 are not clamped to [0,1]. */
+  /** Unique outgoing-RADIANCE texture sources (emissiveMap + lightMap) → a
+   *  dedicated rgba16float texture_2d_array. The historical property name is
+   *  retained for ABI stability. Deduplication keys include the source transfer
+   *  domain: emissive LDR bytes are sRGB-decoded, while light-map bytes are linear.
+   *  Float32 payloads are always treated as already-linear HDR radiance. */
   readonly emissiveSources: unknown[];
   /** Source-layer provenance for host-facing upload diagnostics. */
   readonly sourceInfos: readonly MaterialTextureLayerInfo[];
   /** Linear source-layer provenance for host-facing upload diagnostics. */
   readonly linearSourceInfos: readonly MaterialTextureLayerInfo[];
-  /** Emissive source-layer provenance for host-facing upload diagnostics. */
+  /** Outgoing-radiance source-layer provenance for host-facing diagnostics. */
   readonly emissiveSourceInfos: readonly MaterialTextureLayerInfo[];
   /** Per-material descriptor floats (MATERIAL_TEX_FLOAT_STRIDE per material). */
   readonly descriptors: Float32Array;
@@ -343,6 +697,45 @@ export interface MaterialTextureLayerUse {
 export interface MaterialTextureLayerInfo {
   readonly layer: number;
   readonly uses: readonly MaterialTextureLayerUse[];
+}
+
+/** Upload/decode profiles that may safely share one physical array layer. */
+export type MaterialTextureRoleProfile =
+  | 'color'
+  | 'scalar'
+  | 'alpha-scalar'
+  | 'normal'
+  | 'anisotropy'
+  | 'radiance';
+
+/**
+ * Return the source interpretation required by a material-map role. Handles
+ * are deduplicated only within one profile: sharing a host object must never
+ * make a tangent-space normal silently double as scalar coverage, or make an
+ * authored-alpha map inherit an opaque alpha synthesized for another role.
+ */
+export function materialTextureRoleProfile(field: string): MaterialTextureRoleProfile {
+  if (
+    field === 'normalMap' ||
+    field === 'clearcoatNormalMap' ||
+    field === 'frontLayer.normalMap' ||
+    field === 'backLayer.normalMap'
+  ) {
+    return 'normal';
+  }
+  if (field === 'anisotropyMap') return 'anisotropy';
+  if (field === 'sheenRoughnessMap' || field === 'specularIntensityMap') {
+    return 'alpha-scalar';
+  }
+  if (field === 'emissiveMap' || field === 'lightMap') return 'radiance';
+  if (
+    field === 'baseColorMap' ||
+    field === 'sheenColorMap' ||
+    field === 'specularColorMap'
+  ) {
+    return 'color';
+  }
+  return 'scalar';
 }
 
 function uvFitScaleFor(
@@ -381,7 +774,7 @@ function writeDefaultExtensionUvFitPairs(descriptors: Float32Array, b: number): 
 function writeWrapPair(
   descriptors: Float32Array,
   offset: number,
-  ref: TextureRef | undefined,
+  ref: StagedTextureRef | undefined,
 ): void {
   descriptors[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'];
   descriptors[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'];
@@ -398,7 +791,7 @@ function writeMipPolicy(
   descriptors: Float32Array,
   b: number,
   mapSlot: number,
-  ref: TextureRef | undefined,
+  ref: StagedTextureRef | undefined,
 ): void {
   if (mapSlot < 0 || mapSlot >= MATERIAL_TEX_MIP_POLICY_MAP_COUNT) return;
   descriptors[b + MATERIAL_TEX_MIP_POLICY_VEC4_OFFSET * 4 + mapSlot] =
@@ -417,7 +810,7 @@ function writeFilterPolicy(
   descriptors: Float32Array,
   b: number,
   mapSlot: number,
-  ref: TextureRef | undefined,
+  ref: StagedTextureRef | undefined,
 ): void {
   if (mapSlot < 0 || mapSlot >= MATERIAL_TEX_MIP_POLICY_MAP_COUNT) return;
   const offset =
@@ -432,18 +825,19 @@ function writeUvMeta(
   descriptors: Float32Array,
   b: number,
   mapSlot: number,
-  ref: TextureRef | undefined,
+  ref: StagedTextureRef | undefined,
   uvLayout: MaterialUvSetLayout,
+  context: string,
   metaVec4Offset = MATERIAL_TEX_UV_META_VEC4_OFFSET,
 ): void {
   const vecBase = b + (metaVec4Offset + mapSlot * MATERIAL_TEX_UV_META_VEC4S_PER_MAP) * 4;
-  const t = ref?.transform;
+  const transform = packedTextureTransform(ref, context);
   descriptors[vecBase] = packedUvSlot(ref, uvLayout);
-  descriptors[vecBase + 1] = t?.offset?.[0] ?? 0;
-  descriptors[vecBase + 2] = t?.offset?.[1] ?? 0;
-  descriptors[vecBase + 3] = t?.rotation ?? 0;
-  descriptors[vecBase + 4] = t?.scale?.[0] ?? 1;
-  descriptors[vecBase + 5] = t?.scale?.[1] ?? 1;
+  descriptors[vecBase + 1] = transform.offsetX;
+  descriptors[vecBase + 2] = transform.offsetY;
+  descriptors[vecBase + 3] = transform.rotation;
+  descriptors[vecBase + 4] = transform.scaleX;
+  descriptors[vecBase + 5] = transform.scaleY;
   descriptors[vecBase + 6] = 0;
   descriptors[vecBase + 7] = 0;
 }
@@ -459,16 +853,16 @@ export function applyMaterialTextureUvFitScales(
   const materialCount = Math.floor(descriptors.length / MATERIAL_TEX_FLOAT_STRIDE);
   for (let mi = 0; mi < materialCount; mi += 1) {
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
-    // sRGB array maps: baseColor. Emissive now lives in the dedicated rgba16float
-    // emissive array, so its UV-fit scale reads from that array's layer scales.
+    // sRGB array maps: baseColor. Outgoing-radiance maps live in the dedicated
+    // rgba16float array, so both emissive and light-map UV fits read from it.
     writeUvFitPair(descriptors, b + 28, uvFitScaleFor(sRgbLayerScales, descriptors[b + 0] ?? -1));
     writeUvFitPair(descriptors, b + 30, uvFitScaleFor(emissiveLayerScales, descriptors[b + 3] ?? -1));
-    // Linear array maps: normal, roughness, metallic, AO, light, bump, anisotropy, alpha, transmission.
+    // Linear array maps: normal, roughness, metallic, AO, bump, anisotropy, alpha, transmission.
     writeUvFitPair(descriptors, b + 32, uvFitScaleFor(linearLayerScales, descriptors[b + 1] ?? -1));
     writeUvFitPair(descriptors, b + 34, uvFitScaleFor(linearLayerScales, descriptors[b + 2] ?? -1));
     writeUvFitPair(descriptors, b + 36, uvFitScaleFor(linearLayerScales, descriptors[b + 26] ?? -1));
     writeUvFitPair(descriptors, b + 38, uvFitScaleFor(linearLayerScales, descriptors[b + 13] ?? -1));
-    writeUvFitPair(descriptors, b + 40, uvFitScaleFor(linearLayerScales, descriptors[b + 14] ?? -1));
+    writeUvFitPair(descriptors, b + 40, uvFitScaleFor(emissiveLayerScales, descriptors[b + 14] ?? -1));
     writeUvFitPair(descriptors, b + 42, uvFitScaleFor(linearLayerScales, descriptors[b + 15] ?? -1));
     writeUvFitPair(descriptors, b + 44, uvFitScaleFor(linearLayerScales, descriptors[b + 22] ?? -1));
     writeUvFitPair(descriptors, b + 46, uvFitScaleFor(linearLayerScales, descriptors[b + 24] ?? -1));
@@ -516,18 +910,28 @@ export function applyMaterialTextureUvFitScales(
 
 /** Collect + dedup material texture sources and pack the per-material descriptors.
  *  Three GPU arrays preserve the authored sample domains: sRGB color maps,
- *  linear data maps, and linear-float HDR emissive maps. */
-export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>): CollectedTextures {
+ *  linear data maps, and linear-float outgoing-radiance maps. */
+export function collectMaterialTextures(
+  materials: ReadonlyArray<MaterialSpec>,
+  snapshotContext: MaterialInputSnapshotContext = createMaterialInputSnapshotContext(),
+): CollectedTextures {
+  const stagedMaterials = snapshotMaterialTextureInputs(materials, snapshotContext);
   const sources: unknown[] = [];
   const linearSources: unknown[] = [];
   const emissiveSources: unknown[] = [];
-  const uvLayout = materialUvSetLayout(materials);
+  const uvLayout = materialUvSetLayout(stagedMaterials);
   const makeIndexer = (list: unknown[], colorSpace: MaterialTextureColorSpace) => {
-    const handleToIdx = new Map<unknown, number>();
+    const handleToIdxByProfile = new Map<MaterialTextureRoleProfile, Map<unknown, number>>();
     const usesByLayer: MaterialTextureLayerUse[][] = [];
-    const index = (ref: TextureRef | undefined, materialIndex: number, field: string): number => {
+    const index = (ref: StagedTextureRef | undefined, materialIndex: number, field: string): number => {
       const handle = ref?.handle;
       if (handle == null) return -1;
+      const profile = materialTextureRoleProfile(field);
+      let handleToIdx = handleToIdxByProfile.get(profile);
+      if (handleToIdx == null) {
+        handleToIdx = new Map<unknown, number>();
+        handleToIdxByProfile.set(profile, handleToIdx);
+      }
       let i = handleToIdx.get(handle);
       if (i === undefined) {
         i = list.length;
@@ -551,40 +955,80 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
   };
   const sRgbIndexer = makeIndexer(sources, 'srgb');
   const linearIndexer = makeIndexer(linearSources, 'linear');
-  const emissiveIndexer = makeIndexer(emissiveSources, 'srgb');
+  // Emissive bytes conventionally carry sRGB-encoded colour, whereas light-map
+  // bytes are defined by the core contract as linear outgoing radiance. The same
+  // object used in both roles must therefore occupy two independently converted
+  // layers. Float32 sources remain linear in either role at upload time.
+  const radianceHandleToIdx: Readonly<Record<MaterialTextureColorSpace, Map<unknown, number>>> = {
+    srgb: new Map<unknown, number>(),
+    linear: new Map<unknown, number>(),
+  };
+  const radianceUsesByLayer: MaterialTextureLayerUse[][] = [];
+  const indexOfRadiance = (
+    ref: StagedTextureRef | undefined,
+    materialIndex: number,
+    field: string,
+    colorSpace: MaterialTextureColorSpace,
+  ): number => {
+    const handle = ref?.handle;
+    if (handle == null) return -1;
+    const handleToIdx = radianceHandleToIdx[colorSpace];
+    let i = handleToIdx.get(handle);
+    if (i === undefined) {
+      i = emissiveSources.length;
+      emissiveSources.push(handle);
+      handleToIdx.set(handle, i);
+    }
+    (radianceUsesByLayer[i] ??= []).push({
+      materialIndex,
+      field,
+      colorSpace,
+      texCoord: authoredTexCoord(ref),
+      ...(ref?.magFilter != null ? { magFilter: ref.magFilter } : {}),
+      ...(ref?.minFilter != null ? { minFilter: ref.minFilter } : {}),
+      ...(ref?.mipFilter != null ? { mipFilter: ref.mipFilter } : {}),
+    });
+    return i;
+  };
   const indexOf = sRgbIndexer.index;          // sRGB color array
   const indexOfLinear = linearIndexer.index;  // linear array
-  const indexOfEmissive = emissiveIndexer.index; // linear-float HDR emissive array
+  const indexOfEmissive = (ref: StagedTextureRef | undefined, materialIndex: number, field: string): number =>
+    indexOfRadiance(ref, materialIndex, field, 'srgb');
+  const indexOfLightMap = (ref: StagedTextureRef | undefined, materialIndex: number, field: string): number =>
+    indexOfRadiance(ref, materialIndex, field, 'linear');
 
-  const descriptors = new Float32Array(materials.length * MATERIAL_TEX_FLOAT_STRIDE);
-  materials.forEach((m, mi) => {
+  const descriptors = new Float32Array(stagedMaterials.length * MATERIAL_TEX_FLOAT_STRIDE);
+  stagedMaterials.forEach((m, mi) => {
     const b = mi * MATERIAL_TEX_FLOAT_STRIDE;
-    const bc = m.baseColorMap;
+    const bc = stagedMapRef(m, 'baseColor');
     // glTF's canonical metallicRoughness texture is one image (G=roughness,
     // B=metallic). Preserve that combined-map behavior when only one side is
     // supplied, but allow distinct authored maps to carry independent UV/wrap.
-    const roughnessMap = m.roughnessMap ?? m.metallicMap;
-    const metallicMap = m.metallicMap ?? m.roughnessMap;
+    const roughnessMap = stagedMapRef(m, 'roughness');
+    const metallicMap = stagedMapRef(m, 'metallic');
     descriptors[b + 0] = indexOf(bc, mi, 'baseColorMap');            // baseColorIdx (sRGB array)
-    descriptors[b + 1] = indexOfLinear(m.normalMap, mi, 'normalMap');                 // normalIdx (linear array)
+    descriptors[b + 1] = indexOfLinear(stagedMapRef(m, 'normal'), mi, 'normalMap');  // normalIdx (linear array)
     descriptors[b + 2] = indexOfLinear(roughnessMap, mi, 'roughnessMap'); // roughness map (linear; glTF G channel)
-    descriptors[b + 3] = indexOfEmissive(m.emissiveMap, mi, 'emissiveMap'); // emissiveIdx (dedicated rgba16float emissive array)
+    descriptors[b + 3] = indexOfEmissive(stagedMapRef(m, 'emissive'), mi, 'emissiveMap'); // emissiveIdx
     descriptors[b + 4] = ALPHA_MODE_INDEX[m.alphaMode ?? 'opaque'];
     descriptors[b + 5] = m.alphaCutoff ?? 0.5;
     descriptors[b + 6] = m.opacity ?? 1;
     descriptors[b + 7] = packedUvSlot(bc, uvLayout);
-    const t = bc?.transform;
-    descriptors[b + 8] = t?.offset?.[0] ?? 0;
-    descriptors[b + 9] = t?.offset?.[1] ?? 0;
-    descriptors[b + 10] = t?.scale?.[0] ?? 1;
-    descriptors[b + 11] = t?.scale?.[1] ?? 1;
-    descriptors[b + 12] = t?.rotation ?? 0;
-    // D3 — vec4 #3.yzw + #4.xyz: aoMap / lightMap / bumpMap (all LINEAR-space data:
-    // occlusion factor, baked outgoing radiance, height field) routed through the
-    // linear texture array. Index -1 when absent → the WGSL sampler is a no-op.
-    descriptors[b + 13] = indexOfLinear(m.aoMap, mi, 'aoMap');
-    descriptors[b + 14] = indexOfLinear(m.lightMap, mi, 'lightMap');
-    descriptors[b + 15] = indexOfLinear(m.bumpMap, mi, 'bumpMap');
+    const baseTransform = packedTextureTransform(
+      bc,
+      `collectMaterialTextures: material ${mi} baseColor transform`,
+    );
+    descriptors[b + 8] = baseTransform.offsetX;
+    descriptors[b + 9] = baseTransform.offsetY;
+    descriptors[b + 10] = baseTransform.scaleX;
+    descriptors[b + 11] = baseTransform.scaleY;
+    descriptors[b + 12] = baseTransform.rotation;
+    // D3 — AO/bump are bounded linear data. lightMap is unbounded outgoing
+    // radiance and shares the dedicated rgba16float array with emissiveMap.
+    // Index -1 when absent → the WGSL sampler is a no-op.
+    descriptors[b + 13] = indexOfLinear(stagedMapRef(m, 'ao'), mi, 'aoMap');
+    descriptors[b + 14] = indexOfLightMap(stagedMapRef(m, 'lightMap'), mi, 'lightMap');
+    descriptors[b + 15] = indexOfLinear(stagedMapRef(m, 'bump'), mi, 'bumpMap');
     descriptors[b + 16] = m.aoMapIntensity ?? 1;
     descriptors[b + 17] = packNonNegativeRadianceScalarF32(
       m.lightMapIntensity ?? 1,
@@ -598,40 +1042,76 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     // D3 — vec4 #5: anisotropy scalars + optional KHR_materials_anisotropy map.
     descriptors[b + 20] = m.anisotropy ?? 0;
     descriptors[b + 21] = m.anisotropyRotation ?? 0;
-    descriptors[b + 22] = indexOfLinear(m.anisotropyMap, mi, 'anisotropyMap');
+    descriptors[b + 22] = indexOfLinear(stagedMapRef(m, 'anisotropy'), mi, 'anisotropyMap');
     descriptors[b + 23] = m.normalScale ?? 1;
     // Standalone alphaMap is coverage data (linear). BaseColor alpha still
     // participates too; each map carries its own UV metadata below.
-    descriptors[b + 24] = indexOfLinear(m.alphaMap, mi, 'alphaMap');
-    descriptors[b + 25] = indexOfLinear(m.transmissionMap, mi, 'transmissionMap');
+    descriptors[b + 24] = indexOfLinear(stagedMapRef(m, 'alpha'), mi, 'alphaMap');
+    descriptors[b + 25] = indexOfLinear(stagedMapRef(m, 'transmission'), mi, 'transmissionMap');
     descriptors[b + 26] = indexOfLinear(metallicMap, mi, 'metallicMap'); // metallic map (linear; glTF B channel)
     descriptors[b + 27] = 0;
     // Extension-lobe texture maps. Color tint maps use the sRGB array; scalar
     // factor/roughness/thickness maps use the LINEAR array.
     const extIndexBase = b + MATERIAL_TEX_EXTENSION_INDEX_VEC4_OFFSET * 4;
-    descriptors[extIndexBase] = indexOfLinear(m.clearcoatMap, mi, 'clearcoatMap');
-    descriptors[extIndexBase + 1] = indexOfLinear(m.clearcoatRoughnessMap, mi, 'clearcoatRoughnessMap');
-    descriptors[extIndexBase + 2] = indexOf(m.sheenColorMap, mi, 'sheenColorMap');
-    descriptors[extIndexBase + 3] = indexOfLinear(m.sheenRoughnessMap, mi, 'sheenRoughnessMap');
-    descriptors[extIndexBase + 4] = indexOfLinear(m.iridescenceMap, mi, 'iridescenceMap');
-    descriptors[extIndexBase + 5] = indexOfLinear(m.iridescenceThicknessMap, mi, 'iridescenceThicknessMap');
-    descriptors[extIndexBase + 6] = indexOf(m.specularColorMap, mi, 'specularColorMap');
-    descriptors[extIndexBase + 7] = indexOfLinear(m.specularIntensityMap, mi, 'specularIntensityMap');
+    descriptors[extIndexBase] = indexOfLinear(stagedMapRef(m, 'clearcoat'), mi, 'clearcoatMap');
+    descriptors[extIndexBase + 1] = indexOfLinear(
+      stagedMapRef(m, 'clearcoatRoughness'),
+      mi,
+      'clearcoatRoughnessMap',
+    );
+    descriptors[extIndexBase + 2] = indexOf(stagedMapRef(m, 'sheenColor'), mi, 'sheenColorMap');
+    descriptors[extIndexBase + 3] = indexOfLinear(
+      stagedMapRef(m, 'sheenRoughness'),
+      mi,
+      'sheenRoughnessMap',
+    );
+    descriptors[extIndexBase + 4] = indexOfLinear(
+      stagedMapRef(m, 'iridescence'),
+      mi,
+      'iridescenceMap',
+    );
+    descriptors[extIndexBase + 5] = indexOfLinear(
+      stagedMapRef(m, 'iridescenceThickness'),
+      mi,
+      'iridescenceThicknessMap',
+    );
+    descriptors[extIndexBase + 6] = indexOf(
+      stagedMapRef(m, 'specularColor'),
+      mi,
+      'specularColorMap',
+    );
+    descriptors[extIndexBase + 7] = indexOfLinear(
+      stagedMapRef(m, 'specularIntensity'),
+      mi,
+      'specularIntensityMap',
+    );
     const clearcoatNormalBase = b + MATERIAL_TEX_CLEARCOAT_NORMAL_VEC4_OFFSET * 4;
-    descriptors[clearcoatNormalBase] = indexOfLinear(m.clearcoatNormalMap, mi, 'clearcoatNormalMap');
+    descriptors[clearcoatNormalBase] = indexOfLinear(
+      stagedMapRef(m, 'clearcoatNormal'),
+      mi,
+      'clearcoatNormalMap',
+    );
     descriptors[clearcoatNormalBase + 1] = m.clearcoatNormalScale ?? 1;
     descriptors[clearcoatNormalBase + 2] = 1;
     descriptors[clearcoatNormalBase + 3] = 1;
     const thicknessBase = b + MATERIAL_TEX_THICKNESS_VEC4_OFFSET * 4;
-    descriptors[thicknessBase] = indexOfLinear(m.thicknessMap, mi, 'thicknessMap');
+    descriptors[thicknessBase] = indexOfLinear(stagedMapRef(m, 'thickness'), mi, 'thicknessMap');
     descriptors[thicknessBase + 1] = 1;
     descriptors[thicknessBase + 2] = 1;
     descriptors[thicknessBase + 3] = 0;
     const layerNormalBase = b + MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET * 4;
-    descriptors[layerNormalBase] = indexOfLinear(m.frontLayer?.normalMap, mi, 'frontLayer.normalMap');
-    descriptors[layerNormalBase + 1] = m.frontLayer?.normalScale ?? 1;
-    descriptors[layerNormalBase + 2] = indexOfLinear(m.backLayer?.normalMap, mi, 'backLayer.normalMap');
-    descriptors[layerNormalBase + 3] = m.backLayer?.normalScale ?? 1;
+    descriptors[layerNormalBase] = indexOfLinear(
+      stagedMapRef(m, 'frontLayerNormal'),
+      mi,
+      'frontLayer.normalMap',
+    );
+    descriptors[layerNormalBase + 1] = m.frontLayerNormalScale ?? 1;
+    descriptors[layerNormalBase + 2] = indexOfLinear(
+      stagedMapRef(m, 'backLayerNormal'),
+      mi,
+      'backLayer.normalMap',
+    );
+    descriptors[layerNormalBase + 3] = m.backLayerNormalScale ?? 1;
     const layerNormalFitBase = b + MATERIAL_TEX_LAYER_NORMAL_UV_FIT_VEC4_OFFSET * 4;
     descriptors[layerNormalFitBase] = 1;
     descriptors[layerNormalFitBase + 1] = 1;
@@ -646,9 +1126,8 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     // mip/filter policy slot; each entry carries its wrap + UV-metadata offsets.
     // This replaces four separate hand-written 23-map enumerations. The per-map
     // INDEX + scalar lanes above stay hand-written (they are not uniform per slot).
-    const resolveContext: MaterialTextureResolveContext = { roughnessMap, metallicMap };
     TEXTURE_MAP_SLOTS.forEach((slot, slotIdx) => {
-      const ref = slot.resolve(m, resolveContext);
+      const ref = m.refs[slotIdx];
       writeWrapPair(descriptors, b + slot.wrapFloatOffset, ref);
       writeMipPolicy(descriptors, b, slotIdx, ref);
       writeFilterPolicy(descriptors, b, slotIdx, ref);
@@ -658,6 +1137,7 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
         slot.uvMetaSlot,
         ref,
         uvLayout,
+        `collectMaterialTextures: material ${mi} ${slot.name} transform`,
         slot.uvMetaVec4Offset,
       );
     });
@@ -669,7 +1149,10 @@ export function collectMaterialTextures(materials: ReadonlyArray<MaterialSpec>):
     emissiveSources,
     sourceInfos: sRgbIndexer.infos(),
     linearSourceInfos: linearIndexer.infos(),
-    emissiveSourceInfos: emissiveIndexer.infos(),
+    emissiveSourceInfos: emissiveSources.map((_, layer) => ({
+      layer,
+      uses: radianceUsesByLayer[layer] ?? [],
+    })),
     descriptors,
     unsupportedTexCoordWarnings: [],
     uvSetTexCoords: uvLayout.texCoords,

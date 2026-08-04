@@ -11,6 +11,9 @@ import type { MaterialSpec, Scene, ScenePrimitive } from '@vitrum/core';
 import {
   mergeUv1FromCore,
   mergeWorldSpaceFromCore,
+  analyzeOpticalMediumTopology,
+  lowerTransmissiveAnalyticPrimitives,
+  packMergedOpticalMediumBoundaryIds,
   coreMaterialToMaterialEntry,
   packMaterials,
   toProductionEmissiveRadiance,
@@ -32,6 +35,10 @@ export interface SceneBVH {
   coreMaterials: readonly MaterialSpec[];
   materials: StorageAttributeLike<Float32Array>;
   triMaterialId: StorageAttributeLike<Uint32Array>;
+  /** Exact component/range identity, vec2u per merged BVH triangle. */
+  opticalTriangleIdentity: StorageAttributeLike<Uint32Array>;
+  /** One encoded boundary-base entry for merged traversal. */
+  opticalInstanceBoundaryIdBasePlusOne: StorageAttributeLike<Uint32Array>;
   bounds: {
     readonly min: { readonly x: number; readonly y: number; readonly z: number };
     readonly max: { readonly x: number; readonly y: number; readonly z: number };
@@ -67,15 +74,32 @@ export function buildRCSceneBVHFromCore(
     onWarning?: (warning: string) => void;
   } = {},
 ): SceneBVH {
-  const merged = mergeWorldSpaceFromCore(scene, {
+  const renderScene = lowerTransmissiveAnalyticPrimitives(scene);
+  const merged = mergeWorldSpaceFromCore(renderScene, {
     positionStride: 4,
     filter: opts.filter ?? RC_CORE_MESH_FILTER,
     splitMaterialsByCastShadow: true,
     ...(opts.onWarning !== undefined ? { onWarning: opts.onWarning } : {}),
   });
+  const opticalAnalysis = analyzeOpticalMediumTopology(renderScene, {
+    analyticGeometry: 'generated-triangle',
+    transformArithmetic: 'merged-world-f64-to-f32',
+  });
+  const opticalIds = packMergedOpticalMediumBoundaryIds(
+    renderScene,
+    merged,
+    opticalAnalysis,
+  );
+  const opticalTriangleIdentity = new Uint32Array(merged.triangleCount * 2);
+  for (let triangle = 0; triangle < merged.triangleCount; triangle += 1) {
+    opticalTriangleIdentity[triangle * 2] =
+      opticalIds.triangleComponentIndexPlusOne[triangle]!;
+    opticalTriangleIdentity[triangle * 2 + 1] =
+      opticalIds.triangleRepresentedPrimitiveInstanceIds[triangle]!;
+  }
   const materialFloats = packCascadeMaterialsFromCore(merged.materials);
   const vertCount = merged.vertexCount;
-  const mergedUv1 = mergeUv1FromCore(scene, merged.meshVertexRanges, vertCount);
+  const mergedUv1 = mergeUv1FromCore(renderScene, merged.meshVertexRanges, vertCount);
   const normalsWithUV1 = packUVIntoVec4W(
     merged.normals,
     mergedUv1 == null ? undefined : { array: mergedUv1 },
@@ -89,6 +113,11 @@ export function buildRCSceneBVHFromCore(
     coreMaterials: merged.materials,
     materials: attr(materialFloats, 16),
     triMaterialId: attr(merged.triMaterialId, 1),
+    opticalTriangleIdentity: attr(opticalTriangleIdentity, 2),
+    opticalInstanceBoundaryIdBasePlusOne: attr(
+      opticalIds.instanceBoundaryIdBasePlusOne,
+      1,
+    ),
     bounds: {
       min: {
         x: merged.boundingBox.min[0],

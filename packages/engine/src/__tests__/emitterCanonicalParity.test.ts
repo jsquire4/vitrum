@@ -142,7 +142,8 @@ describe('cross-backend emitter packing parity', () => {
 
     expect('radius' in spot).toBe(false);
     expect(webgl2.data[base + 3 * 4 + 3]).toBe(0); // s3.a: source area
-    expect(webgl2.data[base + 4 * 4 + 0]).toBe(0); // s4.r: legacy radius lane
+    // s4.r is the represented light-selection PMF, not a geometric radius.
+    expect(webgl2.data[base + 4 * 4 + 0]).toBeGreaterThan(0);
 
     const webgpu = packEmitterArrays(scene);
     expect(webgpu.spotLightCount).toBe(1);

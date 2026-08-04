@@ -3,6 +3,7 @@
  * Lives under `ddgi/` so probeUpdatePass does not import `resourceManager`.
  */
 import { defineUbo } from '@vitrum/shared-samplers';
+import { validateGridPublication } from './probeGrid.js';
 
 const DDGI_GRID_UBO = defineUbo([
   { name: 'origin',   type: 'vec3f' },
@@ -21,6 +22,9 @@ const DDGI_GRID_UBO = defineUbo([
   { name: '_reserved3', type: 'f32' },
 ] as const);
 
+/** Exact byte width consumed by every DDGI grid-uniform binding. */
+export const DDGI_GRID_UBO_BYTES = DDGI_GRID_UBO.sizeBytes;
+
 export type DDGIGridParamsInput = {
   origin: { x: number; y: number; z: number };
   spacing: number;
@@ -31,7 +35,7 @@ export type DDGIGridParamsInput = {
   visibilityAtlasH: number;
 };
 
-function packGridParams(p: DDGIGridParamsInput): ArrayBuffer {
+function packGridParamsUnchecked(p: DDGIGridParamsInput): ArrayBuffer {
   const buf = new ArrayBuffer(DDGI_GRID_UBO.sizeBytes);
   DDGI_GRID_UBO.pack(new DataView(buf), 0, {
     origin: [p.origin.x, p.origin.y, p.origin.z] as const,
@@ -52,7 +56,7 @@ function packGridParams(p: DDGIGridParamsInput): ArrayBuffer {
 /** Zero-grid UBO — dimsX=1 gates `isDDGIWired()` false in shade.wgsl. */
 export function buildDDGIPlaceholderUBO(): Float32Array<ArrayBuffer> {
   return new Float32Array(
-    packGridParams({
+    packGridParamsUnchecked({
       origin: { x: 0, y: 0, z: 0 },
       spacing: 24,
       dims: { x: 1, y: 1, z: 1 },
@@ -66,5 +70,22 @@ export function buildDDGIPlaceholderUBO(): Float32Array<ArrayBuffer> {
 
 /** Pack live probe-grid params for shade + probe update passes. */
 export function packDDGIGridParams(p: DDGIGridParamsInput): ArrayBuffer {
-  return packGridParams(p);
+  const publication = validateGridPublication(p.origin, p.spacing, p.dims);
+  if (
+    p.irradianceAtlasW !== publication.irradianceAtlasW ||
+    p.irradianceAtlasH !== publication.irradianceAtlasH ||
+    p.visibilityAtlasW !== publication.visibilityAtlasW ||
+    p.visibilityAtlasH !== publication.visibilityAtlasH
+  ) {
+    throw new RangeError('DDGI grid atlas dimensions do not match the validated probe lattice.');
+  }
+  return packGridParamsUnchecked({
+    origin: publication.origin,
+    spacing: publication.spacing,
+    dims: publication.dims,
+    irradianceAtlasW: publication.irradianceAtlasW,
+    irradianceAtlasH: publication.irradianceAtlasH,
+    visibilityAtlasW: publication.visibilityAtlasW,
+    visibilityAtlasH: publication.visibilityAtlasH,
+  });
 }

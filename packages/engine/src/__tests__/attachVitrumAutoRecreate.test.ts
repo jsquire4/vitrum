@@ -61,7 +61,11 @@ function makeEngine(
     state: 'ready',
     capabilities: {},
     setScene,
-    renderFrame: vi.fn(),
+    renderFrame: vi.fn(() => ({
+      kind: 'skipped' as const,
+      samplesAccumulated: 0 as const,
+      isConverged: false as const,
+    })),
     reset: vi.fn(),
     pause: vi.fn(),
     resume: vi.fn(),

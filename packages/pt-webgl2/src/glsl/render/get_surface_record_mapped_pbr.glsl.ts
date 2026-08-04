@@ -25,6 +25,32 @@ float evalMappedPbrSpectrum( vec3 coeffs, float lambda ) {
   return 0.5 + x * inversesqrt( 1.0 + x * x ) * 0.5;
 }
 
+vec3 applyMappedPbrBump(
+  vec3 normal, mat3 basis, ivec2 sourceSize,
+  float centerHeight, float uHeight, float vHeight, float bumpScale
+) {
+  float dU = uHeight - centerHeight;
+  float dV = vHeight - centerHeight;
+  if (
+    ! materialTextureFiniteFloat( dU ) ||
+    ! materialTextureFiniteFloat( dV ) ||
+    ! materialTextureFiniteFloat( bumpScale )
+  ) return normal;
+  float gradientU = dU * float( sourceSize.x );
+  float gradientV = dV * float( sourceSize.y );
+  if (
+    ! materialTextureFiniteFloat( gradientU ) ||
+    ! materialTextureFiniteFloat( gradientV )
+  ) return normal;
+  vec3 slope = gradientU * basis[ 0 ] + gradientV * basis[ 1 ];
+  if ( ! vitrumFiniteNonZeroVec3( slope ) || bumpScale == 0.0 ) return normal;
+  float absScale = abs( bumpScale );
+  vec3 candidate = absScale > 1.0
+    ? normal / absScale - sign( bumpScale ) * slope
+    : normal - bumpScale * slope;
+  return vitrumNormalizeVec3( candidate, normal );
+}
+
 int getSurfaceRecord(
   uint materialIndex, SurfaceHit surfaceHit,
   sampler2DArray attributesArray, float accumulatedRoughness,
@@ -43,11 +69,15 @@ int getSurfaceRecord(
   vec3 albedoModulation = vec3( 1.0 );
   if ( useTextures && material.map != -1 ) {
     vec3 uvPrime = material.mapTransform * vec3( MAPPED_PBR_UV( 0u ), 1.0 );
-    vec4 sampleValue = sampleMaterialTexture(
-      textures, uvPrime.xy, material.map, material.mapWrap, true
-    );
-    albedo *= sampleValue;
-    albedoModulation *= sampleValue.rgb;
+    vec4 sampleValue;
+    if (
+      sampleMaterialTexture(
+        textures, uvPrime.xy, material.map, material.mapWrap, true, sampleValue
+      )
+    ) {
+      albedo *= sampleValue;
+      albedoModulation *= sampleValue.rgb;
+    }
   }
   if ( material.vertexColors ) {
     albedo *= vertexColor;
@@ -55,20 +85,28 @@ int getSurfaceRecord(
   }
   if ( useTextures && material.alphaMap != -1 ) {
     vec3 uvPrime = material.alphaMapTransform * vec3( MAPPED_PBR_UV( 6u ), 1.0 );
-    albedo.a *= sampleMaterialTexture(
-      textures, uvPrime.xy, material.alphaMap, material.alphaMapWrap
-    ).r;
+    vec4 alphaSample;
+    if (
+      sampleMaterialTexture(
+        textures, uvPrime.xy, material.alphaMap,
+        material.alphaMapWrap, alphaSample
+      )
+    ) albedo.a *= alphaSample.r;
   }
   if ( useTextures && material.aoMap != -1 ) {
     vec3 uvPrime = material.aoMapTransform * vec3( MAPPED_PBR_UV( 16u ), 1.0 );
-    float ao = sampleMaterialTexture(
-      textures, uvPrime.xy, material.aoMap, material.aoMapWrap
-    ).r;
-    float aoFactor = clamp(
-      mix( 1.0, ao, material.aoMapIntensity ), 0.0, 1.0
-    );
-    albedo.rgb *= aoFactor;
-    albedoModulation *= aoFactor;
+    vec4 aoSample;
+    if (
+      sampleMaterialTexture(
+        textures, uvPrime.xy, material.aoMap, material.aoMapWrap, aoSample
+      )
+    ) {
+      float aoFactor = clamp(
+        mix( 1.0, aoSample.r, material.aoMapIntensity ), 0.0, 1.0
+      );
+      albedo.rgb *= aoFactor;
+      albedoModulation *= aoFactor;
+    }
   }
 
   bool useAlphaTest = material.alphaTest != 0.0;
@@ -76,7 +114,8 @@ int getSurfaceRecord(
     material.side != 0.0 && surfaceHit.side != material.side ||
     useAlphaTest && albedo.a < material.alphaTest ||
     ! stochasticOpacityAlreadyAccepted && material.transparent &&
-      ! useAlphaTest && albedo.a < rand( 3 )
+      ! useAlphaTest &&
+      rand( 3 ) >= representedBernoulliProbabilityF32( albedo.a )
   ) {
     return SKIP_SURFACE;
   }
@@ -85,17 +124,25 @@ int getSurfaceRecord(
   if ( useTextures && material.roughnessMap != -1 ) {
     vec3 uvPrime =
       material.roughnessMapTransform * vec3( MAPPED_PBR_UV( 2u ), 1.0 );
-    roughness *= sampleMaterialTexture(
-      textures, uvPrime.xy, material.roughnessMap, material.roughnessMapWrap
-    ).g;
+    vec4 roughnessSample;
+    if (
+      sampleMaterialTexture(
+        textures, uvPrime.xy, material.roughnessMap,
+        material.roughnessMapWrap, roughnessSample
+      )
+    ) roughness *= roughnessSample.g;
   }
   float metalness = material.metalness;
   if ( useTextures && material.metalnessMap != -1 ) {
     vec3 uvPrime =
       material.metalnessMapTransform * vec3( MAPPED_PBR_UV( 1u ), 1.0 );
-    metalness *= sampleMaterialTexture(
-      textures, uvPrime.xy, material.metalnessMap, material.metalnessMapWrap
-    ).b;
+    vec4 metalnessSample;
+    if (
+      sampleMaterialTexture(
+        textures, uvPrime.xy, material.metalnessMap,
+        material.metalnessMapWrap, metalnessSample
+      )
+    ) metalness *= metalnessSample.b;
   }
   vec3 emission = vitrumFiniteNonNegativeRadianceProduct(
     material.emissive, vec3( material.emissiveIntensity )
@@ -103,35 +150,43 @@ int getSurfaceRecord(
   if ( useTextures && material.emissiveMap != -1 ) {
     vec3 uvPrime =
       material.emissiveMapTransform * vec3( MAPPED_PBR_UV( 4u ), 1.0 );
-    emission = vitrumFiniteNonNegativeRadianceProduct(
-      emission,
+    vec4 emissiveSample;
+    if (
       sampleMaterialTexture(
         materialRadianceTextures, uvPrime.xy,
-        material.emissiveMap, material.emissiveMapWrap
-      ).rgb
-    );
+        material.emissiveMap, material.emissiveMapWrap, emissiveSample
+      )
+    ) {
+      emission = vitrumFiniteNonNegativeRadianceProduct(
+        emission, emissiveSample.rgb
+      );
+    }
   }
   if ( useTextures && material.lightMap != -1 && pathDepth == 0 ) {
     vec3 uvPrime =
       material.lightMapTransform * vec3( MAPPED_PBR_UV( 17u ), 1.0 );
-    emission = vitrumFiniteNonNegativeRadianceSum(
-      emission,
-      vitrumFiniteNonNegativeRadianceProduct(
-        vec3( material.lightMapIntensity ),
-        sampleMaterialTexture(
-          materialRadianceTextures, uvPrime.xy,
-          material.lightMap, material.lightMapWrap
-        ).rgb
+    vec4 lightSample;
+    if (
+      sampleMaterialTexture(
+        materialRadianceTextures, uvPrime.xy,
+        material.lightMap, material.lightMapWrap, lightSample
       )
-    );
+    ) {
+      emission = vitrumFiniteNonNegativeRadianceSum(
+        emission,
+        vitrumFiniteNonNegativeRadianceProduct(
+          vec3( material.lightMapIntensity ), lightSample.rgb
+        )
+      );
+    }
   }
 
-  vec3 normal = normalize( textureSampleBarycoord(
+  vec3 sampledNormal = textureSampleBarycoord(
     attributesArray, ATTR_NORMAL, surfaceHit.barycoord, surfaceHit.faceIndices.xyz
-  ).xyz );
-  if ( length( normal ) <= 1e-6 ) {
-    normal = surfaceHit.faceNormal * surfaceHit.side;
-  }
+  ).xyz;
+  vec3 normal = length( sampledNormal ) > 1e-6
+    ? normalize( sampledNormal )
+    : surfaceHit.faceNormal;
   int surfaceBasisUvLayer = ATTR_UV;
   if ( useTextures && material.normalMap != -1 ) {
     vec4 tangentSample = textureSampleBarycoord(
@@ -148,12 +203,19 @@ int getSurfaceRecord(
       surfaceHit.barycoord, surfaceHit.faceIndices.xyz
     ).xy;
     vec3 uvPrime = material.normalMapTransform * vec3( normalUv, 1.0 );
-    vec3 texNormal = sampleMaterialTexture(
-      textures, uvPrime.xy, material.normalMap, material.normalMapWrap
-    ).xyz * 2.0 - 1.0;
-    texNormal.xy *= material.normalScale;
-    vec3 mappedNormal = normalBasis * texNormal;
-    if ( length( mappedNormal ) > 1e-6 ) normal = normalize( mappedNormal );
+    vec4 normalSample;
+    vec3 texNormal;
+    if (
+      sampleMaterialTexture(
+        textures, uvPrime.xy, material.normalMap,
+        material.normalMapWrap, normalSample
+      ) &&
+      decodeMaterialTextureNormal(
+        normalSample, material.normalScale, texNormal
+      )
+    ) {
+      normal = vitrumNormalizeVec3( normalBasis * texNormal, normal );
+    }
   }
   if ( useTextures && material.bumpMap != -1 ) {
     vec4 tangentSample = textureSampleBarycoord(
@@ -170,30 +232,37 @@ int getSurfaceRecord(
       surfaceHit.barycoord, surfaceHit.faceIndices.xyz
     ).xy;
     vec3 uvPrime = material.bumpMapTransform * vec3( bumpUv, 1.0 );
-    vec2 bumpTexel = 1.0 / vec2(
-      materialTextureSourceSize( textures, material.bumpMapWrap, 0 )
-    );
-    float hC = sampleMaterialTexture(
-      textures, uvPrime.xy, material.bumpMap, material.bumpMapWrap
-    ).r;
-    float hU = sampleMaterialTexture(
-      textures, uvPrime.xy + vec2( bumpTexel.x, 0.0 ),
-      material.bumpMap, material.bumpMapWrap
-    ).r;
-    float hV = sampleMaterialTexture(
-      textures, uvPrime.xy + vec2( 0.0, bumpTexel.y ),
-      material.bumpMap, material.bumpMapWrap
-    ).r;
-    vec3 tangent = bumpBasis[ 0 ];
-    vec3 bitangent = bumpBasis[ 1 ];
-    vec3 perturbed = normal - material.bumpScale * (
-      ( hU - hC ) / bumpTexel.x * tangent
-      + ( hV - hC ) / bumpTexel.y * bitangent
-    );
-    if ( length( perturbed ) > 1e-6 ) normal = normalize( perturbed );
+    ivec2 bumpSize;
+    if (
+      materialTextureSourceSize(
+        textures, material.bumpMapWrap, 0, bumpSize
+      )
+    ) {
+      vec2 bumpTexel = 1.0 / vec2( bumpSize );
+      vec4 centerSample;
+      vec4 uSample;
+      vec4 vSample;
+      bool centerValid = sampleMaterialTexture(
+        textures, uvPrime.xy, material.bumpMap,
+        material.bumpMapWrap, centerSample
+      );
+      bool uValid = sampleMaterialTexture(
+        textures, uvPrime.xy + vec2( bumpTexel.x, 0.0 ),
+        material.bumpMap, material.bumpMapWrap, uSample
+      );
+      bool vValid = sampleMaterialTexture(
+        textures, uvPrime.xy + vec2( 0.0, bumpTexel.y ),
+        material.bumpMap, material.bumpMapWrap, vSample
+      );
+      if ( centerValid && uValid && vValid ) {
+        normal = applyMappedPbrBump(
+          normal, bumpBasis, bumpSize,
+          centerSample.r, uSample.r, vSample.r, material.bumpScale
+        );
+      }
+    }
   }
   normal *= surfaceHit.side;
-
   vec3 surfaceColor = albedo.rgb;
   if ( uSpectralRendering == 1 && material.hasSpectralReflectance ) {
     surfaceColor = vec3(
@@ -215,14 +284,21 @@ int getSurfaceRecord(
     bvh.position, attributesArray, surfaceBasisUvLayer,
     surfaceHit.faceIndices.xyz, normal, bsdfTangentSample
   );
+	 surf.oppositeNormal = - normal;
+	 surf.oppositeNormalBasis = getBasisFromSelectedUv(
+		 bvh.position, attributesArray, surfaceBasisUvLayer,
+		 surfaceHit.faceIndices.xyz, surf.oppositeNormal, bsdfTangentSample
+	 );
   surf.ior = material.ior;
-  surf.eta = 1.0 / material.ior;
+  surf.eta = material.ior == 0.0 ? 0.0 : 1.0 / material.ior;
   surf.f0 = iorRatioToF0( surf.eta );
   surf.roughness = clamp( roughness, 0.0, 1.0 );
   surf.roughness *= surf.roughness;
   surf.filteredRoughness = applyFilteredGlossy(
     surf.roughness, accumulatedRoughness
   );
+	 surf.oppositeRoughness = surf.roughness;
+	 surf.oppositeFilteredRoughness = surf.filteredRoughness;
   surf.metalness = clamp( metalness, 0.0, 1.0 );
   surf.color = surfaceColor;
   surf.rgbColor = albedo.rgb;
@@ -240,6 +316,8 @@ int getSurfaceRecord(
   surf.hasSpectralAttenuation = false;
   surf.activeLayerTransmission = vec3( 1.0 );
   surf.hasActiveLayer = false;
+	 surf.oppositeLayerTransmission = vec3( 1.0 );
+	 surf.hasOppositeLayer = false;
   surf.materialIndex = materialIndex;
   surf.attenuationColor = vec3( 1.0 );
   surf.attenuationDistance = INFINITY;

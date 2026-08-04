@@ -4,6 +4,7 @@ export type BdptMediumVec3 = readonly [number, number, number];
 
 export interface BdptEndpointMediumCpu {
   readonly matId: number;
+  readonly initialDistance: number;
   readonly remainingDistance: number;
 }
 
@@ -90,6 +91,7 @@ export function transitionBdptMediumStackCpu(
 
 export const BDPT_NO_ENDPOINT_MEDIUM_CPU: BdptEndpointMediumCpu = {
   matId: BDPT_NO_MEDIUM_CPU,
+  initialDistance: Number.MAX_VALUE,
   remainingDistance: Number.MAX_VALUE,
 };
 
@@ -114,9 +116,34 @@ export function sharedBdptEdgeMediumCpu(
   const sideA = selectBdptEndpointMediumCpu(a, directionAToB);
   const sideB = selectBdptEndpointMediumCpu(b, directionBToA);
   if (sideA.matId !== sideB.matId) return null;
+  if (sideA.matId === BDPT_NO_MEDIUM_CPU) return BDPT_NO_ENDPOINT_MEDIUM_CPU;
+  if (
+    !Number.isFinite(sideA.initialDistance) ||
+    !Number.isFinite(sideB.initialDistance) ||
+    !Number.isFinite(sideA.remainingDistance) ||
+    !Number.isFinite(sideB.remainingDistance) ||
+    sideA.initialDistance < 0 || sideB.initialDistance < 0 ||
+    sideA.remainingDistance < 0 || sideB.remainingDistance < 0
+  ) return null;
+  const aUnbounded = sideA.initialDistance === Number.MAX_VALUE;
+  const bUnbounded = sideB.initialDistance === Number.MAX_VALUE;
+  if (aUnbounded || bUnbounded) {
+    return aUnbounded && bUnbounded
+      ? { ...BDPT_NO_ENDPOINT_MEDIUM_CPU, matId: sideA.matId }
+      : null;
+  }
+  if (
+    sideA.initialDistance !== sideB.initialDistance ||
+    sideA.remainingDistance > sideA.initialDistance ||
+    sideB.remainingDistance > sideB.initialDistance
+  ) return null;
   return {
     matId: sideA.matId,
-    remainingDistance: Math.min(sideA.remainingDistance, sideB.remainingDistance),
+    initialDistance: sideA.initialDistance,
+    remainingDistance: Math.max(
+      sideA.remainingDistance + sideB.remainingDistance - sideA.initialDistance,
+      0,
+    ),
   };
 }
 

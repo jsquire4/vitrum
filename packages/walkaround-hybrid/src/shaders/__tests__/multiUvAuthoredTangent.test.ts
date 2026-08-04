@@ -27,6 +27,11 @@ describe('authored tangent UV-lane contract', () => {
       'materialTangentFrameForHit',
       'preferAuthoredTangentFrameForHit',
       'MaterialTangentFrame',
+      [
+        'var texCoord = 0u;',
+        'materialAtlasFiniteF32(meta0.y)',
+        'texCoord = (u32(meta0.y) >> 4u) & 0xFu;',
+      ],
     ],
     [
       'DDGI probe path',
@@ -34,15 +39,20 @@ describe('authored tangent UV-lane contract', () => {
       'ddgiMaterialTangentFrameForHit',
       'ddgiPreferAuthoredTangentFrameForHit',
       'DdgiMaterialTangentFrame',
+      [
+        'let packedFlags = ddgiMaterialMetaExactU32(meta0.y);',
+        'let flags = select(0u, packedFlags, packedFlags != 0xffffffffu);',
+        'let texCoord = (flags >> 4u) & 0xFu;',
+      ],
     ],
   ] as const)(
     '%s keeps selected nonzero UV lanes derivative-derived and uses authored tangents only for UV0',
-    (_label, source, frameFunction, authoredFunction, frameType) => {
+    (_label, source, frameFunction, authoredFunction, frameType, decodeFragments) => {
       const body = wgslFunctionBody(source, frameFunction);
 
       // The map metadata chooses a real lane and every triangle vertex resolves
       // that same lane before the derivative frame is constructed.
-      expect(body).toContain('let texCoord = (flags >> 4u) & 0xFu;');
+      for (const fragment of decodeFragments) expect(body).toContain(fragment);
       expect(body.match(/materialResolveUv\(triIndex, texCoord,/g)).toHaveLength(3);
 
       // glTF TANGENT describes TEXCOORD_0. UV1+ must retain the frame above

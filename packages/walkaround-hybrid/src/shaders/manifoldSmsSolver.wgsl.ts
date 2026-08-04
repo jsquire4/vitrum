@@ -40,6 +40,8 @@ struct SmsFacet {
   valid: u32,
   triIndex: u32,
   instanceIndex: u32,
+  encodedBoundaryId: u32,
+  representedPrimitiveInstanceId: u32,
   indices: vec4u,
   a: vec3f,
   b: vec3f,
@@ -65,6 +67,8 @@ fn smsInvalidFacet() -> SmsFacet {
   facet.valid = 0u;
   facet.triIndex = 0xffffffffu;
   facet.instanceIndex = 0xffffffffu;
+  facet.encodedBoundaryId = 0u;
+  facet.representedPrimitiveInstanceId = 0u;
   facet.indices = vec4u(0u);
   facet.a = vec3f(0.0);
   facet.b = vec3f(0.0);
@@ -107,13 +111,24 @@ fn smsFacetFromIdentity(
   let c = smsPointToWorld(bvhLoadPosition(indices.z).xyz, instanceIndex);
   let areaVector = cross(b - a, c - a);
   let area2 = length(areaVector);
+  let useTlas = ubo.bvhMode == 1u && ubo.tlasNodeCount > 0u;
+  let representedPrimitiveInstanceId =
+    sceneOpticalRepresentedPrimitiveInstanceId(
+      useTlas, triIndex, instanceIndex,
+    );
   if (!(area2 > 0.0) || !(area2 < INFINITY) ||
-      !(pairPmf > 0.0) || !(pairPmf < INFINITY)) { return facet; }
+      !(pairPmf > 0.0) || !(pairPmf < INFINITY) ||
+      representedPrimitiveInstanceId == 0u) { return facet; }
   let planeU = normalize(b - a);
   let normal = areaVector / area2;
   facet.valid = 1u;
   facet.triIndex = triIndex;
   facet.instanceIndex = instanceIndex;
+  facet.encodedBoundaryId = sceneOpticalEncodedBoundaryId(
+    useTlas, triIndex, instanceIndex,
+  );
+  facet.representedPrimitiveInstanceId =
+    representedPrimitiveInstanceId;
   facet.indices = indices;
   facet.a = a;
   facet.b = b;
@@ -290,6 +305,7 @@ struct SmsFacetOptics {
   transmission: f32,
   iorRgb: vec3f,
   layerTransmission: vec3f,
+  bulkMedium: u32,
   thickness: f32,
   materialWord: u32,
   metalness: f32,
@@ -304,6 +320,7 @@ fn smsFacetOpticsAt(facet: SmsFacet, point: vec3f, incomingTravel: vec3f) -> Sms
   out.transmission = 0.0;
   out.iorRgb = vec3f(1.0);
   out.layerTransmission = vec3f(0.0);
+  out.bulkMedium = 0u;
   out.thickness = 0.0;
   out.materialWord = 0u;
   out.metalness = 0.0;
@@ -340,10 +357,11 @@ fn smsFacetOpticsAt(facet: SmsFacet, point: vec3f, incomingTravel: vec3f) -> Sms
     ),
     layer,
   );
-  out.transmission = sampleTransmissionMapForHit(frame.hit, scalar.a);
+  out.transmission = materialShadowMappedTransmission(frame.hit);
   out.iorRgb = materialDispersionIorRgb(facet.triIndex, decodeIor(materialWord));
   out.layerTransmission = faceLayerTransmission(layer);
-  out.thickness = max(materialOpticalThickness(facet.triIndex), 0.0);
+  out.bulkMedium = select(0u, 1u, facet.encodedBoundaryId != 0u);
+  out.thickness = materialShadowAuthoredThickness(frame.hit);
   out.materialWord = materialWord;
   out.metalness = roughMetal.y;
   out.surfaceCoverage = select(1.0, alpha.coverage, alpha.mode == 2u);
@@ -741,5 +759,5 @@ fn smsAreaFocusingDet(
 export const MANIFOLD_SMS_SOLVER_MODULE: WgslModule = {
   name: 'manifoldSmsSolver',
   source: MANIFOLD_SMS_SOLVER_WGSL,
-  requires: ['common', 'materialAtlas', 'ggxBrdf'],
+  requires: ['common', 'materialAtlas', 'surfaceTextures', 'ggxBrdf'],
 };

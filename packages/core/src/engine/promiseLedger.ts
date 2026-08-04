@@ -1051,6 +1051,14 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
         multiBounceEquilibriumValue: 2,
         inactiveWhenLayerDisabled: 'ddgi',
       },
+      // Conservative full-feature profile: NRC and the bounded refractive
+      // suffix own four-entry stacks. Runtime manifests may publish 8 only
+      // when neither constrained path is active.
+      opticalMedia: {
+        maxNestedMedia: 4,
+        topology: 'closed-oriented-disjoint-or-nested',
+        overflowPolicy: 'reject-scene',
+      },
       primitives: {
         mesh: 'native',
         'skinned-mesh': 'native',
@@ -1244,6 +1252,11 @@ export const BACKEND_PROMISE_LEDGER: Readonly<Record<BackendId, BackendPromiseRe
       analyticShapes: ANALYTIC_SHAPES_FALLBACK_GENERATED_MESH,
       materials: PT_WEBGL2_MATERIALS,
       shadows: PT_WEBGL2_SHADOWS,
+      opticalMedia: {
+        maxNestedMedia: 8,
+        topology: 'closed-oriented-disjoint-or-nested',
+        overflowPolicy: 'reject-scene',
+      },
       denoisers: PT_WEBGL2_DENOISERS,
       causticStrategies: {
         bdpt: {

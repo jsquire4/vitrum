@@ -27,9 +27,12 @@ describe('pt-webgpu double-sided traversal contract', () => {
 
     for (const wgsl of [PT_WEBGPU_TRACE_WGSL, PT_WEBGPU_TRACE_LITE_WGSL]) {
       expect(wgsl).toContain('doubleSided: bool,');
-      expect(wgsl).toContain('(u32(max(m26.w, 0.0)) & 4u) != 0u');
+      expect(wgsl).toContain(
+        'let materialFlagsDecoded = materialRecordExactU32(m26.w, 8u);',
+      );
+      expect(wgsl).toContain('mat.doubleSided = (materialFlags & 4u) != 0u;');
       expect(wgsl).toContain('return mat.doubleSided || mat.transmission > 0.0;');
-      expect(wgsl).toContain('if (materialAcceptsSidedHit(matId, hit.frontFace)) { return hit; }');
+      expect(wgsl).toContain('materialAcceptsSidedHit(matId, hit.frontFace)');
       expect(wgsl).toContain('!materialShadowCastDisabled(matId)');
       expect(wgsl).toContain('fn nextSidedTraversalCursor(cursor: f32, hitDist: f32) -> f32');
       expect(wgsl).not.toContain('MATERIAL_SIDED_TRAVERSAL_LIMIT');
@@ -39,10 +42,10 @@ describe('pt-webgpu double-sided traversal contract', () => {
   it('records geometric winding independently of authored shading normals', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('frontFace: bool,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'var shadeNormal = triHit.normal;',
+      'var shadeNormal = triHit.normal * triHit.side;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'let frontFace = triHit.det > 0.0;',
+      'let frontFace = triHit.side > 0.0;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'let orientationPreserving = transformLinearOrientationSign(l2w0, l2w1, l2w2) > 0.0;',
@@ -54,7 +57,7 @@ describe('pt-webgpu double-sided traversal contract', () => {
 
   it('keeps the CWBVH closest path on the same parity-correct sidedness contract', () => {
     const cwbvh = composePtWebgpuTraceWgsl(false, { cwbvhClosest: true });
-    expect(cwbvh).toContain('(*hit).frontFace = cHit.side > 0.0;');
+    expect(cwbvh).toContain('(*hit).frontFace = exactHit.side > 0.0;');
     expect(cwbvh).toContain('fn traceClosestRaw(ray: Ray, tMin: f32, tMax: f32) -> SceneHit');
     expect(cwbvh).toContain('_ = traceTlasClosestCwbvh(ray, tMin, tMax, &hit);');
     expect(cwbvh).toContain(

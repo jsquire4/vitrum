@@ -10,8 +10,10 @@
  *      - HDRI candidates store ENV_SAMPLE_SENTINEL plus an encoded direction.
  *   2. Finite-emitter and HDRI source weights are scaled by
  *      `Mtotal / nDomain`; attempted `areaM` / `envM` (including null draws)
- *      are persisted, and W finalization divides the resulting tagged-union
- *      `w_sum` by `Mtotal * p̂(selected)`.
+ *      are persisted. The transient represented-WRS state records the actual
+ *      24-bit selected-occurrence probability; word 2 stores
+ *      `H = log2(a_selected / pi_selected) - log2(Mtotal)`, and word 3 is the
+ *      capped logarithmic endpoint `logW = H - log2(p̂(selected))`.
  *   3. Shade consumption uses the stored `r.xi` for both finite emitters and
  *      env sentinels, so candidate p̂, finalization p̂, visibility, and the
  *      shaded contribution all refer to the same sample.
@@ -28,6 +30,12 @@
  * comparison isolates the RIS/W/shade estimator, not the BRDF model.
  */
 import { describe, expect, it } from 'vitest';
+import {
+  createRepresentedWrsStateF32,
+  representedWrsSelectedLogCorrection,
+  updateRepresentedWrsF32,
+  type RepresentedWrsStateF32,
+} from '@vitrum/shared-samplers';
 
 type V3 = [number, number, number];
 type V2 = [number, number];
@@ -149,19 +157,27 @@ function envDirFromXi(xi: V2): V3 {
   return norm([Math.cos(phi) * st, Math.cos(theta), Math.sin(phi) * st]);
 }
 
-// reservoirDi.wgsl.ts:73-92 — ReservoirDI + WRS update
+// reservoirDi.wgsl.ts — persisted ReservoirDI + transient represented WRS
 interface ReservoirDI {
   lightId: number;
   M: number;
-  w_sum: number;
-  W: number;
+  logEstimatorNumerator: number;
+  logW: number;
+  historicalWeightSum: number;
+  historicalW: number;
   xi: V2;
   areaM: number;
   envM: number;
 }
-function updateReservoirDI(r: ReservoirDI, lid: number, xi: V2, w: number, rng: () => number): void {
-  r.w_sum += w;
-  if (rng() * r.w_sum < w) {
+function updateRepresentedReservoirDI(
+  r: ReservoirDI,
+  wrs: RepresentedWrsStateF32,
+  lid: number,
+  xi: V2,
+  logWeight: number,
+  rng: () => number,
+): void {
+  if (updateRepresentedWrsF32(wrs, logWeight, rng)) {
     r.lightId = lid;
     r.xi = xi;
   }
@@ -174,7 +190,11 @@ function updateReservoirDIHistorical(
   rng: () => number,
 ): void {
   r.M += 1;
-  updateReservoirDI(r, lid, xi, w, rng);
+  r.historicalWeightSum += w;
+  if (rng() * r.historicalWeightSum < w) {
+    r.lightId = lid;
+    r.xi = xi;
+  }
 }
 
 // ── scene / receiver ──────────────────────────────────────────────────────────
@@ -272,19 +292,24 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
   const r: ReservoirDI = {
     lightId: 0,
     M: 0,
-    w_sum: 0,
-    W: 0,
+    logEstimatorNumerator: Number.NEGATIVE_INFINITY,
+    logW: Number.NEGATIVE_INFINITY,
+    historicalWeightSum: 0,
+    historicalW: 0,
     xi: [0, 0],
     areaM: 0,
     envM: 0,
   };
+  const wrs = createRepresentedWrsStateF32();
   let areaSupportM = 0;
   let envSupportM = 0;
   const scheduledAreaM = M_LIGHT;
   const scheduledEnvM = cfg.envHasMap ? M_ENV : 0;
   const scheduledTotalM = scheduledAreaM + scheduledEnvM;
-  const areaRisScale = scheduledTotalM / Math.max(1, scheduledAreaM);
-  const envRisScale = scheduledTotalM / Math.max(1, scheduledEnvM);
+  const logAreaRisScale =
+    Math.log2(scheduledTotalM) - Math.log2(Math.max(1, scheduledAreaM));
+  const logEnvRisScale =
+    Math.log2(scheduledTotalM) - Math.log2(Math.max(1, scheduledEnvM));
   const totalPower = Math.max(
     cfg.emitters.reduce((s, e) => s + luminance(e.Le) * e.area, 0),
     1e-8,
@@ -322,7 +347,11 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     if (variant === 'historical') {
       updateReservoirDIHistorical(r, lid, xiTri, w, rng);
     } else {
-      updateReservoirDI(r, lid, xiTri, w * areaRisScale, rng);
+      const logWeight = pHat > 0 && emitterSelPmf > 0 && ls.pdfArea > 0
+        ? Math.log2(pHat) - Math.log2(emitterSelPmf)
+          - Math.log2(ls.pdfArea) + logAreaRisScale
+        : Number.NEGATIVE_INFINITY;
+      updateRepresentedReservoirDI(r, wrs, lid, xiTri, logWeight, rng);
     }
   }
   // M_ENV loop [L375-389]
@@ -340,11 +369,15 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     if (variant === 'historical') {
       updateReservoirDIHistorical(r, ENV_SENTINEL, envDirToXi(envS.dir), wE, rng);
     } else {
-      updateReservoirDI(
+      const logWeight = pHatE > 0 && envS.pdf > 0
+        ? Math.log2(pHatE) - Math.log2(envS.pdf) + logEnvRisScale
+        : Number.NEGATIVE_INFINITY;
+      updateRepresentedReservoirDI(
         r,
+        wrs,
         ENV_SENTINEL,
         envDirToXi(envS.dir),
-        wE * envRisScale,
+        logWeight,
         rng,
       );
     }
@@ -354,20 +387,54 @@ function runRis(cfg: SceneCfg, rng: () => number, variant: Variant = 'shader'): 
     r.envM = envSupportM;
     r.M = areaSupportM + envSupportM;
   }
-  // W finalize [L392-461] — unoccluded scene, so the shadow tests pass.
-  if (r.M > 0 && r.w_sum > 0) {
+  // Finalize the selected represented occurrence; scene is unoccluded.
+  if (
+    r.M > 0 &&
+    (variant === 'historical' ? r.historicalWeightSum > 0 : wrs.hasSelection)
+  ) {
     const pHatZ =
       variant === 'historical' && r.lightId !== ENV_SENTINEL
         ? computePhatCentroid(cfg, r.lightId)
         : computePhatXi(cfg, r.lightId, r.xi);
-    r.W = pHatZ > 0 ? r.w_sum / (r.M * pHatZ) : 0;
+    if (variant === 'historical') {
+      r.historicalW = pHatZ > 0
+        ? r.historicalWeightSum / (r.M * pHatZ)
+        : 0;
+    } else if (pHatZ > 0) {
+      r.logEstimatorNumerator =
+        representedWrsSelectedLogCorrection(wrs) - Math.log2(r.M);
+      r.logW = Math.min(
+        r.logEstimatorNumerator - Math.log2(pHatZ),
+        3.402823466e38,
+      );
+    }
   }
   return r;
 }
 
+function applyReservoirWeight(
+  value: V3,
+  r: ReservoirDI,
+  variant: Variant,
+): V3 {
+  if (variant === 'historical') {
+    return scale(value, r.historicalW);
+  }
+  const weighted = (channel: number): number =>
+    channel > 0 && Number.isFinite(r.logW)
+      ? Math.min(3.402823466e38, 2 ** (Math.log2(channel) + r.logW))
+      : 0;
+  return [weighted(value[0]), weighted(value[1]), weighted(value[2])];
+}
+
 // ── shade consumption transcription (shadingTerms.wgsl.ts lo_direct) ─────────
 function loDirect(cfg: SceneCfg, r: ReservoirDI, rng: () => number, variant: Variant = 'shader'): V3 {
-  if (r.W <= 0 || r.M === 0) return [0, 0, 0]; // L238
+  if (
+    r.M === 0 ||
+    (variant === 'historical'
+      ? r.historicalW <= 0
+      : !Number.isFinite(r.logW))
+  ) return [0, 0, 0];
   if (r.lightId === ENV_SENTINEL) {
     if (!cfg.envHasMap) return [0, 0, 0]; // L248
     const envDir = envDirFromXi(r.xi); // L249
@@ -375,7 +442,7 @@ function loDirect(cfg: SceneCfg, r: ReservoirDI, rng: () => number, variant: Var
     if (nDotL < 1e-6) return [0, 0, 0];
     const envColor = scale(envRadiance(envDir), envMapIntensityForCfg(cfg)); // L252
     const brdfE = evalGGX(albedo, roughness, metalness, normal, wo, envDir); // L253
-    return scale(mulv(envColor, brdfE), r.W); // L254
+    return applyReservoirWeight(mulv(envColor, brdfE), r, variant);
   }
   const e = cfg.emitters[r.lightId]!;
   const lsXi: V2 = variant === 'historical' ? [rng(), rng()] : r.xi;
@@ -390,7 +457,7 @@ function loDirect(cfg: SceneCfg, r: ReservoirDI, rng: () => number, variant: Var
   // shadow ray L278-284: unoccluded
   const G = emitterGeometry(nlDotL, dist * dist, dist2Floor); // L285
   const brdf = evalGGX(albedo, roughness, metalness, normal, wo, wi); // L286
-  return scale(scale(mulv(e.Le, brdf), G), r.W); // L287
+  return applyReservoirWeight(scale(mulv(e.Le, brdf), G), r, variant);
 }
 
 function measurePipeline(cfg: SceneCfg, trials: number, seed: number, variant: Variant = 'shader'): V3 {
@@ -460,6 +527,31 @@ function groundTruthEnv(nSamples: number, seed: number, envMapIntensity = 1): V3
 const lum3 = (c: V3) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
 
 describe('HYB-GI-01/02 oracle — walkaround ReSTIR-DI estimator vs brute force', () => {
+  it('combines logW with radiance before exp2, avoiding pre-shading underflow', () => {
+    const reservoir: ReservoirDI = {
+      lightId: 0,
+      M: 1,
+      logEstimatorNumerator: -200,
+      logW: -200,
+      historicalWeightSum: 0,
+      historicalW: 0,
+      xi: [0, 0],
+      areaM: 1,
+      envM: 0,
+    };
+    const weighted = applyReservoirWeight([2 ** 100, 0, 0], reservoir, 'shader');
+    expect(weighted[0]).toBe(2 ** -100);
+    expect(weighted[0]).toBeGreaterThan(0);
+
+    reservoir.logW = 200;
+    const highLogWeighted = applyReservoirWeight(
+      [2 ** -100, 0, 0],
+      reservoir,
+      'shader',
+    );
+    expect(highLogWeighted[0]).toBe(2 ** 100);
+  });
+
   it('transcription sanity: BRDF-candidate barycentric→xi inversion round-trips sampleEmitterPoint', () => {
     // ris.wgsl.ts:319-328 inverts emitterSampling.wgsl.ts:25-31. If this drifts,
     // the reservoir's (lid, xi) representation silently stops matching the

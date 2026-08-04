@@ -1,13 +1,13 @@
 import {
-	MATERIAL_ALPHA_TRANSFORM_TEXEL,
-	MATERIAL_THICKNESS_TRANSFORM_TEXEL,
-	MATERIAL_TRANSFORM_TEXEL,
-	MATERIAL_WRAP_TEXEL_OFFSET,
+		MATERIAL_ALPHA_TRANSFORM_TEXEL,
+		MATERIAL_TRANSFORM_TEXEL,
+		MATERIAL_WRAP_TEXEL_OFFSET,
 } from '../shader/structs/materialStride.js';
 
 export const attenuate_hit_function = /* glsl */`
 
-	// step through multiple surface hits and accumulate color attenuation based on transmissive surfaces
+		// Step through visibility hits. Alpha/null skips and castShadow:false may
+		// continue; accepted physical surfaces terminate the straight connection.
 	// returns true if a solid surface was hit
 	bool attenuateHit(
 		RenderState state,
@@ -25,6 +25,11 @@ export const attenuate_hit_function = /* glsl */`
                 bool isShadowRay = state.isShadowRay;
                 FogMaterial fogMaterial = state.fogMaterial;
                 MediumStack mediumStack = state.mediumStack;
+		if ( isShadowRay ) {
+			filterShadowMediumStack(
+				state.mediumStack, materials, mediumStack, fogMaterial
+			);
+		}
                 bool finiteRayDistance = ! vitrumIsInfiniteDistance( rayDist );
 
 		float traveledDistance = 0.0;
@@ -49,32 +54,44 @@ export const attenuate_hit_function = /* glsl */`
 
 			sobolBounceIndex ++;
 
-                        bool surfaceFound = bvhIntersectFirstHit(
-                                bvh,
-                                ray.origin,
-                                ray.direction,
-                                surfaceHit.faceIndices,
-                                surfaceHit.faceNormal,
-                                surfaceHit.barycoord,
-                                surfaceHit.side,
-                                surfaceHit.dist
-                        );
+			bool invalidRange = false;
+			bool surfaceFound = ray.minimumDistanceExclusive >= 0.0
+				? bvhIntersectExactRangeFirstHit(
+					ray, surfaceHit, invalidRange
+				)
+				: bvhIntersectCanonicalInitialFirstHit(
+					ray, surfaceHit, invalidRange
+				);
+			if ( invalidRange ) {
+				result = true;
+				break;
+			}
                         float remainingDistance = finiteRayDistance
                                 ? max( rayDist - traveledDistance, 0.0 )
                                 : INFINITY;
                         float segmentDistance = surfaceFound
                                 ? min( max( surfaceHit.dist, 0.0 ), remainingDistance )
                                 : remainingDistance;
-                        #if FEATURE_FOG
-                        if ( fogMaterial.fogVolume ) {
-                                color *= fogSegmentTransmittance(
-                                        materials,
-                                        fogMaterial,
-                                        segmentDistance,
-                                        state.wavelength
-                                );
-                        }
-                        #endif
+			float effectiveSegmentDistance = mediumEffectiveSegmentDistance(
+				mediumStack, segmentDistance
+			);
+			if ( effectiveSegmentDistance < 0.0 ) {
+				result = true;
+				break;
+			}
+                        color *= opticalVisibilitySegmentTransmittance(
+                                materials,
+                                mediumStack,
+                                fogMaterial,
+				effectiveSegmentDistance,
+                                state.wavelength
+                        );
+			if ( ! consumeMediumSegmentDistance(
+				mediumStack, segmentDistance, materials, fogMaterial
+			) ) {
+				result = true;
+				break;
+			}
                         if ( ! surfaceFound ) {
                                 result = false;
                                 break;
@@ -96,72 +113,35 @@ export const attenuate_hit_function = /* glsl */`
 
                         {
 
-				// Shadow visibility through transmissive layers is intentionally a
-				// bounded attenuation approximation here: this helper answers whether
-				// a direct-light/BDPT connection remains visible and returns tint/medium
-				// throughput. It does not add emissive surface radiance or try to make
-				// the shadow ray a second full BSDF path; those are handled by hit/NEE
-				// estimators rather than this visibility predicate.
+					// Physical transmission is not a null-opacity event. Collapsing a glass
+					// interface into this straight segment would omit its refraction,
+					// Fresnel/roughness terms, Jacobians, and BDPT vertex/PDF. This helper
+					// therefore carries only alpha/null policy and medium-segment extinction.
 
 				uint materialIndex = uTexelFetch1D( materialIndexAttribute, surfaceHit.faceIndices.w ).r;
 				Material material;
 				readMaterialInfo( materials, materialIndex, material );
 
-					// adjust the ray to the new surface
-					bool isEntering = surfaceHit.side == 1.0;
-					if ( finiteRayDistance ) {
+						if ( finiteRayDistance ) {
 						traveledDistance += max( surfaceHit.dist, 0.0 );
 					}
-					ray.origin = stepRayOrigin( ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist );
 
-				#if FEATURE_FOG
-
-                                if ( material.fogVolume ) {
-                                        bool stackValid = surfaceHit.side == 1.0
-                                                ? enterMedium(
-                                                        mediumStack, materialIndex,
-                                                        materials, fogMaterial
-                                                )
-                                                : leaveMedium(
-                                                        mediumStack, materialIndex,
-                                                        materials, fogMaterial
-                                                );
-                                        if ( ! stackValid ) {
-                                                result = true;
-                                                break;
-                                        }
-                                        if ( transmissiveTraversals > 0 ) {
-
-                                                remainingTraversals ++;
-                                                transmissiveTraversals --;
-
-                                        }
-                                        continue;
-
-				}
-
-				#endif
-
-				if ( ! material.castShadow && isShadowRay ) {
-
-					continue;
-
-				}
-
-				vec4 vertexColor = textureSampleBarycoord( attributesArray, ATTR_COLOR, surfaceHit.barycoord, surfaceHit.faceIndices.xyz );
+					vec4 vertexColor = textureSampleBarycoord( attributesArray, ATTR_COLOR, surfaceHit.barycoord, surfaceHit.faceIndices.xyz );
 
 				#define ATTENUATE_MAP_UV(mapIndex) textureSampleBarycoord( attributesArray, readMaterialMapUvLayer( materials, materialIndex, mapIndex ), surfaceHit.barycoord, surfaceHit.faceIndices.xyz ).xy
-				#define ATTENUATE_MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
-				#define ATTENUATE_SRGB_MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord) sampleMappedSrgbMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord )
+				#define ATTENUATE_MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord,outValue) sampleMappedMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord, outValue )
+				#define ATTENUATE_SRGB_MAP_SAMPLE(layer,transformOffset,policyOffset,uvCoord,outValue) sampleMappedSrgbMaterialTexture( materials, textures, materialIndex, layer, transformOffset, policyOffset, uvCoord, outValue )
 
 				// albedo
 				vec4 albedo = vec4( material.color, material.opacity );
 				if ( material.map != - 1 ) {
 
-					albedo *= ATTENUATE_SRGB_MAP_SAMPLE(
+					vec4 baseColorSample;
+					if ( ATTENUATE_SRGB_MAP_SAMPLE(
 						material.map, ${MATERIAL_TRANSFORM_TEXEL.baseColorMap}u,
-						${MATERIAL_WRAP_TEXEL_OFFSET + 0}u, ATTENUATE_MAP_UV( 0u )
-					);
+						${MATERIAL_WRAP_TEXEL_OFFSET + 0}u,
+						ATTENUATE_MAP_UV( 0u ), baseColorSample
+					) ) albedo *= baseColorSample;
 
 				}
 
@@ -172,110 +152,114 @@ export const attenuate_hit_function = /* glsl */`
 				}
 
 				// alphaMap
-				if ( material.alphaMap != - 1 ) {
+					if ( material.alphaMap != - 1 ) {
 
-					albedo.a *= ATTENUATE_MAP_SAMPLE(
+					vec4 alphaSample;
+					if ( ATTENUATE_MAP_SAMPLE(
 						material.alphaMap, ${MATERIAL_ALPHA_TRANSFORM_TEXEL}u,
-						${MATERIAL_WRAP_TEXEL_OFFSET + 6}u, ATTENUATE_MAP_UV( 6u )
-					).x;
+						${MATERIAL_WRAP_TEXEL_OFFSET + 6}u,
+						ATTENUATE_MAP_UV( 6u ), alphaSample
+					) ) albedo.a *= alphaSample.x;
 
-				}
+					}
 
-				// transmission
-				float transmission = material.transmission;
-				if ( material.transmissionMap != - 1 ) {
+					#undef ATTENUATE_MAP_SAMPLE
+					#undef ATTENUATE_SRGB_MAP_SAMPLE
+					#undef ATTENUATE_MAP_UV
 
-					transmission *= ATTENUATE_MAP_SAMPLE(
-						material.transmissionMap, ${MATERIAL_TRANSFORM_TEXEL.transmissionMap}u,
-						${MATERIAL_WRAP_TEXEL_OFFSET + 3}u, ATTENUATE_MAP_UV( 3u )
-					).r;
+						float alphaTest = material.alphaTest;
+					bool useAlphaTest = alphaTest != 0.0;
+					bool skipSurface =
+						material.side != 0.0 && surfaceHit.side != material.side ||
+						useAlphaTest && albedo.a < alphaTest ||
+						material.transparent && ! useAlphaTest &&
+							rand( 10 ) >= representedBernoulliProbabilityF32( albedo.a );
 
-				}
+					if ( skipSurface ) {
 
-				// metalness
-				float metalness = material.metalness;
-				if ( material.metalnessMap != - 1 ) {
+						if ( transmissiveTraversals > 0 ) {
+							remainingTraversals ++;
+							transmissiveTraversals --;
+						}
+						if ( ray.minimumDistanceExclusive >= 0.0 ) {
+							if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+								result = true;
+								break;
+							}
+						} else {
+							ray.origin = stepRayOrigin(
+								ray.origin, ray.direction,
+								- surfaceHit.faceNormal, surfaceHit.dist
+							);
+							setOrdinaryRayRange( ray );
+						}
+						continue;
 
-					metalness *= ATTENUATE_MAP_SAMPLE(
-						material.metalnessMap, ${MATERIAL_TRANSFORM_TEXEL.metallicMap}u,
-						${MATERIAL_WRAP_TEXEL_OFFSET + 1}u, ATTENUATE_MAP_UV( 1u )
-					).b;
+					}
 
-				}
+					if ( ! material.castShadow && isShadowRay ) {
 
-				float alphaTest = material.alphaTest;
-				bool useAlphaTest = alphaTest != 0.0;
-				float transmissionFactor = ( 1.0 - metalness ) * transmission;
-				if (
-					transmissionFactor < rand( 9 ) && ! (
-						// material sidedness
-						material.side != 0.0 && surfaceHit.side == material.side
+							// The filtered shadow stack omits this material's volume
+							// extinction, so its boundary is a visibility null event.
+						if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+							result = true;
+							break;
+						}
+						if ( transmissiveTraversals > 0 ) {
+							remainingTraversals ++;
+							transmissiveTraversals --;
+						}
+						continue;
 
-						// alpha test
-						|| useAlphaTest && albedo.a < alphaTest
+					}
 
-						// opacity
-						|| material.transparent && ! useAlphaTest && albedo.a < rand( 10 )
-					)
-				) {
+					bool exactBaseRoughness = material.roughness == 0.0;
+					bool exactFrontRoughness =
+						! material.hasFrontLayer ||
+						material.frontLayerRoughness < 0.0 ||
+						material.frontLayerRoughness == 0.0;
+					bool exactBackRoughness =
+						! material.hasBackLayer ||
+						material.backLayerRoughness < 0.0 ||
+						material.backLayerRoughness == 0.0;
+					if (
+						material.thinFilm && material.transmission > 0.0 &&
+						exactBaseRoughness &&
+						exactFrontRoughness && exactBackRoughness
+					) {
+						SurfaceRecord sheetSurface;
+						int sheetStatus = getSurfaceRecord(
+							materialIndex, surfaceHit, attributesArray,
+							0.0, 0, state.wavelength, true, sheetSurface
+						);
+						vec3 sheetAttenuation;
+						bool sheetConnectable =
+							sheetStatus == HIT_SURFACE &&
+							thinSheetExactVisibilityTransmission(
+								- ray.direction, ray.direction,
+								sheetSurface, state.wavelength,
+								sheetAttenuation
+							);
+						if ( ! sheetConnectable ) {
+							result = true;
+							break;
+						}
+						color *= sheetAttenuation;
+						if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+							result = true;
+							break;
+						}
+						if ( transmissiveTraversals > 0 ) {
+							remainingTraversals ++;
+							transmissiveTraversals --;
+						}
+						continue;
+					}
 
 					result = true;
 					break;
 
-				}
-
-				if ( surfaceHit.side == 1.0 && isEntering ) {
-
-					// only attenuate by surface color on the way in
-					vec3 surfaceTransmission = mix( vec3( 1.0 ), albedo.rgb, transmissionFactor );
-					color *= pathThroughputFromRgb( surfaceTransmission, state.wavelength );
-
-				} else if ( surfaceHit.side == - 1.0 ) {
-
-					float attenuationDist = surfaceHit.dist;
-					if ( material.thickness > 0.0 || material.thicknessMap != - 1 ) {
-
-						float attenuationThickness = material.thickness;
-						if ( material.thicknessMap != - 1 ) {
-
-							attenuationThickness *= ATTENUATE_MAP_SAMPLE(
-								material.thicknessMap, ${MATERIAL_THICKNESS_TRANSFORM_TEXEL}u,
-								${MATERIAL_WRAP_TEXEL_OFFSET + 20}u, ATTENUATE_MAP_UV( 20u )
-							).g;
-
-						}
-						attenuationDist = min( attenuationDist, max( attenuationThickness, 0.0 ) );
-
-					}
-
-					// attenuate by medium once we hit the opposite side of the model.
-					// Sprint 12 Gap §5: use hero-wavelength attenuation when spectral data exists.
-					vec3 attenuation = transmissionAttenuationThroughput(
-						materials,
-						attenuationDist,
-						material.attenuationColor,
-						material.attenuationDistance,
-						material.hasSpectralAttenuation,
-						materialIndex,
-						state.wavelength
-					);
-					color *= attenuation;
-
-				}
-
-				#undef ATTENUATE_MAP_SAMPLE
-				#undef ATTENUATE_SRGB_MAP_SAMPLE
-				#undef ATTENUATE_MAP_UV
-
-				bool isTransmissiveRay = dot( ray.direction, surfaceHit.faceNormal * surfaceHit.side ) < 0.0;
-                                if ( ( isTransmissiveRay || isEntering ) && transmissiveTraversals > 0 ) {
-
-                                        remainingTraversals ++;
-                                        transmissiveTraversals --;
-
-				}
-
-                        }
+							}
 
 		}
 

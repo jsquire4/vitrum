@@ -66,6 +66,7 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
     return startGpuTextureBlit(canvas, debugDevice, irradianceAtlas, {
       throttleMs: 100,
       label: 'ddgi-irr-atlas',
+      decodeMode: 'ddgi-irradiance',
     });
   }, [visible, hasAtlas, hasDevice, debugDevice, irradianceAtlas]);
 
@@ -77,6 +78,7 @@ export const DDGIAtlasViewer: FC<DDGIAtlasViewerProps> = ({
     return startGpuTextureBlit(canvas, debugDevice, visibilityAtlas, {
       throttleMs: 100,
       label: 'ddgi-vis-atlas',
+      decodeMode: 'ddgi-visibility',
     });
   }, [visible, hasVisibilityAtlas, hasDevice, debugDevice, visibilityAtlas]);
 

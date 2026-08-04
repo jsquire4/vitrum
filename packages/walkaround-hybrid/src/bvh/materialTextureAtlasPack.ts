@@ -17,6 +17,7 @@ import {
 } from './materialOptics.js';
 import {
   isWalkaroundWebGpuTextureSource,
+  walkaroundTextureFormatChannelCount,
   type WalkaroundWebGpuTextureSource,
 } from '../materialTextureSource.js';
 import {
@@ -72,6 +73,7 @@ const MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BIGINT =
 
 interface MaterialAtlasCpuBudget {
   usedBytes: bigint;
+  aggregateLimitBytes: bigint;
 }
 
 interface RadiometricPositiveSupport {
@@ -137,11 +139,11 @@ function reserveFloat32Allocation(
     );
   }
   const aggregateBytes = budget.usedBytes + byteCount;
-  if (aggregateBytes > MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BIGINT) {
+  if (aggregateBytes > budget.aggregateLimitBytes) {
     throw new RangeError(
       `packMaterialTextureAtlas: ${label} requires ${byteCount.toString()} CPU bytes ` +
       `(aggregate ${aggregateBytes.toString()}), above the ` +
-      `${MATERIAL_TEXTURE_ATLAS_CPU_TRANSACTION_BUDGET_BYTES}-byte aggregate ` +
+      `${budget.aggregateLimitBytes.toString()}-byte aggregate ` +
       'staging budget.',
     );
   }
@@ -168,11 +170,11 @@ function reserveByteAllocation(
     );
   }
   const aggregateBytes = budget.usedBytes + byteCount;
-  if (aggregateBytes > MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BIGINT) {
+  if (aggregateBytes > budget.aggregateLimitBytes) {
     throw new RangeError(
       `packMaterialTextureAtlas: ${label} requires ${byteCount.toString()} CPU bytes ` +
       `(aggregate ${aggregateBytes.toString()}), above the ` +
-      `${MATERIAL_TEXTURE_ATLAS_CPU_TRANSACTION_BUDGET_BYTES}-byte aggregate ` +
+      `${budget.aggregateLimitBytes.toString()}-byte aggregate ` +
       'staging budget.',
     );
   }
@@ -547,6 +549,7 @@ interface RawPixels {
   readonly height: number;
   readonly data: Float32Array;
   readonly encoding: MaterialTextureAtlasEncoding;
+  readonly channelCount: 1 | 2 | 3 | 4;
   readonly sourceColorSpace?: 'srgb' | 'linear';
 }
 
@@ -631,8 +634,14 @@ function asTextureRef(value: unknown): TextureRef | null {
   return { handle: value };
 }
 
+function isFiniteNonUnderflowingFloat32(value: number | undefined): value is number {
+  if (!Number.isFinite(value)) return false;
+  const packed = Math.fround(value as number);
+  return Number.isFinite(packed) && ((value as number) === 0 || packed !== 0);
+}
+
 function finiteOrFallback(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) ? (value as number) : fallback;
+  return isFiniteNonUnderflowingFloat32(value) ? Math.fround(value) : Math.fround(fallback);
 }
 
 function invalidTextureTransformComponents(ref: TextureRef): string[] {
@@ -640,14 +649,17 @@ function invalidTextureTransformComponents(ref: TextureRef): string[] {
   if (transform == null) return [];
   const invalid: string[] = [];
   if (transform.offset != null) {
-    if (!Number.isFinite(transform.offset[0])) invalid.push('offset.x');
-    if (!Number.isFinite(transform.offset[1])) invalid.push('offset.y');
+    if (!isFiniteNonUnderflowingFloat32(transform.offset[0])) invalid.push('offset.x');
+    if (!isFiniteNonUnderflowingFloat32(transform.offset[1])) invalid.push('offset.y');
   }
   if (transform.scale != null) {
-    if (!Number.isFinite(transform.scale[0])) invalid.push('scale.x');
-    if (!Number.isFinite(transform.scale[1])) invalid.push('scale.y');
+    if (!isFiniteNonUnderflowingFloat32(transform.scale[0])) invalid.push('scale.x');
+    if (!isFiniteNonUnderflowingFloat32(transform.scale[1])) invalid.push('scale.y');
   }
-  if (transform.rotation !== undefined && !Number.isFinite(transform.rotation)) {
+  if (
+    transform.rotation !== undefined &&
+    !isFiniteNonUnderflowingFloat32(transform.rotation)
+  ) {
     invalid.push('rotation');
   }
   return invalid;
@@ -704,11 +716,46 @@ function sourceMetaFields(source: TextureRefSourceMetadata | undefined): {
   };
 }
 
+function describeTextureHintValue(value: unknown): string {
+  if (value === null) return 'null';
+  switch (typeof value) {
+    case 'string':
+      return JSON.stringify(value);
+    case 'number':
+      return String(value);
+    case 'boolean':
+      return value ? 'true' : 'false';
+    case 'undefined':
+      return 'undefined';
+    case 'bigint':
+      return `${value.toString()}n`;
+    case 'symbol':
+      return value.description == null
+        ? 'Symbol()'
+        : `Symbol(${value.description})`;
+    case 'function':
+      return '[function]';
+    case 'object':
+      try {
+        const serialized = JSON.stringify(value);
+        if (serialized !== undefined) return serialized;
+      } catch {
+        // Cyclic objects still receive a deterministic, non-coercive label.
+      }
+      return Object.prototype.toString.call(value);
+  }
+  return 'unknown';
+}
+
 function readHandlePixels(
   handle: unknown,
   budget: MaterialAtlasCpuBudget,
   label: string,
-  beforeDecode?: (width: number, height: number) => void,
+  beforeDecode?: (
+    width: number,
+    height: number,
+    channelCount: 1 | 2 | 3 | 4,
+  ) => void,
 ): ReadHandlePixelsResult | null {
   const h = handle as {
     width?: number;
@@ -721,16 +768,31 @@ function readHandlePixels(
     colorSpace?: string;
   } | null;
   if (h == null) return null;
-  const src = h.data ?? h.image?.data;
-  const width = Number(h.width ?? h.image?.width ?? 0);
-  const height = Number(h.height ?? h.image?.height ?? 0);
-  if (src == null || typeof src.length !== 'number') return null;
+  // Snapshot every user-controlled descriptor property once. Validation,
+  // role preflight, allocation, and decode below consume only these locals.
+  const image = h.image;
+  const directData = h.data;
+  const imageData = image?.data;
+  const directWidth = h.width;
+  const imageWidth = image?.width;
+  const directHeight = h.height;
+  const imageHeight = image?.height;
+  const explicitHint = h.__vitrum_hint__;
+  const looseChannels = h.channels;
+  const looseDataType = h.dataType;
+  const looseColorSpace = h.colorSpace;
+  const src = directData ?? imageData;
+  const width = Number(directWidth ?? imageWidth ?? 0);
+  const height = Number(directHeight ?? imageHeight ?? 0);
+  if (src == null) return null;
+  const sourceLength = src.length;
+  if (typeof sourceLength !== 'number') return null;
   assertPositiveAtlasDimension(width, `${label}.width`);
   assertPositiveAtlasDimension(height, `${label}.height`);
-  if (!Number.isSafeInteger(src.length) || src.length < 0) {
+  if (!Number.isSafeInteger(sourceLength) || sourceLength < 0) {
     throw new RangeError(
       `packMaterialTextureAtlas: ${label}.data.length must be a non-negative ` +
-      `safe integer; received ${String(src.length)}.`,
+      `safe integer; received ${String(sourceLength)}.`,
     );
   }
   const pixelCount = width * height;
@@ -740,12 +802,12 @@ function readHandlePixels(
     );
   }
 
-  const rawHint: unknown = h.__vitrum_hint__ ?? (
-    (h.channels != null || h.dataType != null || h.colorSpace != null)
+  const rawHint: unknown = explicitHint ?? (
+    (looseChannels != null || looseDataType != null || looseColorSpace != null)
       ? {
-          ...(h.channels != null ? { channels: h.channels } : {}),
-          ...(h.dataType != null ? { dataType: h.dataType } : {}),
-          ...(h.colorSpace != null ? { colorSpace: h.colorSpace } : {}),
+          ...(looseChannels != null ? { channels: looseChannels } : {}),
+          ...(looseDataType != null ? { dataType: looseDataType } : {}),
+          ...(looseColorSpace != null ? { colorSpace: looseColorSpace } : {}),
         }
       : undefined
   );
@@ -758,7 +820,7 @@ function readHandlePixels(
   ): InvalidReadHandlePixelsResult => ({
     invalidPayload: {
       ...extra,
-      valueCount: src.length,
+      valueCount: sourceLength,
       width,
       height,
       reason,
@@ -776,13 +838,16 @@ function readHandlePixels(
     readonly colorSpace?: unknown;
   } | undefined;
 
-  const hintedStride = Number(hintRecord?.channels);
+  const hintChannels = hintRecord?.channels;
+  const hintDataType = hintRecord?.dataType;
+  const hintColorSpace = hintRecord?.colorSpace;
+  const hintedStride = Number(hintChannels);
   if (
-    hintRecord?.channels !== undefined &&
+    hintChannels !== undefined &&
     (!Number.isSafeInteger(hintedStride) || hintedStride < 1 || hintedStride > 4)
   ) {
     return invalidPayload(
-      `declared channel count ${String(hintRecord.channels)} is outside 1..4`,
+      `declared channel count ${describeTextureHintValue(hintChannels)} is outside 1..4`,
     );
   }
   const validDataTypes = new Set([
@@ -793,63 +858,67 @@ function readHandlePixels(
     'float32',
   ]);
   if (
-    hintRecord?.dataType !== undefined &&
+    hintDataType !== undefined &&
     (
-      typeof hintRecord.dataType !== 'string' ||
-      !validDataTypes.has(hintRecord.dataType)
+      typeof hintDataType !== 'string' ||
+      !validDataTypes.has(hintDataType)
     )
   ) {
     return invalidPayload(
-      `declared dataType ${String(hintRecord.dataType)} is unsupported`,
+      `declared dataType ${describeTextureHintValue(hintDataType)} is unsupported`,
     );
   }
   if (
-    hintRecord?.colorSpace !== undefined &&
-    hintRecord.colorSpace !== 'srgb' &&
-    hintRecord.colorSpace !== 'linear'
+    hintColorSpace !== undefined &&
+    hintColorSpace !== 'srgb' &&
+    hintColorSpace !== 'linear'
   ) {
     return invalidPayload(
-      `declared colorSpace ${String(hintRecord.colorSpace)} must be "srgb" or "linear"`,
+      `declared colorSpace ${describeTextureHintValue(hintColorSpace)} must be "srgb" or "linear"`,
     );
   }
   const hint: TextureHandleHint | undefined = hintRecord == null
     ? undefined
     : {
-        ...(hintRecord.channels !== undefined
+        ...(hintChannels !== undefined
           ? { channels: hintedStride as 1 | 2 | 3 | 4 }
           : {}),
-        ...(hintRecord.dataType !== undefined
-          ? { dataType: hintRecord.dataType as NonNullable<TextureHandleHint['dataType']> }
+        ...(hintDataType !== undefined
+          ? { dataType: hintDataType as NonNullable<TextureHandleHint['dataType']> }
           : {}),
-        ...(hintRecord.colorSpace !== undefined
-          ? { colorSpace: hintRecord.colorSpace }
+        ...(hintColorSpace !== undefined
+          ? { colorSpace: hintColorSpace }
           : {}),
       };
-  const inferredStride = src.length / pixelCount;
+  const inferredStride = sourceLength / pixelCount;
   const stride = hint?.channels ?? inferredStride;
   if (!Number.isSafeInteger(stride) || stride < 1 || stride > 4) {
     return {
       invalidPayload: {
-        valueCount: src.length,
+        valueCount: sourceLength,
         width,
         height,
         reason:
-          `value count ${src.length} does not resolve to an exact supported ` +
+          `value count ${sourceLength} does not resolve to an exact supported ` +
           `1..4 channel stride for ${width}x${height} pixels`,
       },
     };
   }
   const expectedValueCount = pixelCount * stride;
-  if (!Number.isSafeInteger(expectedValueCount) || src.length !== expectedValueCount) {
+  if (!Number.isSafeInteger(expectedValueCount) || sourceLength !== expectedValueCount) {
     return invalidPayload(
-      `declared ${stride}-channel payload has ${src.length} values; ` +
+      `declared ${stride}-channel payload has ${sourceLength} values; ` +
       `expected exactly ${expectedValueCount}`,
       { pixelStride: stride, expectedValueCount },
     );
   }
   const ambiguousStride = hint == null && stride !== 1 && stride !== 4
-    ? { pixelStride: stride, valueCount: src.length, width, height }
+    ? { pixelStride: stride, valueCount: sourceLength, width, height }
     : undefined;
+
+  // Source-role requirements must fail before the RGBA staging allocation or
+  // any indexed traversal of an adversarial array-like payload.
+  beforeDecode?.(width, height, stride as 1 | 2 | 3 | 4);
 
   const isFloat = src instanceof Float32Array;
   const useHalf = hint?.dataType != null
@@ -878,42 +947,6 @@ function readHandlePixels(
       )
       ? 65535
       : null;
-  for (let index = 0; index < src.length; index += 1) {
-    const value = Number(src[index]);
-    if (!Number.isFinite(value)) {
-      return invalidPayload(
-        `payload value ${index} must be finite for ${resolvedDataType}`,
-        { pixelStride: stride, expectedValueCount },
-      );
-    }
-    if (
-      integerMax != null &&
-      (!Number.isInteger(value) || value < 0 || value > integerMax)
-    ) {
-      return invalidPayload(
-        `payload value ${index} must be an integer in [0, ${integerMax}] for ${resolvedDataType}`,
-        { pixelStride: stride, expectedValueCount },
-      );
-    }
-    if (
-      resolvedDataType === 'float32' &&
-      !Number.isFinite(Math.fround(value))
-    ) {
-      return invalidPayload(
-        `payload value ${index} is outside the finite float32 range`,
-        { pixelStride: stride, expectedValueCount },
-      );
-    }
-  }
-  const intMax = useHalf || useUint16 || useFloat ? 0 : 255;
-  const dec = (v: number): number => (
-    useHalf ? halfToFloat(v) :
-      useFloat ? v :
-      useUint16 ? Math.min(1, Math.max(0, v / 65535)) :
-      intMax > 0 ? v / intMax : v
-  );
-
-  beforeDecode?.(width, height);
   const outputElementCount = reserveFloat32Allocation(
     budget,
     `${label} RGBA decode`,
@@ -922,14 +955,74 @@ function readHandlePixels(
   const out = new Float32Array(outputElementCount);
   for (let p = 0; p < pixelCount; p += 1) {
     const s = p * stride;
-    const r = dec(Number(src[s]));
-    const g = stride > 1 ? dec(Number(src[s + 1])) : r;
-    const b = stride > 2
-      ? dec(Number(src[s + 2]))
-      : stride === 1
-        ? r
-        : 0;
-    const a = stride >= 4 ? dec(Number(src[s + 3])) : 1;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let a = 1;
+    for (let lane = 0; lane < stride; lane += 1) {
+      const index = s + lane;
+      // Read each user-controlled lane exactly once. Validation, f32
+      // canonicalization, and publication all consume this same value.
+      const value = Number(src[index]);
+      if (!Number.isFinite(value)) {
+        releaseStagingAllocation(budget, out.byteLength);
+        return invalidPayload(
+          `payload value ${index} must be finite for ${resolvedDataType}`,
+          { pixelStride: stride, expectedValueCount },
+        );
+      }
+      if (
+        integerMax != null &&
+        (!Number.isInteger(value) || value < 0 || value > integerMax)
+      ) {
+        releaseStagingAllocation(budget, out.byteLength);
+        return invalidPayload(
+          `payload value ${index} must be an integer in [0, ${integerMax}] for ${resolvedDataType}`,
+          { pixelStride: stride, expectedValueCount },
+        );
+      }
+
+      let decoded = value;
+      if (resolvedDataType === 'float32') {
+        decoded = Math.fround(value);
+        if (!Number.isFinite(decoded)) {
+          releaseStagingAllocation(budget, out.byteLength);
+          return invalidPayload(
+            `payload value ${index} is outside the finite float32 range`,
+            { pixelStride: stride, expectedValueCount },
+          );
+        }
+        if (value !== 0 && decoded === 0) {
+          releaseStagingAllocation(budget, out.byteLength);
+          return invalidPayload(
+            `payload value ${index} is nonzero but underflows to zero in float32`,
+            { pixelStride: stride, expectedValueCount },
+          );
+        }
+      } else if (useHalf) {
+        decoded = halfToFloat(value);
+      } else if (useUint16) {
+        decoded = value / 65535;
+      } else {
+        decoded = value / 255;
+      }
+      if (!Number.isFinite(decoded)) {
+        releaseStagingAllocation(budget, out.byteLength);
+        return invalidPayload(
+          `decoded pixel ${p} contains a non-finite component`,
+          { pixelStride: stride, expectedValueCount },
+        );
+      }
+
+      if (lane === 0) r = decoded;
+      else if (lane === 1) g = decoded;
+      else if (lane === 2) b = decoded;
+      else a = decoded;
+    }
+    if (stride === 1) {
+      g = r;
+      b = r;
+    }
     // Public raw-channel convention shared by every backend:
     //   R → [R,R,R,1], RG → [R,G,0,1], RGB → [R,G,B,1].
     // Four-channel payloads retain authored RGBA.
@@ -937,24 +1030,6 @@ function readHandlePixels(
     out[p * 4 + 1] = g;
     out[p * 4 + 2] = b;
     out[p * 4 + 3] = a;
-    if (
-      !Number.isFinite(out[p * 4]) ||
-      !Number.isFinite(out[p * 4 + 1]) ||
-      !Number.isFinite(out[p * 4 + 2]) ||
-      !Number.isFinite(out[p * 4 + 3])
-    ) {
-      releaseStagingAllocation(budget, out.byteLength);
-      return {
-        invalidPayload: {
-          pixelStride: stride,
-          valueCount: src.length,
-          expectedValueCount,
-          width,
-          height,
-          reason: `decoded pixel ${p} contains a non-finite component`,
-        },
-      };
-    }
   }
 
   const sourceColorSpace =
@@ -969,18 +1044,21 @@ function readHandlePixels(
       height,
       data: out,
       encoding: materialTextureAtlasEncodingForDataType(resolvedDataType),
+      channelCount: stride as 1 | 2 | 3 | 4,
       ...(sourceColorSpace ? { sourceColorSpace } : {}),
     },
     ...(ambiguousStride ? { ambiguousStride } : {}),
   };
 }
 
-function packGpuCpuMirrorForRadiometricValidation(
-  layer: MaterialTextureAtlasGpuBackedLayer,
+function packGpuCpuMirrorForRadiometricAtlas(
+  layer: Pick<
+    MaterialTextureAtlasGpuBackedLayer,
+    'layer' | 'width' | 'height' | 'encoding' | 'source'
+  >,
   budget: MaterialAtlasCpuBudget,
 ): {
   readonly data: Uint32Array;
-  readonly packedReservedBytes: number;
   readonly positiveSupport: RadiometricPositiveSupport;
 } {
   const mirror = layer.source.cpuMirror;
@@ -1018,10 +1096,12 @@ function packGpuCpuMirrorForRadiometricValidation(
     );
   }
 
-  // `readHandlePixels` already applies the public raw-channel convention. The
-  // GPU conversion shader applies the same normalization to textureLoad
-  // results, so the immutable mirror and actual GPU source are byte-semantic
-  // peers before the atlas codec.
+  // `readHandlePixels` applies the public raw-channel convention. Radiometric
+  // GPU sources publish this immutable snapshot as their canonical atlas
+  // layer, so classification, preflight, mip generation, and shader sampling
+  // all consume these exact packed bytes. A separately converted GPU copy can
+  // differ at native-sRGB decode/re-encode and f32 mip-rounding boundaries and
+  // therefore cannot be used after the mirror has been accepted as exact.
   for (let pixel = 0; pixel < pixels.width * pixels.height; pixel += 1) {
     const base = pixel * 4;
     if (mirror.channels < 4) {
@@ -1047,7 +1127,6 @@ function packGpuCpuMirrorForRadiometricValidation(
     const data = packMaterialTextureAtlasPixels(pixels.data, layer.encoding);
     return {
       data,
-      packedReservedBytes: data.byteLength,
       positiveSupport,
     };
   } finally {
@@ -1113,145 +1192,312 @@ function generateRadiometricPositiveSupportMip(
   };
 }
 
+interface RadiometricAtlasValidationCodec {
+  readonly unpack: typeof unpackMaterialTextureAtlasPixels;
+  readonly generateMip: typeof generateMaterialTextureAtlasMip;
+}
+
+const DEFAULT_RADIOMETRIC_ATLAS_VALIDATION_CODEC: RadiometricAtlasValidationCodec = {
+  unpack: unpackMaterialTextureAtlasPixels,
+  generateMip: generateMaterialTextureAtlasMip,
+};
+
+function generateRadiometricAtlasMipWithBudget(
+  layer: MaterialTextureAtlasLayer,
+  packed: Uint32Array,
+  width: number,
+  height: number,
+  mipLevel: number,
+  budget: MaterialAtlasCpuBudget,
+  codec: RadiometricAtlasValidationCodec,
+): {
+  readonly width: number;
+  readonly height: number;
+  readonly data: Uint32Array;
+  readonly packedReservedBytes: number;
+} {
+  const targetWidth = Math.max(1, Math.floor(width / 2));
+  const targetHeight = Math.max(1, Math.floor(height / 2));
+  const label = `radiometric layer ${layer.layer} mip ${mipLevel + 1}`;
+  // The codec retains its target RGBA staging array until the packed target is
+  // complete. Reserve both arrays before entering it; keep only the returned
+  // packed reservation after the call.
+  const targetRgbaElements = reserveFloat32Allocation(
+    budget,
+    `${label} generated RGBA staging`,
+    [targetWidth, targetHeight, 4],
+  );
+  const targetRgbaReservedBytes = targetRgbaElements * FLOAT32_BYTES;
+  let packedReservedBytes = 0;
+  try {
+    const packedWords = reserveFloat32Allocation(
+      budget,
+      `${label} generated packed codec planes`,
+      [
+        targetWidth,
+        targetHeight,
+        materialTextureAtlasEncodingPlaneCount(layer.encoding),
+      ],
+    );
+    packedReservedBytes = packedWords * FLOAT32_BYTES;
+    let next: ReturnType<typeof generateMaterialTextureAtlasMip>;
+    try {
+      next = codec.generateMip(
+        packed,
+        width,
+        height,
+        layer.encoding,
+        layer.decodeSrgb,
+      );
+    } catch (error) {
+      releaseStagingAllocation(budget, packedReservedBytes);
+      packedReservedBytes = 0;
+      throw error;
+    }
+    if (
+      next.width !== targetWidth ||
+      next.height !== targetHeight ||
+      next.data.length !== packedWords
+    ) {
+      releaseStagingAllocation(budget, packedReservedBytes);
+      packedReservedBytes = 0;
+      throw new Error(
+        `packMaterialTextureAtlas: ${label} generated an unexpected codec payload.`,
+      );
+    }
+    return { ...next, packedReservedBytes };
+  } finally {
+    releaseStagingAllocation(budget, targetRgbaReservedBytes);
+  }
+}
+
 function validateRadiometricAtlasLayer(
   layer: MaterialTextureAtlasLayer,
   baseLevel: Uint32Array,
   uses: readonly RadiometricAtlasUse[],
   basePositiveSupport: RadiometricPositiveSupport,
   budget: MaterialAtlasCpuBudget,
+  codec: RadiometricAtlasValidationCodec =
+    DEFAULT_RADIOMETRIC_ATLAS_VALIDATION_CODEC,
 ): void {
   let width = layer.width;
   let height = layer.height;
   let packed = baseLevel;
   let positiveSupport = basePositiveSupport;
+  // The base packed level was reserved when the atlas layer was collected.
+  // Generated levels are transient and keep their own reservation only while
+  // they are the current validation source.
+  let generatedPackedReservedBytes = 0;
   try {
     for (let mipLevel = 0; mipLevel < layer.mipLevelCount; mipLevel += 1) {
-      const decoded = unpackMaterialTextureAtlasPixels(packed, layer.encoding);
-      const pixelCount = width * height;
-      if (
-        decoded.length !== pixelCount * 4 ||
-        positiveSupport.mask.length !== pixelCount
-      ) {
-        throw new Error(
-          `packMaterialTextureAtlas: radiometric layer ${layer.layer} mip ${mipLevel} ` +
-          'decoded to an unexpected texel count.',
-        );
-      }
-      for (let pixel = 0; pixel < pixelCount; pixel += 1) {
-        const base = pixel * 4;
-        const storedRgb = [
-          decoded[base]!,
-          decoded[base + 1]!,
-          decoded[base + 2]!,
-        ] as const;
-        for (let channel = 0; channel < 3; channel += 1) {
-          const value = storedRgb[channel]!;
-          if (!Number.isFinite(value) || value < 0) {
+      const decodedElements = reserveFloat32Allocation(
+        budget,
+        `radiometric layer ${layer.layer} mip ${mipLevel} decoded RGBA staging`,
+        [width, height, 4],
+      );
+      const decodedReservedBytes = decodedElements * FLOAT32_BYTES;
+      try {
+        const decoded = codec.unpack(packed, layer.encoding);
+        const pixelCount = width * height;
+        if (
+          decoded.length !== pixelCount * 4 ||
+          positiveSupport.mask.length !== pixelCount
+        ) {
+          throw new Error(
+            `packMaterialTextureAtlas: radiometric layer ${layer.layer} mip ${mipLevel} ` +
+            'decoded to an unexpected texel count.',
+          );
+        }
+        for (let pixel = 0; pixel < pixelCount; pixel += 1) {
+          const base = pixel * 4;
+          const storedRgb = [
+            decoded[base]!,
+            decoded[base + 1]!,
+            decoded[base + 2]!,
+          ] as const;
+          for (let channel = 0; channel < 3; channel += 1) {
+            const value = storedRgb[channel]!;
+            if (!Number.isFinite(value) || value < 0) {
+              throw new RangeError(
+                `packMaterialTextureAtlas: radiometric layer ${layer.layer} mip ` +
+                `${mipLevel} texel ${pixel} channel ${channel} must decode to finite ` +
+                `non-negative radiance; received ${String(value)}.`,
+              );
+            }
+          }
+          const linearRgb = storedRgb.map((value) =>
+            layer.decodeSrgb
+              ? Math.fround(srgbToLinear(value))
+              : Math.fround(value)
+          ) as [number, number, number];
+          if (linearRgb.some((value) => !Number.isFinite(value))) {
             throw new RangeError(
               `packMaterialTextureAtlas: radiometric layer ${layer.layer} mip ` +
-              `${mipLevel} texel ${pixel} channel ${channel} must decode to finite ` +
-              `non-negative radiance; received ${String(value)}.`,
+              `${mipLevel} texel ${pixel} is non-finite after color-space decoding.`,
             );
           }
-        }
-        const linearRgb = storedRgb.map((value) =>
-          layer.decodeSrgb
-            ? Math.fround(srgbToLinear(value))
-            : Math.fround(value)
-        ) as [number, number, number];
-        if (linearRgb.some((value) => !Number.isFinite(value))) {
-          throw new RangeError(
-            `packMaterialTextureAtlas: radiometric layer ${layer.layer} mip ` +
-            `${mipLevel} texel ${pixel} is non-finite after color-space decoding.`,
-          );
+
+          for (const use of uses) {
+            const label =
+              `material ${use.materialIndex} ${use.kind} layer ${layer.layer} ` +
+              `mip ${mipLevel} texel ${pixel}`;
+            const scalar = use.kind === 'emissive'
+              ? use.scalar
+              : [use.intensity, use.intensity, use.intensity] as const;
+            const sourceSupport = positiveSupport.mask[pixel]!;
+            const expectedPositive = scalar.some(
+              (component, channel) =>
+                component > 0 && (sourceSupport & (1 << channel)) !== 0,
+            );
+            const radiance = packRadianceRgbProductF32(
+              scalar,
+              linearRgb,
+              `${label} radiance`,
+            );
+            const positiveProducts = linearRgb
+              .map((component, channel) => component * scalar[channel]!)
+              .filter((component) => component > 0);
+            if (
+              expectedPositive &&
+              positiveProducts.length === 0
+            ) {
+              throw new RangeError(
+                `packMaterialTextureAtlas: positive ${label} radiance must not ` +
+                'collapse completely through atlas codec or mip generation.',
+              );
+            }
+            if (
+              positiveProducts.some(
+                (component) =>
+                  component > RADIOMETRIC_F32_MAX_WITH_DECODE_HEADROOM,
+              )
+            ) {
+              throw new RangeError(
+                `packMaterialTextureAtlas: ${label} radiance must retain finite ` +
+                'Float32 headroom across shader color-space decode and mip arithmetic.',
+              );
+            }
+            if (
+              expectedPositive &&
+              positiveProducts.every((component) => component < MIN_NORMAL_F32)
+            ) {
+              throw new RangeError(
+                `packMaterialTextureAtlas: positive ${label} radiance must retain ` +
+                'normal Float32 magnitude across shader decode and mip arithmetic.',
+              );
+            }
+            if (
+              expectedPositive &&
+              radiance.every((component) => component === 0)
+            ) {
+              throw new RangeError(
+                `packMaterialTextureAtlas: positive ${label} radiance must not ` +
+                'collapse completely to zero after atlas decoding and Float32 multiplication.',
+              );
+            }
+          }
         }
 
-        for (const use of uses) {
-          const label =
-            `material ${use.materialIndex} ${use.kind} layer ${layer.layer} ` +
-            `mip ${mipLevel} texel ${pixel}`;
-          const scalar = use.kind === 'emissive'
-            ? use.scalar
-            : [use.intensity, use.intensity, use.intensity] as const;
-          const sourceSupport = positiveSupport.mask[pixel]!;
-          const expectedPositive = scalar.some(
-            (component, channel) =>
-              component > 0 && (sourceSupport & (1 << channel)) !== 0,
+        if (mipLevel + 1 < layer.mipLevelCount) {
+          const next = generateRadiometricAtlasMipWithBudget(
+            layer,
+            packed,
+            width,
+            height,
+            mipLevel,
+            budget,
+            codec,
           );
-          const radiance = packRadianceRgbProductF32(
-            scalar,
-            linearRgb,
-            `${label} radiance`,
-          );
-          const positiveProducts = linearRgb
-            .map((component, channel) => component * scalar[channel]!)
-            .filter((component) => component > 0);
-          if (
-            expectedPositive &&
-            positiveProducts.length === 0
-          ) {
-            throw new RangeError(
-              `packMaterialTextureAtlas: positive ${label} radiance must not ` +
-              'collapse completely through atlas codec or mip generation.',
+          let nextPositiveSupport: ReturnType<
+            typeof generateRadiometricPositiveSupportMip
+          >;
+          try {
+            nextPositiveSupport = generateRadiometricPositiveSupportMip(
+              positiveSupport,
+              width,
+              height,
+              budget,
+              `radiometric layer ${layer.layer} mip ${mipLevel + 1}`,
             );
+          } catch (error) {
+            releaseStagingAllocation(budget, next.packedReservedBytes);
+            throw error;
           }
-          if (
-            positiveProducts.some(
-              (component) =>
-                component > RADIOMETRIC_F32_MAX_WITH_DECODE_HEADROOM,
-            )
-          ) {
-            throw new RangeError(
-              `packMaterialTextureAtlas: ${label} radiance must retain finite ` +
-              'Float32 headroom across shader color-space decode and mip arithmetic.',
-            );
-          }
-          if (
-            expectedPositive &&
-            positiveProducts.every((component) => component < MIN_NORMAL_F32)
-          ) {
-            throw new RangeError(
-              `packMaterialTextureAtlas: positive ${label} radiance must retain ` +
-              'normal Float32 magnitude across shader decode and mip arithmetic.',
-            );
-          }
-          if (
-            expectedPositive &&
-            radiance.every((component) => component === 0)
-          ) {
-            throw new RangeError(
-              `packMaterialTextureAtlas: positive ${label} radiance must not ` +
-              'collapse completely to zero after atlas decoding and Float32 multiplication.',
-            );
+          const previousPositiveSupportBytes = positiveSupport.reservedBytes;
+          const previousGeneratedPackedBytes = generatedPackedReservedBytes;
+          positiveSupport = nextPositiveSupport.support;
+          generatedPackedReservedBytes = next.packedReservedBytes;
+          width = next.width;
+          height = next.height;
+          packed = next.data;
+          releaseStagingAllocation(budget, previousPositiveSupportBytes);
+          if (previousGeneratedPackedBytes > 0) {
+            releaseStagingAllocation(budget, previousGeneratedPackedBytes);
           }
         }
-      }
-
-      if (mipLevel + 1 < layer.mipLevelCount) {
-        const next = generateMaterialTextureAtlasMip(
-          packed,
-          width,
-          height,
-          layer.encoding,
-          layer.decodeSrgb,
-        );
-        const nextPositiveSupport = generateRadiometricPositiveSupportMip(
-          positiveSupport,
-          width,
-          height,
-          budget,
-          `radiometric layer ${layer.layer} mip ${mipLevel + 1}`,
-        );
-        releaseStagingAllocation(budget, positiveSupport.reservedBytes);
-        positiveSupport = nextPositiveSupport.support;
-        width = next.width;
-        height = next.height;
-        packed = next.data;
+      } finally {
+        releaseStagingAllocation(budget, decodedReservedBytes);
       }
     }
   } finally {
     releaseStagingAllocation(budget, positiveSupport.reservedBytes);
+    if (generatedPackedReservedBytes > 0) {
+      releaseStagingAllocation(budget, generatedPackedReservedBytes);
+    }
   }
+}
+
+/**
+ * @internal Test seam for adversarial transaction-budget ordering. This is not
+ * re-exported from the package: it drives the real validator with one logical
+ * rgba32float texel while callbacks make codec entry observable.
+ */
+export function _probeRadiometricAtlasValidationBudgetForTest(options: {
+  readonly usedBytes: number;
+  readonly aggregateLimitBytes: number;
+  readonly mipLevelCount: 1 | 2;
+  readonly onDecode: () => void;
+  readonly onGenerateMip: () => void;
+}): void {
+  if (
+    !Number.isSafeInteger(options.usedBytes) ||
+    options.usedBytes < 0 ||
+    !Number.isSafeInteger(options.aggregateLimitBytes) ||
+    options.aggregateLimitBytes < options.usedBytes
+  ) {
+    throw new RangeError('radiometric atlas budget probe requires valid byte limits.');
+  }
+  const encoding = materialTextureAtlasEncodingForDataType('float32');
+  const data = new Uint32Array(4);
+  validateRadiometricAtlasLayer(
+    {
+      kind: 'cpu',
+      layer: 0,
+      width: 1,
+      height: 1,
+      encoding,
+      mipLevelCount: options.mipLevelCount,
+      decodeSrgb: false,
+      data,
+    },
+    data,
+    [],
+    { mask: new Uint8Array(1), reservedBytes: 0 },
+    {
+      usedBytes: BigInt(options.usedBytes),
+      aggregateLimitBytes: BigInt(options.aggregateLimitBytes),
+    },
+    {
+      unpack: () => {
+        options.onDecode();
+        return new Float32Array(4);
+      },
+      generateMip: () => {
+        options.onGenerateMip();
+        return { width: 1, height: 1, data: new Uint32Array(4) };
+      },
+    },
+  );
 }
 
 function validateRadiometricAtlasLayers(
@@ -1280,22 +1526,13 @@ function validateRadiometricAtlasLayers(
       );
       continue;
     }
-    // Opaque GPU-only light maps remain a supported ordinary-material input.
-    // Their shader product is guarded fail-dark; emissive GPU maps are rejected
-    // earlier because emitter distributions require an exact CPU mirror.
-    if (layer.source.cpuMirror == null) continue;
-    const mirror = packGpuCpuMirrorForRadiometricValidation(layer, budget);
-    try {
-      validateRadiometricAtlasLayer(
-        layer,
-        mirror.data,
-        uses,
-        mirror.positiveSupport,
-        budget,
-      );
-    } finally {
-      releaseStagingAllocation(budget, mirror.packedReservedBytes);
-    }
+    // Every radiometric GPU source is required to carry an exact CPU mirror and
+    // is canonicalised into a CPU atlas layer during collection. Reaching a GPU
+    // layer here means collection violated the pre-publication invariant.
+    throw new Error(
+      `packMaterialTextureAtlas: radiometric GPU layer ${layer.layer} ` +
+      'reached validation without its required exact CPU mirror.',
+    );
   }
 }
 
@@ -1326,7 +1563,7 @@ function wrapIndex(mode: TextureWrapMode | undefined): number {
 function samplerPolicyPacked(ref: TextureRef, texCoordCode: number): number {
   const wrapS = wrapIndex(ref.wrapS);
   const wrapT = wrapIndex(ref.wrapT);
-  const mipFilter = MIP_FILTER_INDEX[ref.mipFilter ?? 'none'];
+  const mipFilter = MIP_FILTER_INDEX[ref.mipFilter ?? 'linear'];
   const magFilter = FILTER_MODE_INDEX[ref.magFilter ?? 'nearest'];
   const minFilter = FILTER_MODE_INDEX[ref.minFilter ?? 'nearest'];
   return (
@@ -1367,7 +1604,8 @@ function clampedUnit(value: number | undefined, fallback: number): number {
 }
 
 function clampedNonNegative(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
+  const clamped = Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
+  return finiteOrFallback(clamped, fallback);
 }
 
 function clampedSignedUnit(value: number | undefined, fallback: number): number {
@@ -1380,7 +1618,8 @@ function nonNegativeVec3Component(
   fallback: number,
 ): number {
   const value = color?.[index];
-  return Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
+  const clamped = Number.isFinite(value) ? Math.max(0, value ?? fallback) : fallback;
+  return finiteOrFallback(clamped, fallback);
 }
 
 function dielectricF0FromIor(ior: number | undefined): number {
@@ -1446,7 +1685,10 @@ export function packMaterialTextureAtlas(
     [mandatoryMetaWidth, mandatoryMetaHeight, 4n],
   );
 
-  const allocationBudget: MaterialAtlasCpuBudget = { usedBytes: 0n };
+  const allocationBudget: MaterialAtlasCpuBudget = {
+    usedBytes: 0n,
+    aggregateLimitBytes: MATERIAL_TEXTURE_ATLAS_CPU_AGGREGATE_BUDGET_BIGINT,
+  };
   const opticalMetaElementCount = MATERIAL_OPTICAL_META_TEXELS * 4;
   reserveFloat32Allocation(
     allocationBudget,
@@ -1454,6 +1696,7 @@ export function packMaterialTextureAtlas(
     [BigInt(materials.length) + 1n, opticalMetaElementCount],
   );
   const readable = new Map<unknown, Partial<Record<AtlasColorSpace, AtlasLayerRecord>>>();
+  const sourceChannelCounts = new Map<unknown, 1 | 2 | 3 | 4>();
   const ordered: OrderedAtlasLayer[] = [];
   const mipmappedLayers = new Set<number>();
   const diagnostics: MaterialTextureAtlasDiagnostic[] = [];
@@ -1529,6 +1772,51 @@ export function packMaterialTextureAtlas(
   const cpuRadiometricPositiveSupport =
     new Map<number, RadiometricPositiveSupport>();
 
+  const minimumAuthoredChannelCount = (field: AtlasMapField): 1 | 3 | 4 => {
+    if (
+      field === 'normalMap' ||
+      field === 'clearcoatNormalMap' ||
+      field === 'frontLayer.normalMap' ||
+      field === 'backLayer.normalMap' ||
+      field === 'anisotropyMap'
+    ) {
+      return 3;
+    }
+    if (
+      field === 'specularIntensityMap' ||
+      field === 'sheenRoughnessMap'
+    ) {
+      return 4;
+    }
+    return 1;
+  };
+  const assertMaterialMapChannels = (
+    field: AtlasMapField,
+    channelCount: 1 | 2 | 3 | 4,
+    materialIndex: number,
+  ): void => {
+    if (field === 'metallicMap' && channelCount === 2) {
+      throw new RangeError(
+        `packMaterialTextureAtlas: material ${materialIndex} metallicMap uses a ` +
+        '2-channel source. This role requires at least 3 authored channels ' +
+        'containing B, unless exactly 1 channel is supplied (R is replicated ' +
+        'to the consumed B lane).',
+      );
+    }
+    const minimum = minimumAuthoredChannelCount(field);
+    if (channelCount >= minimum) return;
+    const requirement = minimum === 4
+      ? 'the authored alpha channel consumed by this map role'
+      : field === 'anisotropyMap'
+        ? 'authored RG direction and B strength channels'
+        : 'authored XYZ/RGB normal channels; one/two-channel Z reconstruction is not part of the material-atlas source contract';
+    throw new RangeError(
+      `packMaterialTextureAtlas: material ${materialIndex} ${field} uses a ` +
+      `${channelCount}-channel source. This role requires at least ${minimum} ` +
+      `channels for ${requirement}.`,
+    );
+  };
+
   const collect = (
     material: MaterialSpec,
     materialIndex: number,
@@ -1538,15 +1826,15 @@ export function packMaterialTextureAtlas(
     const ref = materialTextureRefForField(material, field);
     if (ref?.handle == null) return;
     if (
-      field === 'emissiveMap' &&
+      (field === 'emissiveMap' || field === 'lightMap') &&
       isWalkaroundWebGpuTextureSource(ref.handle) &&
       ref.handle.cpuMirror == null
     ) {
       const source = textureRefSourceMetadata(ref);
       throw new TypeError(
-        `packMaterialTextureAtlas: material ${materialIndex} emissiveMap uses a ` +
+        `packMaterialTextureAtlas: material ${materialIndex} ${field} uses a ` +
         'GPU source without the exact cpuMirror required for emitter ' +
-        'classification and atlas-radiance preflight' +
+        'classification or atlas-radiance preflight' +
         `${source?.path !== undefined ? ` at ${source.path}` : ''}.`,
       );
     }
@@ -1564,7 +1852,8 @@ export function packMaterialTextureAtlas(
         transformComponents,
         ...sourceMetaFields(source),
         message:
-          `${field} texture transform contains non-finite component(s) ` +
+          `${field} texture transform contains component(s) outside the finite, ` +
+          'non-underflowing float32 domain ' +
           `${transformComponents.join(', ')}` +
           `${source?.path !== undefined ? ` at ${source.path}` : ''}; ` +
           'invalid components are replaced with the identity transform fallback.',
@@ -1573,15 +1862,25 @@ export function packMaterialTextureAtlas(
     let perHandle = readable.get(ref.handle);
     const existing = perHandle?.[colorSpace];
     if (existing != null) {
+      const channelCount = sourceChannelCounts.get(ref.handle);
+      if (channelCount == null) {
+        throw new Error(
+          'packMaterialTextureAtlas: internal source-channel metadata drifted.',
+        );
+      }
+      assertMaterialMapChannels(field, channelCount, materialIndex);
       pushInvalidTransformDiagnostic();
       fieldLayers[field].add(existing.layer);
-      if (ref.mipFilter != null && ref.mipFilter !== 'none') {
+      if (ref.mipFilter !== 'none') {
         mipmappedLayers.add(existing.layer);
       }
       return;
     }
 
     if (isWalkaroundWebGpuTextureSource(ref.handle)) {
+      const channelCount =
+        walkaroundTextureFormatChannelCount(ref.handle.format);
+      assertMaterialMapChannels(field, channelCount, materialIndex);
       if (colorSpace === 'linear' && ref.handle.colorSpace !== 'linear') {
         const source = textureRefSourceMetadata(ref);
         throw new RangeError(
@@ -1603,6 +1902,50 @@ export function packMaterialTextureAtlas(
       const encoding = materialTextureAtlasEncodingForGpuFormat(ref.handle.format);
       const decodeSrgb =
         colorSpace === 'srgb' && ref.handle.colorSpace === 'srgb';
+      const radiometric =
+        radiometricHandleColorSpaces.get(ref.handle)?.has(colorSpace) === true;
+      if (radiometric && ref.handle.cpuMirror != null) {
+        const mirror = packGpuCpuMirrorForRadiometricAtlas(
+          {
+            layer,
+            width: ref.handle.width,
+            height: ref.handle.height,
+            encoding,
+            source: ref.handle,
+          },
+          allocationBudget,
+        );
+        cpuRadiometricPositiveSupport.set(layer, mirror.positiveSupport);
+        const record: AtlasLayerRecord = {
+          layer,
+          width: ref.handle.width,
+          height: ref.handle.height,
+          source: {
+            kind: 'cpu',
+            data: mirror.data,
+            encoding,
+            decodeSrgb,
+          },
+        };
+        ordered.push({
+          handle: ref.handle,
+          colorSpace,
+          record: {
+            width: record.width,
+            height: record.height,
+            source: record.source,
+          },
+        });
+        perHandle ??= {};
+        perHandle[colorSpace] = record;
+        readable.set(ref.handle, perHandle);
+        sourceChannelCounts.set(ref.handle, channelCount);
+        fieldLayers[field].add(layer);
+        if (ref.mipFilter !== 'none') {
+          mipmappedLayers.add(layer);
+        }
+        return;
+      }
       const record: AtlasLayerRecord = {
         layer,
         width: ref.handle.width,
@@ -1626,8 +1969,9 @@ export function packMaterialTextureAtlas(
       perHandle ??= {};
       perHandle[colorSpace] = record;
       readable.set(ref.handle, perHandle);
+      sourceChannelCounts.set(ref.handle, channelCount);
       fieldLayers[field].add(layer);
-      if (ref.mipFilter != null && ref.mipFilter !== 'none') {
+      if (ref.mipFilter !== 'none') {
         mipmappedLayers.add(layer);
       }
       return;
@@ -1646,6 +1990,9 @@ export function packMaterialTextureAtlas(
       ref.handle,
       allocationBudget,
       `material ${materialIndex} ${field}`,
+      (_width, _height, channelCount) => {
+        assertMaterialMapChannels(field, channelCount, materialIndex);
+      },
     );
     if (read == null) {
       const source = textureRefSourceMetadata(ref);
@@ -1709,6 +2056,7 @@ export function packMaterialTextureAtlas(
     }
     pushInvalidTransformDiagnostic();
     const pixels = read.pixels;
+    assertMaterialMapChannels(field, pixels.channelCount, materialIndex);
     if (colorSpace === 'linear' && pixels.sourceColorSpace === 'srgb') {
       const source = textureRefSourceMetadata(ref);
       throw new RangeError(
@@ -1764,8 +2112,9 @@ export function packMaterialTextureAtlas(
     perHandle ??= {};
     perHandle[colorSpace] = record;
     readable.set(ref.handle, perHandle);
+    sourceChannelCounts.set(ref.handle, pixels.channelCount);
     fieldLayers[field].add(layer);
-    if (ref.mipFilter != null && ref.mipFilter !== 'none') {
+    if (ref.mipFilter !== 'none') {
       mipmappedLayers.add(layer);
     }
   };
@@ -2031,24 +2380,27 @@ export function packMaterialTextureAtlas(
   };
 
   const writeNormalScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
-    writeScalarMeta(texel, Number.isFinite(mat?.normalScale)
+    const clamped = Number.isFinite(mat?.normalScale)
       ? Math.max(0, mat?.normalScale ?? 1)
-      : 1);
+      : 1;
+    writeScalarMeta(texel, finiteOrFallback(clamped, 1));
   };
 
   const writeFaceLayerNormalScaleMeta = (
     layer: MaterialSpec['frontLayer']   | undefined,
     texel: number,
   ): void => {
-    writeScalarMeta(texel, Number.isFinite(layer?.normalScale)
+    const clamped = Number.isFinite(layer?.normalScale)
       ? Math.max(0, layer?.normalScale ?? 1)
-      : 1);
+      : 1;
+    writeScalarMeta(texel, finiteOrFallback(clamped, 1));
   };
 
   const writeClearcoatNormalScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
-    writeScalarMeta(texel, Number.isFinite(mat?.clearcoatNormalScale)
+    const clamped = Number.isFinite(mat?.clearcoatNormalScale)
       ? Math.max(0, mat?.clearcoatNormalScale ?? 1)
-      : 1);
+      : 1;
+    writeScalarMeta(texel, finiteOrFallback(clamped, 1));
   };
 
   const writeLightMapIntensityMeta = (
@@ -2070,12 +2422,18 @@ export function packMaterialTextureAtlas(
     const dielectricF0 = dielectricF0FromIor(mat?.ior);
     // Store absolute dielectric F0. Nonnegative KHR specularColor factors are
     // intentionally unbounded, so authored values above one remain observable.
-    baseColorMetaData[b] =
-      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 0, 1);
-    baseColorMetaData[b + 1] =
-      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 1, 1);
-    baseColorMetaData[b + 2] =
-      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 2, 1);
+    baseColorMetaData[b] = finiteOrFallback(
+      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 0, 1),
+      dielectricF0,
+    );
+    baseColorMetaData[b + 1] = finiteOrFallback(
+      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 1, 1),
+      dielectricF0,
+    );
+    baseColorMetaData[b + 2] = finiteOrFallback(
+      dielectricF0 * nonNegativeVec3Component(mat?.specularColor, 2, 1),
+      dielectricF0,
+    );
     baseColorMetaData[b + 3] = clampedUnit(mat?.specularIntensity, 1);
   };
 
@@ -2098,9 +2456,7 @@ export function packMaterialTextureAtlas(
   const writeAnisotropyMeta = (mat: MaterialSpec | undefined, texel: number): void => {
     const b = texel * 4;
     baseColorMetaData[b] = clampedUnit(mat?.anisotropy, 0);
-    baseColorMetaData[b + 1] = Number.isFinite(mat?.anisotropyRotation)
-      ? mat?.anisotropyRotation ?? 0
-      : 0;
+    baseColorMetaData[b + 1] = finiteOrFallback(mat?.anisotropyRotation, 0);
     baseColorMetaData[b + 2] = 0;
     baseColorMetaData[b + 3] = 0;
   };
@@ -2109,15 +2465,20 @@ export function packMaterialTextureAtlas(
     const b = texel * 4;
     const range = mat?.iridescenceThicknessRange;
     baseColorMetaData[b] = clampedUnit(mat?.iridescence, 0);
-    baseColorMetaData[b + 1] = Number.isFinite(mat?.iridescenceIor)
-      ? Math.max(1, mat?.iridescenceIor ?? 1.3)
-      : 1.3;
-    baseColorMetaData[b + 2] = Number.isFinite(range?.[0])
-      ? Math.max(0, range?.[0] ?? 100)
-      : 100;
-    baseColorMetaData[b + 3] = Number.isFinite(range?.[1])
-      ? Math.max(0, range?.[1] ?? 400)
-      : 400;
+    baseColorMetaData[b + 1] = finiteOrFallback(
+      Number.isFinite(mat?.iridescenceIor)
+        ? Math.max(1, mat?.iridescenceIor ?? 1.3)
+        : 1.3,
+      1.3,
+    );
+    baseColorMetaData[b + 2] = finiteOrFallback(
+      Number.isFinite(range?.[0]) ? Math.max(0, range?.[0] ?? 100) : 100,
+      100,
+    );
+    baseColorMetaData[b + 3] = finiteOrFallback(
+      Number.isFinite(range?.[1]) ? Math.max(0, range?.[1] ?? 400) : 400,
+      400,
+    );
   };
 
   const writeBumpScaleMeta = (mat: MaterialSpec | undefined, texel: number): void => {
@@ -2127,9 +2488,7 @@ export function packMaterialTextureAtlas(
     const record = ref?.handle != null && compactTexCoordCode.has(texCoord)
       ? readable.get(ref.handle)?.linear
       : undefined;
-    baseColorMetaData[b] = Number.isFinite(mat?.bumpScale)
-      ? mat?.bumpScale ?? 1
-      : 1;
+    baseColorMetaData[b] = finiteOrFallback(mat?.bumpScale, 1);
     baseColorMetaData[b + 1] = record?.width ?? 0;
     baseColorMetaData[b + 2] = record?.height ?? 0;
     baseColorMetaData[b + 3] = 0;

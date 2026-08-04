@@ -24,7 +24,7 @@
  *   2. PIPELINE LAYOUT + REGISTERED-PASS SET — running the REAL `compilePipelines`
  *      against a recording mock device, the `risGi` compute pipeline uses a
  *      pipeline layout with exactly FOUR bind-group layouts both OFF and ON.
- *      The ON group(3) layout extends the ordinary bindings 0..6 with NRC
+ *      The ON group(3) layout extends the ordinary bindings 0,1,3..6 with NRC
  *      bindings 7..9, and the SET of compiled pipeline labels is IDENTICAL —
  *      no NRC-only pipeline is added and no pass is removed.
  */
@@ -163,8 +163,8 @@ describe('gi-ris PIPELINE LAYOUT + registered-pass set — gated at compile time
   it('NRC extends only risGi group(3); DDGI state reuses the irradiance binding', async () => {
     const off = (await compileAndCollect(false)).find((r) => r.label === 'risGi');
     const on = (await compileAndCollect(true)).find((r) => r.label === 'risGi');
-    expect(off?.bglBindings[3]).toEqual([0, 1, 2, 3, 4, 5, 6]);
-    expect(on?.bglBindings[3]).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(off?.bglBindings[3]).toEqual([0, 1, 3, 4, 5, 6]);
+    expect(on?.bglBindings[3]).toEqual([0, 1, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it('the SET of compiled pipelines is IDENTICAL OFF vs ON (no pipeline/pass added or removed)', async () => {

@@ -92,7 +92,7 @@ describe('FrameParams UBO layout (pt-webgpu)', () => {
       'sceneRadius: f32',
       'directLightingMode: u32',
       'rayOriginBias: f32',
-      'environmentDistantPower: f32',
+      'environmentDistantProposalPmf: f32',
     ]);
   });
 

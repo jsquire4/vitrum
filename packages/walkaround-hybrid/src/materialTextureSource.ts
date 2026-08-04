@@ -81,9 +81,11 @@ export function walkaroundTextureFormatChannelCount(
 export const WALKAROUND_CPU_MIRROR_SNAPSHOT_BUDGET_BYTES = 256 * 1024 * 1024;
 
 /**
- * Immutable texel snapshot for the selected GPU mip/layer. Forward shading
- * continues to use the host-owned GPU texture; CPU emitter-distribution
- * builders use this mirror so mapped mesh-light sampling has the same texels.
+ * Immutable texel snapshot for the selected GPU mip/layer. When the source is
+ * used radiometrically, the atlas publishes this snapshot for forward shading
+ * as well as CPU emitter-distribution construction so both paths consume the
+ * same encoded texels. Non-radiometric maps continue to use the host-owned GPU
+ * texture directly.
  */
 export interface WalkaroundTextureCpuMirror {
   readonly width: number;
@@ -135,9 +137,12 @@ export interface WalkaroundWebGpuTextureSource {
   readonly width: number;
   readonly height: number;
   /**
-   * Exact CPU snapshot of the selected mip/layer. Required for emissive maps
-   * whose texel-varying radiance participates in CPU-built CDF/alias/light-tree
-   * distributions; ordinary material maps do not require it.
+   * Exact CPU snapshot of the selected mip/layer. Required for radiometric
+   * emissive and light maps. A radiometric use publishes this immutable
+   * snapshot as its canonical atlas layer so preflight, generated mips,
+   * forward shading, and CPU-built emitter distributions consume identical
+   * packed bytes. Ordinary material maps do not require it and continue to use
+   * the host-owned GPU texture directly.
    */
   readonly cpuMirror?: WalkaroundTextureCpuMirror;
 }
@@ -163,7 +168,8 @@ export interface WalkaroundWebGpuTextureSourceOptions {
   /**
    * Exact CPU-readable snapshot of the selected mip/layer. The factory copies
    * and freezes it; later host mutations cannot desynchronise GPU shading from
-   * mapped-emitter importance sampling.
+   * radiometric preflight or mapped-emitter importance sampling. Required when
+   * this source is used by an emissive or light map.
    */
   readonly cpuMirror?: WalkaroundTextureCpuMirrorInput;
 }
@@ -178,15 +184,22 @@ function cpuMirrorElementBytes(dataType: WalkaroundTextureCpuMirrorDataType): nu
   return dataType === 'uint8' ? 1 : dataType === 'float32' ? 4 : 2;
 }
 
-function immutableNumericSnapshot(
-  data: ArrayLike<number>,
+type MutableCpuMirrorSnapshot = Uint8Array | Uint16Array | Float32Array;
+
+function allocateCpuMirrorSnapshot(
+  length: number,
   dataType: WalkaroundTextureCpuMirrorDataType,
-): ArrayLike<number> {
-  const snapshot = dataType === 'uint8'
-    ? Uint8Array.from(data)
+): MutableCpuMirrorSnapshot {
+  return dataType === 'uint8'
+    ? new Uint8Array(length)
     : dataType === 'float32'
-      ? Float32Array.from(data)
-      : Uint16Array.from(data);
+      ? new Float32Array(length)
+      : new Uint16Array(length);
+}
+
+function immutableNumericSnapshot(
+  snapshot: MutableCpuMirrorSnapshot,
+): ArrayLike<number> {
   const target = Object.create(null) as { readonly length: number };
   Object.defineProperty(target, 'length', {
     value: snapshot.length,
@@ -219,52 +232,74 @@ function createCpuMirrorSnapshot(
   input: WalkaroundTextureCpuMirrorInput,
   expectedWidth: number,
   expectedHeight: number,
+  expectedChannels: 1 | 2 | 3 | 4,
+  sourceFormat: GPUTextureFormat,
   sourceColorSpace: WalkaroundTextureColorSpace,
 ): WalkaroundTextureCpuMirror {
   if (input == null || typeof input !== 'object' || Array.isArray(input)) {
     throw new TypeError('createWalkaroundWebGpuTextureSource: cpuMirror must be an object.');
   }
-  if (input.width !== expectedWidth || input.height !== expectedHeight) {
+  // Snapshot every user-controlled descriptor property exactly once. All
+  // validation, allocation, and publication below use only these locals.
+  const inputWidth = input.width;
+  const inputHeight = input.height;
+  const inputChannels = input.channels;
+  const inputDataType = input.dataType;
+  const inputColorSpace = input.colorSpace;
+  const inputData = input.data;
+  if (inputWidth !== expectedWidth || inputHeight !== expectedHeight) {
     throw new RangeError(
       'createWalkaroundWebGpuTextureSource: cpuMirror dimensions must exactly match the selected ' +
       `GPU subresource (${expectedWidth}x${expectedHeight}); received ` +
-      `${String(input.width)}x${String(input.height)}.`,
+      `${String(inputWidth)}x${String(inputHeight)}.`,
     );
   }
-  if (![1, 2, 3, 4].includes(input.channels)) {
+  if (![1, 2, 3, 4].includes(inputChannels)) {
     throw new RangeError(
       'createWalkaroundWebGpuTextureSource: cpuMirror.channels must be 1, 2, 3, or 4; ' +
-      `received ${String(input.channels)}.`,
+      `received ${String(inputChannels)}.`,
     );
   }
-  if (!['uint8', 'uint16', 'float16', 'half-float', 'float32'].includes(input.dataType)) {
+  if (inputChannels !== expectedChannels) {
     throw new RangeError(
-      `createWalkaroundWebGpuTextureSource: unsupported cpuMirror.dataType ${String(input.dataType)}.`,
+      'createWalkaroundWebGpuTextureSource: cpuMirror.channels must match the ' +
+      `selected GPU format ${sourceFormat} (${expectedChannels}); received ${String(inputChannels)}.`,
     );
   }
-  if (input.colorSpace !== sourceColorSpace) {
+  if (!['uint8', 'uint16', 'float16', 'half-float', 'float32'].includes(inputDataType)) {
+    throw new RangeError(
+      `createWalkaroundWebGpuTextureSource: unsupported cpuMirror.dataType ${String(inputDataType)}.`,
+    );
+  }
+  if (inputColorSpace !== sourceColorSpace) {
     throw new RangeError(
       'createWalkaroundWebGpuTextureSource: cpuMirror.colorSpace must match the GPU source ' +
-      `colorSpace (${sourceColorSpace}); received ${String(input.colorSpace)}.`,
+      `colorSpace (${sourceColorSpace}); received ${String(inputColorSpace)}.`,
     );
   }
-  if (input.data == null || typeof input.data.length !== 'number') {
+  if (inputData == null) {
+    throw new TypeError('createWalkaroundWebGpuTextureSource: cpuMirror.data must be array-like.');
+  }
+  // Read the user-controlled length once so a getter cannot pass validation
+  // with one value and redirect the subsequent allocation/traversal.
+  const inputDataLength = inputData.length;
+  if (typeof inputDataLength !== 'number') {
     throw new TypeError('createWalkaroundWebGpuTextureSource: cpuMirror.data must be array-like.');
   }
   const pixelCount = expectedWidth * expectedHeight;
-  const expectedLength = pixelCount * input.channels;
+  const expectedLength = pixelCount * inputChannels;
   if (!Number.isSafeInteger(pixelCount) || !Number.isSafeInteger(expectedLength)) {
     throw new RangeError(
       'createWalkaroundWebGpuTextureSource: cpuMirror element count exceeds the safe integer range.',
     );
   }
-  if (!Number.isSafeInteger(input.data.length) || input.data.length !== expectedLength) {
+  if (!Number.isSafeInteger(inputDataLength) || inputDataLength !== expectedLength) {
     throw new RangeError(
       `createWalkaroundWebGpuTextureSource: cpuMirror.data length must be exactly ${expectedLength}; ` +
-      `received ${String(input.data.length)}.`,
+      `received ${String(inputDataLength)}.`,
     );
   }
-  const snapshotBytes = expectedLength * cpuMirrorElementBytes(input.dataType);
+  const snapshotBytes = expectedLength * cpuMirrorElementBytes(inputDataType);
   if (
     !Number.isSafeInteger(snapshotBytes) ||
     snapshotBytes > WALKAROUND_CPU_MIRROR_SNAPSHOT_BUDGET_BYTES
@@ -274,32 +309,52 @@ function createCpuMirrorSnapshot(
       `the per-source budget is ${WALKAROUND_CPU_MIRROR_SNAPSHOT_BUDGET_BYTES} bytes.`,
     );
   }
-  const integerMax = input.dataType === 'uint8'
+  const integerMax = inputDataType === 'uint8'
     ? 255
-    : input.dataType === 'float32'
+    : inputDataType === 'float32'
       ? null
       : 65535;
-  for (let index = 0; index < input.data.length; index += 1) {
-    const value = Number(input.data[index]);
+  // Allocate only after the complete byte budget is known, then validate and
+  // publish the exact same single read of every user-controlled element.
+  const snapshot = allocateCpuMirrorSnapshot(expectedLength, inputDataType);
+  for (let index = 0; index < expectedLength; index += 1) {
+    const value = Number(inputData[index]);
     if (!Number.isFinite(value)) {
       throw new RangeError(
         `createWalkaroundWebGpuTextureSource: cpuMirror.data[${index}] must be finite.`,
       );
     }
+    if (inputDataType === 'float32') {
+      const canonical = Math.fround(value);
+      if (!Number.isFinite(canonical)) {
+        throw new RangeError(
+          `createWalkaroundWebGpuTextureSource: cpuMirror.data[${index}] must be representable as finite float32.`,
+        );
+      }
+      if (value !== 0 && canonical === 0) {
+        throw new RangeError(
+          `createWalkaroundWebGpuTextureSource: cpuMirror.data[${index}] is nonzero but underflows to zero in float32.`,
+        );
+      }
+      snapshot[index] = canonical;
+    }
     if (integerMax != null && (!Number.isInteger(value) || value < 0 || value > integerMax)) {
       throw new RangeError(
         `createWalkaroundWebGpuTextureSource: cpuMirror.data[${index}] must be an integer in ` +
-        `[0, ${integerMax}] for ${input.dataType}.`,
+        `[0, ${integerMax}] for ${inputDataType}.`,
       );
+    }
+    if (integerMax != null) {
+      snapshot[index] = value;
     }
   }
   return Object.freeze({
     width: expectedWidth,
     height: expectedHeight,
-    channels: input.channels,
-    dataType: input.dataType,
-    colorSpace: input.colorSpace,
-    data: immutableNumericSnapshot(input.data, input.dataType),
+    channels: inputChannels,
+    dataType: inputDataType,
+    colorSpace: inputColorSpace,
+    data: immutableNumericSnapshot(snapshot),
   });
 }
 
@@ -319,33 +374,45 @@ export function createWalkaroundWebGpuTextureSource(
   if (texture == null || typeof texture !== 'object' || typeof texture.createView !== 'function') {
     throw new TypeError('createWalkaroundWebGpuTextureSource: texture must be a GPUTexture.');
   }
-  if (options?.format !== texture.format) {
+  if (options == null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError('createWalkaroundWebGpuTextureSource: options must be an object.');
+  }
+  // Options may be a getter-backed host object. Capture the complete tuple
+  // once so validation, compatibility identity, mirror construction, and the
+  // returned descriptor cannot observe different values.
+  const sourceFormat = options.format;
+  const sourceColorSpace = options.colorSpace;
+  const contentRevision = options.contentRevision;
+  const baseMipLevelInput = options.baseMipLevel;
+  const arrayLayerInput = options.arrayLayer;
+  const cpuMirrorInput = options.cpuMirror;
+  if (sourceFormat !== texture.format) {
     throw new RangeError(
-      `createWalkaroundWebGpuTextureSource: declared format ${String(options?.format)} ` +
+      `createWalkaroundWebGpuTextureSource: declared format ${String(sourceFormat)} ` +
       `does not match texture.format ${String(texture.format)}.`,
     );
   }
-  if (options.colorSpace !== 'srgb' && options.colorSpace !== 'linear') {
+  if (sourceColorSpace !== 'srgb' && sourceColorSpace !== 'linear') {
     throw new RangeError(
       `createWalkaroundWebGpuTextureSource: colorSpace must be "srgb" or "linear"; ` +
-      `received ${String(options.colorSpace)}.`,
+      `received ${String(sourceColorSpace)}.`,
     );
   }
   if (
-    options.contentRevision != null &&
+    contentRevision != null &&
     (
-      typeof options.contentRevision !== 'string' ||
-      options.contentRevision.length === 0 ||
-      options.contentRevision.length > 4096
+      typeof contentRevision !== 'string' ||
+      contentRevision.length === 0 ||
+      contentRevision.length > 4096
     )
   ) {
     throw new RangeError(
       'createWalkaroundWebGpuTextureSource: contentRevision must be a non-empty string of at most 4096 code units.',
     );
   }
-  if (options.format.endsWith('-srgb') && options.colorSpace !== 'srgb') {
+  if (sourceFormat.endsWith('-srgb') && sourceColorSpace !== 'srgb') {
     throw new RangeError(
-      `createWalkaroundWebGpuTextureSource: native-sRGB format ${options.format} ` +
+      `createWalkaroundWebGpuTextureSource: native-sRGB format ${sourceFormat} ` +
       'cannot be declared as linear.',
     );
   }
@@ -386,8 +453,8 @@ export function createWalkaroundWebGpuTextureSource(
     );
   }
 
-  const baseMipLevel = options.baseMipLevel ?? 0;
-  const arrayLayer = options.arrayLayer ?? 0;
+  const baseMipLevel = baseMipLevelInput ?? 0;
+  const arrayLayer = arrayLayerInput ?? 0;
   assertNonNegativeInteger(baseMipLevel, 'createWalkaroundWebGpuTextureSource: baseMipLevel');
   assertNonNegativeInteger(arrayLayer, 'createWalkaroundWebGpuTextureSource: arrayLayer');
   if (baseMipLevel >= texture.mipLevelCount) {
@@ -406,20 +473,17 @@ export function createWalkaroundWebGpuTextureSource(
   const width = Math.max(1, Math.floor(texture.width / (2 ** baseMipLevel)));
   const height = Math.max(1, Math.floor(texture.height / (2 ** baseMipLevel)));
   const expectedMirrorChannels =
-    walkaroundTextureFormatChannelCount(options.format);
-  if (
-    options.cpuMirror != null &&
-    options.cpuMirror.channels !== expectedMirrorChannels
-  ) {
-    throw new RangeError(
-      'createWalkaroundWebGpuTextureSource: cpuMirror.channels must match the ' +
-      `selected GPU format ${options.format} (${expectedMirrorChannels}); received ` +
-      `${String(options.cpuMirror.channels)}.`,
-    );
-  }
-  const cpuMirror = options.cpuMirror == null
+    walkaroundTextureFormatChannelCount(sourceFormat);
+  const cpuMirror = cpuMirrorInput == null
     ? undefined
-    : createCpuMirrorSnapshot(options.cpuMirror, width, height, options.colorSpace);
+    : createCpuMirrorSnapshot(
+        cpuMirrorInput,
+        width,
+        height,
+        expectedMirrorChannels,
+        sourceFormat,
+        sourceColorSpace,
+      );
   if (!Number.isSafeInteger(nextWalkaroundWebGpuTextureSourceId)) {
     throw new RangeError(
       'createWalkaroundWebGpuTextureSource: descriptor identity space is exhausted.',
@@ -427,7 +491,7 @@ export function createWalkaroundWebGpuTextureSource(
   }
   const sourceId = nextWalkaroundWebGpuTextureSourceId;
   nextWalkaroundWebGpuTextureSourceId += 1;
-  const compatibilityKey = options.contentRevision == null
+  const compatibilityKey = contentRevision == null
     ? [
         (
           WALKAROUND_TEXTURE_SOURCE_SESSION_SALT[0] ^
@@ -440,7 +504,7 @@ export function createWalkaroundWebGpuTextureSource(
         ) >>> 0,
       ] as const
     : hashTextureContentRevision(
-        `vitrum.walkaround.texture-content.v1:${options.contentRevision}`,
+        `vitrum.walkaround.texture-content.v1:${contentRevision}`,
       );
 
   return Object.freeze({
@@ -451,16 +515,16 @@ export function createWalkaroundWebGpuTextureSource(
     compatibilityKeyHi: compatibilityKey[1],
     device,
     texture,
-    format: options.format,
-    colorSpace: options.colorSpace,
+    format: sourceFormat,
+    colorSpace: sourceColorSpace,
     dimension: '2d' as const,
     ownership: 'host' as const,
     baseMipLevel,
     arrayLayer,
     width,
     height,
-    ...(options.contentRevision != null
-      ? { contentRevision: options.contentRevision }
+    ...(contentRevision != null
+      ? { contentRevision }
       : {}),
     ...(cpuMirror ? { cpuMirror } : {}),
   });

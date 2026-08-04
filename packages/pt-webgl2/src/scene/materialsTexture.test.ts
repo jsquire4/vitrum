@@ -5,8 +5,13 @@
 // `material_mapped_rich.glsl.ts`). Any divergence here is a real render bug.
 
 import { describe, it, expect } from 'vitest';
-import type { MaterialSpec } from '@vitrum/core';
+import {
+  KHR_MATERIALS_IOR_INFINITY_APPROX,
+  type MaterialSpec,
+} from '@vitrum/core';
 import { evaluateSpectrum } from '@vitrum/shared-samplers';
+import { MATERIAL_MAPPED_PBR_GLSL } from '../glsl/shader/structs/material_mapped_pbr.glsl.js';
+import { MATERIAL_MAPPED_RICH_GLSL } from '../glsl/shader/structs/material_mapped_rich.glsl.js';
 import {
   MATERIAL_LAYER_NORMAL_TEXEL_OFFSET,
   MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET,
@@ -22,6 +27,25 @@ function texel(mi: number, s: number, c: number): number {
 }
 
 describe('packMaterialsTexture — RGBA32F byte layout', () => {
+  it('packs omitted mipFilter exactly like linear and keeps explicit none distinct', () => {
+    const handle = {};
+    const packedMip = (mipFilter?: 'linear' | 'none'): number => {
+      const data = packMaterialsTexture([{
+        baseColor: [1, 1, 1],
+        roughness: 1,
+        metallic: 0,
+        baseColorMap: {
+          handle,
+          ...(mipFilter !== undefined ? { mipFilter } : {}),
+        },
+      }], new Map([[handle, 0]])).data;
+      return data[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 2)]! % 4;
+    };
+    expect(packedMip()).toBe(2);
+    expect(packedMip('linear')).toBe(2);
+    expect(packedMip('none')).toBe(0);
+  });
+
   it('exposes the verified MATERIAL_PIXELS constant', () => {
     // D3 (2026-06-10): fork base 85 + texels 85..92 (ao/light/bump ids + scalars
     // + envMapIntensity at 85/86, their transforms at 87..92) + alphaMap transform
@@ -135,10 +159,10 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
   });
 
   it.each([
-    ['negative', -1, /must be finite and non-negative/],
-    ['non-finite', Number.POSITIVE_INFINITY, /must be finite and non-negative/],
-    ['overflowing', Number.MAX_VALUE, /overflows WebGL float32 storage/],
-    ['positive-underflowing', Number.MIN_VALUE, /underflows WebGL float32 storage/],
+    ['negative', -1, /must be >= 0/],
+    ['non-finite', Number.POSITIVE_INFINITY, /must be finite/],
+    ['overflowing', Number.MAX_VALUE, /must be finite and representable as float32/],
+    ['positive-underflowing', Number.MIN_VALUE, /must not underflow to zero as float32/],
   ])('rejects a %s envMapIntensity before packing', (_label, envMapIntensity, message) => {
     const material: MaterialSpec = {
       baseColor: [1, 1, 1],
@@ -149,24 +173,58 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(() => packMaterialsTexture([material])).toThrow(message);
   });
 
-  it('glass (finite attenuationDistance + transmission>0) gets side==0', () => {
-    const glass: MaterialSpec = {
+  it('classifies every transmissive bulk coefficient without treating clear RGB attenuation as a solid', () => {
+    const clearSheet: MaterialSpec = {
       baseColor: [0.95, 0.97, 1.0],
       roughness: 0.05,
       metallic: 0.0,
       transmission: 0.95,
       ior: 1.5,
-      attenuationColor: [0.6, 0.8, 0.95],
-      attenuationDistance: 1.2, // finite → not thin-film → glass side rule applies
+      attenuationColor: [1, 1, 1],
+      attenuationDistance: 1.2,
     };
-    const d = packMaterialsTexture([glass]).data;
-    // isThinFilm == false (attenuationDistance finite) AND transmission>0 ⇒ side 0.
-    expect(d[texel(0, 13, 3)]).toBe(0);
+    const absorbing = {
+      ...clearSheet,
+      attenuationColor: [0.6, 0.8, 0.95] as const,
+    };
+    const scattering = { ...clearSheet, scatteringCoefficient: 1e-9 };
+    const spectral = {
+      ...clearSheet,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 780,
+        values: new Float32Array([0, 0, 0]),
+      },
+    };
+    const thick = { ...clearSheet, thickness: 0.4 };
+    const opaqueThick = { ...thick, transmission: 0 };
+    const d = packMaterialsTexture([
+      clearSheet,
+      absorbing,
+      scattering,
+      spectral,
+      thick,
+      opaqueThick,
+    ]).data;
+
+    // A transmissive non-bulk interface is a sheet. A finite attenuation
+    // distance with RGB [1,1,1] has sigmaA=0 and remains a sheet.
+    expect(d[texel(0, 11, 2)]).toBe(1);
+    expect(d[texel(0, 13, 3)]).toBe(1);
+    for (const materialIndex of [1, 2, 3, 4]) {
+      expect(d[texel(materialIndex, 11, 2)]).toBe(0);
+      expect(d[texel(materialIndex, 13, 3)]).toBe(0);
+    }
+    // Bulk topology and sheet classification are transmission-gated. Dormant
+    // opaque volume payload is neither a sheet nor an active volume.
+    expect(d[texel(5, 11, 2)]).toBe(0);
+    expect(d[texel(5, 13, 3)]).toBe(1);
+
     // s12 = attenuationColor.rgb / attenuationDistance.
-    expect(d[texel(0, 12, 0)]).toBeCloseTo(0.6, 6);
-    expect(d[texel(0, 12, 1)]).toBeCloseTo(0.8, 6);
-    expect(d[texel(0, 12, 2)]).toBeCloseTo(0.95, 6);
-    expect(d[texel(0, 12, 3)]).toBeCloseTo(1.2, 6);
+    expect(d[texel(1, 12, 0)]).toBeCloseTo(0.6, 6);
+    expect(d[texel(1, 12, 1)]).toBeCloseTo(0.8, 6);
+    expect(d[texel(1, 12, 2)]).toBeCloseTo(0.95, 6);
+    expect(d[texel(1, 12, 3)]).toBeCloseTo(1.2, 6);
   });
 
   it('opaque defaults: ior 1.5, attenuationColor white, attenuationDistance Infinity, side front', () => {
@@ -177,8 +235,20 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 12, 1)]).toBe(1.0);
     expect(d[texel(0, 12, 2)]).toBe(1.0);
     expect(d[texel(0, 12, 3)]).toBe(Infinity); // attenuationDistance default
-    expect(d[texel(0, 11, 2)]).toBe(1); // isThinFilm true (thickness 0 + dist Infinity)
+    expect(d[texel(0, 11, 2)]).toBe(0); // opaque is neither a sheet nor a bulk medium
     expect(d[texel(0, 13, 3)]).toBe(1); // FrontSide (no transmission)
+  });
+
+  it('maps the legal authored IOR-zero endpoint before GLSL transport', () => {
+    const d = packMaterialsTexture([{
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
+      transmission: 1,
+      ior: 0,
+    }]).data;
+    expect(d[texel(0, 2, 0)]).toBe(Math.fround(KHR_MATERIALS_IOR_INFINITY_APPROX));
+    expect(Number.isFinite(d[texel(0, 2, 0)])).toBe(true);
   });
 
   it('packs authored double-sided opaque surfaces while preserving closed-volume exit traversal', () => {
@@ -193,6 +263,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
       ...frontOnly,
       transmission: 1,
       attenuationDistance: 2,
+      thickness: 0.5,
     };
     const d = packMaterialsTexture([frontOnly, twoSided, closedGlass]).data;
     expect(d[texel(0, 13, 3)]).toBe(1);
@@ -239,7 +310,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
       roughness: 1,
       metallic: 0,
       emissive: [1, 1, 1],
-      emissiveMap: { handle: {} },
+      emissiveMap: { handle: {}, mipFilter: 'none' },
     };
     const filtered: MaterialSpec = {
       ...exactNearest,
@@ -311,7 +382,9 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     };
     const d = packMaterialsTexture([sss]).data;
     const flags = d[texel(0, 14, 3)]!;
-    expect((flags & (1 << 4)) !== 0).toBe(true); // TRANSLUCENT_BIT
+    // Surface SSS no longer has a second flag/estimator. Positive scattering is
+    // represented exclusively by the geometric fog-volume lane when transmitted.
+    expect((flags & (1 << 4)) !== 0).toBe(false);
     // s15.r is the scalar SSS free-flight majorant max(σ_a + σ_s).
     const sigmaTR = -Math.log(0.5) / 2.0 + 0.7;
     const sigmaTG = -Math.log(0.25) / 2.0 + 0.8;
@@ -324,6 +397,32 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 16, 1)]).toBeCloseTo(0.8, 6);
     expect(d[texel(0, 16, 2)]).toBeCloseTo(0.9, 6);
     expect(d[texel(0, 16, 3)]).toBe(0); // 0 layers
+  });
+
+  it('keeps zero-color Beer lanes exact while packing a finite free-flight proposal', () => {
+    const medium: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      attenuationColor: [0, 0.5, 1],
+      attenuationDistance: 2,
+      scatteringCoefficientRGB: [0.2, 0.1, 0.05],
+    };
+    const d = packMaterialsTexture([medium]).data;
+    const finiteGreenExtinction = -Math.log(0.5) / 2 + 0.1;
+    const finiteBlueExtinction = 0.05;
+    const proposal = d[texel(0, 15, 0)]!;
+
+    expect(Number.isFinite(proposal)).toBe(true);
+    expect(proposal).toBeCloseTo(
+      Math.max(finiteGreenExtinction, finiteBlueExtinction),
+      6,
+    );
+    expect(d[texel(0, 16, 0)]! / proposal).toBeCloseTo(0.2 / proposal, 6);
+    expect(d[texel(0, 16, 1)]! / proposal).toBeCloseTo(0.1 / proposal, 6);
+    expect(d[texel(0, 16, 2)]! / proposal).toBeCloseTo(0.05 / proposal, 6);
+    expect((d[texel(0, 14, 2)]! & 4) !== 0).toBe(true);
   });
 
   it('includes the packed spectral extinction peak in the free-flight majorant', () => {
@@ -358,12 +457,14 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     const active = packMaterialsTexture([participating]).data;
     expect((active[texel(0, 14, 2)]! & 4) !== 0).toBe(true);
     expect(active[texel(0, 15, 0)]).toBeGreaterThan(0);
+    expect(active[texel(0, 11, 2)]).toBe(0); // geometric bulk, never virtual thin sheet
+    expect(active[texel(0, 13, 3)]).toBe(0); // preserve both entry and exit boundaries
 
     const nonTransmitted = packMaterialsTexture([{ ...participating, transmission: 0 }]).data;
     expect((nonTransmitted[texel(0, 14, 2)]! & 4) !== 0).toBe(false);
   });
 
-  it('scatteringCoefficientRGB alone activates translucent SSS and packs sigmaS', () => {
+  it('scatteringCoefficientRGB packs medium coefficients without a dormant surface flag', () => {
     const sss: MaterialSpec = {
       baseColor: [1, 1, 1],
       roughness: 0.5,
@@ -372,7 +473,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     };
     const d = packMaterialsTexture([sss]).data;
     const flags = d[texel(0, 14, 3)]!;
-    expect((flags & (1 << 4)) !== 0).toBe(true);
+    expect((flags & (1 << 4)) !== 0).toBe(false);
     expect(d[texel(0, 15, 0)]).toBeCloseTo(0.3, 6);
     expect(d[texel(0, 16, 0)]).toBeCloseTo(0.0, 6);
     expect(d[texel(0, 16, 1)]).toBeCloseTo(0.3, 6);
@@ -482,10 +583,14 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, ln, 1)]).toBeCloseTo(0.75, 6);
     expect(d[texel(0, ln, 2)]).toBe(5);
     expect(d[texel(0, ln, 3)]).toBeCloseTo(0.5, 6);
-    // front transform first row: sx*cos, sx*sin, offsetX.
+    // front transform rows encode rotate(uv * scale):
+    // (sx*cos, -sy*sin, offsetX), (sx*sin, sy*cos, offsetY).
     expect(d[texel(0, ln + 1, 0)]).toBeCloseTo(0.0, 6);
-    expect(d[texel(0, ln + 1, 1)]).toBeCloseTo(0.5, 6);
+    expect(d[texel(0, ln + 1, 1)]).toBeCloseTo(-0.25, 6);
     expect(d[texel(0, ln + 1, 2)]).toBeCloseTo(0.25, 6);
+    expect(d[texel(0, ln + 2, 0)]).toBeCloseTo(0.5, 6);
+    expect(d[texel(0, ln + 2, 1)]).toBeCloseTo(0.0, 6);
+    expect(d[texel(0, ln + 2, 2)]).toBeCloseTo(0.5, 6);
     // back transform first row: sx, 0, offsetX.
     expect(d[texel(0, ln + 3, 0)]).toBeCloseTo(0.3, 6);
     expect(d[texel(0, ln + 3, 1)]).toBeCloseTo(0.0, 6);
@@ -502,6 +607,78 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, ln + 6, 3)]).toBe(2);
     expect(d[texel(0, ln + 7, 0)]).toBe(4);
     expect(d[texel(0, ln + 7, 1)]).toBe(2);
+  });
+
+  it('rejects UV-transform float32 overflow and non-zero underflow before publication', () => {
+    const handle = {};
+    const layerOf = new Map<unknown, number>([[handle, 0]]);
+    const material = (value: number, lane: 'offset' | 'scale' | 'rotation'): MaterialSpec => ({
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle,
+        transform: lane === 'offset'
+          ? { offset: [value, 0] }
+          : lane === 'scale'
+            ? { scale: [value, 1] }
+            : { rotation: value },
+      },
+    });
+
+    expect(() => packMaterialsTexture([material(Number.MAX_VALUE, 'offset')], layerOf))
+      .toThrow(/offset\[0\] must be finite and representable as float32/);
+    expect(() => packMaterialsTexture([material(-Number.MAX_VALUE, 'scale')], layerOf))
+      .toThrow(/scale\[0\] must be finite and representable as float32/);
+    expect(() => packMaterialsTexture([material(Number.MIN_VALUE, 'rotation')], layerOf))
+      .toThrow(/rotation must not underflow to zero as float32/);
+  });
+
+  it('canonicalizes finite UV-transform boundaries and preserves negative scale', () => {
+    const handle = {};
+    const layerOf = new Map<unknown, number>([[handle, 0]]);
+    const maxF32 = Math.fround(3.402823466e38);
+    const minF32 = Math.fround(2 ** -149);
+    const rotation = Math.PI / 3 + 1e-8;
+    const canonicalRotation = Math.fround(rotation);
+    const c = Math.fround(Math.cos(canonicalRotation));
+    const s = Math.fround(Math.sin(canonicalRotation));
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: {
+        handle,
+        transform: {
+          offset: [maxF32, minF32],
+          scale: [-2, 3],
+          rotation,
+        },
+      },
+    };
+
+    const data = packMaterialsTexture([material], layerOf).data;
+
+    expect(data[texel(0, 55, 0)]).toBe(Math.fround(-2 * c));
+    expect(data[texel(0, 55, 1)]).toBe(Math.fround(-3 * s));
+    expect(data[texel(0, 55, 2)]).toBe(maxF32);
+    expect(data[texel(0, 56, 0)]).toBe(Math.fround(-2 * s));
+    expect(data[texel(0, 56, 1)]).toBe(Math.fround(3 * c));
+    expect(data[texel(0, 56, 2)]).toBe(minF32);
+    const used = Array.from(data.slice(0, MATERIAL_PIXELS * 4));
+    expect(used[texel(0, 12, 3)]).toBe(Number.POSITIVE_INFINITY);
+    expect(used.every((value, index) =>
+      index === texel(0, 12, 3) || Number.isFinite(value))).toBe(true);
+  });
+
+  it('guards transformed-UV products, LOD, and integer texel casts in both GLSL decoders', () => {
+    for (const glsl of [MATERIAL_MAPPED_PBR_GLSL, MATERIAL_MAPPED_RICH_GLSL]) {
+      expect(glsl).toContain('! materialTextureFiniteVec2( uv )');
+      expect(glsl).toContain('vec2 baseCoord = uv * baseSize;');
+      expect(glsl).toContain('greaterThan( abs( baseCoord ), vec2( 1073741824.0 ) )');
+      expect(glsl).toContain('if ( ! materialTextureFiniteFloat( rawLod ) ) return false;');
+      expect(glsl).not.toContain('return vec4( 1.0 )');
+    }
   });
 
   it('packs each atlas handle native extent into its sampler policy', () => {
@@ -650,7 +827,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET, 3)]).toBe(1);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 0)]).toBe(2);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 1)]).toBe(0);
-    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 2)]).toBe(0);
+    expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 2)]).toBe(2);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 1, 3)]).toBe(0);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 18, 0)]).toBe(1);
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 18, 1)]).toBe(0);
@@ -751,6 +928,24 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, MATERIAL_WRAP_TEXEL_OFFSET + 20, 1)]).toBe(2);
   });
 
+  it('does not let a thickness map create a cap from zero while absorption keeps geometric bulk', () => {
+    const thicknessHandle = {};
+    const d = packMaterialsTexture([{
+      baseColor: [1, 1, 1],
+      roughness: 0.1,
+      metallic: 0,
+      transmission: 1,
+      thickness: 0,
+      thicknessMap: { handle: thicknessHandle },
+      attenuationColor: [0.7, 1, 1],
+      attenuationDistance: 2,
+    }], new Map([[thicknessHandle, 3]])).data;
+
+    expect(d[texel(0, 11, 2)]).toBe(0); // positive sigmaA => closed geometry
+    expect(d[texel(0, 97, 0)]).toBe(0); // no authored cap
+    expect(d[texel(0, 97, 1)]).toBe(3); // map remains available as metadata
+  });
+
   // D3 — ao/lightMap/bumpMap transforms at texels 87/89/91 (item 26).
   //
   // The packer writes ao/lightMap/bumpMap id + scalars at texels 85/86, and their
@@ -768,11 +963,11 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
   // readTextureTransform will read on the GPU.
   //
   // writeTransform encoding (verified against material_mapped_rich.glsl.ts):
-  //   texel k   row1: (sx·cos, sx·sin, offsetX, 0)
-  //   texel k+1 row2: (−sy·sin, sy·cos, offsetY, 0)
+  //   texel k   row1: (sx·cos, −sy·sin, offsetX, 0)
+  //   texel k+1 row2: (sx·sin, sy·cos, offsetY, 0)
   // readTextureTransform unpacks:
-  //   col0 = (row1.r, row2.r, 0) = (sx·cos, −sy·sin, 0)
-  //   col1 = (row1.g, row2.g, 0) = (sx·sin,  sy·cos, 0)
+  //   col0 = (row1.r, row2.r, 0) = (sx·cos, sx·sin, 0)
+  //   col1 = (row1.g, row2.g, 0) = (−sy·sin, sy·cos, 0)
   //   col2 = (row1.b, row2.b, 1) = (offsetX, offsetY, 1)
   it('D3 item26: ao/lightMap/bumpMap transforms are packed at texels 87/89/91', () => {
     // Three distinct opaque handles — layerOf maps each to a real layer.
@@ -797,7 +992,7 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
       roughness: 0.5,
       metallic: 0.0,
       aoMap:      { handle: aoHandle,    transform: { scale: [2, 3],     offset: [0.1, 0.2] } },
-      lightMap:   { handle: lightHandle, transform: { rotation: Math.PI / 2 } },
+      lightMap:   { handle: lightHandle, transform: { scale: [2, 3], rotation: Math.PI / 2 } },
       bumpMap:    { handle: bumpHandle,  transform: { scale: [0.5, 0.5], offset: [0.25, 0.75] } },
     };
 
@@ -816,34 +1011,34 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 86, 2)]).toBe(1);  // bumpScale default
 
     // ── Texels 87/88: aoMapTransform (scale=[2,3], offset=[0.1,0.2], r=0) ──
-    // row1 = (sx·cos, sx·sin, offsetX, 0) = (2·1, 2·0, 0.1, 0) = (2, 0, 0.1, 0)
+    // row1 = (sx·cos, −sy·sin, offsetX, 0) = (2, 0, 0.1, 0)
     expect(d[texel(0, 87, 0)]).toBeCloseTo(2,   6);  // row1.r = sx·cos
-    expect(d[texel(0, 87, 1)]).toBeCloseTo(0,   6);  // row1.g = sx·sin
+    expect(d[texel(0, 87, 1)]).toBeCloseTo(0,   6);  // row1.g = −sy·sin
     expect(d[texel(0, 87, 2)]).toBeCloseTo(0.1, 6);  // row1.b = offsetX
     expect(d[texel(0, 87, 3)]).toBe(0);               // row1.a = 0 (pad)
-    // row2 = (−sy·sin, sy·cos, offsetY, 0) = (0, 3, 0.2, 0)
-    expect(d[texel(0, 88, 0)]).toBeCloseTo(0,   6);  // row2.r = −sy·sin
+    // row2 = (sx·sin, sy·cos, offsetY, 0) = (0, 3, 0.2, 0)
+    expect(d[texel(0, 88, 0)]).toBeCloseTo(0,   6);  // row2.r = sx·sin
     expect(d[texel(0, 88, 1)]).toBeCloseTo(3,   6);  // row2.g = sy·cos
     expect(d[texel(0, 88, 2)]).toBeCloseTo(0.2, 6);  // row2.b = offsetY
     expect(d[texel(0, 88, 3)]).toBe(0);               // row2.a = 0 (pad)
 
-    // ── Texels 89/90: lightMapTransform (scale=[1,1], offset=[0,0], r=π/2) ─
-    // row1 = (cos(π/2), sin(π/2), 0, 0) ≈ (0, 1, 0, 0)
+    // ── Texels 89/90: lightMapTransform (scale=[2,3], offset=[0,0], r=π/2) ─
+    // row1 = (2·cos(π/2), −3·sin(π/2), 0, 0) ≈ (0, −3, 0, 0)
     expect(d[texel(0, 89, 0)]).toBeCloseTo(0,  5);   // cos(π/2) ≈ 0
-    expect(d[texel(0, 89, 1)]).toBeCloseTo(1,  6);   // sin(π/2) ≈ 1
+    expect(d[texel(0, 89, 1)]).toBeCloseTo(-3, 6);   // −sy·sin
     expect(d[texel(0, 89, 2)]).toBeCloseTo(0,  6);   // offsetX = 0
-    // row2 = (−sin(π/2), cos(π/2), 0, 0) ≈ (−1, 0, 0, 0)
-    expect(d[texel(0, 90, 0)]).toBeCloseTo(-1, 6);   // −sin(π/2) ≈ −1
+    // row2 = (2·sin(π/2), 3·cos(π/2), 0, 0) ≈ (2, 0, 0, 0)
+    expect(d[texel(0, 90, 0)]).toBeCloseTo(2, 6);    // sx·sin
     expect(d[texel(0, 90, 1)]).toBeCloseTo(0,  5);   // cos(π/2) ≈ 0
     expect(d[texel(0, 90, 2)]).toBeCloseTo(0,  6);   // offsetY = 0
 
     // ── Texels 91/92: bumpMapTransform (scale=[0.5,0.5], offset=[0.25,0.75], r=0) ─
     // row1 = (0.5, 0, 0.25, 0)
     expect(d[texel(0, 91, 0)]).toBeCloseTo(0.5,  6); // sx·cos
-    expect(d[texel(0, 91, 1)]).toBeCloseTo(0,    6); // sx·sin
+    expect(d[texel(0, 91, 1)]).toBeCloseTo(0,    6); // −sy·sin
     expect(d[texel(0, 91, 2)]).toBeCloseTo(0.25, 6); // offsetX
     // row2 = (0, 0.5, 0.75, 0)
-    expect(d[texel(0, 92, 0)]).toBeCloseTo(0,    6); // −sy·sin
+    expect(d[texel(0, 92, 0)]).toBeCloseTo(0,    6); // sx·sin
     expect(d[texel(0, 92, 1)]).toBeCloseTo(0.5,  6); // sy·cos
     expect(d[texel(0, 92, 2)]).toBeCloseTo(0.75, 6); // offsetY
   });
@@ -925,6 +1120,163 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect(d[texel(0, 1, 3)]).toBe(9); // roughnessMap: LDR linear
     expect(d[texel(0, 3, 3)]).toBe(3); // emissiveMap: HDR sRGB source role
     expect(d[texel(0, 85, 1)]).toBe(5); // lightMap: HDR linear
+  });
+
+  it('runs core material validation while preserving only the three private packer flags', () => {
+    const unknownField = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      accidentalBackendField: 1,
+    } as unknown as MaterialSpec;
+    expect(() => packMaterialsTexture([unknownField])).toThrow(
+      /accidentalBackendField|unknown|unsupported/i,
+    );
+
+    const adapterMetadata = Symbol('adapter texture provenance');
+    const materialWithMetadata: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+    };
+    Object.defineProperty(materialWithMetadata, adapterMetadata, {
+      value: { source: 'test' },
+      enumerable: false,
+    });
+    expect(() => packMaterialsTexture([materialWithMetadata])).not.toThrow();
+
+    const privateFlags = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      castShadow: false,
+      vertexColors: true,
+      meshEmitterCastShadowDisabled: true,
+    } as MaterialSpec & {
+      readonly castShadow: boolean;
+      readonly vertexColors: boolean;
+      readonly meshEmitterCastShadowDisabled: boolean;
+    };
+    const data = packMaterialsTexture([privateFlags]).data;
+    expect(data[texel(0, 14, 1)]).toBe(0);
+    expect(data[texel(0, 14, 2)]! & 1).toBe(1);
+    expect(data[texel(0, 14, 3)]! & 0x40).toBe(0x40);
+
+    const invalidPrivateFlag = {
+      ...privateFlags,
+      castShadow: 0 as unknown as boolean,
+    } as unknown as MaterialSpec;
+    expect(() => packMaterialsTexture([invalidPrivateFlag]))
+      .toThrow(/castShadow must be boolean/);
+  });
+
+  it.each([
+    Number.NaN,
+    1.5,
+    16_777_217,
+    2_147_483_648,
+    -2,
+  ])('rejects non-exact callback layer id %s before packing', (layer) => {
+    const handle = {};
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle },
+    };
+    const layerLookup = {
+      get: () => layer,
+    } as unknown as Map<unknown, number>;
+    expect(() => packMaterialsTexture([material], layerLookup)).toThrow(
+      /material texture layer must be an exact float32 integer/,
+    );
+  });
+
+  it.each([
+    Number.NaN,
+    1.5,
+    16_777_217,
+    2_147_483_648,
+    -1,
+  ])('rejects non-exact callback UV attribute layer %s before packing', (layer) => {
+    const handle = {};
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle, texCoord: 2 },
+    };
+    const uvLayerByTexCoord = {
+      get: () => layer,
+    } as unknown as ReadonlyMap<number, number>;
+    expect(() => packMaterialsTexture(
+      [material],
+      new Map([[handle, 0]]),
+      { uvLayerByTexCoord },
+    )).toThrow(/UV attribute layer .* exact float32 integer/);
+  });
+
+  it('rejects overflowing or fractional atlas placement descriptors', () => {
+    const handle = {};
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      baseColorMap: { handle },
+    };
+    const srgb = new Map<unknown, number>([[handle, 0]]);
+    const linear = new Map<unknown, number>();
+    const descriptor = (placement: {
+      readonly x: number;
+      readonly width: number;
+    }) => ({
+      srgb,
+      linear,
+      dimensions: new Map<unknown, readonly [number, number]>([[handle, [1, 1]]]),
+      placements: {
+        srgb: new Map([[handle, {
+          layer: 0,
+          x: placement.x,
+          y: 0,
+          width: placement.width,
+          height: 1,
+        }]]),
+        linear: new Map(),
+      },
+    });
+
+    expect(() => packMaterialsTexture([material], descriptor({
+      x: 536_870_912,
+      width: 1,
+    }))).toThrow(/offsetX\/mipFilter exceeds the GLSL signed-int descriptor range/);
+    expect(() => packMaterialsTexture([material], descriptor({
+      x: 0,
+      width: 1.5,
+    }))).toThrow(/width\/wrapS payload must be an exact float32 integer/);
+    expect(() => packMaterialsTexture([material], descriptor({
+      x: 0,
+      width: 536_870_912,
+    }))).toThrow(/width\/wrapS exceeds the GLSL signed-int descriptor range/);
+  });
+
+  it('rejects overflow in the derived SSS spectral majorant', () => {
+    const maxF32 = Math.fround(3.402823466e38);
+    const material: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
+      transmission: 1,
+      ior: 1.5,
+      scatteringCoefficient: maxF32,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 780,
+        values: new Float32Array([maxF32, maxF32, maxF32]),
+      },
+    };
+    expect(() => packMaterialsTexture([material])).toThrow(
+      /derived sigmaT majorant overflows WebGL float32 storage/,
+    );
   });
 
   it('multiple materials are packed at their MATERIAL_PIXELS-strided offsets', () => {

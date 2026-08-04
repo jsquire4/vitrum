@@ -101,8 +101,10 @@ export interface ResolvedReadableTexture {
 /**
  * Resolve the `data`/dims/stride/decode-fn/srgb-flag for a CPU-readable texture
  * handle (D12-1). Returns `null` when the handle is not readable, dims are
- * non-positive, the stride is out of range, or the buffer is too short — the
- * exact reject conditions the three `emitterClassify` texel readers used inline.
+ * non-positive, the stride is out of range, or the buffer length does not
+ * exactly match the declared pixels and channels. Exact length keeps CPU
+ * emitter classification aligned with backend atlas ingestion: a malformed
+ * map must not affect light selection after the renderer rejects that map.
  *
  * `width`/`height` are floored; `pixelCount = floor(w)·floor(h)` — identical to
  * the former per-reader arithmetic.
@@ -126,7 +128,7 @@ export function resolveReadableTexture(
   if (pixelCount <= 0) return null;
   const heuristicStride = Math.max(1, Math.round(src.length / pixelCount));
   const stride = hintChannels ?? heuristicStride;
-  if (stride < 1 || stride > 4 || src.length < pixelCount * stride) {
+  if (stride < 1 || stride > 4 || src.length !== pixelCount * stride) {
     return null;
   }
   const decode = makeChannelDecoder(src, hintDataType);

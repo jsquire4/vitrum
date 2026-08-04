@@ -46,6 +46,52 @@ describe('pt-webgl2 immutable material texture sources', () => {
     ])));
   });
 
+  it('reads getter-backed raw elements exactly once into the validated snapshot', () => {
+    let lengthReads = 0;
+    let elementReads = 0;
+    const data = {
+      get length() {
+        lengthReads += 1;
+        return lengthReads === 1 ? 1 : Number.POSITIVE_INFINITY;
+      },
+      get 0() {
+        elementReads += 1;
+        return elementReads === 1 ? 17 : Number.POSITIVE_INFINITY;
+      },
+    };
+
+    const source = createPtWebgl2TextureSource({
+      width: 1,
+      height: 1,
+      channels: 1,
+      dataType: 'uint8',
+      data,
+    }, { colorSpace: 'linear' });
+
+    expect(lengthReads).toBe(1);
+    expect(elementReads).toBe(1);
+    expect(source.cpuMirror.data[0]).toBe(17);
+  });
+
+  it('rejects SharedArrayBuffer-backed raw texels before allocating an immutable snapshot', () => {
+    if (typeof SharedArrayBuffer === 'undefined') return;
+    const cases = [
+      ['uint8', new Uint8Array(new SharedArrayBuffer(Uint8Array.BYTES_PER_ELEMENT))],
+      ['uint16', new Uint16Array(new SharedArrayBuffer(Uint16Array.BYTES_PER_ELEMENT))],
+      ['float32', new Float32Array(new SharedArrayBuffer(Float32Array.BYTES_PER_ELEMENT))],
+    ] as const;
+
+    for (const [dataType, data] of cases) {
+      expect(() => createPtWebgl2TextureSource({
+        width: 1,
+        height: 1,
+        channels: 1,
+        dataType,
+        data,
+      }, { colorSpace: 'linear' })).toThrow(/SharedArrayBuffer-backed material texels/);
+    }
+  });
+
   it('snapshots loaded browser sources through an origin-clean 2D readback surface', () => {
     const drawImage = vi.fn();
     const getImageData = vi.fn(() => ({
@@ -95,6 +141,27 @@ describe('pt-webgl2 immutable material texture sources', () => {
     expect(drawImage).toHaveBeenCalledTimes(1);
   });
 
+  it('rejects oversized browser readback before constructing a canvas surface', () => {
+    const constructSurface = vi.fn();
+    class GuardedOffscreenCanvas {
+      constructor(width: number, height: number) {
+        constructSurface(width, height);
+      }
+      getContext() {
+        throw new Error('readback surface must not be reached');
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', GuardedOffscreenCanvas);
+    const browserSource = {
+      naturalWidth: 100_000,
+      naturalHeight: 100_000,
+    } as unknown as TexImageSource;
+
+    expect(() => createPtWebgl2TextureSource(browserSource, { colorSpace: 'srgb' }))
+      .toThrow(/immutable browser snapshot requires 40000000000 bytes, above the/);
+    expect(constructSurface).not.toHaveBeenCalled();
+  });
+
   it('fails closed for tainted/unloaded browser sources and malformed raw layouts', () => {
     class FailingOffscreenCanvas {
       constructor(public width: number, public height: number) {}
@@ -126,5 +193,12 @@ describe('pt-webgl2 immutable material texture sources', () => {
       dataType: 'float32',
       data: [Number.NaN],
     }, { colorSpace: 'linear' })).toThrow(/finite and representable as f32/);
+    expect(() => createPtWebgl2TextureSource({
+      width: 1,
+      height: 1,
+      channels: 1,
+      dataType: 'float32',
+      data: [Number.MIN_VALUE],
+    }, { colorSpace: 'linear' })).toThrow(/must not underflow to zero as f32/);
   });
 });

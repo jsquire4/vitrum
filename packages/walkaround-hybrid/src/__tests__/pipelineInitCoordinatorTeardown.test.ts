@@ -74,6 +74,7 @@ function makePollingHost(
     ppgMaxDTreeNodesPerCell: undefined,
     ppgMixAlpha: 0,
     checkerboard: false,
+    cameraPrefixFullRateRequired: false,
     ppgDispatchInterval: 1,
     regirConfig: undefined,
     isSceneReadyForBvh: () => false,

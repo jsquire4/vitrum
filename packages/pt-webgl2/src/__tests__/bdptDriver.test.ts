@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning, FrameInput, MaterialSpec, MeshPrimitive, Scene } from '@vitrum/core';
 import { createPTEngine_WebGL2 } from '../index.js';
+import {
+  BDPT_LIGHT_PATH_COLS,
+  BDPT_LIGHT_PATH_ROWS,
+} from '../gl/BdptSubpathBuilder.js';
 import { createMockGl } from './mockGl.js';
 
 // A5 — BDPT host-driver loop. Verifies the per-column light-subpath passes are
@@ -128,7 +132,7 @@ function orderedGl(log: { op: string; v?: unknown }[]): WebGLRenderingContext {
 }
 
 describe('A5 BDPT host driver', () => {
-  it('defaults bdpt:true to four light vertices in the 8x8 path buffer, then eye flag=0', async () => {
+  it('defaults bdpt:true to four light vertices in the complete path buffer, then eye flag=0', async () => {
     const log: { op: string; v?: unknown }[] = [];
     const gl = orderedGl(log) as unknown as WebGL2RenderingContext;
     const engine = await createPTEngine_WebGL2({ device: gl, bdpt: true });
@@ -137,7 +141,12 @@ describe('A5 BDPT host driver', () => {
 
     const cols = log.filter((e) => e.op === 'uBdptVertexCol').map((e) => e.v);
     expect(cols).toEqual([0, 1, 2, 3]);
-    expect(log.some((e) => e.op === 'resolution' && Array.isArray(e.v) && e.v[0] === 8 && e.v[1] === 8)).toBe(true);
+    expect(log.some((e) =>
+      e.op === 'resolution' &&
+      Array.isArray(e.v) &&
+      e.v[0] === BDPT_LIGHT_PATH_COLS &&
+      e.v[1] === BDPT_LIGHT_PATH_ROWS
+    )).toBe(true);
 
     const passFlags = log.filter((e) => e.op === 'uBdptLightSubpathPass').map((e) => e.v);
     expect(passFlags).toContain(1);

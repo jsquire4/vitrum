@@ -146,7 +146,8 @@ describe('ProbeUpdatePass candidate-first resource replacement', () => {
       emitterTrisBuf: previous.gpu,
       emitterTrisCount: 0,
     } as ProbeUpdateGpuState;
-    internal._emitterTrisData = new Float32Array(40);
+    // Two 20-float records plus two 4-float represented-alias entries.
+    internal._emitterTrisData = new Float32Array(48);
     internal._emitterTrisCount = 2;
     const candidates: TrackedBuffer[] = [];
     let failWrite = true;
@@ -284,7 +285,6 @@ describe('ProbeUpdatePass candidate-first resource replacement', () => {
       envMapView: externalView,
       envMapOwnedByPass: false,
       envMapPlaceholderTex: null,
-      linearSampler: sampler,
     } as ProbeUpdateGpuState;
     internal._hasEnv = true;
     internal._envRotationY = 0.75;
@@ -346,6 +346,7 @@ describe('ProbeUpdatePass candidate-first resource replacement', () => {
       internal._grid.allocateAtlases();
       const irrSlot = internal._grid.irradianceReadTex;
       const visSlot = internal._grid.visibilityReadTex;
+      if (!irrSlot || !visSlot) throw new Error('expected allocated DDGI atlas slots');
       const created: TrackedTexture[] = [];
       let uploadCount = 0;
       let failureAvailable = true;
@@ -438,6 +439,7 @@ describe('ProbeUpdatePass candidate-first resource replacement', () => {
     internal._grid.allocateAtlases();
     const irrSlot = internal._grid.irradianceReadTex;
     const visSlot = internal._grid.visibilityReadTex;
+    if (!irrSlot || !visSlot) throw new Error('expected allocated DDGI atlas slots');
     const device = {
       createTexture: vi.fn((descriptor: GPUTextureDescriptor) => {
         const size = descriptor.size as readonly number[];

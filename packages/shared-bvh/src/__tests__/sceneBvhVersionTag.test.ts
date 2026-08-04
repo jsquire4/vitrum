@@ -48,6 +48,54 @@ const PACKED_MATERIAL_BASE: MaterialSpec = {
   thickness: 0.5,
 };
 
+// Closed tetrahedron used whenever a fixture authors positive-thickness bulk
+// transmission. SceneBvh now runs the production manifold/containment
+// preflight, so the former single open triangle was not a valid bulk medium.
+const TETRA_POSITIONS = new Float32Array([
+  0, 0, 0,
+  1, 0, 0,
+  0, 1, 0,
+  0, 0, 1,
+]);
+const TETRA_INDICES = new Uint32Array([
+  0, 2, 1,
+  0, 1, 3,
+  0, 3, 2,
+  1, 2, 3,
+]);
+const TETRA_NORMALS = new Float32Array([
+  -1, -1, -1,
+   1,  0,  0,
+   0,  1,  0,
+   0,  0,  1,
+]);
+const TETRA_UVS = new Float32Array([
+  0, 0,
+  1, 0,
+  0, 1,
+  1, 1,
+]);
+
+function closedBulkScene(material: Partial<MaterialSpec>): Scene {
+  return {
+    primitives: [{
+      kind: 'mesh',
+      id: 'bulk-tetra',
+      positions: TETRA_POSITIONS,
+      normals: TETRA_NORMALS,
+      indices: TETRA_INDICES,
+      material: {
+        baseColor: [1, 1, 1],
+        roughness: 0.5,
+        metallic: 0,
+        ...material,
+      },
+    }],
+    emitters: [],
+    environment: { kind: 'none' },
+  };
+}
+
 function sceneWithPackedMaterial(
   material: MaterialSpec,
   opts: {
@@ -59,10 +107,11 @@ function sceneWithPackedMaterial(
     primitives: [
       {
         kind: 'mesh',
-        id: 'packed-tri',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: opts.normals ?? new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
+        id: 'packed-tetra',
+        positions: TETRA_POSITIONS,
+        normals: opts.normals ?? TETRA_NORMALS,
+        indices: TETRA_INDICES,
+        uvs: TETRA_UVS,
         material,
         castShadow: opts.castShadow ?? true,
       },
@@ -253,7 +302,7 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
 
   it('H33: no tag → attenuationDistance-only material edit triggers rebuild', () => {
     const bvh = new SceneBvh();
-    bvh.updateFromCore(minimalScene({
+    bvh.updateFromCore(closedBulkScene({
       transmission: 1,
       attenuationColor: [0.5, 0.5, 0.5],
       attenuationDistance: 1,
@@ -262,7 +311,7 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
     const first = bvh.buffers;
     expect(first).not.toBeNull();
 
-    bvh.updateFromCore(minimalScene({
+    bvh.updateFromCore(closedBulkScene({
       transmission: 1,
       attenuationColor: [0.5, 0.5, 0.5],
       attenuationDistance: 10,
@@ -274,7 +323,7 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
 
   it('H33: no tag → thickness-only material edit triggers rebuild', () => {
     const bvh = new SceneBvh();
-    bvh.updateFromCore(minimalScene({
+    bvh.updateFromCore(closedBulkScene({
       transmission: 1,
       attenuationColor: [0.5, 0.5, 0.5],
       attenuationDistance: 3,
@@ -283,7 +332,7 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
     const first = bvh.buffers;
     expect(first).not.toBeNull();
 
-    bvh.updateFromCore(minimalScene({
+    bvh.updateFromCore(closedBulkScene({
       transmission: 1,
       attenuationColor: [0.5, 0.5, 0.5],
       attenuationDistance: 3,
@@ -359,13 +408,18 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
     const bvh = new SceneBvh();
     bvh.updateFromCore(sceneWithPackedMaterial(
       PACKED_MATERIAL_BASE,
-      { normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]) },
+      { normals: TETRA_NORMALS },
     ));
     const before = bvh.buffers;
 
     bvh.updateFromCore(sceneWithPackedMaterial(
       PACKED_MATERIAL_BASE,
-      { normals: new Float32Array([0, 1, 0, 0, 1, 0, 0, 1, 0]) },
+      { normals: new Float32Array([
+        0, 1, 0,
+        0, 1, 0,
+        0, 1, 0,
+        0, 1, 0,
+      ]) },
     ));
 
     expect(bvh.buffers).not.toBe(before);
@@ -374,14 +428,14 @@ describe('H34-h: SceneBvh sceneVersionTag fast path', () => {
 
   it('no tag → omitted and explicit +Infinity attenuation pack identically', () => {
     const bvh = new SceneBvh();
-    bvh.updateFromCore(minimalScene({
+    bvh.updateFromCore(closedBulkScene({
       transmission: 1,
       attenuationColor: [0.5, 0.5, 0.5],
       thickness: 0.25,
     }));
     const before = bvh.buffers;
 
-    bvh.updateFromCore(minimalScene({
+    bvh.updateFromCore(closedBulkScene({
       transmission: 1,
       attenuationColor: [0.5, 0.5, 0.5],
       attenuationDistance: Number.POSITIVE_INFINITY,

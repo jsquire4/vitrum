@@ -246,11 +246,11 @@ describe('pt-webgpu normal-map tangent-frame oracle', () => {
       'let normalizedDuv1 = duv1 / uvScale;',
       'let f = 1.0 / det;',
       'var normalScale = materialTexDescriptors[base + 5u].w;',
-      'tn.x = tn.x * normalScale;',
+      'tangentNormal.x * normalScale,',
       'normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);',
-      'let normalGpuUvSlot = u32(materialTexDescriptors[base + normalUvMetaOffset].x);',
-      'let clearcoatNormalGpuUvSlot = u32(',
-      'let bumpGpuUvSlot = u32(uvMeta.x);',
+      'let normalGpuUvSlot = materialTextureExactU32(',
+      'let clearcoatNormalGpuUvSlot = materialTextureExactU32(',
+      'let bumpGpuUvSlot = materialTextureExactU32(',
       'let clearcoatNormalScale = materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].y;',
     ]) {
       expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(snippet);

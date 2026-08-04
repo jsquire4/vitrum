@@ -36,6 +36,7 @@ describe('arbitrary UV sets in shared displacement', () => {
           texCoord: 3,
           wrapS: 'clamp-to-edge',
           wrapT: 'clamp-to-edge',
+          mipFilter: 'none',
         },
       },
       positions: POSITIONS,
@@ -61,6 +62,7 @@ describe('arbitrary UV sets in shared displacement', () => {
           texCoord: 3,
           wrapS: 'clamp-to-edge',
           wrapT: 'clamp-to-edge',
+          mipFilter: 'none',
         },
         displacementSubdivisions: 1,
       },
@@ -92,6 +94,7 @@ describe('arbitrary UV sets in shared displacement', () => {
         texCoord: ordinaryPropertyIndex,
         wrapS: 'clamp-to-edge' as const,
         wrapT: 'clamp-to-edge' as const,
+        mipFilter: 'none' as const,
       },
       displacementSubdivisions: 1,
     };

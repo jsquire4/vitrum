@@ -47,6 +47,23 @@ interface MediumLayerOracle {
   readonly remainingDistance: number;
 }
 
+interface BoundaryIdentityOracle {
+  readonly matId: number;
+  readonly boundaryKind: number;
+  readonly boundaryIndex: number;
+  readonly boundaryComponent: number;
+}
+
+function sameBoundaryIdentity(
+  a: BoundaryIdentityOracle,
+  b: BoundaryIdentityOracle,
+): boolean {
+  return a.matId === b.matId &&
+    a.boundaryKind === b.boundaryKind &&
+    a.boundaryIndex === b.boundaryIndex &&
+    a.boundaryComponent === b.boundaryComponent;
+}
+
 function traceNestedExitOracle(
   sourceLayers: readonly MediumLayerOracle[],
   distanceToInnerExit: number,
@@ -205,5 +222,21 @@ describe('pt-webgpu straight medium visibility boundary partition', () => {
     expect(
       PT_WEBGPU_PATH_TRACE_KERNEL_WGSL.match(/&bdptMediumStack, bdptMediumDepth,/g),
     ).toHaveLength(2);
+  });
+
+  it('does not replace the live top with a disconnected component sharing material and instance', () => {
+    const sourceTop = {
+      matId: 4,
+      boundaryKind: 1,
+      boundaryIndex: 7,
+      boundaryComponent: 2,
+    };
+    expect(sameBoundaryIdentity(sourceTop, {
+      ...sourceTop,
+      boundaryComponent: 3,
+    })).toBe(false);
+    expect(PT_WEBGPU_MEDIUM_NEE_WGSL).toContain(
+      'sourceTop.boundaryComponent != sourceLayer.boundaryComponent',
+    );
   });
 });

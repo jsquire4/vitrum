@@ -53,6 +53,9 @@
  *   14    56      attenuationCol.b  f32
  *   15    60      flags             u32    bit 0 = isGlass (transmission > 0)
  *                                          bit 1 = castShadow disabled
+ *                                          bit 2 = double-sided
+ *                                          bit 3 = unlit
+ *                                          bit 4 = NEE emitter suppression
  *
  * Defaults (when a field is absent on the input):
  *   baseColor = (1,1,1), emissive = (0,0,0), roughness = 1.0, metalness = 0,
@@ -69,7 +72,7 @@
  * @since W2-C5 (premium-grade-refactor-20260517.md §W2 sub-task 5).
  */
 
-import type { MaterialSpec } from '@vitrum/core';
+import { effectiveMaterialIor, type MaterialSpec } from '@vitrum/core';
 import { packRadianceRgbScaleF32 } from './radianceFloat32.js';
 
 /** Floats per entry. 16 × 4 = 64 bytes. */
@@ -99,6 +102,15 @@ export const MATERIAL_FLAG_CAST_SHADOW_DISABLED = 0x2;
 
 /** Flag bit: both winding orientations are authored surface sides. */
 export const MATERIAL_FLAG_DOUBLE_SIDED = 0x4;
+
+/** Flag bit: lighting-independent `KHR_materials_unlit` surface. */
+export const MATERIAL_FLAG_UNLIT = 0x8;
+
+/**
+ * Flag bit: camera-visible emission is deliberately excluded from emitter NEE.
+ * Mirrors the strict `MaterialSpec.extensions.skipEmitter === true` contract.
+ */
+export const MATERIAL_FLAG_SKIP_EMITTER = 0x10;
 
 /** Library-canonical default roughness — used when an input lacks one.
  *  See module docstring for the choice rationale. */
@@ -142,7 +154,8 @@ export interface MaterialEntryInput {
    * Explicit flag override. When omitted, {@link packMaterials} derives
    * `flags = (transmission > 0) ? MATERIAL_FLAG_IS_GLASS : 0`.
    * Pass an explicit value if the caller needs additional bits (e.g.
-   * `castShadow:false` at bit 1 or `doubleSided:true` at bit 2).
+   * `castShadow:false` at bit 1, `doubleSided:true` at bit 2, or an unlit
+   * shading model at bit 3).
    */
   flags?: number;
 }
@@ -211,7 +224,12 @@ export function coreMaterialToMaterialEntry(material: MaterialSpec): MaterialEnt
       ? MATERIAL_FLAG_CAST_SHADOW_DISABLED
       : 0) |
     (material.doubleSided === true ? MATERIAL_FLAG_DOUBLE_SIDED : 0);
-  if (flags !== 0) out.flags = flags;
+  const completeFlags = flags |
+    (material.shadingModel === 'unlit' ? MATERIAL_FLAG_UNLIT : 0) |
+    (material.extensions?.['skipEmitter'] === true
+      ? MATERIAL_FLAG_SKIP_EMITTER
+      : 0);
+  if (completeFlags !== 0) out.flags = completeFlags;
   return out;
 }
 
@@ -355,8 +373,13 @@ export function packMaterials(
         if (value < 0 || value > 1) throw new RangeError(`packMaterials: mats[${i}].${key} must be in [0, 1].`);
       }
     }
-    if (material.ior !== undefined && !(assertF32(material.ior, `mats[${i}].ior`) > 0)) {
-      throw new RangeError(`packMaterials: mats[${i}].ior must be > 0.`);
+    if (material.ior !== undefined) {
+      const ior = assertF32(material.ior, `mats[${i}].ior`);
+      if (ior !== 0 && ior < 1) {
+        throw new RangeError(
+          `packMaterials: mats[${i}].ior must be 0 or >= 1.`,
+        );
+      }
     }
     if (material.thickness !== undefined && assertF32(material.thickness, `mats[${i}].thickness`) < 0) {
       throw new RangeError(`packMaterials: mats[${i}].thickness must be >= 0.`);
@@ -384,7 +407,7 @@ export function packMaterials(
     const attenuationColor = m.attenuationColor ?? [1, 1, 1];
     const roughness = m.roughness ?? MATERIAL_DEFAULT_ROUGHNESS;
     const metalness = m.metalness ?? 0;
-    const ior = m.ior ?? 1.5;
+    const ior = effectiveMaterialIor(m.ior);
     const transmission = m.transmission ?? 0;
     const attenuationDistance = m.attenuationDistance;
     const attenDistF = attenuationDistance ?? MATERIAL_ATTEN_DIST_INFINITE;

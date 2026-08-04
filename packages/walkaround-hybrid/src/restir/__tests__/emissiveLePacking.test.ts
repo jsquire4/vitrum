@@ -102,6 +102,31 @@ describe('packBVHEmissiveLeFromCore — camera-visible core emissive Le', () => 
 
     const out = packBVHEmissiveLeFromCore(new Uint32Array([0]), [material], 1);
 
-    expect(Array.from(out)).toEqual([6, 6, 6, 0]);
+    expect(Array.from(out)).toEqual([6, 6, 6, 1]);
+  });
+
+  it('packs exact implicit NEE ownership independently from visible Le', () => {
+    const implicit: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 1,
+      metallic: 0,
+      emissive: [2, 1, 0.5],
+    };
+    const skipped: MaterialSpec = {
+      ...implicit,
+      extensions: { skipEmitter: true },
+    };
+    const zero: MaterialSpec = {
+      ...implicit,
+      emissiveIntensity: 0,
+    };
+    const out = packBVHEmissiveLeFromCore(
+      new Uint32Array([0, 1, 2]),
+      [implicit, skipped, zero],
+      3,
+    );
+    expect(Array.from(out.slice(0, 4))).toEqual([2, 1, 0.5, 1]);
+    expect(Array.from(out.slice(4, 8))).toEqual([2, 1, 0.5, 0]);
+    expect(Array.from(out.slice(8, 12))).toEqual([0, 0, 0, 0]);
   });
 });

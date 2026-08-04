@@ -296,7 +296,10 @@ describe('pt-webgpu extension lobe CPU references', () => {
 
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('fn charlieSheenPdf(');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('fn charlieSheenSample(');
-    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('let sheenPdf = sheen * charlieSheenPdf(');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('let sheenPdf = charlieSheenPdf(');
+    expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
+      'extensionProbabilities.z * sheenPdf',
+    );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('let bs = charlieSheenSample(rng, -incomingDir, normal, tanT, tanB, sheenRoughness);');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain('let sheenPdf = sheen * nDotL * INV_PI;');
   });

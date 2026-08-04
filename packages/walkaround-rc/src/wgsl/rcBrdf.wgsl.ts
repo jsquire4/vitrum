@@ -138,74 +138,261 @@ fn rcSampleVisibleGgxNormal(n: vec3f, wo: vec3f, rough: f32, xi: vec2f) -> vec3f
   return safe_normalize(wmT.x * tangent + wmT.y * bitangent + wmT.z * n);
 }
 
-struct RcGgxDielectricTransmissionSample {
+// Heitz 2018 visible-normal sampling with independently authored tangent and
+// bitangent slopes. RC receives explicit random variates instead of a mutable
+// RNG pointer so all three dispersed colour lanes can share one correlated
+// branch/sample sequence while their IORs still produce distinct directions.
+fn rcSampleVndfTangentAnisotropic(
+  wo: vec3f,
+  alphaX: f32,
+  alphaY: f32,
+  xi: vec2f,
+) -> vec3f {
+  if (alphaX <= 0.0 || alphaY <= 0.0) {
+    return vec3f(0.0, 0.0, 1.0);
+  }
+  let vh = safe_normalize(vec3f(alphaX * wo.x, alphaY * wo.y, wo.z));
+  let lensq = vh.x * vh.x + vh.y * vh.y;
+  var t1 = vec3f(1.0, 0.0, 0.0);
+  if (lensq > 0.0) {
+    t1 = vec3f(-vh.y, vh.x, 0.0) * inverseSqrt(lensq);
+  }
+  let t2 = cross(vh, t1);
+  let radius = sqrt(clamp(xi.x, 0.0, 1.0));
+  let phi = 2.0 * RC_PI * clamp(xi.y, 0.0, 1.0);
+  let diskX = radius * cos(phi);
+  var diskY = radius * sin(phi);
+  let blend = 0.5 * (1.0 + vh.z);
+  diskY = (1.0 - blend) * sqrt(max(0.0, 1.0 - diskX * diskX)) +
+    blend * diskY;
+  let nh = diskX * t1 + diskY * t2 +
+    sqrt(max(0.0, 1.0 - diskX * diskX - diskY * diskY)) * vh;
+  return safe_normalize(vec3f(
+    alphaX * nh.x,
+    alphaY * nh.y,
+    max(0.0, nh.z),
+  ));
+}
+
+fn rcDielectricTransmissionAxes(rough: f32, anisotropy: f32) -> vec2f {
+  let boundedRoughness = clamp(rough, 0.0, 1.0);
+  let alpha = max(boundedRoughness * boundedRoughness, 1e-6);
+  let aspect = sqrt(1.0 - 0.9 * clamp(anisotropy, 0.0, 1.0));
+  return vec2f(alpha / aspect, alpha * aspect);
+}
+
+const RC_DIELECTRIC_EVENT_INVALID: u32 = 0u;
+const RC_DIELECTRIC_EVENT_REFLECTION: u32 = 1u;
+const RC_DIELECTRIC_EVENT_TRANSMISSION: u32 = 2u;
+
+struct RcDielectricLobeSample {
   direction: vec3f,
-  weight: f32,
-  transmission: f32,
+  weightRgb: vec3f,
   microfacetCos: f32,
+  kind: u32,
   valid: u32,
 };
 
-fn rcSampleGgxDielectricTransmission(
+// Sample one requested member of the exact dielectric optical envelope. The
+// caller owns the discrete reflection/transmission choice and scalar material
+// transmission; this helper divides only by the continuous VNDF/direction
+// proposal. Consequently exact Fresnel reflection (including TIR) survives at
+// t=1 and paired bulk exits do not pay t twice.
+fn rcSampleDielectricLobe(
+  triIndex: u32,
+  frontFacing: bool,
   n: vec3f,
+  anisotropyTangent: vec3f,
+  anisotropyBitangent: vec3f,
   wo: vec3f,
   rough: f32,
-  etaIncident: f32,
-  etaTarget: f32,
+  anisotropy: f32,
+  anisotropyRotation: f32,
+  etaIncidentRgb: vec3f,
+  etaTargetRgb: vec3f,
+  layerTransmission: vec3f,
+  channel: u32,
+  applyThinFilm: bool,
+  chooseReflection: bool,
   xi: vec2f,
-) -> RcGgxDielectricTransmissionSample {
-  var out: RcGgxDielectricTransmissionSample;
+) -> RcDielectricLobeSample {
+  var out: RcDielectricLobeSample;
   out.direction = vec3f(0.0);
-  out.weight = 0.0;
-  out.transmission = 0.0;
+  out.weightRgb = vec3f(0.0);
   out.microfacetCos = 0.0;
+  out.kind = RC_DIELECTRIC_EVENT_INVALID;
   out.valid = 0u;
+
+  let etaIncident = rcRgbChannel(etaIncidentRgb, channel);
+  let etaTarget = rcRgbChannel(etaTargetRgb, channel);
   let nDotWo = dot(n, wo);
-  if (nDotWo <= 0.0 || etaIncident <= 0.0 || etaTarget <= 0.0) { return out; }
-  let eta = etaIncident / etaTarget;
-  let etap = etaTarget / etaIncident;
-  if (rough <= 0.0) {
-    let wi = refract(-wo, n, eta);
-    if (dot(wi, wi) <= 0.0) { return out; }
-    let interfaceT = 1.0 - rcDielectricFresnelExact(nDotWo, etaIncident, etaTarget);
-    if (interfaceT <= 0.0) { return out; }
-    out.direction = safe_normalize(wi);
-    out.weight = interfaceT / (etap * etap);
-    out.transmission = interfaceT;
-    out.microfacetCos = nDotWo;
-    out.valid = 1u;
+  if (!(nDotWo > 0.0) || etaIncident <= 0.0 || etaTarget <= 0.0) {
     return out;
   }
 
   let authoredRoughness = clamp(rough, 0.0, 1.0);
-  var wm = rcSampleVisibleGgxNormal(n, wo, authoredRoughness, xi);
-  if (dot(wm, n) < 0.0) { wm = -wm; }
+  let aniso = clamp(anisotropy, 0.0, 1.0);
+  var wm = n;
+  var frame = mat2x3f(anisotropyTangent, anisotropyBitangent);
+  var axes = vec2f(0.0);
+  if (authoredRoughness > 0.0) {
+    if (aniso > 0.0) {
+      frame = rcRotateTangentFrame(
+        anisotropyTangent, anisotropyBitangent, anisotropyRotation,
+      );
+      axes = rcDielectricTransmissionAxes(authoredRoughness, aniso);
+      let woT = vec3f(
+        dot(wo, frame[0]), dot(wo, frame[1]), dot(wo, n),
+      );
+      let wmT = rcSampleVndfTangentAnisotropic(
+        woT, axes.x, axes.y, xi,
+      );
+      wm = safe_normalize(
+        wmT.x * frame[0] + wmT.y * frame[1] + wmT.z * n,
+      );
+    } else {
+      wm = rcSampleVisibleGgxNormal(n, wo, authoredRoughness, xi);
+    }
+    if (dot(wm, n) < 0.0) { wm = -wm; }
+  }
+
   let woDotM = dot(wo, wm);
-  if (woDotM <= 0.0) { return out; }
-  let wiRaw = refract(-wo, wm, eta);
-  if (dot(wiRaw, wiRaw) <= 0.0) { return out; }
-  let wi = safe_normalize(wiRaw);
-  let nDotWiAbs = abs(dot(n, wi));
-  let wiDotM = dot(wi, wm);
-  let denom = wiDotM + woDotM / etap;
-  if (dot(n, wi) >= 0.0 || nDotWiAbs <= 0.0 || wiDotM >= 0.0 || denom == 0.0) {
+  if (!(woDotM > 0.0)) { return out; }
+  let reflectedDirection = safe_normalize(reflect(-wo, wm));
+  let refractedRaw = refract(-wo, wm, etaIncident / etaTarget);
+  let tir = dot(refractedRaw, refractedRaw) <= 1e-12;
+  var reflectanceRgb = vec3f(
+    rcDielectricFresnelExact(
+      woDotM, etaIncidentRgb.r, etaTargetRgb.r,
+    ),
+    rcDielectricFresnelExact(
+      woDotM, etaIncidentRgb.g, etaTargetRgb.g,
+    ),
+    rcDielectricFresnelExact(
+      woDotM, etaIncidentRgb.b, etaTargetRgb.b,
+    ),
+  );
+  var transmittanceRgb = vec3f(1.0) - reflectanceRgb;
+  if (applyThinFilm) {
+    let film = materialThinFilmResponse(triIndex, frontFacing, woDotM);
+    if (film.present != 0u) {
+      reflectanceRgb = film.reflectance;
+      transmittanceRgb = film.transmittance;
+    }
+  }
+  let etaRatioRgb = max(etaIncidentRgb, vec3f(1e-6)) /
+    max(etaTargetRgb, vec3f(1e-6));
+  let sin2TargetRgb = etaRatioRgb * etaRatioRgb *
+    (1.0 - woDotM * woDotM);
+  let tirRgb = sin2TargetRgb >= vec3f(1.0);
+  reflectanceRgb = select(reflectanceRgb, vec3f(1.0), tirRgb);
+  transmittanceRgb = select(transmittanceRgb, vec3f(0.0), tirRgb);
+  let layerTransferRgb = clamp(
+    layerTransmission, vec3f(0.0), vec3f(1.0),
+  );
+  reflectanceRgb = clamp(
+    reflectanceRgb, vec3f(0.0), vec3f(1.0),
+  ) * layerTransferRgb;
+  transmittanceRgb = clamp(
+    transmittanceRgb, vec3f(0.0), vec3f(1.0),
+  ) * layerTransferRgb;
+  let reflectance = rcRgbChannel(reflectanceRgb, channel);
+  let transmittance = rcRgbChannel(transmittanceRgb, channel);
+
+  var directionalBaseWeight = 0.0;
+  if (chooseReflection) {
+    let nDotWi = dot(n, reflectedDirection);
+    if (!(nDotWi > 0.0) || !(reflectance > 0.0)) { return out; }
+    if (authoredRoughness <= 0.0) {
+      directionalBaseWeight = 1.0;
+    } else {
+      var D = 0.0;
+      var G1o = 0.0;
+      var G1i = 0.0;
+      if (aniso > 0.0) {
+        D = rcDistributionGGXAnisotropic(
+          n, frame[0], frame[1], wm, axes.x, axes.y,
+        );
+        G1o = rcSmithG1Anisotropic(
+          n, frame[0], frame[1], wo, axes.x, axes.y,
+        );
+        G1i = rcSmithG1Anisotropic(
+          n, frame[0], frame[1], reflectedDirection, axes.x, axes.y,
+        );
+      } else {
+        let alpha = authoredRoughness * authoredRoughness;
+        let alpha2 = alpha * alpha;
+        D = rcDistributionGGX(dot(n, wm), authoredRoughness);
+        G1o = rcSmithG1GGX(nDotWo, alpha2);
+        G1i = rcSmithG1GGX(nDotWi, alpha2);
+      }
+      let directionPdf = D * G1o / (4.0 * nDotWo);
+      let frBase = D * G1o * G1i /
+        (4.0 * nDotWo * nDotWi);
+      if (!(directionPdf > 0.0) || !(frBase > 0.0)) { return out; }
+      directionalBaseWeight = frBase * nDotWi / directionPdf;
+    }
+    out.direction = reflectedDirection;
+    out.kind = RC_DIELECTRIC_EVENT_REFLECTION;
+    out.weightRgb = reflectanceRgb * directionalBaseWeight;
+  } else {
+    if (tir || !(transmittance > 0.0)) { return out; }
+    let refractedDirection = safe_normalize(refractedRaw);
+    let nDotWiAbs = abs(dot(n, refractedDirection));
+    let wiDotM = dot(refractedDirection, wm);
+    let etap = etaTarget / etaIncident;
+    let denom = wiDotM + woDotM / etap;
+    if (
+      dot(n, refractedDirection) >= 0.0 || !(nDotWiAbs > 0.0) ||
+      wiDotM >= 0.0 || abs(denom) <= 1e-8
+    ) { return out; }
+    if (authoredRoughness <= 0.0) {
+      directionalBaseWeight = 1.0 / (etap * etap);
+    } else {
+      var D = 0.0;
+      var G1o = 0.0;
+      var G1i = 0.0;
+      if (aniso > 0.0) {
+        D = rcDistributionGGXAnisotropic(
+          n, frame[0], frame[1], wm, axes.x, axes.y,
+        );
+        G1o = rcSmithG1Anisotropic(
+          n, frame[0], frame[1], wo, axes.x, axes.y,
+        );
+        G1i = rcSmithG1Anisotropic(
+          n, frame[0], frame[1], -refractedDirection, axes.x, axes.y,
+        );
+      } else {
+        let alpha = authoredRoughness * authoredRoughness;
+        let alpha2 = alpha * alpha;
+        D = rcDistributionGGX(dot(n, wm), authoredRoughness);
+        G1o = rcSmithG1GGX(nDotWo, alpha2);
+        G1i = rcSmithG1GGX(nDotWiAbs, alpha2);
+      }
+      let microfacetPdf = D * G1o * abs(woDotM) / nDotWo;
+      let directionPdf = microfacetPdf * abs(wiDotM) /
+        (denom * denom);
+      let ftBase = D * G1o * G1i *
+        abs(wiDotM * woDotM /
+          (nDotWiAbs * nDotWo * denom * denom)) /
+        (etap * etap);
+      if (!(directionPdf > 0.0) || !(ftBase > 0.0)) { return out; }
+      directionalBaseWeight = ftBase * nDotWiAbs / directionPdf;
+    }
+    out.direction = refractedDirection;
+    out.kind = RC_DIELECTRIC_EVENT_TRANSMISSION;
+    out.weightRgb = transmittanceRgb * directionalBaseWeight;
+  }
+
+  let selectedWeight = rcRgbChannel(out.weightRgb, channel);
+  let maximumWeight = max(
+    out.weightRgb.x, max(out.weightRgb.y, out.weightRgb.z),
+  );
+  if (!(selectedWeight > 0.0) || maximumWeight >= 1e30) {
+    out.weightRgb = vec3f(0.0);
+    out.kind = RC_DIELECTRIC_EVENT_INVALID;
     return out;
   }
-  let alpha = authoredRoughness * authoredRoughness;
-  let alpha2 = alpha * alpha;
-  let D = rcDistributionGGX(dot(n, wm), authoredRoughness);
-  let G1o = rcSmithG1GGX(nDotWo, alpha2);
-  let G = G1o * rcSmithG1GGX(nDotWiAbs, alpha2);
-  let interfaceT = 1.0 - rcDielectricFresnelExact(woDotM, etaIncident, etaTarget);
-  let denom2 = denom * denom;
-  let pdf = (D * G1o * abs(woDotM) / nDotWo) * abs(wiDotM) / denom2;
-  if (D <= 0.0 || G <= 0.0 || interfaceT <= 0.0 || pdf <= 0.0) { return out; }
-  let ft = interfaceT * D * G *
-    abs(wiDotM * woDotM / (nDotWiAbs * nDotWo * denom2)) /
-    (etap * etap);
-  out.direction = wi;
-  out.weight = ft * nDotWiAbs / pdf;
-  out.transmission = interfaceT;
   out.microfacetCos = woDotM;
   out.valid = 1u;
   return out;
@@ -278,8 +465,16 @@ fn rcEvaluateProbeDirectResponse(mat: RCProbeHitMaterial, n: vec3f, wo: vec3f, w
   let F0 = rcIridescenceModifiedF0(rcBaseMaterialF0(mat), mat.iridescence, vDotH);
   let F = rcFresnelSchlick(vDotH, F0);
   let spec = (D * G) * F / (4.0 * nDotV * nDotL);
-  let diffuse = mat.albedo * (1.0 - clamp(mat.metalness, 0.0, 1.0)) * RC_INV_PI;
-  return (diffuse + spec) * nDotL
-       + rcEvalClearcoatLobe(mat.clearcoat, mat.clearcoatNormal, v, l)
-       + rcEvalSheenLobe(mat.sheen, mat.sheenRoughness, n, v, l);
+  let diffuse = mat.albedo *
+    (1.0 - clamp(mat.metalness, 0.0, 1.0)) *
+    (1.0 - clamp(mat.transmission, 0.0, 1.0)) * RC_INV_PI;
+  let baseResponse = diffuse * nDotL;
+  let reflectionResponse = spec * nDotL
+    + rcEvalClearcoatLobe(mat.clearcoat, mat.clearcoatNormal, v, l)
+    + rcEvalSheenLobe(mat.sheen, mat.sheenRoughness, n, v, l);
+  // Film reflectance is absolute in the specular term; multiplying it by film
+  // T would produce the invalid R*T endpoint. Face absorption applies to both
+  // sides, while film T applies only to the base closure behind the film.
+  return baseResponse * mat.layerTransmission +
+    reflectionResponse * mat.reflectionLayerTransmission;
 }`;

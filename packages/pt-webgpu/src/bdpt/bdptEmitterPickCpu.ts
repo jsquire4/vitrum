@@ -3,8 +3,6 @@
  * endpoint sampling for test oracles and `fillBdptLightPathCpu`.
  */
 
-import { luminance as luminance709 } from '@vitrum/shared-samplers';
-
 import type { UploadedSceneBuffers } from '../scene/uploadSceneBuffers.js';
 import { resolvePtWebgpuSceneRadius } from '../scene/sceneScalePolicy.js';
 import { scalePtWebgpuEnvironmentRadianceF32 } from '../environmentRadianceScale.js';
@@ -23,27 +21,10 @@ const PI = Math.PI;
 const DIRECTIONAL_LIGHT_FLOAT_STRIDE = 8;
 
 /** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
-function bdptLightLuminance(rgb: readonly [number, number, number]): number {
-  return Math.max(luminance709(rgb[0], rgb[1], rgb[2]), 0);
-}
-
-/** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
 function bdptHasEnvironmentEmitter(sb: UploadedSceneBuffers): boolean {
   return sb.hasEnvironmentMap &&
     sb.environmentMapWidth > 0 &&
     sb.environmentMapHeight > 0;
-}
-
-/** @internal Test-oracle CPU mirror of the GPU emitter-pick math; not public API. */
-function bdptEnvironmentPower(sb: UploadedSceneBuffers): number {
-  if (
-    sb.hasEnvironmentMap &&
-    sb.environmentMapWidth > 0 &&
-    sb.environmentMapHeight > 0
-  ) {
-    return Math.max(sb.environmentLightTreePower, 0);
-  }
-  return 0;
 }
 
 function exactPositiveEmitterMeasure(value: number, label: string): number {
@@ -80,6 +61,7 @@ function directionalRecord(
   readonly dir: [number, number, number];
   readonly irradiance: [number, number, number];
   readonly rawAngularDiameter: number;
+  readonly distantDirectProposalPmf: number;
 } | null {
   const base = index * DIRECTIONAL_LIGHT_FLOAT_STRIDE;
   if (sb.directionalLightsData.length < base + DIRECTIONAL_LIGHT_FLOAT_STRIDE) {
@@ -98,6 +80,7 @@ function directionalRecord(
       sb.directionalLightsData[base + 5] ?? 0,
       sb.directionalLightsData[base + 6] ?? 0,
     ],
+    distantDirectProposalPmf: sb.directionalLightsData[base + 7] ?? 0,
   };
 }
 
@@ -105,16 +88,18 @@ export function distantDirectEmitterCount(sb: UploadedSceneBuffers): number {
   return sb.directionalLightCount + (bdptHasEnvironmentEmitter(sb) ? 1 : 0);
 }
 
-export function distantDirectEmitterPower(
+export function distantDirectEmitterPmf(
   sb: UploadedSceneBuffers,
   localIndex: number,
 ): number {
   if (localIndex < sb.directionalLightCount) {
     const record = directionalRecord(sb, localIndex);
-    return record ? bdptLightLuminance(record.irradiance) : 0;
+    const pmf = record?.distantDirectProposalPmf ?? 0;
+    return Number.isFinite(pmf) && pmf > 0 && pmf <= 1 ? pmf : 0;
   }
   if (localIndex === sb.directionalLightCount && bdptHasEnvironmentEmitter(sb)) {
-    return bdptEnvironmentPower(sb);
+    const pmf = sb.environmentDistantProposalPmf;
+    return Number.isFinite(pmf) && pmf > 0 && pmf <= 1 ? pmf : 0;
   }
   return 0;
 }
@@ -150,19 +135,7 @@ export function distantDirectSelectionPdf(
   ) {
     return 0;
   }
-  let powerScale = 0;
-  for (let i = 0; i < count; i += 1) {
-    powerScale = Math.max(powerScale, distantDirectEmitterPower(sb, i));
-  }
-  if (!(powerScale > 0) || !Number.isFinite(powerScale)) return 0;
-  let normalizedTotal = 0;
-  for (let i = 0; i < count; i += 1) {
-    normalizedTotal += distantDirectEmitterPower(sb, i) / powerScale;
-  }
-  return normalizedTotal > 0
-    ? (distantDirectEmitterPower(sb, localIndex) / powerScale) /
-        normalizedTotal
-    : 0;
+  return distantDirectEmitterPmf(sb, localIndex);
 }
 
 /** Exact rejection threshold used by `u32 % count` without modulo bias. */

@@ -48,13 +48,25 @@ export async function exportGIStateImpl(
   const pipeline = deps.pipeline;
   if (pipeline == null) return null;
 
+  // Snapshot every CPU-owned part of the estimator generation before starting
+  // any asynchronous readback. A host may render, resize, or publish a new
+  // scene immediately after this function returns its promise; none of those
+  // mutations may relabel the GPU bytes already queued below.
+  const grid = deps.ddgi.gridParams;
+  const dims = { x: grid.dims.x, y: grid.dims.y, z: grid.dims.z };
+  const origin = [grid.origin.x, grid.origin.y, grid.origin.z] as const;
+  const spacing = grid.spacing;
+  const compatibility = deps.compatibility.slice();
+  const ppgStateRequired = pipeline.ppgStateRequired;
+  const nrcStateRequired = pipeline.nrcStateRequired;
+  const ppgRaw = ppgStateRequired ? pipeline.exportPPGSTree() : null;
+
   const atlasPromise = deps.ddgi.exportAtlasData(deps.device);
   const restirGIPromise = pipeline.exportRestirGIReservoirs(deps.device);
   const restirDIPromise = pipeline.exportRestirDIReservoirs(deps.device);
-  const nrcPromise = pipeline.nrcStateRequired
+  const nrcPromise = nrcStateRequired
     ? pipeline.exportNrcLearnedState()
     : Promise.resolve(null);
-  const ppgRaw = pipeline.ppgStateRequired ? pipeline.exportPPGSTree() : null;
 
   const [atlas, restirGI, restirDI, nrc] = await Promise.all([
     atlasPromise,
@@ -66,13 +78,12 @@ export async function exportGIStateImpl(
     atlas == null ||
     restirGI == null ||
     restirDI == null ||
-    (pipeline.ppgStateRequired && ppgRaw == null) ||
-    (pipeline.nrcStateRequired && nrc == null)
+    (ppgStateRequired && ppgRaw == null) ||
+    (nrcStateRequired && nrc == null)
   ) {
     return null;
   }
 
-  const grid = deps.ddgi.gridParams;
   const ppg = ppgRaw == null
     ? undefined
     : {
@@ -85,11 +96,11 @@ export async function exportGIStateImpl(
         sceneBoundsMax: ppgRaw.sceneBoundsMax,
       };
   return {
-    dims: { x: grid.dims.x, y: grid.dims.y, z: grid.dims.z },
-    origin: [grid.origin.x, grid.origin.y, grid.origin.z],
-    spacing: grid.spacing,
+    dims,
+    origin,
+    spacing,
     ...atlas,
-    compatibility: deps.compatibility.slice(),
+    compatibility,
     restirGI,
     restirDI,
     ...(ppg != null ? { ppg } : {}),

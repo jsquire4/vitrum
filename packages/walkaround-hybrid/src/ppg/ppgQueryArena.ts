@@ -1,8 +1,12 @@
 import type { SerialisedSTree } from './serialise.js';
 
 export const PPG_QUERY_ARENA_MAGIC = 0x50504741;
-export const PPG_QUERY_ARENA_VERSION = 1;
-export const PPG_QUERY_ARENA_SCHEMA = 0x8f2e09c1;
+// v2 overlays exact represented proposal bucket counts into the query-only
+// dTree lanes (interior lane 5 / leaf lane 6). Persistent snapshot bytes keep
+// their original serialisation ABI and are transformed immediately before an
+// arena upload.
+export const PPG_QUERY_ARENA_VERSION = 2;
+export const PPG_QUERY_ARENA_SCHEMA = 0x4d5bc8a7;
 export const PPG_QUERY_ARENA_HEADER_WORDS = 16;
 export const PPG_QUERY_ARENA_EPOCH_WORD = 2;
 const BINDING_ALIGNMENT_BYTES = 256;

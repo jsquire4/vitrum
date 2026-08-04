@@ -81,6 +81,36 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(cv.renderFrame).not.toHaveBeenCalled();
   });
 
+  it('snapshots a fixed-size matrix without re-reading a getter-backed length', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine();
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      stillFramesBeforeHandoff: 3,
+    });
+    let lengthReads = 0;
+    const view = Object.create(null) as Record<string, number> & { readonly length: number };
+    Object.defineProperty(view, 'length', {
+      get() {
+        lengthReads += 1;
+        return lengthReads <= 2 ? 16 : 0;
+      },
+    });
+    const identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+    identity.forEach((value, index) => { view[index] = value; });
+    const frame = {
+      ...input(0),
+      viewMatrix: view,
+    } as unknown as FrameInput;
+
+    expect(c.frame(frame).phase).toBe('realtime');
+    // One read belongs to core camera derivation and one to the coordinator's
+    // fixed-size snapshot. A third read would reopen the old validation/copy
+    // TOCTOU and allow the stored matrix length to differ from the checked one.
+    expect(lengthReads).toBe(2);
+  });
+
   it('settles, then hands off to the converged engine after the threshold (reset once on entry)', () => {
     const rt = makeStubEngine();
     const cv = makeStubEngine();

@@ -103,6 +103,7 @@ function sections(): GIStateExtendedSections {
   return {
     compatibility: compatibility(),
     restirDI: {
+      representationVersion: 1,
       width: 1,
       height: 1,
       strideU32: 8,
@@ -134,7 +135,7 @@ function sections(): GIStateExtendedSections {
   };
 }
 
-describe('GI-state v8 extension block', () => {
+describe('GI-state complete-state extension block', () => {
   it('round-trips compatibility, ReSTIR-DI, and complete NRC learned state', () => {
     const source = sections();
     const decoded = deserializeGIStateExtendedSections(
@@ -161,6 +162,38 @@ describe('GI-state v8 extension block', () => {
     );
     expect(decoded.restirDI).toBeUndefined();
     expect(decoded.nrc).toBeUndefined();
+  });
+
+  it('cold-migrates version-1 linear DI reservoirs while retaining other state', () => {
+    const source = sections();
+    const encoded = serializeGIStateExtendedSections(source);
+    const view = new DataView(encoded);
+    view.setUint32(4, 1, true); // historical extension version
+    const diStart = 32 + source.compatibility.byteLength;
+    view.setUint32(diStart + 16, 0, true); // historical reserved word
+    const current = diStart + 20;
+    view.setUint32(current, 7, true);
+    view.setUint32(current + 4, 1, true);
+    view.setFloat32(current + 8, 2, true);
+    view.setFloat32(current + 12, 0.5, true);
+    view.setFloat32(current + 16, 0.25, true);
+    view.setFloat32(current + 20, 0.75, true);
+    view.setUint32(current + 24, 1, true);
+    view.setUint32(current + 28, 0, true);
+
+    const decoded = deserializeGIStateExtendedSections(encoded);
+    expect(decoded.restirDI?.representationVersion).toBe(1);
+    expect(decoded.restirDI?.current.every((word) => word === 0)).toBe(true);
+    expect(decoded.nrc?.trainedSteps).toBe(source.nrc?.trainedSteps);
+  });
+
+  it('rejects a representation marker that disagrees with extension version', () => {
+    const encoded = serializeGIStateExtendedSections(sections());
+    const diStart = 32 + sections().compatibility.byteLength;
+    new DataView(encoded).setUint32(diStart + 16, 0, true);
+    expect(() => deserializeGIStateExtendedSections(encoded)).toThrow(
+      /representation marker/,
+    );
   });
 
   it('rejects unknown flags and inconsistent section lengths', () => {

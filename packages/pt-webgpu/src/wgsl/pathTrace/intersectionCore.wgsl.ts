@@ -33,6 +33,10 @@ export const PT_WEBGPU_INTERSECTION_CORE_WGSL = /* wgsl */ `fn intersectAabb(ray
 struct SceneHit {
   didHit: bool,
   dist: f32,
+  // Exact represented-space hit carried through TLAS local-to-world transform.
+  // Continuation starts here instead of reconstructing origin + direction*t,
+  // whose independent rounding can overstep an adjacent representable surface.
+  position: vec3f,
   triIndex: u32,
   normal: vec3f,
   // Geometric-winding orientation at the accepted hit. Unlike the interpolated
@@ -49,6 +53,10 @@ struct SceneHit {
   // merged-BLAS/lite/analytic paths. Full-tier normal maps use this to transform
   // their per-hit tangent basis into the same world frame as hit.normal.
   instanceIndex: u32,
+  // Exact projected-edge classification from the watertight predicate that
+  // accepted this triangle. Analytic hits use zero. Transmission continuation
+  // uses this payload to exclude only the just-crossed represented feature.
+  zeroEdgeMask: u32,
 };
 
 const SHAPE_SPHERE = 1u;
@@ -435,14 +443,16 @@ fn intersectHChannelLocal(ray: Ray, lengthX: f32, railWidth: f32, blockHeight: f
 // declares \`materials\` / \`triMaterialIds\` / MATERIAL_VEC4_STRIDE before this
 // module, so the symbols resolve in every composition.
 fn materialShadowCastDisabled(matId: u32) -> bool {
-  let vecIndex = matId * MATERIAL_VEC4_STRIDE + 25u;
-  if (vecIndex >= arrayLength(&materials)) { return false; }
-  return materials[vecIndex].w > 0.5;
+  let materialBase = materialRecordBase(matId);
+  let vecIndex = materialRecordIndex(materialBase, 25u);
+  if (vecIndex == MATERIAL_INVALID_INDEX) { return false; }
+  let disabled = materials[vecIndex].w;
+  return materialRecordFiniteF32(disabled) && disabled > 0.5;
 }
 
 fn triShadowCastDisabled(triIdx: u32) -> bool {
   if (triIdx >= arrayLength(&triMaterialIds)) { return false; }
-  return materialShadowCastDisabled(triMaterialIds[triIdx]);
+  return materialShadowCastDisabled(triMaterialIds[triIdx].x);
 }
 
 // Mesh BVH traversal — closest: shrinking ray interval (hit.dist) for slab tests
@@ -459,11 +469,13 @@ fn traceMeshBvh(
 ) -> bool {
   (*hit).didHit = false;
   (*hit).dist = tMaxBound;
+  (*hit).position = vec3f(0.0);
   (*hit).triIndex = 0u;
   (*hit).normal = vec3f(0.0, 1.0, 0.0);
   (*hit).frontFace = false;
   (*hit).baryVW = vec2f(0.0);
   (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  (*hit).zeroEdgeMask = 0u;
   if (params.bvhNodeCount == 0u || arrayLength(&bvhNodes) == 0u || rootNode >= min(params.bvhNodeCount, arrayLength(&bvhNodes))) {
     return false;
   }
@@ -503,7 +515,7 @@ fn traceMeshBvh(
         let a = positions[tri.x].xyz;
         let b = positions[tri.y].xyz;
         let c = positions[tri.z].xyz;
-        let triHit = mollerTrumboreCore(
+        let triHit = opticalWatertightTriangleIntersect(
           ray.origin,
           ray.direction,
           a,
@@ -520,6 +532,9 @@ fn traceMeshBvh(
         // face — NEE always occluded + bounce rays trapped → black geometry
         // (G-P0.3 capture found this via the face-on Cornell back wall).
         if (hitT > tMin && hitT < select(tMaxBound, (*hit).dist, closest)) {
+          if (opticalTraversalSuppressesTriangle(t, tri, a, b, c)) {
+            continue;
+          }
           if (!closest) {
             // SHADOW-01 — any-hit mode is exclusively occlusion (shadow /
             // visibility) queries: skip castShadow:false geometry.
@@ -528,8 +543,8 @@ fn traceMeshBvh(
             }
             return true;
           }
-          var shadeNormal = triHit.normal;
-          let frontFace = triHit.det > 0.0;
+          var shadeNormal = triHit.normal * triHit.side;
+          let frontFace = triHit.side > 0.0;
           // Carry canonical (v,w) weights into texture and smooth-normal
           // interpolation. Re-solving this payload from the hit point loses
           // precision independently of the intersection that accepted it.
@@ -548,11 +563,13 @@ fn traceMeshBvh(
           }
           (*hit).didHit = true;
           (*hit).dist = hitT;
+          (*hit).position = opticalCanonicalHitPoint(triHit, a, b, c);
           (*hit).triIndex = t;
           (*hit).normal = shadeNormal;
           (*hit).frontFace = frontFace;
           (*hit).baryVW = shadeBaryVW;
           (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+          (*hit).zeroEdgeMask = triHit.zeroEdgeMask;
         }
       }
     } else {
@@ -576,4 +593,379 @@ fn traceMeshBvh(
     }
   }
   return select(false, (*hit).didHit, closest);
-}`;
+}
+
+// Optical-medium boundary identity. The payload is encoded as id + 1 in the
+// triangle index .w lane so zero remains an unambiguous non-boundary sentinel.
+// Full-tier TLAS identities include the represented instance; lite geometry is
+// already expanded into one merged world-space triangle stream.
+const MEDIUM_BOUNDARY_KIND_TLAS: u32 = 0u;
+const MEDIUM_BOUNDARY_KIND_MERGED: u32 = 1u;
+const MEDIUM_BOUNDARY_KIND_INVALID: u32 = 0xffffffffu;
+const OPTICAL_MEDIUM_STACK_LIMIT: u32 = 8u;
+
+fn mediumBoundaryIdentity(triIndex: u32, instanceIndex: u32) -> vec3u {
+  if (triIndex >= min(params.triangleCount, arrayLength(&indices))) {
+    return vec3u(MEDIUM_BOUNDARY_KIND_INVALID);
+  }
+  let encodedBoundary = opticalEncodedBoundaryId(triIndex, instanceIndex);
+  if (encodedBoundary == 0u) {
+    return vec3u(MEDIUM_BOUNDARY_KIND_INVALID);
+  }
+  if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX) {
+    return vec3u(MEDIUM_BOUNDARY_KIND_TLAS, instanceIndex, encodedBoundary);
+  }
+  return vec3u(MEDIUM_BOUNDARY_KIND_MERGED, 0u, encodedBoundary);
+}
+
+fn mediumBoundaryIsValid(boundary: vec3u) -> bool {
+  return boundary.x != MEDIUM_BOUNDARY_KIND_INVALID && boundary.z != 0u;
+}
+
+fn mediumBoundaryMatches(
+  kind: u32,
+  index: u32,
+  component: u32,
+  boundary: vec3u,
+) -> bool {
+  return mediumBoundaryIsValid(boundary) &&
+    kind == boundary.x && index == boundary.y && component == boundary.z;
+}
+
+struct OpticalLocalBoundaryHit {
+  didHit: bool,
+  valid: bool,
+  ambiguous: bool,
+  tangent: bool,
+  dist: f32,
+  triIndex: u32,
+  baryVW: vec2f,
+  frontFace: bool,
+  frontFaceCount: u32,
+  backFaceCount: u32,
+};
+
+fn opticalResetLocalBoundaryHit(
+  hit: ptr<function, OpticalLocalBoundaryHit>,
+  tMax: f32,
+) {
+  (*hit).didHit = false;
+  (*hit).valid = true;
+  (*hit).ambiguous = false;
+  (*hit).tangent = false;
+  (*hit).dist = tMax;
+  (*hit).triIndex = 0u;
+  (*hit).baryVW = vec2f(0.0);
+  (*hit).frontFace = false;
+  (*hit).frontFaceCount = 0u;
+  (*hit).backFaceCount = 0u;
+}
+
+// Traverse one represented BLAS with the canonical watertight
+// triangle predicate. Only positively encoded authored bulk boundaries
+// participate; opaque geometry and transmissive sheets are intentionally
+// invisible to containment reconstruction.
+fn traceOpticalMeshBvhLocal(
+  ray: Ray,
+  exclusiveMinT: f32,
+  tMax: f32,
+  rootNode: u32,
+  hit: ptr<function, OpticalLocalBoundaryHit>,
+) {
+  opticalResetLocalBoundaryHit(hit, tMax);
+  let nodeLimit = min(params.bvhNodeCount, arrayLength(&bvhNodes));
+  if (
+    params.bvhNodeCount == 0u || arrayLength(&bvhNodes) == 0u ||
+    rootNode >= nodeLimit
+  ) {
+    (*hit).valid = false;
+    return;
+  }
+
+  var stack: array<u32, ${BVH_INTERSECT_STACK_DEPTH}>;
+  var stackPtr = 0u;
+  stack[stackPtr] = rootNode;
+  stackPtr = stackPtr + 1u;
+  while (stackPtr > 0u) {
+    stackPtr = stackPtr - 1u;
+    let nodeIdx = stack[stackPtr];
+    if (nodeIdx >= nodeLimit) {
+      (*hit).valid = false;
+      return;
+    }
+    let node = bvhNodes[nodeIdx];
+    let bmin = vec3f(node.boundsMin[0], node.boundsMin[1], node.boundsMin[2]);
+    let bmax = vec3f(node.boundsMax[0], node.boundsMax[1], node.boundsMax[2]);
+    if (!intersectAabb(ray, bmin, bmax, exclusiveMinT, (*hit).dist)) {
+      continue;
+    }
+    let splitOrCount = node.splitAxisOrTriCount;
+    if ((splitOrCount & LEAFNODE_FLAG) == LEAFNODE_FLAG) {
+      let count = splitOrCount & 0x0000ffffu;
+      let start = node.rightChildOrTriOffset;
+      for (var i = 0u; i < count; i = i + 1u) {
+        let triIndex = start + i;
+        if (triIndex >= min(params.triangleCount, arrayLength(&indices))) {
+          (*hit).valid = false;
+          return;
+        }
+        let tri = indices[triIndex];
+        if (tri.w == 0u) { continue; }
+        if (
+          triIndex >= arrayLength(&triMaterialIds) ||
+          !decodeMaterial(triMaterialIds[triIndex].x).isBulkMedium
+        ) {
+          // A stamped boundary whose live material is no longer bulk means the
+          // host published geometry/material state non-atomically. Fail dark.
+          (*hit).valid = false;
+          return;
+        }
+        if (
+          tri.x >= arrayLength(&positions) ||
+          tri.y >= arrayLength(&positions) ||
+          tri.z >= arrayLength(&positions)
+        ) {
+          (*hit).valid = false;
+          return;
+        }
+        let candidate = opticalWatertightTriangleIntersect(
+          ray.origin,
+          ray.direction,
+          positions[tri.x].xyz,
+          positions[tri.y].xyz,
+          positions[tri.z].xyz,
+          exclusiveMinT,
+        );
+        if (!candidate.hit || !(candidate.t < tMax)) { continue; }
+        if (!(*hit).didHit || candidate.t < (*hit).dist) {
+          (*hit).didHit = true;
+          (*hit).ambiguous = false;
+          (*hit).tangent = false;
+          (*hit).dist = candidate.t;
+          (*hit).triIndex = triIndex;
+          (*hit).baryVW = candidate.bary.yz;
+          (*hit).frontFace = candidate.side > 0.0;
+          (*hit).frontFaceCount = select(0u, 1u, candidate.side > 0.0);
+          (*hit).backFaceCount = select(0u, 1u, candidate.side < 0.0);
+        } else if (
+          bitcast<u32>(candidate.t) == bitcast<u32>((*hit).dist)
+        ) {
+          let sameBoundary =
+            tri.w == indices[(*hit).triIndex].w &&
+            triMaterialIds[triIndex].x == triMaterialIds[(*hit).triIndex].x;
+          if (!sameBoundary) {
+            (*hit).ambiguous = true;
+          } else {
+            (*hit).frontFaceCount = (*hit).frontFaceCount +
+              select(0u, 1u, candidate.side > 0.0);
+            (*hit).backFaceCount = (*hit).backFaceCount +
+              select(0u, 1u, candidate.side < 0.0);
+          }
+        }
+      }
+    } else {
+      let leftChild = nodeIdx + 1u;
+      let rightChild = nodeIdx + node.rightChildOrTriOffset;
+      if (
+        leftChild >= nodeLimit || rightChild >= nodeLimit ||
+        stackPtr + 2u > ${BVH_INTERSECT_STACK_DEPTH}u
+      ) {
+        (*hit).valid = false;
+        return;
+      }
+      stack[stackPtr] = rightChild;
+      stackPtr = stackPtr + 1u;
+      stack[stackPtr] = leftChild;
+      stackPtr = stackPtr + 1u;
+    }
+  }
+  if ((*hit).didHit && !(*hit).ambiguous) {
+    let hasFront = (*hit).frontFaceCount > 0u;
+    let hasBack = (*hit).backFaceCount > 0u;
+    if (hasFront && hasBack) {
+      if ((*hit).frontFaceCount == (*hit).backFaceCount) {
+        // A balanced mixed-sign fan is a tangent touch: it has no winding
+        // transition and therefore makes no medium-stack change.
+        (*hit).tangent = true;
+      } else {
+        // An unbalanced mixed-sign exact-t event cannot be reduced to one
+        // canonical crossing without depending on triangle enumeration order.
+        (*hit).ambiguous = true;
+      }
+    } else {
+      // Any number of duplicate/coincident faces with one uniform sign is one
+      // represented boundary crossing, not repeated pushes or pops.
+      (*hit).frontFace = hasFront;
+    }
+  }
+}
+
+struct OpticalBoundaryHit {
+  didHit: bool,
+  valid: bool,
+  ambiguous: bool,
+  tangent: bool,
+  dist: f32,
+  triIndex: u32,
+  instanceIndex: u32,
+  baryVW: vec2f,
+  matId: u32,
+  boundary: vec3u,
+  frontFace: bool,
+};
+
+fn opticalResetBoundaryHit(
+  hit: ptr<function, OpticalBoundaryHit>,
+  tMax: f32,
+) {
+  (*hit).didHit = false;
+  (*hit).valid = true;
+  (*hit).ambiguous = false;
+  (*hit).tangent = false;
+  (*hit).dist = tMax;
+  (*hit).triIndex = 0u;
+  (*hit).instanceIndex = INVALID_TLAS_INSTANCE_INDEX;
+  (*hit).baryVW = vec2f(0.0);
+  (*hit).matId = 0u;
+  (*hit).boundary = vec3u(MEDIUM_BOUNDARY_KIND_INVALID);
+  (*hit).frontFace = false;
+}
+
+fn opticalBoundaryHitSameEvent(
+  aBoundary: vec3u,
+  aFrontFace: bool,
+  bBoundary: vec3u,
+  bFrontFace: bool,
+) -> bool {
+  return all(aBoundary == bBoundary) && aFrontFace == bFrontFace;
+}
+
+struct OpticalContainment {
+  valid: bool,
+  depth: u32,
+  matIds: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>,
+  boundaries: array<vec3u, OPTICAL_MEDIUM_STACK_LIMIT>,
+  triIndices: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>,
+  instanceIndices: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>,
+  baryVWs: array<vec2f, OPTICAL_MEDIUM_STACK_LIMIT>,
+};
+
+fn opticalHasRepresentedBoundaries() -> bool {
+  let triangleLimit = min(params.triangleCount, arrayLength(&indices));
+  for (var triIndex = 0u; triIndex < triangleLimit; triIndex = triIndex + 1u) {
+    if (indices[triIndex].w != 0u) { return true; }
+  }
+  return false;
+}
+
+// Reconstruct the exact ordered medium state on the open ray immediately after
+// a launch point. Starting from the fixed launch origin avoids a fabricated
+// outside anchor and defines the intended side when the origin lies exactly on
+// a boundary. Front/back pairs encountered outward cancel through a temporary
+// LIFO. Unmatched back faces identify origin-containing components in
+// inner-to-outer order; reversing them yields the live outer-to-inner stack.
+// There is deliberately no crossing-count ceiling: only live nesting is
+// bounded, while any number of disjoint closed components may be crossed.
+fn opticalContainmentAlongRay(
+  origin: vec3f,
+  directionRaw: vec3f,
+) -> OpticalContainment {
+  var result: OpticalContainment;
+  result.valid = true;
+  result.depth = 0u;
+  for (var i = 0u; i < OPTICAL_MEDIUM_STACK_LIMIT; i = i + 1u) {
+    result.matIds[i] = 0u;
+    result.boundaries[i] = vec3u(MEDIUM_BOUNDARY_KIND_INVALID);
+    result.triIndices[i] = 0u;
+    result.instanceIndices[i] = INVALID_TLAS_INSTANCE_INDEX;
+    result.baryVWs[i] = vec2f(0.0);
+  }
+  if (!opticalHasRepresentedBoundaries()) { return result; }
+  let directionScale = max(
+    abs(directionRaw.x), max(abs(directionRaw.y), abs(directionRaw.z)),
+  );
+  if (
+    !all(origin == origin) ||
+    any(abs(origin) > vec3f(3.402823e38)) ||
+    !(directionScale > 0.0) || directionScale > 3.402823e38
+  ) {
+    result.valid = false;
+    return result;
+  }
+  let ray = Ray(origin, safe_normalize(directionRaw));
+  var enteredDepth = 0u;
+  var enteredMatIds: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var enteredBoundaries: array<vec3u, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var containedDepth = 0u;
+  var containedMatIds: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var containedBoundaries: array<vec3u, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var containedTriIndices: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var containedInstanceIndices: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var containedBaryVWs: array<vec2f, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var cursor = 0.0;
+  loop {
+    let event = traceOpticalBoundaryClosest(ray, cursor, INFINITY);
+    if (!event.valid || event.ambiguous) {
+      result.valid = false;
+      return result;
+    }
+    if (!event.didHit) {
+      if (enteredDepth != 0u) {
+        result.valid = false;
+        return result;
+      }
+      result.depth = containedDepth;
+      for (var i = 0u; i < containedDepth; i = i + 1u) {
+        let reverseIndex = containedDepth - 1u - i;
+        result.matIds[i] = containedMatIds[reverseIndex];
+        result.boundaries[i] = containedBoundaries[reverseIndex];
+        result.triIndices[i] = containedTriIndices[reverseIndex];
+        result.instanceIndices[i] = containedInstanceIndices[reverseIndex];
+        result.baryVWs[i] = containedBaryVWs[reverseIndex];
+      }
+      return result;
+    }
+    if (!(event.dist > cursor)) {
+      result.valid = false;
+      return result;
+    }
+    if (event.tangent) {
+      cursor = event.dist;
+      continue;
+    }
+    if (event.frontFace) {
+      if (enteredDepth >= OPTICAL_MEDIUM_STACK_LIMIT) {
+        result.valid = false;
+        return result;
+      }
+      enteredMatIds[enteredDepth] = event.matId;
+      enteredBoundaries[enteredDepth] = event.boundary;
+      enteredDepth = enteredDepth + 1u;
+    } else {
+      if (enteredDepth > 0u) {
+        if (
+          !all(enteredBoundaries[enteredDepth - 1u] == event.boundary) ||
+          enteredMatIds[enteredDepth - 1u] != event.matId
+        ) {
+          result.valid = false;
+          return result;
+        }
+        enteredDepth = enteredDepth - 1u;
+      } else {
+        if (containedDepth >= OPTICAL_MEDIUM_STACK_LIMIT) {
+          result.valid = false;
+          return result;
+        }
+        containedMatIds[containedDepth] = event.matId;
+        containedBoundaries[containedDepth] = event.boundary;
+        containedTriIndices[containedDepth] = event.triIndex;
+        containedInstanceIndices[containedDepth] = event.instanceIndex;
+        containedBaryVWs[containedDepth] = event.baryVW;
+        containedDepth = containedDepth + 1u;
+      }
+    }
+    cursor = event.dist;
+  }
+  return result;
+}
+`;

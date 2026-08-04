@@ -8,8 +8,9 @@
  *   w_i      = m_i(y_i) pHat_0(y_i) W_i
  *
  * DI keeps the exact finite-emitter area sample (or exact environment
- * direction), so the shift Jacobian is one. The output reservoir's unbiased
- * contribution weight is sum_i(w_i) / pHat_0(z), with no second M division.
+ * direction), so the shift Jacobian is one. The outer represented WRS stores
+ * H = log2(w_selected / pi_selected); generalized finalization persists
+ * logW = H - log2(pHat_0(z)), with no second M division and no linear endpoint.
  *
  * Reference: Lin et al., "Generalized Resampled Importance Sampling:
  * Foundations of ReSTIR", SIGGRAPH 2022, Eq. 19 and supplemental Eq. S.7.
@@ -40,8 +41,10 @@ export interface DiGeneralizedReuseCandidate {
   readonly attempts: readonly number[];
   /** pHat_j(y_i) for this candidate under every gathered surface domain j. */
   readonly densitiesAtDomains: readonly number[];
-  /** Canonical contribution weight stored by source reservoir i. */
-  readonly sourceReservoirWeight: number;
+  /** Legacy linear source UCW, used only when no persisted H is supplied. */
+  readonly sourceReservoirWeight?: number;
+  /** Persisted H = log2(W_uncapped * pHat_i(selected)). */
+  readonly sourceLogEstimatorNumerator?: number;
   /** Canonical output domain; center/current is index zero by convention. */
   readonly canonicalIndex?: number;
 }
@@ -104,69 +107,71 @@ export function generalizedDiReuseCandidateLogWeight(
   ) {
     return 0;
   }
+  if (
+    candidate.sourceIndex < 0 ||
+    !Number.isSafeInteger(candidate.sourceIndex) ||
+    candidate.sourceIndex >= candidate.densitiesAtDomains.length
+  ) {
+    return Number.NEGATIVE_INFINITY;
+  }
   const misWeight = generalizedTalbotMisWeight(candidate);
   const canonicalDensity = positiveFinite(
     candidate.densitiesAtDomains[canonicalIndex]!,
   );
-  const sourceReservoirWeight = positiveFinite(
-    candidate.sourceReservoirWeight,
+  const sourceDensity = positiveFinite(
+    candidate.densitiesAtDomains[candidate.sourceIndex]!,
   );
+  let sourceLogWeight = Number.NEGATIVE_INFINITY;
+  if (
+    candidate.sourceLogEstimatorNumerator !== undefined &&
+    Number.isFinite(candidate.sourceLogEstimatorNumerator) &&
+    sourceDensity > 0
+  ) {
+    sourceLogWeight = Math.min(
+      candidate.sourceLogEstimatorNumerator - Math.log2(sourceDensity),
+      MAX_FINITE,
+    );
+  } else {
+    const sourceReservoirWeight = positiveFinite(
+      candidate.sourceReservoirWeight ?? 0,
+    );
+    if (sourceReservoirWeight > 0) {
+      sourceLogWeight = Math.log2(sourceReservoirWeight);
+    }
+  }
   if (
     misWeight === 0 ||
     canonicalDensity === 0 ||
-    sourceReservoirWeight === 0
+    !Number.isFinite(sourceLogWeight)
   ) {
     return Number.NEGATIVE_INFINITY;
   }
   return (
     Math.log2(misWeight) +
     Math.log2(canonicalDensity) +
-    Math.log2(sourceReservoirWeight)
+    sourceLogWeight
   );
 }
 
-export function scaleGeneralizedDiCandidateLogWeights(
-  logWeights: readonly number[],
-): {
-  readonly maxLogWeight: number;
-  readonly scaledWeights: readonly number[];
-  readonly scaledWeightSum: number;
-} {
-  const maxLogWeight = Math.max(...logWeights);
-  if (!Number.isFinite(maxLogWeight)) {
-    return {
-      maxLogWeight: Number.NEGATIVE_INFINITY,
-      scaledWeights: logWeights.map(() => 0),
-      scaledWeightSum: 0,
-    };
-  }
-  const scaledWeights = logWeights.map((logWeight) =>
-    Number.isFinite(logWeight) ? 2 ** (logWeight - maxLogWeight) : 0
-  );
-  return {
-    maxLogWeight,
-    scaledWeights,
-    scaledWeightSum: scaledWeights.reduce((sum, weight) => sum + weight, 0),
-  };
-}
-
-export function finalizeGeneralizedDiReservoirWeight(
-  scaledResamplingWeightSum: number,
+export function finalizeGeneralizedDiReservoirLogWeight(
+  selectedRepresentedLogCorrection: number,
   selectedCanonicalDensity: number,
-  maxLogWeight = 0,
-): number {
-  const numerator = positiveFinite(scaledResamplingWeightSum);
+): { readonly H: number; readonly logW: number } {
   const denominator = positiveFinite(selectedCanonicalDensity);
   if (
-    numerator === 0 ||
     denominator === 0 ||
-    !Number.isFinite(maxLogWeight)
+    !Number.isFinite(selectedRepresentedLogCorrection) ||
+    selectedRepresentedLogCorrection <= -MAX_FINITE ||
+    selectedRepresentedLogCorrection > MAX_FINITE
   ) {
-    return 0;
+    return {
+      H: Number.NEGATIVE_INFINITY,
+      logW: Number.NEGATIVE_INFINITY,
+    };
   }
-  const logWeight =
-    maxLogWeight + Math.log2(numerator) - Math.log2(denominator);
-  return logWeight >= Math.log2(MAX_FINITE)
-    ? MAX_FINITE
-    : positiveFinite(2 ** logWeight);
+  const H = selectedRepresentedLogCorrection;
+  return {
+    H,
+    logW: Math.min(H - Math.log2(denominator), MAX_FINITE),
+  };
 }

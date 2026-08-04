@@ -5,7 +5,7 @@ import { PT_WEBGPU_TRACE_WGSL, composePtWebgpuTraceWgsl } from '../wgsl/pathTrac
 describe('unified MNEE multi-interface closure', () => {
   it('owns chain lengths one through eight in one coupled estimator', () => {
     expect(code).toContain('let maximumLength = min(params.mneeMaxChainLength, 8u);');
-    expect(code).toContain('let chainLength = 1u + min(');
+    expect(code).toContain('let chainLength = 1u + ptRandBoundedU32(rng, maximumLength);');
     expect(code).toContain('var facets: array<MneeFacetProposal, 8>;');
     expect(code).toContain('return boundedManifoldCaustic(');
     expect(code).not.toContain('fn pointLightGlassSlabCaustic(');

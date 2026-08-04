@@ -69,9 +69,10 @@ describe('walkaround shader hash policy', () => {
   });
 
   it('clips stained-glass visibility in the canonical world-distance walk', () => {
-    expect(SURFACE_TEXTURES_WGSL).toContain('let hit = traceSceneFirstHit(');
-    expect(SURFACE_TEXTURES_WGSL).toContain('if (!hit.didHit || hit.dist >= remaining)');
-    expect(SURFACE_TEXTURES_WGSL).toContain('walkRay.origin = origin + dir * traveled;');
+    expect(SURFACE_TEXTURES_WGSL).toContain('var hit = traceSceneFirstHit(');
+    expect(SURFACE_TEXTURES_WGSL).toContain('walkRay, exclusiveMinT,');
+    expect(SURFACE_TEXTURES_WGSL).toContain('if (!hit.didHit || hit.dist >= tMax)');
+    expect(SURFACE_TEXTURES_WGSL).toContain('exclusiveMinT = acceptedT;');
     expect(SURFACE_TEXTURES_WGSL).not.toContain('localOrigin, localDir, 1e20');
   });
 });

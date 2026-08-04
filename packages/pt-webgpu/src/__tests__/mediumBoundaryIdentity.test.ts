@@ -31,8 +31,24 @@ function instancedVolume(instances: readonly Mat4[]): Scene {
       {
         kind: 'instanced-mesh',
         id: 'nested-volume-shells',
-        positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
-        normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
+        positions: new Float32Array([
+          1, 1, 1,
+          -1, -1, 1,
+          -1, 1, -1,
+          1, -1, -1,
+        ]),
+        normals: new Float32Array([
+          0, 0, 1,
+          0, 0, 1,
+          0, 0, 1,
+          0, 0, 1,
+        ]),
+        indices: new Uint32Array([
+          0, 2, 1,
+          0, 1, 3,
+          0, 3, 2,
+          1, 2, 3,
+        ]),
         material: {
           baseColor: [1, 1, 1],
           roughness: 0,
@@ -146,18 +162,21 @@ describe('pt-webgpu exact medium-boundary identity', () => {
 
   it('carries the identity and strict top-of-stack rule through every transport path', () => {
     expect(PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL).toContain(
-      'return vec2u(MEDIUM_BOUNDARY_KIND_TLAS, instanceIndex);',
+      'return vec3u(MEDIUM_BOUNDARY_KIND_TLAS, instanceIndex, encodedBoundary);',
     );
     expect(PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL).toContain(
-      'return vec2u(MEDIUM_BOUNDARY_KIND_ANALYTIC, analyticIndex);',
+      'return vec3u(MEDIUM_BOUNDARY_KIND_MERGED, 0u, encodedBoundary);',
     );
     expect(PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL).toContain(
-      'return vec2u(MEDIUM_BOUNDARY_KIND_INVALID);',
+      'return vec3u(MEDIUM_BOUNDARY_KIND_INVALID);',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('boundaryKind: u32,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('boundaryIndex: u32,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'mediumBoundaryMatches(layer.boundaryKind, layer.boundaryIndex, boundary)',
+      'layer.boundaryComponent,',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'mediumBoundaryMatches(',
     );
 
     const nonVolumetricKernel = composePathTraceKernelWgsl({
@@ -201,13 +220,10 @@ describe('pt-webgpu exact medium-boundary identity', () => {
     expect(packed.tlasBlasRoots).toHaveLength(2);
   });
 
-  it('never revives skipped full-tier meshes through the identity-free root-0 fallback', () => {
-    const packed = buildPackedScene(instancedVolume([transform(0)]), {
+  it('rejects singular instances before the identity-free root-0 fallback can revive them', () => {
+    expect(() => buildPackedScene(instancedVolume([transform(0)]), {
       geometryMode: 'tlas',
-    });
-    expect(packed.triangleCount).toBe(0);
-    expect(packed.tlasNodes).toHaveLength(0);
-    expect(packed.warnings.some((warning) => warning.includes('non-invertible'))).toBe(true);
+    })).toThrow(/must have an invertible linear transform/);
 
     const binary = composePtWebgpuPathTraceIntersectionWgsl();
     const cwbvh = composePtWebgpuPathTraceIntersectionWgsl({ cwbvhClosest: true });

@@ -3,6 +3,7 @@ import {
   X_CMF_INTEGRAL,
   Y_CMF_INTEGRAL,
   Z_CMF_INTEGRAL,
+  heroWavelengthMisMixturePdf,
   wavelengthToRGB,
   xyzToLinearSRGB,
 } from '@vitrum/shared-samplers';
@@ -15,6 +16,9 @@ describe('shared spectral + BDPT wavelength', () => {
     expect(sharedBdptWavelengthForSeed(37, 5)).not.toEqual(first);
     expect(Math.fround(first.wavelengthNm)).toBe(first.wavelengthNm);
     expect(Math.fround(first.pdf)).toBe(first.pdf);
+    expect(first.pdf).toBe(
+      Math.fround(heroWavelengthMisMixturePdf(first.wavelengthNm)),
+    );
     expect(first.wavelengthNm).toBeGreaterThanOrEqual(380);
     expect(first.wavelengthNm).toBeLessThanOrEqual(780);
     expect(first.pdf).toBeGreaterThan(0);
@@ -32,6 +36,13 @@ describe('shared spectral + BDPT wavelength', () => {
       ),
     );
     expect(uniqueSeeds.size).toBeGreaterThan(120);
+
+    for (let sample = 0; sample < 128; sample++) {
+      const represented = sharedBdptWavelengthForSeed(37, sample);
+      expect(represented.pdf).toBe(
+        Math.fround(heroWavelengthMisMixturePdf(represented.wavelengthNm)),
+      );
+    }
   });
 
   it('preserves constant-spectrum MIS normalization over successive frames', () => {

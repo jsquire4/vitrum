@@ -18,6 +18,7 @@ function map(
       data,
       ...descriptor,
     },
+    mipFilter: 'none',
     ...sampler,
   };
 }
@@ -117,6 +118,7 @@ describe('strict CPU displacement contract', () => {
         data: new Float32Array([1]),
         image: { width: 1, height: 1, data: new Float32Array([0]) },
       },
+      mipFilter: 'none',
     } as TextureRef;
     expect(() => maybeDisplaceMeshPositions(vertexInput(displacementMap)))
       .toThrow('width and height must be positive safe integers');
@@ -150,6 +152,24 @@ describe('strict CPU displacement contract', () => {
       {},
       sampler,
     )))).toThrow(message);
+  });
+
+  it('treats omitted mipFilter as linear and requires explicit none for CPU displacement', () => {
+    expect(() => maybeDisplaceMeshPositions(vertexInput(map(
+      new Float32Array([1]),
+      {},
+      { mipFilter: undefined },
+    )))).toThrow(/mipFilter "linear" cannot be honored/);
+    expect(() => maybeDisplaceMeshPositions(vertexInput(map(
+      new Float32Array([1]),
+      {},
+      { mipFilter: 'linear' },
+    )))).toThrow(/mipFilter "linear" cannot be honored/);
+    expect(() => maybeDisplaceMeshPositions(vertexInput(map(
+      new Float32Array([1]),
+      {},
+      { mipFilter: 'none' },
+    )))).not.toThrow();
   });
 
   it('honors nearest versus linear base-level sampling', () => {

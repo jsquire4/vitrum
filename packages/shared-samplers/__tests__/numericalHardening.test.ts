@@ -148,4 +148,19 @@ describe('CPU/WGSL sampler degeneracy contracts', () => {
     expect(PCG_WGSL).not.toContain('/ f32(0xFFFFFFFFu)');
     expect(PCG_HASH_TO_F32_WGSL).not.toContain('/ 4294967295.0');
   });
+
+  it('uses full-domain rejection for exact bounded integer selection', () => {
+    expect(PCG_WGSL).toContain('fn rand_bounded_u32(');
+    expect(PCG_WGSL).toContain('let threshold = (0u - bound) % bound;');
+    expect(PCG_WGSL).toContain('if (value >= threshold) { return value % bound; }');
+    expect(PCG_WGSL).toContain('fn represented_bernoulli_probability_f32(');
+    expect(PCG_WGSL).toContain('floor(probability * 16777216.0 + 0.5)');
+    const domain = 1n << 32n;
+    for (const bound of [2n, 3n, 7n, 255n, 65537n, 0xffff_ffffn]) {
+      const rejectedPrefix = domain % bound;
+      const accepted = domain - rejectedPrefix;
+      expect(rejectedPrefix).toBeLessThan(bound);
+      expect(accepted % bound).toBe(0n);
+    }
+  });
 });

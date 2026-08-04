@@ -72,20 +72,36 @@ describe('Sprint 16 — RIS_GI WGSL', () => {
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
   });
 
-  it('evaluates tinted alpha visibility for every candidate before reservoir selection', () => {
+  it('uses the stochastic first-hit realization exactly once before reservoir selection', () => {
     expect(RIS_GI_WGSL).toContain('@group(1) @binding(5) var bvh_beer: texture_2d<u32>;');
-    expect(RIS_GI_WGSL).toContain('traceSceneAlphaTintTransmittanceTextured(');
-    expect(RIS_GI_WGSL).toContain('candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);');
-    expect(RIS_GI_WGSL).toContain('pHat = restir_gi_receiver_phat_from_payload(');
-    expect(RIS_GI_WGSL).toContain(') * candidateVisibility;');
+    expect(RIS_GI_WGSL).toContain('traceSceneFirstHitAlphaMaskTexturedWithMetadata(');
+    expect(RIS_GI_WGSL).toContain('bounceTrace.requiresNativeEstimator');
+    expect(RIS_GI_WGSL).toContain('let candidateVisibility: f32 = 1.0;');
+    expect(RIS_GI_WGSL).not.toContain('let shadowTint = traceSceneAlphaTintTransmittanceTextured(');
+    expect(RIS_GI_WGSL).toContain('let receiverPHat = restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain(
+      'let logPHat = reservoirGiLogPositiveProduct(receiverPHat, candidateVisibility);',
+    );
     expect(RIS_GI_WGSL).not.toContain('traceSceneAlphaTransmittanceTextured(');
     expect(RIS_GI_WGSL).not.toContain('r.w_sum = r.w_sum * shadowT;');
   });
 
-  it('computes W = w_sum / (M · p̂(z)) per the RIS estimator', () => {
-    expect(RIS_GI_WGSL).toContain('finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, r.nativePHat);');
-    expect(COMMON_WGSL).toContain('let denominator = f32((*r).M) * pHatF;');
-    expect(COMMON_WGSL).toContain('let W_raw = (*r).w_sum / denominator;');
+  it('persists uncapped H and caps only word-7 logW by the explicit GI cap', () => {
+    expect(RIS_GI_WGSL).toContain(
+      'finaliseGIReservoirFromNativeWrs(&r, giWrs, ubo.restirGiWCap);',
+    );
+    expect(COMMON_WGSL).toContain('(*r).H = reservoirGiCollapseLogParts(correction);');
+    expect(COMMON_WGSL).toContain('-log2(f32((*r).M))');
+    expect(COMMON_WGSL).toContain('let cappedLogW = min(logW, logCap);');
+    expect(COMMON_WGSL).not.toMatch(/\(\*r\)\.H\s*=\s*min\(/);
+
+    const selectedLogWeight = 180;
+    const H = selectedLogWeight - Math.log2(8);
+    const sourceLogW = H - Math.log2(2 ** -20);
+    expect(H).toBe(177);
+    expect(sourceLogW).toBe(197);
+    expect(H).toBeGreaterThan(128);
+    expect(sourceLogW).toBeGreaterThan(128);
   });
 
   it('only dispatches over half-resolution pixels (W/2 × H/2)', () => {
@@ -119,9 +135,12 @@ describe('Sprint 16 — ReservoirGI canonical byte pack and pass-local accessors
     expect(accessors).toContain('let words = packReservoirGI(r);');
   });
 
-  it('updateReservoirGI weights by w_sum (canonical reservoir update)', () => {
+  it('updateReservoirGI delegates selection to represented log-domain WRS', () => {
     expect(COMMON_WGSL).toContain('fn updateReservoirGI');
-    expect(COMMON_WGSL).toMatch(/rand_f32\(rng\)\s*\*\s*\(\*r\)\.w_sum\s*<\s*w/);
+    expect(COMMON_WGSL).toContain(
+      'if (representedWrsUpdate(wrs, logWeight, rng)) {',
+    );
+    expect(COMMON_WGSL).not.toContain('(*r).w_sum');
   });
 });
 

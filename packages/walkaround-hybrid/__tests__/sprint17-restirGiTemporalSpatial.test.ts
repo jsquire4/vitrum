@@ -47,10 +47,25 @@ describe('Sprint 17 — temporal-GI WGSL', () => {
   });
 
   it('evaluates both native receiver techniques in the canonical transformed domain', () => {
-    expect(TEMPORAL_GI_WGSL).toContain('grisDomainToCanonicalJacobian');
+    expect(TEMPORAL_GI_WGSL).toContain('grisLogDomainToCanonicalJacobian');
     expect(TEMPORAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity');
     expect(TEMPORAL_GI_WGSL).toContain('var techniqueLogMass: array<f32, 2>');
     expect(TEMPORAL_GI_WGSL).not.toContain('jacobianReconnectionShift');
+  });
+
+  it('admits a canonical local estimator only as an identity row and marks shifted tint for recast', () => {
+    expect(TEMPORAL_GI_WGSL).toContain(
+      'i == 0u && reservoirGiHasLocalEstimator(candidate)',
+    );
+    expect(TEMPORAL_GI_WGSL).toContain(
+      'candidateLogWeight[i] = candidate.H;',
+    );
+    expect(TEMPORAL_GI_WGSL).toContain(
+      'GI_SAMPLE_FLAG_RECAST_TINT,\n          candidate.sampleFlags,\n          identityOnly,',
+    );
+    expect(TEMPORAL_GI_WGSL).not.toContain(
+      '|| reservoirGiHasLocalEstimator(current)',
+    );
   });
 });
 
@@ -86,17 +101,66 @@ describe('Sprint 17 — spatial-GI WGSL', () => {
   it('applies geometric-consistency rejection and complete transformed-density evaluation', () => {
     expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialNormalDotMin');
     expect(SPATIAL_GI_WGSL).toContain('ubo.restirGiSpatialCoplanarTol');
-    expect(SPATIAL_GI_WGSL).toContain('grisDomainToCanonicalJacobian');
+    expect(SPATIAL_GI_WGSL).toContain('grisLogDomainToCanonicalJacobian');
     expect(SPATIAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity');
     expect(SPATIAL_GI_WGSL).toContain('var techniqueLogMass: array<f32, 6>');
     expect(SPATIAL_GI_WGSL).not.toContain('jacobianReconnectionShift');
   });
 
-  it('uses Eq. 7 attempt mass only in m_i and applies each source UCW once', () => {
+  it('gathers every compatible technique before evaluating fixed-sample densities', () => {
+    const gatherStart = SPATIAL_GI_WGSL.indexOf(
+      'for (var gather: u32 = 0u; gather < K_SPATIAL_GI;',
+    );
+    const gatherEnd = SPATIAL_GI_WGSL.indexOf(
+      'domains[domainCount] = q;',
+      gatherStart,
+    );
+    expect(gatherStart).toBeGreaterThanOrEqual(0);
+    expect(gatherEnd).toBeGreaterThan(gatherStart);
+    const gather = SPATIAL_GI_WGSL.slice(gatherStart, gatherEnd);
+    expect(gather).not.toContain('grisLogDomainToCanonicalJacobian(');
+    expect(gather).not.toContain('grisLogMaterialPHatAt(');
+
+    const matrixStart = SPATIAL_GI_WGSL.indexOf(
+      'for (var i: u32 = 0u; i < domainCount;',
+      gatherEnd,
+    );
+    const matrixEnd = SPATIAL_GI_WGSL.indexOf(
+      'var out = emptyReservoirGI();',
+      matrixStart,
+    );
+    expect(matrixStart).toBeGreaterThan(gatherEnd);
+    expect(matrixEnd).toBeGreaterThan(matrixStart);
+    const matrix = SPATIAL_GI_WGSL.slice(matrixStart, matrixEnd);
+    expect(matrix).toContain('grisLogDomainToCanonicalJacobian(');
+    expect(matrix).toContain('grisLogMaterialPHatAt(');
+  });
+
+  it('uses Eq. 7 attempt mass in log m_i and derives each source logW from H', () => {
     expect(SPATIAL_GI_WGSL).toContain('grisLogWeightedTransformedDensity(');
     expect(SPATIAL_GI_WGSL).toContain('grisLogCanonicalResamplingWeight(');
-    expect(SPATIAL_GI_WGSL).toContain('candidate.W,');
-    expect(SPATIAL_GI_WGSL).not.toMatch(/candidate\.W\s*\*\s*f32\(domainM\[i\]\)/);
+    expect(SPATIAL_GI_WGSL).toContain('candidate.H,');
+    expect(SPATIAL_GI_WGSL).toContain('candidate.nativeLogPHat,');
+    expect(SPATIAL_GI_WGSL).toContain(
+      'let logMisWeight = techniqueLogMass[i] - logDenominator;',
+    );
+    expect(SPATIAL_GI_WGSL).not.toMatch(/candidate\.W\b/);
+    expect(SPATIAL_GI_WGSL).not.toContain('sourceScaledMass');
+  });
+
+  it('keeps neighbour local rows denominator-only and marks shifted tint for recast', () => {
+    expect(SPATIAL_GI_WGSL).toContain(
+      'i == 0u && reservoirGiHasLocalEstimator(candidate)',
+    );
+    expect(SPATIAL_GI_WGSL).toContain(
+      'candidateLogWeight[i] = candidate.H;',
+    );
+    expect(SPATIAL_GI_WGSL).toContain(
+      'GI_SAMPLE_FLAG_RECAST_TINT,\n          candidate.sampleFlags,\n          identityOnly,',
+    );
+    expect(SPATIAL_GI_WGSL).not.toContain(
+      '|| reservoirGiHasLocalEstimator(rCenter)',
+    );
   });
 });
 

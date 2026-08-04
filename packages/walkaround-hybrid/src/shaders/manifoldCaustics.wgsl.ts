@@ -377,16 +377,102 @@ struct SmsMediaBuild {
   valid: u32,
 };
 
+fn smsEmptyContainingMedia() -> MaterialShadowContainingMedia {
+  var out: MaterialShadowContainingMedia;
+  out.valid = 1u;
+  out.state = materialShadowEmptyMediumState();
+  return out;
+}
+
+fn smsSourceIncomingDirection(
+  endpoint: SmsEndpoint,
+  firstVertex: vec3f,
+) -> vec3f {
+  if (endpoint.sourceMode == 1u) {
+    return -safe_normalize(endpoint.towardLight);
+  }
+  return safe_normalize(firstVertex - endpoint.position);
+}
+
+fn smsSourceContainingMedia(
+  endpoint: SmsEndpoint,
+  firstVertex: vec3f,
+) -> MaterialShadowContainingMedia {
+  if (endpoint.sourceMode == 1u) {
+    return smsEmptyContainingMedia();
+  }
+  return materialShadowClassifyContainingMedia(
+    ubo.bvhMode,
+    ubo.tlasNodeCount,
+    endpoint.position,
+    smsSourceIncomingDirection(endpoint, firstVertex),
+    ubo.triIntersectEpsilon,
+    bvh_material,
+    BVH_MATERIAL_TEX_WIDTH,
+    bvh_beer,
+  );
+}
+
+fn smsReceiverContainingMedia(
+  receiver: vec3f,
+  lastVertex: vec3f,
+) -> MaterialShadowContainingMedia {
+  return materialShadowClassifyContainingMedia(
+    ubo.bvhMode,
+    ubo.tlasNodeCount,
+    receiver,
+    safe_normalize(receiver - lastVertex),
+    ubo.triIntersectEpsilon,
+    bvh_material,
+    BVH_MATERIAL_TEX_WIDTH,
+    bvh_beer,
+  );
+}
+
+fn smsTriangleIorChannel(triIndex: u32, channel: u32) -> f32 {
+  let coord = vec2u(
+    triIndex % BVH_MATERIAL_TEX_WIDTH,
+    triIndex / BVH_MATERIAL_TEX_WIDTH,
+  );
+  let materialWord = textureLoad(bvh_material, vec2i(coord), 0).r;
+  return smsChannel(
+    materialDispersionIorRgb(triIndex, decodeIor(materialWord)),
+    channel,
+  );
+}
+
 fn smsBuildMedia(
   geometry: SmsChainGeometry,
   endpoint: SmsEndpoint,
   seeds: array<vec3f, 8>,
+  receiver: vec3f,
   channel: u32,
 ) -> SmsMediaBuild {
   var out: SmsMediaBuild;
   out.valid = 0u;
-  var stack: array<f32, 8>;
-  var depth = 0u;
+  if (geometry.count == 0u) { return out; }
+  let sourceContaining = smsSourceContainingMedia(endpoint, seeds[0]);
+  let receiverContaining = smsReceiverContainingMedia(
+    receiver, seeds[geometry.count - 1u],
+  );
+  if (sourceContaining.valid == 0u || receiverContaining.valid == 0u) {
+    return out;
+  }
+  var stackBoundaryId: array<u32, 16>;
+  var stackRepresentedId: array<u32, 16>;
+  var stackIor: array<f32, 16>;
+  var depth = sourceContaining.state.depth;
+  if (depth > MATERIAL_SHADOW_MEDIUM_CAPACITY) { return out; }
+  for (var seed = 0u; seed < MATERIAL_SHADOW_MEDIUM_CAPACITY; seed += 1u) {
+    if (seed >= depth) { break; }
+    let ior = smsTriangleIorChannel(
+      sourceContaining.state.tri[seed], channel,
+    );
+    if (!(ior > 0.0) || !(ior < INFINITY)) { return out; }
+    stackBoundaryId[seed] = sourceContaining.state.materialId[seed];
+    stackRepresentedId[seed] = sourceContaining.state.instance[seed];
+    stackIor[seed] = ior;
+  }
   var previous = endpoint.position;
   for (var i = 0u; i < SMS_MAX_VERTICES; i = i + 1u) {
     if (i >= geometry.count) { break; }
@@ -400,11 +486,20 @@ fn smsBuildMedia(
     if (!(materialIor > 0.0) || !(materialIor < INFINITY)) { return out; }
     let entering = dot(incoming, geometry.facets[i].geometricNormal) < 0.0;
     var currentIor = 1.0;
-    if (depth > 0u) { currentIor = stack[depth - 1u]; }
+    if (depth > 0u) { currentIor = stackIor[depth - 1u]; }
     out.media.etaI[i] = currentIor;
     var boundaryTargetIor = materialIor;
-    if (!entering && depth > 1u) { boundaryTargetIor = stack[depth - 2u]; }
-    if (!entering && depth == 1u) { boundaryTargetIor = 1.0; }
+    if (optics.bulkMedium != 0u && !entering) {
+      if (
+        depth == 0u ||
+        stackBoundaryId[depth - 1u] !=
+          geometry.facets[i].encodedBoundaryId ||
+        stackRepresentedId[depth - 1u] !=
+          geometry.facets[i].representedPrimitiveInstanceId
+      ) { return out; }
+      boundaryTargetIor = 1.0;
+      if (depth > 1u) { boundaryTargetIor = stackIor[depth - 2u]; }
+    }
     out.media.etaT[i] = boundaryTargetIor;
     // Reflection observes the same physical boundary IORs but does not mutate
     // the medium stack. The residual itself is eta-independent for reflection.
@@ -412,15 +507,15 @@ fn smsBuildMedia(
       previous = seeds[i];
       continue;
     }
-    if (entering) {
-      if (optics.thickness > 0.0) {
-        if (depth >= SMS_MAX_VERTICES) { return out; }
-        stack[depth] = materialIor;
+    if (optics.bulkMedium != 0u) {
+      if (entering) {
+        if (depth >= MATERIAL_SHADOW_MEDIUM_CAPACITY) { return out; }
+        stackBoundaryId[depth] = geometry.facets[i].encodedBoundaryId;
+        stackRepresentedId[depth] =
+          geometry.facets[i].representedPrimitiveInstanceId;
+        stackIor[depth] = materialIor;
         depth = depth + 1u;
-      }
-    } else {
-      if (optics.thickness > 0.0) {
-        if (depth == 0u) { return out; }
+      } else {
         depth = depth - 1u;
       }
     }
@@ -436,6 +531,16 @@ fn smsBuildMedia(
     let eta = out.media.etaI[i] / out.media.etaT[i];
     if (eta * eta * (1.0 - cosIncident * cosIncident) >= 1.0) { return out; }
     previous = seeds[i];
+  }
+  if (depth != receiverContaining.state.depth) { return out; }
+  for (var destination = 0u; destination < MATERIAL_SHADOW_MEDIUM_CAPACITY; destination += 1u) {
+    if (destination >= depth) { break; }
+    if (
+      stackBoundaryId[destination] !=
+        receiverContaining.state.materialId[destination] ||
+      stackRepresentedId[destination] !=
+        receiverContaining.state.instance[destination]
+    ) { return out; }
   }
   out.valid = 1u;
   return out;
@@ -507,7 +612,10 @@ fn smsProvesUniquePlanarDeltaTransmission(
   var incoming = safe_normalize(solved.vertices[0] - endpoint.position);
   if (endpoint.sourceMode == 1u) { incoming = -endpoint.towardLight; }
   let optics = smsFacetOpticsAt(facet, solved.vertices[0], incoming);
-  if (optics.frame.valid == 0u || optics.thickness <= 0.0) { return false; }
+  // A one-vertex bulk chain cannot both enter and leave a closed component.
+  // The structural W=1 proof is therefore restricted to the represented
+  // reciprocal thin-sheet event (encoded boundary zero).
+  if (optics.frame.valid == 0u || optics.bulkMedium != 0u) { return false; }
   let cosIncident = dot(-incoming, optics.frame.normal);
   if (!(cosIncident > 0.0) || !(media.etaI[0] > 0.0) || !(media.etaT[0] > 0.0)) {
     return false;
@@ -554,7 +662,40 @@ struct SmsSegmentVisibility {
   alphaTransmittance: f32,
 };
 
-fn smsTraceReachesFacet(
+fn smsFacetSourceFeature(
+  facet: SmsFacet,
+  incomingOrigin: vec3f,
+  sourcePosition: vec3f,
+) -> OpticalSourceFeature {
+  let delta = sourcePosition - incomingOrigin;
+  let distanceToSource = safe_length(delta);
+  if (!(distanceToSource > 0.0) || !(distanceToSource < INFINITY)) {
+    return opticalSourceFeatureInvalid();
+  }
+  let exact = opticalWatertightTriangleIntersect(
+    incomingOrigin,
+    safe_normalize(delta),
+    facet.a,
+    facet.b,
+    facet.c,
+    0.0,
+  );
+  if (!exact.hit) { return opticalSourceFeatureInvalid(); }
+  return opticalCreateSourceFeature(
+    facet.encodedBoundaryId,
+    facet.representedPrimitiveInstanceId,
+    facet.triIndex,
+    exact.zeroEdgeMask,
+    facet.a,
+    facet.b,
+    facet.c,
+  );
+}
+
+// The receiver is an ordinary diffuse/opaque launch, so its own G-buffer
+// surface uses the ordinary geometric offset. Once a manifold interface has
+// accepted the path, the sibling fixed-origin walker below takes over.
+fn smsTraceReceiverReachesFacet(
   origin: vec3f,
   targetPosition: vec3f,
   facet: SmsFacet,
@@ -575,7 +716,10 @@ fn smsTraceReachesFacet(
     8.0 * walkaroundRayOriginBias(),
     32.0 * SMS_F32_EPSILON * distanceToTarget,
   );
-  for (var layer = 0u; layer < 32u; layer = layer + 1u) {
+  let surfaceBudget = materialShadowWorldSurfaceBudget(
+    ubo.bvhMode, ubo.tlasNodeCount,
+  );
+  for (var layer = 0u; layer < surfaceBudget; layer = layer + 1u) {
     let hit = traceSceneFirstHit(
       ubo.bvhMode, ubo.tlasNodeCount, ray, ubo.triIntersectEpsilon,
     );
@@ -610,6 +754,68 @@ fn smsTraceReachesFacet(
   return out;
 }
 
+// Accepted specular interfaces remain at the exact represented point. The
+// crossed face/edge/vertex fan is excluded by its exact watertight source
+// feature, while exclusive-minT advances on the original ray without an
+// origin step that could jump a nearby boundary.
+fn smsTraceOpticalSourceReachesFacet(
+  origin: vec3f,
+  targetPosition: vec3f,
+  facet: SmsFacet,
+  sourceFeature: OpticalSourceFeature,
+) -> SmsSegmentVisibility {
+  var out: SmsSegmentVisibility;
+  out.reachesFacet = 0u;
+  out.alphaTransmittance = 1.0;
+  let delta = targetPosition - origin;
+  let distanceToTarget = safe_length(delta);
+  if (!(distanceToTarget > 0.0) || !(distanceToTarget < INFINITY) ||
+      sourceFeature.kind == OPTICAL_SOURCE_FEATURE_INVALID) { return out; }
+  let ray = Ray(origin, safe_normalize(delta));
+  var exclusiveMinT = 0.0;
+  let tolerance = max(
+    8.0 * walkaroundRayOriginBias(),
+    32.0 * SMS_F32_EPSILON * distanceToTarget,
+  );
+  let surfaceBudget = materialShadowWorldSurfaceBudget(
+    ubo.bvhMode, ubo.tlasNodeCount,
+  );
+  for (var layer = 0u; layer < surfaceBudget; layer = layer + 1u) {
+    let traced = traceSceneFirstHitWithOpticalSourceExclusion(
+      ubo.bvhMode,
+      ubo.tlasNodeCount,
+      ray,
+      exclusiveMinT,
+      sourceFeature,
+    );
+    if (traced.valid == 0u) { return out; }
+    let hit = traced.hit;
+    if (!hit.didHit) { return out; }
+    let sameFacet = hit.indices.w == facet.triIndex &&
+      (ubo.bvhMode != 1u || hit.instanceIndex == facet.instanceIndex);
+    if (sameFacet && abs(hit.dist - distanceToTarget) <= tolerance) {
+      out.reachesFacet = 1u;
+      return out;
+    }
+    if (!(hit.dist > exclusiveMinT) ||
+        hit.dist >= distanceToTarget - tolerance) { return out; }
+    let word = textureLoad(
+      bvh_material,
+      vec2i(
+        i32(hit.indices.w % BVH_MATERIAL_TEX_WIDTH),
+        i32(hit.indices.w / BVH_MATERIAL_TEX_WIDTH),
+      ),
+      0,
+    ).r;
+    let alphaT = materialShadowTransmittanceForHit(hit, word, false);
+    if (!(alphaT > 0.0)) { return out; }
+    out.alphaTransmittance = out.alphaTransmittance * alphaT;
+    if (!(out.alphaTransmittance > 0.0)) { return out; }
+    exclusiveMinT = hit.dist;
+  }
+  return out;
+}
+
 fn smsChainIdentityVisible(
   geometry: SmsChainGeometry,
   solved: SmsChainResult,
@@ -617,7 +823,7 @@ fn smsChainIdentityVisible(
 ) -> f32 {
   var alphaTransmittance = 1.0;
   let last = geometry.count - 1u;
-  let receiverSegment = smsTraceReachesFacet(
+  let receiverSegment = smsTraceReceiverReachesFacet(
     receiver, solved.vertices[last], geometry.facets[last],
   );
   if (receiverSegment.reachesFacet == 0u) {
@@ -628,9 +834,15 @@ fn smsChainIdentityVisible(
   loop {
     if (reverse == 0u) { break; }
     let previousVertexIndex = reverse - 1u;
-    let segment = smsTraceReachesFacet(
+    let sourceFeature = smsFacetSourceFeature(
+      geometry.facets[reverse],
+      solved.vertices[previousVertexIndex],
+      solved.vertices[reverse],
+    );
+    if (sourceFeature.kind == OPTICAL_SOURCE_FEATURE_INVALID) { return 0.0; }
+    let segment = smsTraceOpticalSourceReachesFacet(
       solved.vertices[reverse], solved.vertices[previousVertexIndex],
-      geometry.facets[previousVertexIndex],
+      geometry.facets[previousVertexIndex], sourceFeature,
     );
     if (segment.reachesFacet == 0u) { return 0.0; }
     alphaTransmittance = alphaTransmittance * segment.alphaTransmittance;
@@ -639,7 +851,71 @@ fn smsChainIdentityVisible(
   return alphaTransmittance;
 }
 
-fn smsEndpointTransport(endpoint: SmsEndpoint, firstVertex: vec3f) -> vec3f {
+fn smsEndpointSourceFeature(
+  endpoint: SmsEndpoint,
+  firstVertex: vec3f,
+  firstFacet: SmsFacet,
+) -> OpticalSourceFeature {
+  var incomingOrigin = endpoint.position;
+  if (endpoint.sourceMode == 1u) {
+    incomingOrigin = firstVertex + safe_normalize(endpoint.towardLight);
+  }
+  return smsFacetSourceFeature(firstFacet, incomingOrigin, firstVertex);
+}
+
+fn smsTraceExternalAlphaFromOpticalSource(
+  origin: vec3f,
+  direction: vec3f,
+  tMax: f32,
+  sourceFeature: OpticalSourceFeature,
+) -> f32 {
+  if (sourceFeature.kind == OPTICAL_SOURCE_FEATURE_INVALID ||
+      tMax != tMax || tMax < 0.0) { return 0.0; }
+  let ray = Ray(origin, direction);
+  var exclusiveMinT = 0.0;
+  var transmittance = 1.0;
+  let surfaceBudget = materialShadowWorldSurfaceBudget(
+    ubo.bvhMode, ubo.tlasNodeCount,
+  );
+  for (var layer = 0u; layer < surfaceBudget; layer = layer + 1u) {
+    let traced = traceSceneFirstHitWithOpticalSourceExclusion(
+      ubo.bvhMode,
+      ubo.tlasNodeCount,
+      ray,
+      exclusiveMinT,
+      sourceFeature,
+    );
+    if (traced.valid == 0u) { return 0.0; }
+    let hit = traced.hit;
+    if (!hit.didHit || hit.dist >= tMax) {
+      return clamp(transmittance, 0.0, 1.0);
+    }
+    if (!(hit.dist > exclusiveMinT)) { return 0.0; }
+    let word = textureLoad(
+      bvh_material,
+      vec2i(
+        i32(hit.indices.w % BVH_MATERIAL_TEX_WIDTH),
+        i32(hit.indices.w / BVH_MATERIAL_TEX_WIDTH),
+      ),
+      0,
+    ).r;
+    // Every covered material-transmission boundary belongs to the frozen SMS
+    // topology. Unselected covered glass is therefore opaque here; only
+    // castShadow:false, alpha holes, and represented blend coverage pass.
+    let alphaT = materialShadowTransmittanceForHit(hit, word, false);
+    if (!(alphaT > 0.0)) { return 0.0; }
+    transmittance = transmittance * alphaT;
+    if (!(transmittance > 0.0)) { return 0.0; }
+    exclusiveMinT = hit.dist;
+  }
+  return 0.0;
+}
+
+fn smsEndpointTransport(
+  endpoint: SmsEndpoint,
+  firstVertex: vec3f,
+  firstFacet: SmsFacet,
+) -> vec3f {
   var direction: vec3f;
   var distanceToSource = INFINITY;
   var distanceSquaredToSource = 1.0;
@@ -676,39 +952,30 @@ fn smsEndpointTransport(endpoint: SmsEndpoint, firstVertex: vec3f) -> vec3f {
   if (!(scalar > 0.0) || !(scalar < INFINITY)) { return vec3f(0.0); }
   var visibility = vec3f(1.0);
   if (endpoint.castShadowDisabled == 0u) {
-    let maximum = select(distanceToSource, INFINITY, endpoint.sourceMode == 1u);
-    // Every covered material-transmission boundary must appear explicitly in
-    // geometry.facets. An unselected refractive boundary on this external
-    // segment is an occluder; alpha-only holes/blend coverage remain visible.
-    visibility = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
-      ubo.bvhMode, ubo.tlasNodeCount,
-      firstVertex + direction * walkaroundRayOriginBias(),
-      direction,
-      max(0.0, maximum - walkaroundRayEndMargin()),
-      ubo.triIntersectEpsilon,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer, true,
+    let maximum = select(
+      max(0.0, distanceToSource - walkaroundRayEndMargin()),
+      INFINITY,
+      endpoint.sourceMode == 1u,
     );
+    let sourceFeature = smsEndpointSourceFeature(
+      endpoint, firstVertex, firstFacet,
+    );
+    visibility = vec3f(smsTraceExternalAlphaFromOpticalSource(
+      firstVertex,
+      direction,
+      maximum,
+      sourceFeature,
+    ));
   }
   return endpoint.radiance * scalar * visibility;
 }
 
 fn smsBeerTint(optics: SmsFacetOptics) -> vec3f {
-  let coord = vec2u(
-    optics.frame.hit.indices.w % BVH_BEER_TEX_WIDTH,
-    optics.frame.hit.indices.w / BVH_BEER_TEX_WIDTH,
-  );
-  let packed = textureLoad(bvh_beer, vec2i(coord), 0).r;
-  var tint = vec3f(
-    f32((packed >> 24u) & 0xffu) / 255.0,
-    f32((packed >> 16u) & 0xffu) / 255.0,
-    f32((packed >> 8u) & 0xffu) / 255.0,
-  );
-  return applyThicknessMapToBeerTint(
-    optics.frame.hit.indices.w,
-    optics.frame.hit.uv,
-    materialAtlasUv1ForHit(optics.frame.hit),
-    tint,
-  );
+  return materialShadowAuthoredBeerTint(optics.frame.hit, bvh_beer);
+}
+
+fn smsThicknessMapScale(optics: SmsFacetOptics) -> f32 {
+  return materialShadowThicknessMapScale(optics.frame.hit);
 }
 
 fn smsInterfaceFactor(
@@ -720,6 +987,7 @@ fn smsInterfaceFactor(
   next: vec3f,
   endpoint: SmsEndpoint,
   channel: u32,
+  payMaterialTransmission: bool,
 ) -> f32 {
   var incoming = safe_normalize(vertex - previous);
   if (index == 0u && endpoint.sourceMode == 1u) { incoming = -endpoint.towardLight; }
@@ -774,11 +1042,10 @@ fn smsInterfaceFactor(
   var transmission = 1.0 - dielectricFresnelExact(woDotM, etaI, etaT);
   if (film.present != 0u) { transmission = smsChannel(film.transmittance, channel); }
   transmission = transmission * smsChannel(optics.layerTransmission, channel);
-  let entering = dot(incoming, geometry.facets[index].geometricNormal) < 0.0;
-  if (entering || optics.thickness <= 0.0) {
+  if (payMaterialTransmission) {
     transmission = transmission * optics.transmission;
   }
-  if (optics.thickness <= 0.0) {
+  if (optics.bulkMedium == 0u) {
     let exitLayer = sampleFaceLayerControls(
       geometry.facets[index].triIndex, optics.frame.hit.side < 0.0,
     );
@@ -819,10 +1086,29 @@ fn smsEvaluatePath(
   var out: SmsPathEvaluation;
   out.factor = 0.0;
   out.valid = 0u;
-  var mediumTri: array<u32, 8>;
-  var mediumTint: array<vec3f, 8>;
-  var mediumThickness: array<f32, 8>;
-  var depth = 0u;
+  if (geometry.count == 0u) { return out; }
+  let sourceContaining = smsSourceContainingMedia(
+    endpoint, solved.vertices[0],
+  );
+  let receiverContaining = smsReceiverContainingMedia(
+    receiver, solved.vertices[geometry.count - 1u],
+  );
+  if (sourceContaining.valid == 0u || receiverContaining.valid == 0u) {
+    return out;
+  }
+  var mediumBoundaryId: array<u32, 16>;
+  var mediumRepresentedId: array<u32, 16>;
+  var mediumDistance: array<f32, 16>;
+  var mediumTransmissionPaid: array<u32, 16>;
+  var depth = sourceContaining.state.depth;
+  if (depth > MATERIAL_SHADOW_MEDIUM_CAPACITY) { return out; }
+  for (var seed = 0u; seed < MATERIAL_SHADOW_MEDIUM_CAPACITY; seed += 1u) {
+    if (seed >= depth) { break; }
+    mediumBoundaryId[seed] = sourceContaining.state.materialId[seed];
+    mediumRepresentedId[seed] = sourceContaining.state.instance[seed];
+    mediumDistance[seed] = 0.0;
+    mediumTransmissionPaid[seed] = 0u;
+  }
   var previous = endpoint.position;
   var factor = 1.0;
   for (var i = 0u; i < SMS_MAX_VERTICES; i = i + 1u) {
@@ -832,35 +1118,60 @@ fn smsEvaluatePath(
     if (i == 0u && endpoint.sourceMode == 1u) { segmentDistance = 0.0; }
     if (depth > 0u && segmentDistance > 0.0) {
       let top = depth - 1u;
-      let distanceScale = segmentDistance / mediumThickness[top];
-      let fallback = pow(max(mediumTint[top], vec3f(0.0)), vec3f(distanceScale));
-      factor = factor * smsChannel(
-        materialSpectralAttenuation(mediumTri[top], segmentDistance, fallback), channel,
-      );
+      mediumDistance[top] = mediumDistance[top] + segmentDistance;
+    }
+    var incoming = safe_normalize(vertex - previous);
+    if (i == 0u && endpoint.sourceMode == 1u) {
+      incoming = -endpoint.towardLight;
+    }
+    let entering = dot(
+      incoming, geometry.facets[i].geometricNormal,
+    ) < 0.0;
+    let optics = smsFacetOpticsAt(geometry.facets[i], vertex, incoming);
+    if (optics.frame.valid == 0u) { return out; }
+    var payMaterialTransmission = optics.bulkMedium == 0u || entering;
+    if (optics.bulkMedium != 0u && !entering) {
+      if (
+        depth == 0u ||
+        mediumBoundaryId[depth - 1u] !=
+          geometry.facets[i].encodedBoundaryId ||
+        mediumRepresentedId[depth - 1u] !=
+          geometry.facets[i].representedPrimitiveInstanceId
+      ) { return out; }
+      payMaterialTransmission = mediumTransmissionPaid[depth - 1u] == 0u;
     }
     var next = receiver;
     if (i + 1u < geometry.count) { next = solved.vertices[i + 1u]; }
     let interfaceFactor = smsInterfaceFactor(
       geometry, media, i, vertex, previous, next, endpoint, channel,
+      payMaterialTransmission,
     );
     if (!(interfaceFactor > 0.0) || !(interfaceFactor < INFINITY)) { return out; }
     factor = factor * interfaceFactor;
-    if (geometry.events[i] == SMS_EVENT_TRANSMISSION) {
-      var incoming = safe_normalize(vertex - previous);
-      if (i == 0u && endpoint.sourceMode == 1u) { incoming = -endpoint.towardLight; }
-      let entering = dot(incoming, geometry.facets[i].geometricNormal) < 0.0;
-      let optics = smsFacetOpticsAt(geometry.facets[i], vertex, incoming);
-      if (optics.thickness > 0.0) {
-        if (entering) {
-          if (depth >= SMS_MAX_VERTICES) { return out; }
-          mediumTri[depth] = geometry.facets[i].triIndex;
-          mediumTint[depth] = smsBeerTint(optics);
-          mediumThickness[depth] = optics.thickness;
-          depth = depth + 1u;
-        } else {
-          if (depth == 0u) { return out; }
-          depth = depth - 1u;
-        }
+    if (geometry.events[i] == SMS_EVENT_TRANSMISSION &&
+        optics.bulkMedium != 0u) {
+      if (entering) {
+        if (depth >= MATERIAL_SHADOW_MEDIUM_CAPACITY) { return out; }
+        mediumBoundaryId[depth] = geometry.facets[i].encodedBoundaryId;
+        mediumRepresentedId[depth] =
+          geometry.facets[i].representedPrimitiveInstanceId;
+        mediumDistance[depth] = 0.0;
+        mediumTransmissionPaid[depth] = 1u;
+        depth = depth + 1u;
+      } else {
+        let top = depth - 1u;
+        factor = factor * smsChannel(
+          materialShadowBeerForSegment(
+            geometry.facets[i].triIndex,
+            smsBeerTint(optics),
+            optics.thickness,
+            smsThicknessMapScale(optics),
+            sampleVolumeScatteringControls(geometry.facets[i].triIndex),
+            mediumDistance[top],
+          ),
+          channel,
+        );
+        depth = top;
       }
     }
     previous = vertex;
@@ -868,13 +1179,28 @@ fn smsEvaluatePath(
   let finalDistance = length(receiver - previous);
   if (depth > 0u && finalDistance > 0.0) {
     let top = depth - 1u;
-    let distanceScale = finalDistance / mediumThickness[top];
-    let fallback = pow(max(mediumTint[top], vec3f(0.0)), vec3f(distanceScale));
+    mediumDistance[top] = mediumDistance[top] + finalDistance;
+  }
+  if (depth != receiverContaining.state.depth) { return out; }
+  for (var live = 0u; live < MATERIAL_SHADOW_MEDIUM_CAPACITY; live += 1u) {
+    if (live >= depth) { break; }
+    if (
+      mediumBoundaryId[live] != receiverContaining.state.materialId[live] ||
+      mediumRepresentedId[live] != receiverContaining.state.instance[live]
+    ) { return out; }
     factor = factor * smsChannel(
-      materialSpectralAttenuation(mediumTri[top], finalDistance, fallback), channel,
+      materialShadowBeerForSegment(
+        receiverContaining.state.tri[live],
+        receiverContaining.state.tint[live],
+        receiverContaining.state.thickness[live],
+        receiverContaining.state.thicknessMapScale[live],
+        receiverContaining.state.scattering[live],
+        mediumDistance[live],
+      ),
+      channel,
     );
   }
-  if (depth != 0u || !(factor > 0.0) || !(factor < INFINITY)) { return out; }
+  if (!(factor > 0.0) || !(factor < INFINITY)) { return out; }
   out.factor = factor;
   out.valid = 1u;
   return out;
@@ -929,8 +1255,17 @@ fn lo_manifold_caustic(
     var event = SMS_EVENT_REFLECTION;
     var eventPmf = 1.0;
     if (transmissionSupported) {
-      event = select(SMS_EVENT_REFLECTION, SMS_EVENT_TRANSMISSION, rand_f32(&rng) < 0.5);
-      eventPmf = 0.5;
+      let transmissionEventPmf = represented_bernoulli_probability_f32(0.5);
+      event = select(
+        SMS_EVENT_REFLECTION,
+        SMS_EVENT_TRANSMISSION,
+        rand_f32(&rng) < transmissionEventPmf,
+      );
+      eventPmf = select(
+        1.0 - transmissionEventPmf,
+        transmissionEventPmf,
+        event == SMS_EVENT_TRANSMISSION,
+      );
     }
     geometry.events[i] = event;
     let offset = smsSampleOffsetNormal(optics, incoming, event, eventPmf, &rng);
@@ -949,7 +1284,9 @@ fn lo_manifold_caustic(
   smsBuildFrame(normal, &receiverTangent, &receiverBitangent);
   var result = vec3f(0.0);
   for (var channel = 0u; channel < 3u; channel = channel + 1u) {
-    let built = smsBuildMedia(geometry, endpoint, seeds, channel);
+    let built = smsBuildMedia(
+      geometry, endpoint, seeds, receiver, channel,
+    );
     if (built.valid == 0u) { continue; }
     let solved = smsSolveChain(geometry, built.media, endpoint.position, receiver, seeds);
     if (solved.valid == 0u) { continue; }
@@ -957,7 +1294,9 @@ fn lo_manifold_caustic(
     if (!(chainVisibility > 0.0)) { continue; }
     let path = smsEvaluatePath(geometry, built.media, endpoint, solved, receiver, channel);
     if (path.valid == 0u) { continue; }
-    let endpointTransport = smsEndpointTransport(endpoint, solved.vertices[0]);
+    let endpointTransport = smsEndpointTransport(
+      endpoint, solved.vertices[0], geometry.facets[0],
+    );
     let light = smsChannel(endpointTransport, channel);
     if (!(light > 0.0) || !(light < INFINITY)) { continue; }
     let wi = safe_normalize(solved.vertices[chainLength - 1u] - receiver);

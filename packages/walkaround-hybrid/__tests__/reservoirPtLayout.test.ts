@@ -28,20 +28,21 @@ import {
 
 // ── FROZEN GOLDEN — the original Sprint-16 ReservoirGI 80-byte layout ─────────
 // Field name → u32 index within the reservoir. Transcribed by hand from the
-// pre-GRIS layout (xv 0..2, former padding/current key 3, nv 4..6, W 7,
-// xs 8..10, w_sum 11, ns 12..14,
-// M 15, Lo 16..18, lightId 19). The GRIS widening MUST NOT change any of these.
+// pre-GRIS offsets (xv 0..2, former padding/current key 3, nv 4..6, word 7,
+// xs 8..10, word 11, ns 12..14, M 15, Lo 16..18, word 19). Word 19 is now
+// the GI sampleFlags lane; its offset remains byte-compatible. The H/logW
+// representation changes the meanings of words 7 and 11 without moving them.
 const GOLDEN_SHARED_FIELD_INDEX: Record<string, number> = {
   'r.xv.x': 0, 'r.xv.y': 1, 'r.xv.z': 2,
   'r.receiverMaterialKey': 3,
   'r.nv.x': 4, 'r.nv.y': 5, 'r.nv.z': 6,
-  'r.W': 7,
+  'r.logW': 7,
   'r.xs.x': 8, 'r.xs.y': 9, 'r.xs.z': 10,
-  'r.w_sum': 11,
+  'r.H': 11,
   'r.ns.x': 12, 'r.ns.y': 13, 'r.ns.z': 14,
   'r.M': 15,
   'r.Lo.x': 16, 'r.Lo.y': 17, 'r.Lo.z': 18,
-  'r.lightId': 19,
+  'r.sampleFlags': 19,
 };
 
 /**
@@ -91,7 +92,7 @@ describe('H24 — the sole live reservoir layout carries generalized-reuse metad
     expect(Math.max(...writes)).toBe(27);
     expect(Math.max(...reads)).toBe(27);
     expect(store).toContain('r.prefixVertexCount');
-    expect(load).toContain('r.nativePHat');
+    expect(load).toContain('r.nativeLogPHat');
   });
 
   it('pass-local accessors copy exact bindings through the canonical pack/unpack helpers', () => {
@@ -117,7 +118,7 @@ describe('GRIS Phase-0 — shared fields [0..19] preserve the old word layout', 
     for (const [field, idx] of Object.entries(GOLDEN_SHARED_FIELD_INDEX)) {
       const isRawU32 =
         field === 'r.M'
-        || field === 'r.lightId'
+        || field === 'r.sampleFlags'
         || field === 'r.receiverMaterialKey';
       const escaped = field.replace(/\./g, '\\.');
       const pat = isRawU32
@@ -135,13 +136,13 @@ describe('GRIS Phase-0 — shared fields [0..19] preserve the old word layout', 
         { lhs: 'r.xv', indices: [0, 1, 2], raw: false },
         { lhs: 'r.receiverMaterialKey', indices: [3], raw: true },
         { lhs: 'r.nv', indices: [4, 5, 6], raw: false },
-        { lhs: 'r.W', indices: [7], raw: false },
+        { lhs: 'r.logW', indices: [7], raw: false },
         { lhs: 'r.xs', indices: [8, 9, 10], raw: false },
-        { lhs: 'r.w_sum', indices: [11], raw: false },
+        { lhs: 'r.H', indices: [11], raw: false },
         { lhs: 'r.ns', indices: [12, 13, 14], raw: false },
         { lhs: 'r.M', indices: [15], raw: true },
         { lhs: 'r.Lo', indices: [16, 17, 18], raw: false },
-        { lhs: 'r.lightId', indices: [19], raw: true },
+        { lhs: 'r.sampleFlags', indices: [19], raw: true },
       ];
       for (const { lhs, indices, raw } of checks) {
         // Each index in `indices` must appear as a read for this field's RHS.
@@ -168,14 +169,14 @@ describe('GRIS Phase-0 — appended fields live strictly after index 19', () => 
 
   it('the GRIS reconnection-shift cache is written at indices 20..27', () => {
     // wi_recon.xyz → 20,21,22 ; sampleVisibility → 23 ;
-    // prefixVertexCount → 24 ; sampleKind/nativePHat/historyEpoch → 25,26,27.
+    // prefixVertexCount → 24 ; sampleKind/nativeLogPHat/historyEpoch → 25,26,27.
     expect(store).toMatch(/words\[20u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.x\);/);
     expect(store).toMatch(/words\[21u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.y\);/);
     expect(store).toMatch(/words\[22u\]\s*=\s*bitcast<u32>\(r\.wi_recon\.z\);/);
     expect(store).toMatch(/words\[23u\]\s*=\s*bitcast<u32>\(r\.sampleVisibility\);/);
     expect(store).toMatch(/words\[24u\]\s*=\s*r\.prefixVertexCount;/);
     expect(store).toMatch(/words\[25u\]\s*=\s*r\.sampleKind;/);
-    expect(store).toMatch(/words\[26u\]\s*=\s*bitcast<u32>\(r\.nativePHat\);/);
+    expect(store).toMatch(/words\[26u\]\s*=\s*bitcast<u32>\(r\.nativeLogPHat\);/);
     expect(store).toMatch(/words\[27u\]\s*=\s*r\.historyEpoch;/);
   });
 
@@ -189,18 +190,16 @@ describe('GRIS Phase-0 — appended fields live strictly after index 19', () => 
 describe('GRIS Phase-0 — emptyReservoirGI matches old empty on shared fields + zeroes GRIS fields', () => {
   const empty = fnBody(RESERVOIR_GI_WGSL, 'emptyReservoirGI');
 
-  it('shared-field initialisers are unchanged from the original empty constructor', () => {
-    // Original initialisers (Sprint-16): all positions/Lo zero, normals (0,1,0),
-    // W/w_sum 0, M/lightId/key 0u.
+  it('shared-field initialisers use sentinels for the represented log lanes', () => {
     expect(empty).toContain('r.xv = vec3f(0.0);');
     expect(empty).toContain('r.nv = vec3f(0,1,0);');
     expect(empty).toContain('r.xs = vec3f(0.0);');
     expect(empty).toContain('r.ns = vec3f(0,1,0);');
     expect(empty).toContain('r.Lo = vec3f(0.0);');
-    expect(empty).toContain('r.W = 0.0;');
-    expect(empty).toContain('r.w_sum = 0.0;');
+    expect(empty).toContain('r.logW = RESERVOIR_GI_LOG_ZERO;');
+    expect(empty).toContain('r.H = RESERVOIR_GI_LOG_ZERO;');
     expect(empty).toContain('r.M = 0u;');
-    expect(empty).toContain('r.lightId = 0u;');
+    expect(empty).toContain('r.sampleFlags = 0u;');
     expect(empty).toContain('r.receiverMaterialKey = 0u;');
   });
 
@@ -209,7 +208,7 @@ describe('GRIS Phase-0 — emptyReservoirGI matches old empty on shared fields +
     expect(empty).toContain('r.sampleVisibility = 0.0;');
     expect(empty).toContain('r.prefixVertexCount = 0u;');
     expect(empty).toContain('r.sampleKind = GI_SAMPLE_SURFACE;');
-    expect(empty).toContain('r.nativePHat = 0.0;');
+    expect(empty).toContain('r.nativeLogPHat = RESERVOIR_GI_LOG_ZERO;');
     expect(empty).toContain('r.historyEpoch = 0u;');
   });
 });

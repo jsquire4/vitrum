@@ -27,9 +27,18 @@ describe('RC out-of-model confidence blend', () => {
       'let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m) * select(0.0, 1.0, rcHasEnergy);',
     );
     expect(body).toContain('let wRestirGi = 1.0 - wRc;');
-    expect(body).toContain('let diffuseWeight = 1.0 - clamp(metal, 0.0, 1.0);');
     expect(body).toContain(
-      'return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);',
+      'let diffuseWeight = (1.0 - clamp(metal, 0.0, 1.0)) *',
+    );
+    expect(body).toContain('(1.0 - clamp(transmission, 0.0, 1.0));');
+    expect(body).toContain(
+      'let Lo_rcDemodulated = restirShadeAggregateDiffuseDemodulated(',
+    );
+    expect(body).toContain(
+      'return wRestirGi * Lo_indirect + wRc * Lo_rcDemodulated;',
+    );
+    expect(body).not.toContain(
+      'return diffuseWeight * (wRestirGi',
     );
     expect(body).not.toContain('let cRc = clamp(rcParams.rcWeight, 0.0, 1.0) * (1.0 - m);');
   });

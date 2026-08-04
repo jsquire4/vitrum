@@ -172,11 +172,11 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
       { binding: 5, kind: 'tex:uint', note: 'bvh_beer (Beer-Lambert visible color, r32uint texture; shade-only)' },
       // Camera-visible + GI-suffix emitters (2026-05-30; GI suffix 2026-06-20) —
       // per-triangle HDR emissive radiance
-      // Le, rgba16float texture (texture, not storage — keeps the scene group at
+      // Le + exact NEE-ownership alpha, rgba32float texture (texture, not storage — keeps the scene group at
       // three storage arenas, same rationale as bvh_beer). Shade/transparent OIT
       // read it for camera-visible glow; ReSTIR-GI suffix shading reads it before
       // applying readable emissive maps at hit UV.
-      { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le, rgba16float texture; shade + OIT + ReSTIR-GI suffix)' },
+      { binding: 12, kind: 'tex', note: 'bvh_emissive (per-tri HDR emissive Le + NEE ownership, rgba32float texture; shade + OIT + ReSTIR-GI suffix)' },
       // H41 — analytic point/spot emitters for camera-visible NEE in opaque shade
       // and transparent OIT (separate from the RIS area-emitter pool). The
       // rgba32float texture starts with a header texel whose .x lane is the light
@@ -294,7 +294,6 @@ export const BIND_GROUP_TABLE: readonly BindGroupTableEntry[] = [
     entries: [
       { binding: 0, kind: 'tex:f', note: 'DDGI irradiance atlas' },
       { binding: 1, kind: 'tex:f', note: 'DDGI visibility atlas' },
-      { binding: 2, kind: 'sampler:f', note: 'DDGI linear sampler' },
       { binding: 3, kind: 'uniform', note: 'DDGIGridUniform' },
       { binding: 4, kind: 'storage-ro', note: 'RC cascade-0 radiance' },
       { binding: 5, kind: 'uniform', note: 'RCParams' },

@@ -246,6 +246,7 @@ fn bdptEvaluateCameraSplatVertex(
   let lv4 = bdptLightPath[bdptLightPathIndex(i32(c), 4u)];
   let lv5 = bdptLightPath[bdptLightPathIndex(i32(c), 5u)];
   let lv6 = bdptLightPath[bdptLightPathIndex(i32(c), 6u)];
+  let lv7 = bdptLightPath[bdptLightPathIndex(i32(c), 7u)];
   if (
     lv0.w == BDPT_KIND_INVALID ||
     lv3.w < 0.0
@@ -286,10 +287,13 @@ fn bdptEvaluateCameraSplatVertex(
     lightNormal,
     toCamera,
     bitcast<u32>(lv5.w),
+    lv7.x,
     lv6.y,
     bitcast<u32>(lv6.x),
+    lv7.x,
     lv6.y,
     bitcast<u32>(lv6.z),
+    lv7.y,
     lv6.w,
   );
   let cameraConnectionMedium = bdptNoEndpointMedium();
@@ -299,19 +303,49 @@ fn bdptEvaluateCameraSplatVertex(
   if (connectionMedium.remainingDistance < 0.0) {
     return bdptCameraSplatInvalidResult();
   }
+  var connectionTransmittance = vec3f(1.0);
+  var connectionIor = 1.0;
+  if (connectionMedium.matId != BDPT_NO_MEDIUM) {
+    let connectionMaterial = decodeMaterial(connectionMedium.matId);
+    connectionIor = max(connectionMaterial.ior, 1e-4);
+    if (
+      params.spectralEnabled != 0u &&
+      connectionMaterial.dispersionAbbe > 0.0
+    ) {
+      connectionIor = cauchyIorAtLambda(
+        bdptInvocationHeroLambdaNm,
+        connectionMaterial.ior,
+        connectionMaterial.dispersionAbbe,
+      );
+    }
+    let connectionSigmaT = bdptMaterialSigmaT(
+      connectionMedium.matId,
+      connectionMaterial,
+      bdptInvocationHeroLambdaNm,
+    );
+    connectionTransmittance = materialBeer(
+      connectionSigmaT,
+      min(cameraDistance, max(connectionMedium.remainingDistance, 0.0)),
+    );
+  }
 
   let visibilityRay = Ray(
     lightPosition + toCamera * ptRayOriginBias(),
     toCamera,
   );
-  if (traceAny(
+  let visibility = traceSurfaceVisibility(
     visibilityRay,
     ptRayTMin(),
     ptFiniteSegmentTMax(cameraDistance),
+    bdptInvocationHeroLambdaNm,
+    connectionIor,
     rng,
-  )) {
+  );
+  if (!visibility.visible) {
     return bdptCameraSplatInvalidResult();
   }
+  connectionTransmittance = connectionTransmittance *
+    visibility.transmittance;
 
   let lightMaterial = bdptSampleMaterialAtPayload(
     u32(lv3.w), lv4, lightNormal, lv3.xyz,
@@ -366,6 +400,8 @@ fn bdptEvaluateCameraSplatVertex(
     bdptLightPath[bdptLightPathIndex(i32(c - 1u), 5u)];
   let predecessor6 =
     bdptLightPath[bdptLightPathIndex(i32(c - 1u), 6u)];
+  let predecessor7 =
+    bdptLightPath[bdptLightPathIndex(i32(c - 1u), 7u)];
   let lcToPredecessor = safe_normalize(predecessor0.xyz - lightPosition);
   var revLcMinus = bdptMarginalSurfacePdf(
     lightMaterial.baseColor,
@@ -398,10 +434,13 @@ fn bdptEvaluateCameraSplatVertex(
     lightNormal,
     lcToPredecessor,
     bitcast<u32>(lv5.w),
+    lv7.x,
     lv6.y,
     bitcast<u32>(lv6.x),
+    lv7.x,
     lv6.y,
     bitcast<u32>(lv6.z),
+    lv7.y,
     lv6.w,
   );
   let predecessorPrefixMedium = bdptSelectEndpointMedium(
@@ -409,10 +448,13 @@ fn bdptEvaluateCameraSplatVertex(
     predecessor1.xyz,
     -lcToPredecessor,
     bitcast<u32>(predecessor5.w),
+    predecessor7.x,
     predecessor6.y,
     bitcast<u32>(predecessor6.x),
+    predecessor7.x,
     predecessor6.y,
     bitcast<u32>(predecessor6.z),
+    predecessor7.y,
     predecessor6.w,
   );
   revLcMinus = revLcMinus * bdptEndpointEdgeDistanceDensity(
@@ -528,7 +570,7 @@ fn bdptEvaluateCameraSplatVertex(
 
   var contribution =
     lv2.xyz * lightScatter * surfaceCosine *
-    projection.sampleWiOverPdf * misWeight;
+    projection.sampleWiOverPdf * misWeight * connectionTransmittance;
   if (!bdptFiniteNonNegativeRgb(contribution)) {
     return bdptCameraSplatInvalidResult();
   }

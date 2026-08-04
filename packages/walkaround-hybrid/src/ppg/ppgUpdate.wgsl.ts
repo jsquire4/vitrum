@@ -10,13 +10,13 @@
  *
  * === TRAINING ESTIMATOR ===
  * For M independent RIS candidates Xi~q with weights wi=pHat(Xi)/q(Xi),
- * reservoir sampling chooses Y with probability wi/sum(w). For any directional
- * bin B, `1[Y in B] * sum(w)/M` has expectation `integral_B pHat(w) dw`:
- * conditioning on the candidates cancels the reservoir-selection denominator.
- * The update pass therefore runs before reuse and deposits `w_sum/M` at the
- * selected direction. This is an unbiased histogram estimator for arbitrary
- * bins of the exact receiver contribution targeted by the RIS producer; raw Lo
- * is not a valid substitute because it omits both q and reservoir selection.
+ * represented WRS chooses Y with its persisted represented selection
+ * probability. For any directional bin B, `1[Y in B] * exp2(H)`, where
+ * `H=log2(w_selected / selectionProbability / M)`, has expectation
+ * `integral_B pHat(w) dw`. The update pass therefore runs before reuse and
+ * deposits `exp2(H)` at the selected direction. This is an unbiased histogram
+ * estimator for arbitrary bins of the exact receiver contribution targeted by
+ * the RIS producer; raw Lo and capped logW are not valid substitutes.
  *
  * === DEVIATION 4 FIX (coordinate frame) ===
  * Both reservoir endpoints are in WORLD space. The cylindrical equal-area UV
@@ -105,7 +105,7 @@ export function buildPpgUpdateWgsl(
   return /* wgsl */`
 // ── PPG update kernel ─────────────────────────────────────────────────────────
 // Muller et al. 2017 section 3.3 - training from accepted GI reservoir samples.
-// The training tuple is (xv, normalize(xs - xv), w_sum/M) from the initial reservoir.
+// The training tuple is (xv, persisted wi_recon, exp2(H)) from the initial reservoir.
 // DEVIATION 4 FIX: all directions are in WORLD space.
 // W9: real flat-buffer leaf location (no more uniform-grid stub).
 
@@ -156,17 +156,25 @@ fn ppgArenaLoadDTreeOffsetUpdate(word: u32) -> u32 {
 // ── Atomic f32 accumulation through u32 compare/exchange ────────────────────
 // WebGPU has no atomic<f32>. Storing IEEE-754 bits in atomic<u32> avoids the
 // quantisation and per-sample 65536-radiance saturation of the old fixed-point
-// counter. A bounded retry loop makes the kernel wait-free under adversarial
-// contention or repeated weak-CAS failure; after 256 collisions this one
-// training deposit is dropped instead of risking a non-terminating dispatch.
+// counter. Retry until this deposit is published: a fixed retry cap biases the
+// learned distribution under contention by discarding arbitrary samples while
+// still counting them toward topology confidence. This is lock-free (there is
+// no held lock); every interfering successful CAS advances the shared sum and
+// that writer exits. Saturation is the only terminal storage limit.
 const MAX_FINITE_F32: f32 = 3.402823466e+38;
-const MAX_FLUX_CAS_ATTEMPTS: u32 = 256u;
+const PPG_RESERVOIR_LOG_ZERO: f32 = -3.402823466e+38;
+// Correctly-rounded f32 endpoint policy. 2^-150 is exactly half of the
+// smallest subnormal and therefore rounds to zero (ties-to-even); every log in
+// (-150, 128) is still allowed to reach exp2, including subnormal results.
+const PPG_LOG2_ROUND_TO_ZERO: f32 = -150.0;
+const PPG_LOG2_OVERFLOW: f32 = 128.0;
 
 fn atomicAddFlux(slot: u32, value: f32) {
   if (!(value > 0.0) || value > MAX_FINITE_F32) { return; }
   var oldBits = atomicLoad(&ppgFluxAtomics[slot]);
-  for (var attempt = 0u; attempt < MAX_FLUX_CAS_ATTEMPTS; attempt = attempt + 1u) {
+  loop {
     let oldValue = bitcast<f32>(oldBits);
+    if (oldValue == MAX_FINITE_F32) { return; }
     // Repair an impossible negative/NaN/Inf accumulator defensively. Fresh
     // training buffers are zeroed, so this branch only handles corruption.
     var nextValue = value;
@@ -243,7 +251,7 @@ fn dTreeFindLeafBase(dTreeOffset: u32, uv: vec2<f32>) -> u32 {
 
 // ── Dispatch ──────────────────────────────────────────────────────────────────
 // One workgroup per 64 half-res GI reservoir entries. Each invocation:
-//   1. Reads an accepted reservoir's (xv, normalize(xs - xv), w_sum, M) triple.
+//   1. Reads an accepted reservoir's (xv, persisted wi_recon, H, M) tuple.
 //   2. Computes the incoming-direction octahedral UV (world frame).
 //   3. Walks the sTree to its cell, then the cell's dTree to a leaf.
 //   4. Atomically increments the leaf's flux accumulator.
@@ -266,20 +274,32 @@ fn ppgUpdateMain(@builtin(global_invocation_id) gid: vec3<u32>) {
     bitcast<f32>(ppgReservoirGiCurrent[b + 1u]),
     bitcast<f32>(ppgReservoirGiCurrent[b + 2u])
   );
-  let samplePoint = vec3f(
-    bitcast<f32>(ppgReservoirGiCurrent[b + 8u]),
-    bitcast<f32>(ppgReservoirGiCurrent[b + 9u]),
-    bitcast<f32>(ppgReservoirGiCurrent[b + 10u])
+  // The producer already persists a robust receiver-to-sample direction.
+  // Reconstructing xs-xv here loses precision in translated scenes, collapses
+  // short edges, and gives environment proxies a needless distance dependence.
+  let dirRaw = vec3f(
+    bitcast<f32>(ppgReservoirGiCurrent[b + 20u]),
+    bitcast<f32>(ppgReservoirGiCurrent[b + 21u]),
+    bitcast<f32>(ppgReservoirGiCurrent[b + 22u])
   );
-  let dirRaw = samplePoint - pos;
   let dirLen2 = dot(dirRaw, dirRaw);
   if (!(dirLen2 > 1e-12) || dirLen2 > MAX_FINITE_F32) { return; }
   let dir = dirRaw * inverseSqrt(dirLen2);
 
-  // Unbiased RIS histogram mass for the selected initial-reservoir sample.
-  // For arbitrary bin B: E[1(Y in B) * w_sum/M] = integral_B pHat(w) dw.
-  let reservoirWSum = bitcast<f32>(ppgReservoirGiCurrent[b + 11u]);
-  let trainingMass = reservoirWSum / f32(reservoirM);
+  // Unbiased represented-RIS histogram mass for the selected initial sample.
+  // For arbitrary B: E[1(Y in B) * exp2(H)] = integral_B pHat(w) dw.
+  // Convert only at the atomic buffer endpoint. Values at/below the f32
+  // round-to-zero midpoint deposit zero; values at/above exp2's overflow
+  // boundary saturate. Never floor a tiny mass upward or truncate a finite log.
+  let reservoirH = bitcast<f32>(ppgReservoirGiCurrent[b + 11u]);
+  if (!(reservoirH > PPG_RESERVOIR_LOG_ZERO) || reservoirH > MAX_FINITE_F32) {
+    return;
+  }
+  if (reservoirH <= PPG_LOG2_ROUND_TO_ZERO) { return; }
+  var trainingMass = MAX_FINITE_F32;
+  if (reservoirH < PPG_LOG2_OVERFLOW) {
+    trainingMass = min(exp2(reservoirH), MAX_FINITE_F32);
+  }
   if (!(trainingMass > 0.0) || trainingMass > MAX_FINITE_F32) { return; }
 
   // Cylindrical EQUAL-AREA UV of the incoming WORLD direction (Müller 2017 §3.2).

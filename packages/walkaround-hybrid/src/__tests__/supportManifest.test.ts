@@ -183,6 +183,29 @@ describe('walkaround executable support manifests', () => {
     }
   });
 
+  it('publishes the exact active optical-medium stack capacity', () => {
+    const ordinary = new HybridEngine(makeOpts());
+    const nrc = new HybridEngine(makeOpts({ nrcEnabled: true }));
+    const refractive = new HybridEngine(makeOpts({
+      causticStrategy: 'refractive-trace',
+    }));
+    try {
+      expect(ordinary.capabilities.supportDetails?.opticalMedia?.maxNestedMedia).toBe(8);
+      expect(nrc.capabilities.supportDetails?.opticalMedia?.maxNestedMedia).toBe(4);
+      expect(refractive.capabilities.supportDetails?.opticalMedia?.maxNestedMedia).toBe(4);
+      expect(BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails.opticalMedia)
+        .toEqual({
+          maxNestedMedia: 4,
+          topology: 'closed-oriented-disjoint-or-nested',
+          overflowPolicy: 'reject-scene',
+        });
+    } finally {
+      ordinary.dispose();
+      nrc.dispose();
+      refractive.dispose();
+    }
+  });
+
   it('keeps the static fully provisioned ledger profile synchronized', () => {
     const expected = BACKEND_PROMISE_LEDGER['walkaround-hybrid'].supportDetails;
     expect(WALKAROUND_FULL_CERTIFIED_SUPPORT_MANIFEST).toEqual({

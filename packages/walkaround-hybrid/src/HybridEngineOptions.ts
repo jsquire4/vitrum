@@ -719,8 +719,9 @@ export interface HybridEngineOptions extends EngineOptions {
    * shade then reads (same parity), so no gap-pixel reservoir passthrough is
    * needed.
    *
-   * The ReSTIR-DI `ris` initial-candidate pass ALSO compacts (it carries forward
-   * the gap-parity reservoir), so the full compacted set is FOUR passes — shade +
+   * The ReSTIR-DI `ris` initial-candidate pass ALSO compacts. Temporal reuse
+   * treats a gap slot as having no fresh current proposal and carries its valid
+   * reprojected history once, so the full compacted set is FOUR passes — shade +
    * the two spatial passes + ris — which is where the whole-frame win comes from
    * (the BVH re-cast passes dominate).
    *
@@ -899,7 +900,8 @@ export interface HybridEngineOptions extends EngineOptions {
     readonly enabled?: boolean;
     /** Cells per axis (cubic grid). Default 16 ⇒ up to 4096 cells. */
     readonly cellsPerAxis?: number;
-    /** M — WRS candidates drawn per cell sub-reservoir at grid build. Default 32. */
+    /** M — WRS candidates drawn per cell sub-reservoir at grid build. Default
+     * 32; maximum 4096 because each survivor invocation executes M serially. */
     readonly candidatesPerCell?: number;
     /** K — survivors stored per cell (per-pixel candidate diversity). Default 8. */
     readonly survivorsPerCell?: number;

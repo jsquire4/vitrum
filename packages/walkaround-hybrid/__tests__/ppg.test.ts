@@ -96,6 +96,24 @@ describe('PPG sTree — adaptive split (Müller §3.1)', () => {
     expect(tree.nodes[0]!.splitAxis).toBe(-1);  // -1 = leaf
   });
 
+  it('does not manufacture degenerate children for an unsplittable spatial cell', () => {
+    const collapsed = buildSTree({ min: [4, 4, 4], max: [4, 4, 4] });
+    collapsed.nodes[0]!.sampleCount = 1;
+    splitOverflowLeaves(collapsed, 0, 32);
+    expect(collapsed.nodes).toHaveLength(1);
+    expect(collapsed.dTrees).toHaveLength(1);
+    expect(collapsed.nodes[0]!.splitAxis).toBe(-1);
+
+    const adjacent = buildSTree({
+      min: [1, 0, 0],
+      max: [1 + Number.EPSILON, 0, 0],
+    });
+    adjacent.nodes[0]!.sampleCount = 1;
+    splitOverflowLeaves(adjacent, 0, 32);
+    expect(adjacent.nodes).toHaveLength(1);
+    expect(adjacent.dTrees).toHaveLength(1);
+  });
+
   it('findSTreeLeaf returns root for any in-bounds point on a fresh tree', () => {
     const tree = buildSTree(SCENE_AABB);
     expect(findSTreeLeaf(tree, [0, 0, 0])).toBe(0);
@@ -326,15 +344,20 @@ describe('PPG WGSL — training-signal contract', () => {
   it('ppgUpdate kernel trains from accepted ReSTIR-GI reservoirs, not dead sample buffers', () => {
     // The prior scaffold allocated ppgSamplesPos/Dir/Li buffers but never wrote
     // them. The live kernel must read accepted reservoir records instead:
-    // xv at [0..2], xs at [8..10], RIS w_sum at [11], and M at [15].
+    // xv at [0..2], robust receiver→sample direction at [20..22], log-H at
+    // [11], M at [15], and reconnectable-prefix support at [24].
     expect(PPG_UPDATE_WGSL).not.toMatch(/Lo_clamp|Lo_outgoing|outgoingRadiance/);
     expect(PPG_UPDATE_WGSL).not.toMatch(/ppgSamplesPos|ppgSamplesDir|ppgLiSamples/);
     expect(PPG_UPDATE_WGSL).toContain('ppgReservoirGiCurrent');
     expect(PPG_UPDATE_WGSL).toContain('RESERVOIR_GI_STRIDE_LOCAL');
     expect(PPG_UPDATE_WGSL).toContain('b + 0u');
-    expect(PPG_UPDATE_WGSL).toContain('b + 8u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 20u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 21u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 22u');
     expect(PPG_UPDATE_WGSL).toContain('b + 15u');
     expect(PPG_UPDATE_WGSL).toContain('b + 11u');
+    expect(PPG_UPDATE_WGSL).toContain('b + 24u');
+    expect(PPG_UPDATE_WGSL).not.toContain('ppgReservoirGiCurrent[b + 8u]');
   });
 
   it('ppgUpdate kernel includes a workgroup_size declaration (sanity check)', () => {

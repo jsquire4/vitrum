@@ -80,13 +80,19 @@ fn bdptWriteLvMediumSides(
     bitcast<f32>(incidentMedium.matId), incidentMedium.remainingDistance,
     bitcast<f32>(transmittedMedium.matId), transmittedMedium.remainingDistance,
   );
+  bdptLightPath[bdptLightPathIndex(col, 7u)] = vec4f(
+    incidentMedium.initialDistance,
+    transmittedMedium.initialDistance,
+    0.0,
+    0.0,
+  );
 }
 
 fn bdptWriteLvMediumPayload(col: i32, layer: BdptMediumLayer) {
   bdptLightPath[bdptLightPathIndex(col, 5u)] =
     vec4f(1.0, layer.g, 1.0, bitcast<f32>(layer.matId));
   let endpointMedium = BdptEndpointMedium(
-    layer.matId, layer.remainingDistance,
+    layer.matId, layer.initialDistance, layer.remainingDistance,
   );
   bdptWriteLvMediumSides(col, endpointMedium, endpointMedium);
 }
@@ -121,9 +127,8 @@ fn bdptMaterialWithVolumeThickness(
   let thicknessSample = sampleVolumeThicknessTexture(
     matId, triIndex, baryVW, instanceIndex,
   );
-  if (thicknessSample >= 0.0) {
+  if (thicknessSample >= 0.0 && mat.hasVolumeThickness) {
     mat.volumeThickness = max(mat.volumeThickness * thicknessSample, 0.0);
-    mat.hasVolumeThickness = true;
   }
   return mat;
 }
@@ -148,6 +153,10 @@ struct BdptSampledMaterial {
   anisotropy: f32,
   anisotropyRotation: f32,
   clearcoatNormal: vec3f,
+  oppositeNormal: vec3f,
+  oppositeRoughness: f32,
+  oppositeLayerWeight: vec3f,
+  isThinSheet: bool,
   thinFilm: ThinFilmInterface,
 }
 
@@ -200,7 +209,20 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f,
   out.anisotropyRotation = materialAnisotropyRotation(
     matId, triIndex, baryVW, shadingNormal, instanceIndex,
   );
-  out.clearcoatNormal = applyClearcoatNormalMap(matId, triIndex, baryVW, shadingNormal, instanceIndex);
+  let interfaceBaseNormal = materialBaseInterfaceNormal(
+    triIndex, baryVW, instanceIndex, isFrontFace, shadingNormal,
+  );
+  out.clearcoatNormal = applyClearcoatNormalMap(
+    matId, triIndex, baryVW, interfaceBaseNormal, instanceIndex,
+  );
+  out.oppositeNormal = -interfaceBaseNormal;
+  out.oppositeNormal = applyNormalMap(
+    matId, triIndex, baryVW, out.oppositeNormal, instanceIndex, !isFrontFace,
+  );
+  out.oppositeNormal = applyBumpMap(
+    matId, triIndex, baryVW, out.oppositeNormal, instanceIndex,
+  );
+  out.isThinSheet = mat.isThinSheet;
   out.thinFilm = ThinFilmInterface(
     mat.thinFilmEnabled,
     matId,
@@ -214,14 +236,25 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f,
     out.transmission,
   );
   let layerTx = clamp(select(mat.backLayerTx, mat.frontLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
+  let oppositeLayerTx = clamp(select(mat.frontLayerTx, mat.backLayerTx, isFrontFace), vec3f(0.0), vec3f(1.0));
   let layerRoughness = select(mat.backLayerRoughness, mat.frontLayerRoughness, isFrontFace);
+  let oppositeLayerRoughness = select(mat.frontLayerRoughness, mat.backLayerRoughness, isFrontFace);
+  out.oppositeRoughness = out.roughness;
   if (layerRoughness >= 0.0) {
     out.roughness = clamp(layerRoughness, 0.0, 1.0);
+  }
+  if (oppositeLayerRoughness >= 0.0) {
+    out.oppositeRoughness = clamp(oppositeLayerRoughness, 0.0, 1.0);
   }
   let layerWeight = select(
     layerTx,
     activeLayerWeightRgb(layerTx, heroLambda, true),
     params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
+  );
+  out.oppositeLayerWeight = select(
+    oppositeLayerTx,
+    activeLayerWeightRgb(oppositeLayerTx, heroLambda, true),
+    params.spectralEnabled != 0u && luminance(oppositeLayerTx) < 0.999,
   );
   out.baseColor = out.baseColor * layerWeight;
   if (params.spectralEnabled != 0u) {
@@ -238,6 +271,9 @@ fn bdptSampleMaterialAtPayload(matId: u32, payload: vec4f, shadingNormal: vec3f,
 }
 
 fn bdptWriteInvalid(col: i32) {
+  // A pending source feature belongs only to the immediately following path
+  // edge. Any failed extension cancels it before this invocation advances.
+  opticalClearContinuationSource();
   bdptLightPath[bdptLightPathIndex(col, 0u)] = vec4f(0.0, 0.0, 0.0, BDPT_KIND_INVALID);
   bdptLightPath[bdptLightPathIndex(col, 1u)] = vec4f(0.0);
   bdptLightPath[bdptLightPathIndex(col, 2u)] = vec4f(0.0);
@@ -674,6 +710,7 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
     var surfaceThroughputMul = vec3f(0.0);
     var surfaceRayOrigin = prevPos;
     var sampledDelta = false;
+    var sampledReverseSurfacePdf = 0.0;
 
     if (prevMatId == BDPT_LV_MEDIUM_MATID) {
       if (mediumDepth == 0u) {
@@ -784,8 +821,7 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
         prevTriWord & 0x7fffffffu,
         bitcast<u32>(prevPayload.w),
       );
-      let prevCrossesMedium =
-        prevDecodedMat.isTranslucent && prevMat.transmission > 0.0;
+      let prevCrossesMedium = prevDecodedMat.isBulkMedium;
       if (prevCrossesMedium && !mediumBoundaryIsValid(prevBoundary)) {
         bdptWriteInvalid(col);
         continue;
@@ -815,7 +851,11 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
         prevMat.specularColor,
         prevMat.specularIntensity,
         prevThinFilm,
-        prevDecodedMat.isTranslucent,
+        prevMat.isThinSheet,
+        prevMat.oppositeNormal,
+        prevMat.oppositeRoughness,
+        prevMat.oppositeLayerWeight,
+        prevDecodedMat.isBulkMedium,
         prevMat.clearcoat,
         prevMat.clearcoatRoughness,
         prevMat.sheen,
@@ -826,9 +866,24 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       );
       scatterDir = bsPrev.sampledDir;
       pdfScatter = bsPrev.sampledEventPdf;
+      sampledReverseSurfacePdf = bsPrev.sampledReverseEventPdf;
       surfaceThroughputMul = bsPrev.throughputMul;
-      surfaceRayOrigin = bsPrev.newRayOrigin;
-      sampledDelta = bsPrev.sampledIsDelta;
+      let crossedTransmissiveInterface =
+        bsPrev.sampledLobe == BSDF_LOBE_DELTA_TRANSMISSION ||
+        bsPrev.sampledLobe == BSDF_LOBE_ROUGH_TRANSMISSION ||
+        bsPrev.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION;
+      if (crossedTransmissiveInterface) {
+        if (!opticalContinuationSourceIsActive()) {
+          bdptWriteInvalid(col);
+          continue;
+        }
+        surfaceRayOrigin = prevPos;
+      } else {
+        opticalClearContinuationSource();
+        surfaceRayOrigin = bsPrev.newRayOrigin;
+      }
+      sampledDelta = bsPrev.sampledIsDelta ||
+        bsPrev.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION;
 
       if (bsPrev.enteredMedium) {
         if (mediumDepth >= BDPT_MEDIUM_STACK_LIMIT) {
@@ -861,6 +916,33 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       continue;
     }
 
+    if (
+      col == 1 && prevMatId < 0.0 &&
+      prevMatId != BDPT_LV_DIRECTIONAL_EMITTER_MATID &&
+      prevMatId != BDPT_LV_ENVIRONMENT_EMITTER_MATID
+    ) {
+      let launchContainment = opticalContainmentAlongRay(prevPos, scatterDir);
+      if (!launchContainment.valid) {
+        bdptWriteInvalid(col);
+        continue;
+      }
+      mediumDepth = launchContainment.depth;
+      for (var mediumIndex = 0u; mediumIndex < mediumDepth; mediumIndex = mediumIndex + 1u) {
+        let launchMatId = launchContainment.matIds[mediumIndex];
+        mediumStack[mediumIndex] = bdptMediumLayer(
+          launchMatId,
+          materialAtOpticalBoundary(
+            launchMatId,
+            launchContainment.triIndices[mediumIndex],
+            launchContainment.baryVWs[mediumIndex],
+            launchContainment.instanceIndices[mediumIndex],
+          ),
+          bdptInvocationHeroLambdaNm,
+          launchContainment.boundaries[mediumIndex],
+        );
+      }
+    }
+
     // PBRT RandomWalk reverse-density convention: the swapped directional PDF
     // evaluated at L_{i-1} after sampling L_i describes reverse ARRIVAL at
     // L_{i-2}, not at L_{i-1}. L_{i-1}.row2.w was seeded when that vertex was
@@ -876,6 +958,10 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
         swappedDirectionalPdf = hgPhase(
           dot(-woAtPrev, scatterDir), prevMediumPayload.y,
         );
+      } else if (
+        prevMatId >= 0.0 && sampledReverseSurfacePdf > 0.0
+      ) {
+        swappedDirectionalPdf = sampledReverseSurfacePdf;
       } else if (prevMatId >= 0.0 && !sampledDelta) {
         let prevPayloadForRev =
           bdptLightPath[bdptLightPathIndex(prevCol, 4u)];
@@ -920,9 +1006,8 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       prevPos + scatterDir * ptRayOriginBias();
     ray.origin = select(surfaceRayOrigin, emitterRayOrigin, prevMatId < 0.0 && prevMatId != BDPT_LV_MEDIUM_MATID);
     ray.direction = scatterDir;
-    let alphaTraceOrigin = ray.origin;
-    var alphaAdvance = 0.0;
-    var hit = traceClosest(ray, ptRayTMin(), INFINITY);
+    var alphaCursor = ptRayTMin();
+    var hit = traceClosest(ray, alphaCursor, INFINITY);
     let alphaSurfaceHitLimit = sceneSurfaceHitLimit();
     var alphaSurfaceHitCount = 0u;
     var alphaTraversalValid = true;
@@ -936,79 +1021,80 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       if (!alphaTestPassThrough(
         hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
       )) { break; }
-      let alphaStep = hit.dist + ptRayTMin();
-      alphaAdvance = alphaAdvance + alphaStep;
-      ray.origin = ray.origin + ray.direction * alphaStep;
-      hit = traceClosest(ray, ptRayTMin(), INFINITY);
+      let nextAlphaCursor = hit.dist;
+      if (!(nextAlphaCursor > alphaCursor)) {
+        alphaTraversalValid = false;
+        break;
+      }
+      alphaCursor = nextAlphaCursor;
+      hit = traceClosest(ray, alphaCursor, INFINITY);
     }
     if (!alphaTraversalValid) {
       bdptWriteInvalid(col);
       continue;
     }
-    ray.origin = alphaTraceOrigin;
-    if (hit.didHit) { hit.dist = hit.dist + alphaAdvance; }
     var segmentForwardDensity = 1.0;
     var segmentReverseDensity = 1.0;
     var segmentWeight = vec3f(1.0);
     var mediumCollision = false;
     var collisionDistance = 0.0;
-    // If an emitter/camera starts inside a closed volume there is no preceding
-    // entry interface to seed the stack. A first back-face hit identifies the
-    // homogeneous layer for this segment; sample it exactly like an explicit
-    // entered layer instead of applying an eye/light-asymmetric Beer fallback.
-    if (mediumDepth == 0u && hit.didHit) {
-      let inferredMatId = hitMaterialId(hit);
-      let inferredMat = bdptMaterialWithVolumeThickness(
-        inferredMatId, hit.triIndex, hit.baryVW, hit.instanceIndex,
-      );
-      let inferredBackFace = !hit.frontFace;
-      if (inferredBackFace && inferredMat.isTranslucent) {
-        let inferredBoundary = mediumBoundaryIdentity(
-          hit.triIndex, hit.instanceIndex,
-        );
-        if (!mediumBoundaryIsValid(inferredBoundary)) {
-          bdptWriteInvalid(col);
-          continue;
-        }
-        mediumStack[0u] =
-          bdptMediumLayer(
-            inferredMatId, inferredMat, bdptInvocationHeroLambdaNm,
-            inferredBoundary,
-          );
-        mediumDepth = 1u;
-      }
-    }
     if (mediumDepth > 0u) {
       let topIndex = mediumDepth - 1u;
       let layer = mediumStack[topIndex];
-      let heroSigmaT = bdptHeroSigmaT(layer.sigmaT);
-      if (heroSigmaT > 0.0) {
-        let surfaceDistance = select(1e30, hit.dist, hit.didHit);
-        let segmentLimit = min(surfaceDistance, layer.remainingDistance);
+      var flightRate = layer.sigmaT.x;
+      if (params.spectralEnabled == 0u) {
+        let flightChannel = ptRandBoundedU32(&rng, 3u);
+        if (flightChannel == 1u) { flightRate = layer.sigmaT.y; }
+        if (flightChannel == 2u) { flightRate = layer.sigmaT.z; }
+      }
+      let surfaceDistance = select(INFINITY, hit.dist, hit.didHit);
+      let segmentLimit = min(surfaceDistance, layer.remainingDistance);
+      if (segmentLimit > 0.0 && flightRate > PT_F32_MAX) {
+        bdptWriteInvalid(col);
+        continue;
+      }
+      if (!(flightRate >= 0.0)) {
+        bdptWriteInvalid(col);
+        continue;
+      }
+      {
         let xiFlight = rand_f32(&rng);
-        let freeFlightDistance =
-          -log(max(1.0 - xiFlight, 1e-9)) / heroSigmaT;
+        var freeFlightDistance = INFINITY;
+        if (flightRate > 0.0) {
+          freeFlightDistance = -log(max(1.0 - xiFlight, 1e-9)) / flightRate;
+        }
         collisionDistance = min(freeFlightDistance, segmentLimit);
-        let heroSurvival = exp(-heroSigmaT * collisionDistance);
-        let transmittance =
-          exp(-layer.sigmaT * collisionDistance);
+        let transmittance = materialBeer(layer.sigmaT, collisionDistance);
+        let survivalPdf = select(
+          materialRgbSurvivalPdf(layer.sigmaT, collisionDistance),
+          materialBeerLane(flightRate, collisionDistance),
+          params.spectralEnabled != 0u,
+        );
+        let collisionPdf = select(
+          materialRgbCollisionPdf(layer.sigmaT, collisionDistance),
+          materialExtinctionDensityLane(flightRate, collisionDistance),
+          params.spectralEnabled != 0u,
+        );
         mediumCollision = freeFlightDistance < segmentLimit;
         segmentForwardDensity = select(
-          heroSurvival,
-          heroSigmaT * heroSurvival,
+          survivalPdf,
+          collisionPdf,
           mediumCollision,
         );
         segmentReverseDensity = select(
-          heroSurvival,
-          heroSigmaT * heroSurvival,
+          survivalPdf,
+          collisionPdf,
           prevMatId == BDPT_LV_MEDIUM_MATID,
         );
-        segmentWeight = select(
-          transmittance / max(heroSurvival, 1e-20),
-          layer.sigmaS * transmittance /
-            max(heroSigmaT * heroSurvival, 1e-20),
-          mediumCollision,
-        );
+        if (!(segmentForwardDensity > 0.0)) {
+          bdptWriteInvalid(col);
+          continue;
+        }
+        if (mediumCollision) {
+          segmentWeight = layer.sigmaS * transmittance / collisionPdf;
+        } else {
+          segmentWeight = transmittance / survivalPdf;
+        }
         mediumStack[topIndex].remainingDistance =
           max(layer.remainingDistance - collisionDistance, 0.0);
       }
@@ -1037,7 +1123,7 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       matIdx, hit.triIndex, hit.baryVW, hit.instanceIndex,
     );
     let hitBoundary = mediumBoundaryIdentity(hit.triIndex, hit.instanceIndex);
-    if (hitDecodedMat.isTranslucent && !mediumBoundaryIsValid(hitBoundary)) {
+    if (hitDecodedMat.isBulkMedium && !mediumBoundaryIsValid(hitBoundary)) {
       bdptWriteInvalid(col);
       continue;
     }
@@ -1051,7 +1137,7 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
     var transmittedIor = max(hitDecodedMat.ior, 1e-4);
     if (!isFrontFaceHit) {
       transmittedIor = 1.0;
-      if (hitDecodedMat.isTranslucent) {
+      if (hitDecodedMat.isBulkMedium) {
         if (
           mediumDepth == 0u ||
           !bdptMediumLayerMatchesBoundary(
@@ -1067,28 +1153,34 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
       }
     }
     let hitEtaTOverI = transmittedIor / max(incidentIor, 1e-4);
-    let newPos = ray.origin + ray.direction * hit.dist;
+    let newPos = hit.position;
     var incidentMedium = bdptNoEndpointMedium();
     if (mediumDepth > 0u) {
       let incidentLayer = mediumStack[mediumDepth - 1u];
       incidentMedium = BdptEndpointMedium(
-        incidentLayer.matId, incidentLayer.remainingDistance,
+        incidentLayer.matId,
+        incidentLayer.initialDistance,
+        incidentLayer.remainingDistance,
       );
     }
     var transmittedMedium = bdptNoEndpointMedium();
-    if (hitDecodedMat.isTranslucent) {
+    if (hitDecodedMat.isBulkMedium) {
       if (isFrontFaceHit) {
         let enteredLayer = bdptMediumLayer(
           matIdx, hitDecodedMat, bdptInvocationHeroLambdaNm, hitBoundary,
         );
         transmittedMedium = BdptEndpointMedium(
-          enteredLayer.matId, enteredLayer.remainingDistance,
+          enteredLayer.matId,
+          enteredLayer.initialDistance,
+          enteredLayer.remainingDistance,
         );
       } else {
         if (mediumDepth > 1u) {
           let belowLayer = mediumStack[mediumDepth - 2u];
           transmittedMedium = BdptEndpointMedium(
-            belowLayer.matId, belowLayer.remainingDistance,
+            belowLayer.matId,
+            belowLayer.initialDistance,
+            belowLayer.remainingDistance,
           );
         }
       }
@@ -1145,6 +1237,14 @@ fn bdptBuildInvocationLightSubpath(pixel: vec2u) {
     // the §10.3 connection evaluates the REAL light-vertex BSDF (glossy/metallic).
     bdptWriteLvBsdf(col, f32(matIdx), woLp);
     bdptWriteLvMaterialPayload(col, hit.triIndex, hit.baryVW, hit.instanceIndex, isFrontFaceHit);
+    if (hitDecodedMat.transmission > 0.0) {
+      if (!opticalSetContinuationSourceFromHit(hit)) {
+        bdptWriteInvalid(col);
+        continue;
+      }
+    } else {
+      opticalClearContinuationSource();
+    }
     bdptWriteLvInterfaceEta(col, hitEtaTOverI, incidentIor, transmittedIor);
     var activeMediumMatId = BDPT_NO_MEDIUM;
     if (mediumDepth > 0u) {

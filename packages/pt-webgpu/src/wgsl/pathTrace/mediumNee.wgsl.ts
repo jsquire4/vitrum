@@ -33,9 +33,7 @@ fn sampleCanonicalDirectLight(
       );
     }
   }
-  let index = u32(min(
-    floor(rand_f32(rng) * f32(lightCount)), f32(lightCount - 1u),
-  ));
+  let index = ptRandBoundedU32(rng, lightCount);
   return DirectLightSelection(index, f32(lightCount));
 }
 
@@ -54,54 +52,21 @@ fn distantDirectEmitterGlobalIndex(localIndex: u32) -> u32 {
     params.meshAreaLightCount;
 }
 
-fn distantDirectEnvironmentPower() -> f32 {
-  return max(params.environmentDistantPower, 0.0);
+fn distantDirectEnvironmentPmf() -> f32 {
+  let pmf = params.environmentDistantProposalPmf;
+  return select(0.0, pmf, pmf > 0.0 && pmf <= 1.0);
 }
 
-fn distantDirectDirectionalPower(localIndex: u32) -> f32 {
-  let irradiance = max(
-    directionalLights[localIndex * 2u + 1u].rgb,
-    vec3f(0.0),
-  );
-  let componentScale = max(irradiance.r, max(irradiance.g, irradiance.b));
-  if (!(componentScale > 0.0) || componentScale > 3.402823466e38) {
-    return 0.0;
-  }
-  // Scaling before the Rec.709 dot keeps three individually finite HDR
-  // components from overflowing their luminance sum.
-  let normalizedLuminance = clamp(
-    luminance(irradiance / componentScale),
-    0.0,
-    1.0,
-  );
-  return componentScale * normalizedLuminance;
+fn distantDirectDirectionalPmf(localIndex: u32) -> f32 {
+  let pmf = directionalLights[localIndex * 2u + 1u].w;
+  return select(0.0, pmf, pmf > 0.0 && pmf <= 1.0);
 }
 
-fn distantDirectEmitterPower(localIndex: u32) -> f32 {
+fn distantDirectEmitterPmf(localIndex: u32) -> f32 {
   if (localIndex < params.directionalLightCount) {
-    return distantDirectDirectionalPower(localIndex);
+    return distantDirectDirectionalPmf(localIndex);
   }
-  return distantDirectEnvironmentPower();
-}
-
-fn distantDirectPowerScale(count: u32) -> f32 {
-  var powerScale = 0.0;
-  for (var i = 0u; i < count; i = i + 1u) {
-    powerScale = max(powerScale, distantDirectEmitterPower(i));
-  }
-  return powerScale;
-}
-
-fn distantDirectNormalizedPowerSum(count: u32, powerScale: f32) -> f32 {
-  if (!(powerScale > 0.0) || powerScale > 3.402823466e38) {
-    return 0.0;
-  }
-  var normalizedTotal = 0.0;
-  for (var i = 0u; i < count; i = i + 1u) {
-    normalizedTotal =
-      normalizedTotal + distantDirectEmitterPower(i) / powerScale;
-  }
-  return normalizedTotal;
+  return distantDirectEnvironmentPmf();
 }
 
 fn distantDirectSelectionPdf(globalIndex: u32) -> f32 {
@@ -119,12 +84,7 @@ fn distantDirectSelectionPdf(globalIndex: u32) -> f32 {
   ) {
     return 0.0;
   }
-  let powerScale = distantDirectPowerScale(count);
-  let normalizedTotal = distantDirectNormalizedPowerSum(count, powerScale);
-  if (!(normalizedTotal > 0.0)) { return 0.0; }
-  return
-    (distantDirectEmitterPower(localIndex) / powerScale) /
-    normalizedTotal;
+  return distantDirectEmitterPmf(localIndex);
 }
 
 fn sampleDistantDirectLight(
@@ -133,35 +93,33 @@ fn sampleDistantDirectLight(
 ) -> DirectLightSelection {
   let count = distantDirectEmitterCount();
   if (count == 0u || sumAll) { return DirectLightSelection(0u, 1.0); }
-  let powerScale = distantDirectPowerScale(count);
-  let normalizedTotal = distantDirectNormalizedPowerSum(count, powerScale);
-  if (!(normalizedTotal > 0.0)) {
-    return DirectLightSelection(0xffffffffu, 0.0);
-  }
-  let pickTarget = rand_f32(rng) * normalizedTotal;
+  // The host publishes exact multiples of 2^-24. rand_f32 is the matching
+  // canonical 24-bit variate, so the sampled interval and reported PMF agree
+  // exactly and every positive physical source retains at least one bucket.
+  let pickTarget = rand_f32(rng);
   var cumulative = 0.0;
   var lastPositiveIndex = 0xffffffffu;
-  var lastPositivePower = 0.0;
+  var lastPositivePmf = 0.0;
   for (var i = 0u; i < count; i = i + 1u) {
-    let normalizedPower = distantDirectEmitterPower(i) / powerScale;
-    if (normalizedPower > 0.0) {
+    let pmf = distantDirectEmitterPmf(i);
+    if (pmf > 0.0) {
       lastPositiveIndex = i;
-      lastPositivePower = normalizedPower;
+      lastPositivePmf = pmf;
     }
-    cumulative = cumulative + normalizedPower;
-    if (normalizedPower > 0.0 && pickTarget < cumulative) {
+    cumulative = cumulative + pmf;
+    if (pmf > 0.0 && pickTarget < cumulative) {
       return DirectLightSelection(
         distantDirectEmitterGlobalIndex(i),
-        normalizedTotal / normalizedPower,
+        1.0 / pmf,
       );
     }
   }
-  // Rounding the cumulative sum below normalizedTotal must not turn a valid
-  // draw into an invalid emitter. Fall back to the last positive interval.
+  // Defensive fallback for a corrupted/non-canonical RNG endpoint or storage
+  // payload. Correct host data sums to exactly one in f32 arithmetic.
   if (lastPositiveIndex != 0xffffffffu) {
     return DirectLightSelection(
       distantDirectEmitterGlobalIndex(lastPositiveIndex),
-      normalizedTotal / lastPositivePower,
+      1.0 / lastPositivePmf,
     );
   }
   return DirectLightSelection(0xffffffffu, 0.0);
@@ -178,9 +136,8 @@ fn mediumMaterialAtHit(hit: SceneHit) -> DecodedMaterial {
   let thicknessSample = sampleVolumeThicknessTexture(
     matId, hit.triIndex, hit.baryVW, hit.instanceIndex,
   );
-  if (thicknessSample >= 0.0) {
+  if (thicknessSample >= 0.0 && mat.hasVolumeThickness) {
     mat.volumeThickness = max(mat.volumeThickness * thicknessSample, 0.0);
-    mat.hasVolumeThickness = true;
   }
   return mat;
 }
@@ -213,7 +170,11 @@ fn traceMediumVisibility(
     sourceDepth == 0u ||
     sourceDepth > BDPT_MEDIUM_STACK_LIMIT ||
     !mediumBoundaryIsValid(
-      vec2u(sourceLayer.boundaryKind, sourceLayer.boundaryIndex),
+      vec3u(
+        sourceLayer.boundaryKind,
+        sourceLayer.boundaryIndex,
+        sourceLayer.boundaryComponent,
+      ),
     )
   ) {
     return result;
@@ -222,7 +183,11 @@ fn traceMediumVisibility(
   for (var i = 0u; i < sourceDepth; i = i + 1u) {
     let source = (*sourceStack)[i];
     if (!mediumBoundaryIsValid(
-      vec2u(source.boundaryKind, source.boundaryIndex),
+      vec3u(
+        source.boundaryKind,
+        source.boundaryIndex,
+        source.boundaryComponent,
+      ),
     )) {
       return result;
     }
@@ -232,7 +197,8 @@ fn traceMediumVisibility(
   if (
     sourceTop.matId != sourceLayer.matId ||
     sourceTop.boundaryKind != sourceLayer.boundaryKind ||
-    sourceTop.boundaryIndex != sourceLayer.boundaryIndex
+    sourceTop.boundaryIndex != sourceLayer.boundaryIndex ||
+    sourceTop.boundaryComponent != sourceLayer.boundaryComponent
   ) {
     return result;
   }
@@ -241,27 +207,30 @@ fn traceMediumVisibility(
   // with the caller's post-flight state.
   stack[sourceDepth - 1u] = sourceLayer;
   var depth = sourceDepth;
-  var rayOrigin = origin;
   var travelled = 0.0;
+  var cursor = ptRayTMin();
+  let shadowRay = Ray(origin, direction);
   let surfaceHitLimit = sceneSurfaceHitLimit();
   var surfaceHitCount = 0u;
 
   loop {
     let remaining = max(maxDistance - travelled, 0.0);
-    if (!(remaining > ptRayTMin())) {
+    if (!(maxDistance > cursor)) {
       result.visible = true;
       return result;
     }
-    let shadowRay = Ray(rayOrigin, direction);
-    let hit = traceClosest(shadowRay, ptRayTMin(), remaining);
-    let segment = select(remaining, hit.dist, hit.didHit);
+    let hit = traceClosest(shadowRay, cursor, maxDistance);
+    let segment = select(remaining, hit.dist - travelled, hit.didHit);
+    if (!(segment >= 0.0)) { return result; }
     if (depth > 0u) {
       let top = depth - 1u;
       let attenDistance = min(segment, stack[top].remainingDistance);
       result.transmittance = result.transmittance *
-        exp(-stack[top].sigmaT * max(attenDistance, 0.0));
-      stack[top].remainingDistance =
-        max(stack[top].remainingDistance - attenDistance, 0.0);
+        materialBeer(stack[top].sigmaT, attenDistance);
+      if (stack[top].remainingDistance <= PT_F32_MAX) {
+        stack[top].remainingDistance =
+          max(stack[top].remainingDistance - attenDistance, 0.0);
+      }
     }
     if (!hit.didHit) {
       result.visible = true;
@@ -279,9 +248,9 @@ fn traceMediumVisibility(
     if (alphaTestPassThrough(
       matId, hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
     )) {
-      let advance = hit.dist + ptRayTMin();
-      rayOrigin = rayOrigin + direction * advance;
-      travelled = travelled + advance;
+      if (!(hit.dist > cursor)) { return result; }
+      cursor = hit.dist;
+      travelled = hit.dist;
       continue;
     }
 
@@ -292,11 +261,33 @@ fn traceMediumVisibility(
       ),
       0.0, 1.0,
     );
-    if (!mat.isTranslucent || transmission <= 0.0) {
+    if (mat.isThinSheet) {
+      if (!ignoreOpaque) {
+        var incidentIor = 1.0;
+        if (depth > 0u) {
+          incidentIor = stack[depth - 1u].ior;
+        }
+        let sheetTransmission = thinSheetExactVisibilityTransmission(
+          hit, direction, heroLambda, incidentIor,
+        );
+        // Rough sheets have two latent interface samples and cannot be
+        // evaluated along an arbitrary NEE segment. Invalid/TIR sheets also
+        // return zero. All three cases are deliberately fail-closed.
+        if (!(max(max(sheetTransmission.x, sheetTransmission.y), sheetTransmission.z) > 0.0)) {
+          return result;
+        }
+        result.transmittance = result.transmittance * sheetTransmission;
+      }
+      if (!(hit.dist > cursor)) { return result; }
+      cursor = hit.dist;
+      travelled = hit.dist;
+      continue;
+    }
+    if (!mat.isBulkMedium || transmission <= 0.0) {
       if (!ignoreOpaque) { return result; }
-      let advance = hit.dist + ptRayTMin();
-      rayOrigin = rayOrigin + direction * advance;
-      travelled = travelled + advance;
+      if (!(hit.dist > cursor)) { return result; }
+      cursor = hit.dist;
+      travelled = hit.dist;
       continue;
     }
 
@@ -332,9 +323,9 @@ fn traceMediumVisibility(
       depth = depth - 1u;
     }
 
-    let advance = hit.dist + ptRayTMin();
-    rayOrigin = rayOrigin + direction * advance;
-    travelled = travelled + advance;
+    if (!(hit.dist > cursor)) { return result; }
+    cursor = hit.dist;
+    travelled = hit.dist;
   }
   return result;
 }

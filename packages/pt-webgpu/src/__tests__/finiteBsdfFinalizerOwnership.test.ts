@@ -32,7 +32,9 @@ describe('finite BSDF finalizer ownership', () => {
     );
     expect(sampler).toContain('let roughTransmissionProposalPdf =');
     expect(sampler).not.toContain('let ft = evaluateRoughDielectricTransmission(');
-    expect(sampler).not.toContain('max(result.sampledEventPdf, 1e-10)');
+    expect(sampler).not.toContain(
+      'roughTransmissionProposalPdf * evaluateRoughDielectricTransmission',
+    );
     expect(sampler).not.toContain('ggxMultiscatterBoost(');
     expect(sampler).not.toContain('ggxMultiscatterBoostRoughness(');
     expect(sampler).not.toContain('result.sampleAllowsAreaMis = true;');
@@ -49,13 +51,13 @@ describe('finite BSDF finalizer ownership', () => {
     );
 
     expect(sampler).toContain(
-      'result.sampledEventPdf = reflectionProbability / lobeWeightSum;',
+      'extensionProbabilities.x * reflectionProbability;',
     );
     expect(sampler).toContain(
       'microfacetInterface.reflectance * sheenAttenuation *',
     );
     expect(sampler).toContain(
-      'result.sampledEventPdf = transmissionProbability / lobeWeightSum;',
+      'extensionProbabilities.x * transmissionProbability;',
     );
     expect(sampler).toContain('baseColor * transmissionWeight *');
     expect(count(sampler, 'result.sampledIsDelta = true;')).toBe(2);

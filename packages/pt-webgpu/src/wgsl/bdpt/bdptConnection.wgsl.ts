@@ -53,11 +53,13 @@ struct BdptMediumLayer {
   matId: u32,
   boundaryKind: u32,
   boundaryIndex: u32,
+  boundaryComponent: u32,
   ior: f32,
   sigmaA: vec3f,
   sigmaT: vec3f,
   sigmaS: vec3f,
   g: f32,
+  initialDistance: f32,
   remainingDistance: f32,
 }
 
@@ -102,11 +104,10 @@ fn bdptMaterialSigmaT(
 }
 
 fn bdptHeroSigmaT(sigmaT: vec3f) -> f32 {
-  return select(
-    max(sigmaT.x, max(sigmaT.y, sigmaT.z)),
-    sigmaT.x,
-    params.spectralEnabled != 0u,
+  let spectral = select(
+    0.0, sigmaT.x, sigmaT.x > 0.0 && sigmaT.x <= PT_F32_MAX,
   );
+  return select(materialFiniteMajorant(sigmaT), spectral, params.spectralEnabled != 0u);
 }
 
 fn bdptSegmentDistanceDensity(
@@ -119,55 +120,75 @@ fn bdptSegmentDistanceDensity(
   if (mediumMatId == BDPT_NO_MEDIUM) { return 1.0; }
   let mat = decodeMaterial(mediumMatId);
   let sigmaT = bdptMaterialSigmaT(mediumMatId, mat, heroLambda);
-  let heroSigmaT = bdptHeroSigmaT(sigmaT);
-  if (heroSigmaT <= 0.0) { return select(1.0, 0.0, destinationIsMedium); }
-
   let effectiveDistance = min(
-    max(distance, 0.0), max(remainingDistance, 0.0),
+    distance, remainingDistance,
   );
-  let survival = exp(-heroSigmaT * effectiveDistance);
-  return select(survival, heroSigmaT * survival, destinationIsMedium);
+  if (!(effectiveDistance >= 0.0)) { return 0.0; }
+  if (params.spectralEnabled != 0u) {
+    let rate = sigmaT.x;
+    return select(
+      materialBeerLane(rate, effectiveDistance),
+      materialExtinctionDensityLane(rate, effectiveDistance),
+      destinationIsMedium,
+    );
+  }
+  return select(
+    materialRgbSurvivalPdf(sigmaT, effectiveDistance),
+    materialRgbCollisionPdf(sigmaT, effectiveDistance),
+    destinationIsMedium,
+  );
 }
 fn bdptMediumLayer(
   matId: u32,
   mat: DecodedMaterial,
   heroLambda: f32,
-  boundary: vec2u,
+  boundary: vec3u,
 ) -> BdptMediumLayer {
   let sigmaS = bdptMaterialSigmaS(mat, heroLambda);
   let sigmaT = bdptMaterialSigmaT(matId, mat, heroLambda);
+  let initialDistance = materialAttenuationDistance(INFINITY, mat);
   return BdptMediumLayer(
     matId,
     boundary.x,
     boundary.y,
+    boundary.z,
     max(mat.ior, 1e-4),
     bdptMaterialSigmaA(matId, mat, heroLambda),
     sigmaT,
     sigmaS,
     clamp(mat.scatteringAnisotropy, -0.999999, 0.999999),
-    materialAttenuationDistance(INFINITY, mat),
+    initialDistance,
+    initialDistance,
   );
 }
 
 fn bdptMediumLayerMatchesBoundary(
   layer: BdptMediumLayer,
   matId: u32,
-  boundary: vec2u,
+  boundary: vec3u,
 ) -> bool {
   return layer.matId == matId &&
-    mediumBoundaryMatches(layer.boundaryKind, layer.boundaryIndex, boundary);
+    mediumBoundaryMatches(
+      layer.boundaryKind,
+      layer.boundaryIndex,
+      layer.boundaryComponent,
+      boundary,
+    );
 }
 
 
 
 struct BdptEndpointMedium {
   matId: u32,
+  initialDistance: f32,
   remainingDistance: f32,
 }
 
 fn bdptNoEndpointMedium() -> BdptEndpointMedium {
   return BdptEndpointMedium(
-    BDPT_NO_MEDIUM, BDPT_UNBOUNDED_MEDIUM_DISTANCE,
+    BDPT_NO_MEDIUM,
+    BDPT_UNBOUNDED_MEDIUM_DISTANCE,
+    BDPT_UNBOUNDED_MEDIUM_DISTANCE,
   );
 }
 
@@ -176,22 +197,31 @@ fn bdptSelectEndpointMedium(
   normal: vec3f,
   direction: vec3f,
   mediumMatId: u32,
+  mediumInitialDistance: f32,
   mediumRemainingDistance: f32,
   incidentMediumMatId: u32,
+  incidentMediumInitialDistance: f32,
   incidentMediumRemainingDistance: f32,
   transmittedMediumMatId: u32,
+  transmittedMediumInitialDistance: f32,
   transmittedMediumRemainingDistance: f32,
 ) -> BdptEndpointMedium {
   if (isMedium) {
-    return BdptEndpointMedium(mediumMatId, mediumRemainingDistance);
+    return BdptEndpointMedium(
+      mediumMatId, mediumInitialDistance, mediumRemainingDistance,
+    );
   }
   if (dot(normal, direction) >= 0.0) {
     return BdptEndpointMedium(
-      incidentMediumMatId, incidentMediumRemainingDistance,
+      incidentMediumMatId,
+      incidentMediumInitialDistance,
+      incidentMediumRemainingDistance,
     );
   }
   return BdptEndpointMedium(
-    transmittedMediumMatId, transmittedMediumRemainingDistance,
+    transmittedMediumMatId,
+    transmittedMediumInitialDistance,
+    transmittedMediumRemainingDistance,
   );
 }
 
@@ -200,10 +230,51 @@ fn bdptSharedEdgeMedium(
   b: BdptEndpointMedium,
 ) -> BdptEndpointMedium {
   if (a.matId != b.matId) {
-    return BdptEndpointMedium(BDPT_NO_MEDIUM, -1.0);
+    return BdptEndpointMedium(BDPT_NO_MEDIUM, -1.0, -1.0);
   }
+  if (a.matId == BDPT_NO_MEDIUM) {
+    return bdptNoEndpointMedium();
+  }
+  if (
+    !(a.initialDistance >= 0.0) || !(b.initialDistance >= 0.0) ||
+    !(a.remainingDistance >= 0.0) || !(b.remainingDistance >= 0.0) ||
+    a.initialDistance > BDPT_UNBOUNDED_MEDIUM_DISTANCE ||
+    b.initialDistance > BDPT_UNBOUNDED_MEDIUM_DISTANCE ||
+    a.remainingDistance > BDPT_UNBOUNDED_MEDIUM_DISTANCE ||
+    b.remainingDistance > BDPT_UNBOUNDED_MEDIUM_DISTANCE
+  ) {
+    return BdptEndpointMedium(BDPT_NO_MEDIUM, -1.0, -1.0);
+  }
+  let aUnbounded = a.initialDistance == BDPT_UNBOUNDED_MEDIUM_DISTANCE;
+  let bUnbounded = b.initialDistance == BDPT_UNBOUNDED_MEDIUM_DISTANCE;
+  if (aUnbounded || bUnbounded) {
+    if (!(aUnbounded && bUnbounded)) {
+      return BdptEndpointMedium(BDPT_NO_MEDIUM, -1.0, -1.0);
+    }
+    return BdptEndpointMedium(
+      a.matId,
+      BDPT_UNBOUNDED_MEDIUM_DISTANCE,
+      BDPT_UNBOUNDED_MEDIUM_DISTANCE,
+    );
+  }
+  // A mapped thickness cap is directional entry data. Two halves can form one
+  // represented path only when they carry the exact same original cap; an
+  // unequal pair has no single finite-distance measure and is rejected.
+  if (a.initialDistance != b.initialDistance) {
+    return BdptEndpointMedium(BDPT_NO_MEDIUM, -1.0, -1.0);
+  }
+  if (
+    a.remainingDistance > a.initialDistance ||
+    b.remainingDistance > b.initialDistance
+  ) {
+    return BdptEndpointMedium(BDPT_NO_MEDIUM, -1.0, -1.0);
+  }
+  let jointRemaining = max(
+    a.remainingDistance + b.remainingDistance - a.initialDistance,
+    0.0,
+  );
   return BdptEndpointMedium(
-    a.matId, min(a.remainingDistance, b.remainingDistance),
+    a.matId, a.initialDistance, jointRemaining,
   );
 }
 
@@ -236,10 +307,13 @@ struct BdptEyeVtx {
   pdfFwd: f32,
   pdfRev: f32,
   spec: bool,
+  mediumInitialDistance: f32,
   mediumRemainingDistance: f32,
   incidentMediumMatId: u32,
+  incidentMediumInitialDistance: f32,
   incidentMediumRemainingDistance: f32,
   transmittedMediumMatId: u32,
+  transmittedMediumInitialDistance: f32,
   transmittedMediumRemainingDistance: f32,
   medium: bool,
   mediumG: f32,
@@ -259,10 +333,13 @@ fn bdptEyeStackStore(
   medium: bool,
   mediumG: f32,
   mediumMatId: u32,
+  mediumInitialDistance: f32,
   mediumRemainingDistance: f32,
   incidentMediumMatId: u32,
+  incidentMediumInitialDistance: f32,
   incidentMediumRemainingDistance: f32,
   transmittedMediumMatId: u32,
+  transmittedMediumInitialDistance: f32,
   transmittedMediumRemainingDistance: f32,
 ) {
   if (d >= min(params.bdptMaxEyeDepth, BDPT_MAX_EYE_DEPTH)) { return; }
@@ -275,10 +352,13 @@ fn bdptEyeStackStore(
   v.medium = medium;
   v.mediumG = mediumG;
   v.mediumMatId = mediumMatId;
+  v.mediumInitialDistance = mediumInitialDistance;
   v.mediumRemainingDistance = mediumRemainingDistance;
   v.incidentMediumMatId = incidentMediumMatId;
+  v.incidentMediumInitialDistance = incidentMediumInitialDistance;
   v.incidentMediumRemainingDistance = incidentMediumRemainingDistance;
   v.transmittedMediumMatId = transmittedMediumMatId;
+  v.transmittedMediumInitialDistance = transmittedMediumInitialDistance;
   v.transmittedMediumRemainingDistance = transmittedMediumRemainingDistance;
   bdptEyeStackPrivate[d] = v;
 }
@@ -665,33 +745,34 @@ fn bdptTransmissiveConnectionPdf(
     iridescenceThicknessMin, iridescenceThicknessMax,
     specularColor, specularIntensity, evalThinFilm,
   );
-  let lobeWeightSum = brdfExtensionLobeWeightSum(clearcoat, sheen);
+  let extensionProbabilities = brdfRepresentedExtensionLobeProbabilities(
+    clearcoat, sheen,
+  );
   if (nDotL < -1e-5) {
-    return (
+    return extensionProbabilities.x * (
       eventProbabilities.z *
       bsdfRoughTransmissionPdf(
         roughness, evalEta, evalNormal, wo, wi,
         anisotropy, anisotropyRotation,
       )
-    ) / lobeWeightSum;
+    );
   }
   if (nDotL <= 1e-5) { return 0.0; }
 
   let pdfSpec = bsdfSpecularReflectionPdf(
     roughness, evalNormal, wo, wi, anisotropy, anisotropyRotation,
   );
-  let clearcoatDensity =
-    max(clearcoat, 0.0) * clearcoatPdf(
-      clearcoat, clearcoatRoughness, evalClearcoatNormal, wo, wi,
-    );
-  let sheenDensity =
-    max(sheen, 0.0) * charlieSheenPdf(
-      sheen, sheenRoughness, evalNormal, wo, wi,
-    );
-  return (
-    eventProbabilities.x * pdfSpec + eventProbabilities.y * nDotL * INV_PI +
-      clearcoatDensity + sheenDensity
-  ) / lobeWeightSum;
+  let baseDensity = eventProbabilities.x * pdfSpec +
+    eventProbabilities.y * nDotL * INV_PI;
+  let clearcoatDensity = clearcoatPdf(
+    clearcoat, clearcoatRoughness, evalClearcoatNormal, wo, wi,
+  );
+  let sheenDensity = charlieSheenPdf(
+    sheen, sheenRoughness, evalNormal, wo, wi,
+  );
+  return extensionProbabilities.x * baseDensity +
+    extensionProbabilities.y * clearcoatDensity +
+    extensionProbabilities.z * sheenDensity;
 }
 
 // Marginal directional density of the complete sampled BSDF mixture. BDPT
@@ -1090,6 +1171,7 @@ fn evaluateBdptConnection(
   let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];
   let lv5 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 5u)];
   let lv6 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 6u)];
+  let lv7 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 7u)];
   let lvMatId = lv3.w;
   // Infinite endpoints are launch constructs on a scene-bounding disk, not
   // finite points that an eye vertex may connect to. Ordinary directional/env
@@ -1105,10 +1187,13 @@ fn evaluateBdptConnection(
   let lightIsMedium = lvMatId == BDPT_LV_MEDIUM_MATID;
   let lightMediumG = select(0.0, lv5.y, lightIsMedium);
   let lightMediumMatId = bitcast<u32>(lv5.w);
+  let lightMediumInitialDistance = lv7.x;
   let lightMediumRemainingDistance = lv6.y;
   let lightIncidentMediumMatId = bitcast<u32>(lv6.x);
+  let lightIncidentMediumInitialDistance = lv7.x;
   let lightIncidentMediumRemainingDistance = lv6.y;
   let lightTransmittedMediumMatId = bitcast<u32>(lv6.z);
+  let lightTransmittedMediumInitialDistance = lv7.y;
   let lightTransmittedMediumRemainingDistance = lv6.w;
   let eyeRecord = bdptEyeStackLoad(eyeDepth);
   let isSpotEndpoint = lightVtxIdx == 0 && lvMatId == BDPT_LV_SPOT_EMITTER_MATID;
@@ -1126,18 +1211,29 @@ fn evaluateBdptConnection(
     lightPos, lightNormal, lightIsMedium,
   );
   var connectionTransmittance = vec3f(1.0);
+  var connectionIor = 1.0;
   let eyeConnectionMedium = bdptSelectEndpointMedium(
     eyeIsMedium, eyeNormal, connDir,
-    eyeMediumMatId, eyeRecord.mediumRemainingDistance,
-    eyeRecord.incidentMediumMatId, eyeRecord.incidentMediumRemainingDistance,
+    eyeMediumMatId,
+    eyeRecord.mediumInitialDistance,
+    eyeRecord.mediumRemainingDistance,
+    eyeRecord.incidentMediumMatId,
+    eyeRecord.incidentMediumInitialDistance,
+    eyeRecord.incidentMediumRemainingDistance,
     eyeRecord.transmittedMediumMatId,
+    eyeRecord.transmittedMediumInitialDistance,
     eyeRecord.transmittedMediumRemainingDistance,
   );
   let lightConnectionMedium = bdptSelectEndpointMedium(
     lightIsMedium, lightNormal, -connDir,
-    lightMediumMatId, lightMediumRemainingDistance,
-    lightIncidentMediumMatId, lightIncidentMediumRemainingDistance,
+    lightMediumMatId,
+    lightMediumInitialDistance,
+    lightMediumRemainingDistance,
+    lightIncidentMediumMatId,
+    lightIncidentMediumInitialDistance,
+    lightIncidentMediumRemainingDistance,
     lightTransmittedMediumMatId,
+    lightTransmittedMediumInitialDistance,
     lightTransmittedMediumRemainingDistance,
   );
   let connectionMedium = bdptSharedEdgeMedium(
@@ -1148,14 +1244,26 @@ fn evaluateBdptConnection(
   }
   if (connectionMedium.matId != BDPT_NO_MEDIUM) {
     let connectionMaterial = decodeMaterial(connectionMedium.matId);
+    connectionIor = max(connectionMaterial.ior, 1e-4);
+    if (
+      params.spectralEnabled != 0u &&
+      connectionMaterial.dispersionAbbe > 0.0
+    ) {
+      connectionIor = cauchyIorAtLambda(
+        bdptInvocationHeroLambdaNm,
+        connectionMaterial.ior,
+        connectionMaterial.dispersionAbbe,
+      );
+    }
     let connectionSigmaT = bdptMaterialSigmaT(
       connectionMedium.matId, connectionMaterial, bdptInvocationHeroLambdaNm,
     );
     let connectionDistance = min(
       dist, max(connectionMedium.remainingDistance, 0.0),
     );
-    connectionTransmittance =
-      exp(-connectionSigmaT * connectionDistance);
+    connectionTransmittance = materialBeer(
+      connectionSigmaT, connectionDistance,
+    );
   }
   if (isPointEndpoint) {
     gTerm = cosEye * pointSpotDistanceAttenuation(dist, lv4.y, lv4.z);
@@ -1179,10 +1287,20 @@ fn evaluateBdptConnection(
     eyePos + connDir * ptRayOriginBias(),
     connDir,
   );
-  if (!lightEmitterCastShadowDisabled && traceAny(
-    shadowRay, ptRayTMin(), ptFiniteSegmentTMax(dist), rng,
-  )) {
-    return vec3f(0.0);
+  if (!lightEmitterCastShadowDisabled) {
+    let visibility = traceSurfaceVisibility(
+      shadowRay,
+      ptRayTMin(),
+      ptFiniteSegmentTMax(dist),
+      bdptInvocationHeroLambdaNm,
+      connectionIor,
+      rng,
+    );
+    if (!visibility.visible) {
+      return vec3f(0.0);
+    }
+    connectionTransmittance = connectionTransmittance *
+      visibility.transmittance;
   }
   var eyeBrdf = vec3f(
     hgPhase(dot(-eyeWo, connDir), eyeMediumG),
@@ -1409,18 +1527,26 @@ fn evaluateBdptConnection(
     let prevEyeForDensity = bdptEyeStackLoad(e - 1u);
     let currentEyePrefixMedium = bdptSelectEndpointMedium(
       eyeIsMedium, eyeNormal, eeToPrev,
-      eyeMediumMatId, eyeRecord.mediumRemainingDistance,
-      eyeRecord.incidentMediumMatId, eyeRecord.incidentMediumRemainingDistance,
+      eyeMediumMatId,
+      eyeRecord.mediumInitialDistance,
+      eyeRecord.mediumRemainingDistance,
+      eyeRecord.incidentMediumMatId,
+      eyeRecord.incidentMediumInitialDistance,
+      eyeRecord.incidentMediumRemainingDistance,
       eyeRecord.transmittedMediumMatId,
+      eyeRecord.transmittedMediumInitialDistance,
       eyeRecord.transmittedMediumRemainingDistance,
     );
     let previousEyePrefixMedium = bdptSelectEndpointMedium(
       prevEyeForDensity.medium, prevEyeForDensity.nrm, -eeToPrev,
       prevEyeForDensity.mediumMatId,
+      prevEyeForDensity.mediumInitialDistance,
       prevEyeForDensity.mediumRemainingDistance,
       prevEyeForDensity.incidentMediumMatId,
+      prevEyeForDensity.incidentMediumInitialDistance,
       prevEyeForDensity.incidentMediumRemainingDistance,
       prevEyeForDensity.transmittedMediumMatId,
+      prevEyeForDensity.transmittedMediumInitialDistance,
       prevEyeForDensity.transmittedMediumRemainingDistance,
     );
     fwdEeMinus = fwdEeMinus * bdptEndpointEdgeDistanceDensity(
@@ -1481,19 +1607,25 @@ fn evaluateBdptConnection(
     let lcm1 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 1u)];
     let lcm5 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 5u)];
     let lcm6 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 6u)];
+    let lcm7 = bdptLightPath[bdptLightPathIndex(i32(c - 1u), 7u)];
     let previousLightIsMedium = lcm3.w == BDPT_LV_MEDIUM_MATID;
     let currentLightPrefixMedium = bdptSelectEndpointMedium(
       lightIsMedium, lightNormal, lcToLcMinus,
-      lightMediumMatId, lightMediumRemainingDistance,
-      lightIncidentMediumMatId, lightIncidentMediumRemainingDistance,
+      lightMediumMatId,
+      lightMediumInitialDistance,
+      lightMediumRemainingDistance,
+      lightIncidentMediumMatId,
+      lightIncidentMediumInitialDistance,
+      lightIncidentMediumRemainingDistance,
       lightTransmittedMediumMatId,
+      lightTransmittedMediumInitialDistance,
       lightTransmittedMediumRemainingDistance,
     );
     let previousLightPrefixMedium = bdptSelectEndpointMedium(
       previousLightIsMedium, lcm1.xyz, -lcToLcMinus,
-      bitcast<u32>(lcm5.w), lcm6.y,
-      bitcast<u32>(lcm6.x), lcm6.y,
-      bitcast<u32>(lcm6.z), lcm6.w,
+      bitcast<u32>(lcm5.w), lcm7.x, lcm6.y,
+      bitcast<u32>(lcm6.x), lcm7.x, lcm6.y,
+      bitcast<u32>(lcm6.z), lcm7.y, lcm6.w,
     );
     revLcMinus = revLcMinus * bdptEndpointEdgeDistanceDensity(
       currentLightPrefixMedium, previousLightPrefixMedium,

@@ -36,11 +36,11 @@ function positiveU32Attempts(value: number, domainIndex: number): number {
   return value;
 }
 
-/** log2(M * pHat / J), without forming an overflow-prone quotient/product. */
+/** log2(M * pHat / J), accepting the two density terms in exact log2 form. */
 export function logWeightedTransformedDensity(
   attempts: number,
-  pHat: number,
-  jacobian: number,
+  logPHat: number,
+  logDomainToCanonicalJacobian: number,
   inverseValid = true,
 ): number {
   if (
@@ -48,14 +48,12 @@ export function logWeightedTransformedDensity(
     !Number.isInteger(attempts) ||
     attempts <= 0 ||
     attempts > MAX_U32 ||
-    !(pHat > 0) ||
-    !Number.isFinite(pHat) ||
-    !(jacobian > 0) ||
-    !Number.isFinite(jacobian)
+    !Number.isFinite(logPHat) ||
+    !Number.isFinite(logDomainToCanonicalJacobian)
   ) {
     return Number.NEGATIVE_INFINITY;
   }
-  return Math.log2(attempts) + Math.log2(pHat) - Math.log2(jacobian);
+  return Math.log2(attempts) + logPHat - logDomainToCanonicalJacobian;
 }
 
 function sub(a: Vec3, b: Vec3): Vec3 {
@@ -101,14 +99,16 @@ export interface GrisSample {
   readonly Lo: Vec3;
   /** Technique that originally produced this sample. */
   readonly nativeDomainIndex: number;
-  /** Stored native pHat, including native visibility, when available. */
-  readonly nativePHat?: number;
+  /** Stored exact log2 native pHat, including native visibility, when available. */
+  readonly nativeLogPHat?: number;
 }
 
 export interface GrisTechniqueMatrix {
   readonly pHats: readonly number[];
+  readonly logPHats: readonly number[];
   readonly jacobians: readonly number[];
   readonly transformedDensities: readonly number[];
+  readonly logTransformedDensities: readonly number[];
   /** Max-log-normalized masses in [0,1], preserving all representable ratios. */
   readonly numerators: readonly number[];
   /** Sum of the normalized numerators (at most MAX_GRIS_TECHNIQUES). */
@@ -130,6 +130,24 @@ export function reconnectionGeometryTerm(x1: Vec3, x2: Vec3, n2: Vec3): number {
   return Number.isFinite(result) && result > 0 ? result : 0;
 }
 
+/**
+ * A stored suffix normal is face-forwarded toward its native receiver. Moving
+ * the receiver across that geometric plane changes the represented material
+ * side, so the bounded reservoir has no valid inverse shift there.
+ */
+export function surfaceSuffixReceiverSupported(
+  receiverXv: Vec3,
+  xs: Vec3,
+  ns: Vec3,
+): boolean {
+  if (!finiteVec3(receiverXv) || !finiteVec3(xs) || !finiteVec3(ns)) return false;
+  const towardReceiver = normalized(sub(receiverXv, xs));
+  const suffixNormal = normalized(ns);
+  return towardReceiver !== undefined
+    && suffixNormal !== undefined
+    && dot(suffixNormal, towardReceiver) > 0;
+}
+
 /** |dT_domain->canonical|. Environment directions map identically. */
 export function domainToCanonicalJacobian(
   domainXv: Vec3,
@@ -138,6 +156,10 @@ export function domainToCanonicalJacobian(
 ): number {
   if (sample.kind === 'environment') return 1;
   if (sample.xs === undefined || sample.ns === undefined) return 0;
+  if (!surfaceSuffixReceiverSupported(domainXv, sample.xs, sample.ns)
+      || !surfaceSuffixReceiverSupported(canonicalXv, sample.xs, sample.ns)) {
+    return 0;
+  }
   const domainGeometry = reconnectionGeometryTerm(domainXv, sample.xs, sample.ns);
   const canonicalGeometry = reconnectionGeometryTerm(canonicalXv, sample.xs, sample.ns);
   if (!(domainGeometry > 0) || !(canonicalGeometry > 0)) return 0;
@@ -211,8 +233,12 @@ export function evaluateTechniqueMatrix(
 
   const canonical = domains[canonicalDomainIndex]!;
   const pHats = new Array<number>(domains.length).fill(0);
+  const logPHats = new Array<number>(domains.length).fill(Number.NEGATIVE_INFINITY);
   const jacobians = new Array<number>(domains.length).fill(0);
   const densities = new Array<number>(domains.length).fill(0);
+  const logDensities = new Array<number>(domains.length).fill(
+    Number.NEGATIVE_INFINITY,
+  );
   const logNumerators = new Array<number>(domains.length).fill(
     Number.NEGATIVE_INFINITY,
   );
@@ -224,23 +250,38 @@ export function evaluateTechniqueMatrix(
     const inverseValid = domain.inverseValid !== false
       && Number.isFinite(visibility)
       && visibility > 0;
-    let pHat = index === sample.nativeDomainIndex && sample.nativePHat !== undefined
-      ? sample.nativePHat
-      : proxyPHatAt(domain, sample);
-    if (!inverseValid || !Number.isFinite(pHat) || !(pHat > 0)) pHat = 0;
+    const evaluatedPHat = proxyPHatAt(domain, sample);
+    let logPHat = index === sample.nativeDomainIndex
+        && sample.nativeLogPHat !== undefined
+      ? sample.nativeLogPHat
+      : evaluatedPHat > 0 && Number.isFinite(evaluatedPHat)
+        ? Math.log2(evaluatedPHat)
+        : Number.NEGATIVE_INFINITY;
+    if (!inverseValid || !Number.isFinite(logPHat)) {
+      logPHat = Number.NEGATIVE_INFINITY;
+    }
 
     const jacobian = domainToCanonicalJacobian(domain.xv, canonical.xv, sample);
-    const density = transformedDensity(pHat, jacobian, inverseValid);
+    const logJacobian = jacobian > 0 && Number.isFinite(jacobian)
+      ? Math.log2(jacobian)
+      : Number.NEGATIVE_INFINITY;
+    const logDensity = Number.isFinite(logPHat) && Number.isFinite(logJacobian)
+      ? logPHat - logJacobian
+      : Number.NEGATIVE_INFINITY;
+    const pHat = Number.isFinite(logPHat) ? 2 ** logPHat : 0;
+    const density = Number.isFinite(logDensity) ? 2 ** logDensity : 0;
     const logNumerator = logWeightedTransformedDensity(
       attempts,
-      pHat,
-      jacobian,
+      logPHat,
+      logJacobian,
       inverseValid,
     );
 
     pHats[index] = pHat;
+    logPHats[index] = logPHat;
     jacobians[index] = jacobian;
     densities[index] = density;
+    logDensities[index] = logDensity;
     logNumerators[index] = logNumerator;
   }
 
@@ -257,8 +298,10 @@ export function evaluateTechniqueMatrix(
 
   return {
     pHats,
+    logPHats,
     jacobians,
     transformedDensities: densities,
+    logTransformedDensities: logDensities,
     numerators,
     denominator,
     logNumerators,
@@ -269,6 +312,30 @@ export function evaluateTechniqueMatrix(
 
 /** Log-domain form used to batch-normalize canonical WRS contributions. */
 export function logCanonicalResamplingWeight(
+  logMisWeight: number,
+  logCanonicalPHat: number,
+  sourceH: number,
+  sourceNativeLogPHat: number,
+  logSourceToCanonicalJacobian: number,
+): number {
+  if (!Number.isFinite(logMisWeight)
+      || !Number.isFinite(logCanonicalPHat)
+      || !Number.isFinite(sourceH)
+      || !Number.isFinite(sourceNativeLogPHat)
+      || !Number.isFinite(logSourceToCanonicalJacobian)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const sourceLogW = sourceH - sourceNativeLogPHat;
+  if (!Number.isFinite(sourceLogW)) return Number.NEGATIVE_INFINITY;
+  const result = logMisWeight
+    + logCanonicalPHat
+    + sourceLogW
+    + logSourceToCanonicalJacobian;
+  return Number.isFinite(result) ? result : Number.NEGATIVE_INFINITY;
+}
+
+/** Canonical resampling weight accumulated for one source reservoir sample. */
+export function canonicalResamplingWeight(
   misWeight: number,
   canonicalPHat: number,
   sourceReservoirW: number,
@@ -282,26 +349,14 @@ export function logCanonicalResamplingWeight(
       || !Number.isFinite(sourceReservoirW)
       || !(sourceToCanonicalJacobian > 0)
       || !Number.isFinite(sourceToCanonicalJacobian)) {
-    return Number.NEGATIVE_INFINITY;
+    return 0;
   }
-  return Math.log2(misWeight)
-    + Math.log2(canonicalPHat)
-    + Math.log2(sourceReservoirW)
-    + Math.log2(sourceToCanonicalJacobian);
-}
-
-/** Canonical resampling weight accumulated for one source reservoir sample. */
-export function canonicalResamplingWeight(
-  misWeight: number,
-  canonicalPHat: number,
-  sourceReservoirW: number,
-  sourceToCanonicalJacobian: number,
-): number {
   const logWeight = logCanonicalResamplingWeight(
-    misWeight,
-    canonicalPHat,
-    sourceReservoirW,
-    sourceToCanonicalJacobian,
+    Math.log2(misWeight),
+    Math.log2(canonicalPHat),
+    Math.log2(sourceReservoirW),
+    0,
+    Math.log2(sourceToCanonicalJacobian),
   );
   if (!Number.isFinite(logWeight)) return 0;
   if (logWeight >= LOG_MAX_FINITE_F32) return MAX_FINITE_F32;
@@ -339,29 +394,28 @@ export function normaliseCanonicalResamplingWeights(
 
 /**
  * Recover the unscaled reservoir weight after common-max-log WRS selection.
- * This mirrors `grisFinaliseLogScaledReservoir`: selection ratios are left
- * untouched and the configured production cap is applied only to the final
- * estimator multiplier.
+ * This mirrors persisting H from a common-max-log WRS batch and then deriving
+ * logW as H - nativeLogPHat. Selection ratios are untouched and the configured
+ * production cap is applied only to the final estimator multiplier.
  */
 export function finaliseLogScaledReservoirWeight(
   maxLogWeight: number,
   scaledWeightSum: number,
-  selectedPHat: number,
+  selectedLogPHat: number,
   weightCap: number,
 ): number {
   if (
     !Number.isFinite(maxLogWeight)
     || !(scaledWeightSum > 0)
     || !Number.isFinite(scaledWeightSum)
-    || !(selectedPHat > 0)
-    || !Number.isFinite(selectedPHat)
+    || !Number.isFinite(selectedLogPHat)
     || !(weightCap > 0)
     || !Number.isFinite(weightCap)
   ) {
     return 0;
   }
   const logWeight =
-    maxLogWeight + Math.log2(scaledWeightSum) - Math.log2(selectedPHat);
+    maxLogWeight + Math.log2(scaledWeightSum) - selectedLogPHat;
   if (!Number.isFinite(logWeight)) return 0;
   if (logWeight >= Math.log2(weightCap)) return weightCap;
   const weight = 2 ** logWeight;

@@ -12,6 +12,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Window } from 'happy-dom';
+import { asBackendTexture } from '@vitrum/core';
 import type { Engine, FrameInput, FrameOutput } from '@vitrum/core';
 import type { EngineWithBackendId } from '../src/createEngine.js';
 import {
@@ -294,7 +295,7 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     handle.dispose();
   });
 
-  it('forwards previous view/projection matrices starting on the second RAF tick', async () => {
+  it('advances previous matrices and frameIndex only after a rendered output', async () => {
     const scheduledFrames: FrameRequestCallback[] = [];
     (globalThis as Record<string, unknown>).requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
       scheduledFrames.push(cb);
@@ -321,7 +322,19 @@ describe('attachVitrum with happy-dom + mock engine', () => {
       emitters: [],
       environment: { kind: 'none' as const },
     };
-    const engine = Object.assign(makeMockEngine(), { backendId: 'pt-webgl2' as const }) as
+    let outputIndex = 0;
+    const engine = Object.assign(makeMockEngine(() => {
+      outputIndex += 1;
+      if (outputIndex === 1) {
+        return { kind: 'skipped', samplesAccumulated: 0, isConverged: false };
+      }
+      return {
+        kind: 'rendered',
+        primaryRadiance: asBackendTexture<'pt-webgl2', object>({}),
+        samplesAccumulated: outputIndex - 1,
+        isConverged: false,
+      };
+    }), { backendId: 'pt-webgl2' as const }) as
       EngineWithBackendId & { readonly _renders: FrameInput[] };
 
     const handle = await attachVitrum({
@@ -336,12 +349,20 @@ describe('attachVitrum with happy-dom + mock engine', () => {
 
     scheduledFrames.shift()?.(1000);
     scheduledFrames.shift()?.(1016);
+    scheduledFrames.shift()?.(1032);
 
-    expect(engine._renders).toHaveLength(2);
+    expect(engine._renders).toHaveLength(3);
     expect(engine._renders[0]?.prevViewMatrix).toBeUndefined();
     expect(engine._renders[0]?.prevProjMatrix).toBeUndefined();
-    expect(engine._renders[1]?.prevViewMatrix).toBe(engine._renders[0]?.viewMatrix);
-    expect(engine._renders[1]?.prevProjMatrix).toBe(engine._renders[0]?.projMatrix);
+    expect(engine._renders[0]?.frameIndex).toBe(0);
+    // The first output was skipped, so it cannot become a reprojection source.
+    expect(engine._renders[1]?.prevViewMatrix).toBeUndefined();
+    expect(engine._renders[1]?.prevProjMatrix).toBeUndefined();
+    expect(engine._renders[1]?.frameIndex).toBe(0);
+    // The second output rendered and is now the sole committed predecessor.
+    expect(engine._renders[2]?.prevViewMatrix).toBe(engine._renders[1]?.viewMatrix);
+    expect(engine._renders[2]?.prevProjMatrix).toBe(engine._renders[1]?.projMatrix);
+    expect(engine._renders[2]?.frameIndex).toBe(1);
 
     handle.dispose();
   });

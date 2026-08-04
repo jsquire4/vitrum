@@ -22,6 +22,8 @@ export interface ProbeUpdateBvhGpuBuffers {
   tlasBlasRootsBuf: GPUBuffer;
   tlasW2lBuf: GPUBuffer;
   tlasL2wBuf: GPUBuffer;
+  opticalTriangleIdentityBuf: GPUBuffer;
+  opticalInstanceBoundaryIdBasePlusOneBuf: GPUBuffer;
 }
 
 type ProbeBvhBufferKey = keyof ProbeUpdateBvhGpuBuffers;
@@ -101,7 +103,7 @@ function rebuildProbeBvhBuffers(
     throw error;
   }
 
-  // All writes have succeeded; publish the ten-buffer cohort without a
+  // All writes have succeeded; publish the complete buffer cohort without a
   // fallible operation between fields, then retire the old cohort.
   for (const [key] of entries) g[key] = candidates.get(key)!;
   destroyBuffersBestEffort(previousSet, candidateSet);
@@ -258,6 +260,12 @@ export function rebuildProbeBvhFromRestir(
     ['tlasBlasRootsBuf', tlas?.blasRoots ?? empty, STORAGE_PLACEHOLDER_BYTES],
     ['tlasW2lBuf', tlas?.worldToLocal ?? empty, STORAGE_PLACEHOLDER_BYTES],
     ['tlasL2wBuf', tlas?.localToWorld ?? empty, STORAGE_PLACEHOLDER_BYTES],
+    ['opticalTriangleIdentityBuf', snap.opticalTriangleIdentity, STORAGE_PLACEHOLDER_BYTES],
+    [
+      'opticalInstanceBoundaryIdBasePlusOneBuf',
+      snap.opticalInstanceBoundaryIdBasePlusOne,
+      STORAGE_PLACEHOLDER_BYTES,
+    ],
   ]);
 }
 
@@ -289,5 +297,11 @@ export function rebuildProbeBvhFromScene(
     ['tlasBlasRootsBuf', empty, STORAGE_PLACEHOLDER_BYTES],
     ['tlasW2lBuf', empty, STORAGE_PLACEHOLDER_BYTES],
     ['tlasL2wBuf', empty, STORAGE_PLACEHOLDER_BYTES],
+    ['opticalTriangleIdentityBuf', buffers.opticalTriangleIdentity, STORAGE_PLACEHOLDER_BYTES],
+    [
+      'opticalInstanceBoundaryIdBasePlusOneBuf',
+      buffers.opticalInstanceBoundaryIdBasePlusOne,
+      STORAGE_PLACEHOLDER_BYTES,
+    ],
   ]);
 }

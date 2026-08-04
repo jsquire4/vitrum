@@ -211,9 +211,26 @@ interface ProgramGraph {
   prepareStage: number;
 }
 
-/** Compiler/relink identity. Scene light presence is deliberately absent:
+/** Compiler/relink identity. Scene light presence and topology size are deliberately absent:
  * analytic, mesh-area, and environment paths are runtime-count/texture branches
- * in the same GLSL and do not alter either composed source or preamble defines. */
+ * in the same GLSL and do not alter either composed source or preamble defines.
+ * Optical-medium containment is likewise bounded by a validated runtime uint. */
+const MAX_CONTAINMENT_TRIANGLE_COUNT = 0xffff_fffe;
+
+/** Validate and return the exact query count for any finite containment segment. */
+export function containmentWalkQueryLimit(sceneTriangleCount: number): number {
+  if (
+    !Number.isSafeInteger(sceneTriangleCount) ||
+    sceneTriangleCount < 0 ||
+    sceneTriangleCount > MAX_CONTAINMENT_TRIANGLE_COUNT
+  ) {
+    throw new RangeError(
+      `pt-webgl2: containment triangle count must be an integer in [0, ${MAX_CONTAINMENT_TRIANGLE_COUNT}], got ${sceneTriangleCount}`,
+    );
+  }
+  return sceneTriangleCount + 1;
+}
+
 export function programGraphKey(features: TraceFeatures): string {
   return [
     features.bdpt ? 1 : 0,
@@ -858,6 +875,11 @@ export class GlResources {
     // H1 FIX: lights.count must be set as uint (setUint) — without it the analytic-light
     // system is inert (count defaults to 0u, NEE gate and forward light loop both see 0).
     prog.setUint('lights.count', scene.lightCount);
+    // Validate before converting to a WebGL uint. The shader performs exactly
+    // triangleCount + 1 runtime-bounded queries, and UINT_MAX is rejected so
+    // that addition cannot wrap.
+    containmentWalkQueryLimit(scene.triangleCount);
+    prog.setUint('uSceneTriangleCount', scene.triangleCount);
     // B4: mesh-area NEE scalars (count==0 → inert branch, byte-identical to no-mesh-light).
     prog.setUint('uMeshLightCount', scene.meshLightCount);
     prog.setFloat('uTotalEmissivePower', scene.totalEmissivePower);

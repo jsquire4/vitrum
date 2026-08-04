@@ -69,6 +69,7 @@ function makeStubDevice() {
       maxStorageBuffersPerShaderStage: 64,
       maxStorageTexturesPerShaderStage: 8,
       maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
       maxBufferSize: 256 * 1024 * 1024,
       maxStorageBufferBindingSize: 128 * 1024 * 1024,
     },
@@ -206,9 +207,10 @@ describe('pt-webgpu incremental environment updates', () => {
     expect(createdLabels).toEqual([
       'vitrum.pt-webgpu.scene.environmentMapTexels',
       'vitrum.pt-webgpu.scene.environmentMapCdf',
+      'vitrum.pt-webgpu.scene.directionalLights',
       'vitrum.pt-webgpu.scene.lightTree',
     ]);
-    expect(writeBuffer.mock.calls.length - writesBefore).toBe(3);
+    expect(writeBuffer.mock.calls.length - writesBefore).toBe(4);
     expect(createdLabels.some((label) =>
       /positions|normals|indices|bvh|tlas|materials/i.test(label),
     )).toBe(false);
@@ -219,6 +221,7 @@ describe('pt-webgpu incremental environment updates', () => {
     expect(destroyedOldLabels).toEqual([
       'vitrum.pt-webgpu.scene.environmentMapTexels',
       'vitrum.pt-webgpu.scene.environmentMapCdf',
+      'vitrum.pt-webgpu.scene.directionalLights',
       'vitrum.pt-webgpu.scene.lightTree',
     ]);
   });

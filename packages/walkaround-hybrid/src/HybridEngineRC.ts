@@ -48,8 +48,8 @@ import { refitBvhBounds } from '@vitrum/shared-bvh';
 import type { SceneBVHBuffers } from './restir/bvhCore.js';
 import { packBVHIndexWFromCore } from './restir/packingHelpers.js';
 import {
-  makeRestirBvhSnapshot,
-  isRestirTlasOnlyRefit,
+  refreshRestirBvhSnapshot,
+  isRestirTlasOnlySnapshotChange,
   type RestirBvhSnapshot,
 } from './restir/restirBvhSnapshot.js';
 import type { PipelineSubsystem } from './pipeline/PipelineSubsystem.js';
@@ -85,6 +85,8 @@ interface RCBVHBuffers {
   readonly bvhNormalsBuf?:    GPUBuffer;
   readonly materialsBuf:     GPUBuffer;
   readonly triMaterialIdBuf: GPUBuffer;
+  readonly opticalTriangleIdentityBuf: GPUBuffer;
+  readonly opticalInstanceBoundaryIdBasePlusOneBuf: GPUBuffer;
   readonly tlasNodesBuf?:     GPUBuffer;
   readonly tlasInstanceIndicesBuf?: GPUBuffer;
   readonly tlasBlasRootsBuf?: GPUBuffer;
@@ -111,6 +113,7 @@ function rcReplacementCleanups(
     owned = [buffers.bvhPositionsBuf, buffers.bvhNodesBuf];
   } else if (kind === 'tlas-refit') {
     owned = [
+      buffers.opticalInstanceBoundaryIdBasePlusOneBuf,
       buffers.tlasNodesBuf,
       buffers.tlasInstanceIndicesBuf,
       buffers.tlasBlasRootsBuf,
@@ -125,6 +128,8 @@ function rcReplacementCleanups(
       buffers.bvhNormalsBuf,
       buffers.materialsBuf,
       buffers.triMaterialIdBuf,
+      buffers.opticalTriangleIdentityBuf,
+      buffers.opticalInstanceBoundaryIdBasePlusOneBuf,
       buffers.tlasNodesBuf,
       buffers.tlasInstanceIndicesBuf,
       buffers.tlasBlasRootsBuf,
@@ -147,11 +152,13 @@ function destroyRCBVHBuffers(buffers: RCBVHBuffers | null): void {
   destroyGpuBuffer(buffers.bvhNormalsBuf);
   destroyGpuBuffer(buffers.materialsBuf);
   destroyGpuBuffer(buffers.triMaterialIdBuf);
+  destroyGpuBuffer(buffers.opticalTriangleIdentityBuf);
   destroyRCTLASBuffers(buffers);
 }
 
 function destroyRCTLASBuffers(buffers: RCBVHBuffers | null): void {
   if (buffers == null) return;
+  destroyGpuBuffer(buffers.opticalInstanceBoundaryIdBasePlusOneBuf);
   destroyGpuBuffer(buffers.tlasNodesBuf);
   destroyGpuBuffer(buffers.tlasInstanceIndicesBuf);
   destroyGpuBuffer(buffers.tlasBlasRootsBuf);
@@ -529,22 +536,22 @@ export class RCSubsystem implements PipelineSubsystem {
         // BvhBufferHost publishes any replacement arena later in the same
         // transaction; dispatchFrame adopts those fresh borrowed ranges before
         // the next probe dispatch.
-        const snap = makeRestirBvhSnapshot(buffers, scene);
+        const snap = refreshRestirBvhSnapshot(
+          previous.restirSnapshot,
+          buffers,
+          scene,
+        );
         const needsReplacement =
           previous.bvhBuffers == null ||
-          snap.contentVersion !== previous.lastBvhVersion;
+          snap !== previous.restirSnapshot;
         const tlasOnly =
           needsReplacement &&
           previous.bvhBuffers != null &&
           snap.tlas != null &&
-          isRestirTlasOnlyRefit(snap, {
-            blasContentVersion: previous.lastBlasVersion,
-            tlasContentVersion: previous.lastTlasVersion,
-            materialContentVersion: previous.lastMaterialVersion,
-          });
+          isRestirTlasOnlySnapshotChange(previous.restirSnapshot, snap);
         if (needsReplacement) {
           nextBvh = tlasOnly
-            ? { ...previous.bvhBuffers!, ...this._uploadRestirTlasBuffers(snap.tlas) }
+            ? { ...previous.bvhBuffers!, ...this._uploadRestirTlasBuffers(snap) }
             : this._uploadFromRestirSnapshot(snap, false);
           replacementKind = tlasOnly ? 'tlas-refit' : 'full';
         }
@@ -571,21 +578,20 @@ export class RCSubsystem implements PipelineSubsystem {
         nextTlasVersion = snap.tlasContentVersion;
         nextMaterialVersion = snap.materialContentVersion;
       } else if (options.geometryChanged && buffers.bvhMode === 'tlas') {
-        const snap = makeRestirBvhSnapshot(buffers);
+        const snap = refreshRestirBvhSnapshot(
+          previous.restirSnapshot,
+          buffers,
+        );
         const needsReplacement =
-          previous.bvhBuffers == null || snap.contentVersion !== previous.lastBvhVersion;
+          previous.bvhBuffers == null || snap !== previous.restirSnapshot;
         const tlasOnly =
           needsReplacement &&
           previous.bvhBuffers != null &&
           snap.tlas != null &&
-          isRestirTlasOnlyRefit(snap, {
-            blasContentVersion: previous.lastBlasVersion,
-            tlasContentVersion: previous.lastTlasVersion,
-            materialContentVersion: previous.lastMaterialVersion,
-          });
+          isRestirTlasOnlySnapshotChange(previous.restirSnapshot, snap);
           if (needsReplacement) {
             nextBvh = tlasOnly
-              ? { ...previous.bvhBuffers!, ...this._uploadRestirTlasBuffers(snap.tlas) }
+              ? { ...previous.bvhBuffers!, ...this._uploadRestirTlasBuffers(snap) }
             : this._uploadFromRestirSnapshot(snap);
           replacementKind = tlasOnly ? 'tlas-refit' : 'full';
         }
@@ -658,7 +664,11 @@ export class RCSubsystem implements PipelineSubsystem {
         nextBvh = { ...previous.bvhBuffers, materialsBuf };
         replacementKind = 'materials';
         if (buffers.bvhMode === 'tlas' || this._sharedGeometryBindings != null) {
-          const snap = makeRestirBvhSnapshot(buffers, scene);
+          const snap = refreshRestirBvhSnapshot(
+            previous.restirSnapshot,
+            buffers,
+            scene,
+          );
           nextSnapshot = snap;
           nextBvhVersion = snap.contentVersion;
           nextBlasVersion = snap.blasContentVersion;
@@ -790,7 +800,10 @@ export class RCSubsystem implements PipelineSubsystem {
       this._tlasNodeCount = 0;
       return;
     }
-    const snap = makeRestirBvhSnapshot(buffers);
+    const snap = refreshRestirBvhSnapshot(
+      this._restirSnapshot,
+      buffers,
+    );
     const sharedGeometryChanged =
       (this._sharedGeometryBindings == null) !== (effectiveSharedGeometry == null) ||
       (
@@ -799,24 +812,20 @@ export class RCSubsystem implements PipelineSubsystem {
       );
     const needsReplacement =
       this._bvhBuffers == null || sharedGeometryChanged ||
-      snap.contentVersion !== this._lastBvhVersion;
+      snap !== this._restirSnapshot;
     const tlasOnly =
       needsReplacement &&
       !sharedGeometryChanged &&
       this._bvhBuffers != null &&
       snap.tlas != null &&
-      isRestirTlasOnlyRefit(snap, {
-        blasContentVersion: this._lastBlasVersion,
-        tlasContentVersion: this._lastTlasVersion,
-        materialContentVersion: this._lastMaterialVersion,
-      });
+      isRestirTlasOnlySnapshotChange(this._restirSnapshot, snap);
     let replacement: RCBVHBuffers | null = null;
     let cascadeCandidate: GPUBuffer[] | null = null;
     let dispatcherCandidate = this._dispatcher;
     try {
       if (needsReplacement) {
         replacement = tlasOnly
-          ? { ...this._bvhBuffers!, ...this._uploadRestirTlasBuffers(snap.tlas) }
+          ? { ...this._bvhBuffers!, ...this._uploadRestirTlasBuffers(snap) }
           : this._uploadFromRestirSnapshot(
               snap,
               effectiveSharedGeometry == null,
@@ -1155,6 +1164,10 @@ export class RCSubsystem implements PipelineSubsystem {
       ...(normalsBinding?.size == null ? {} : { bvhNormalsSize: Number(normalsBinding.size) }),
       materialsBuf:     bvh.materialsBuf,
       triMaterialIdBuf: bvh.triMaterialIdBuf,
+      opticalTriangleIdentityBuf: bvh.opticalTriangleIdentityBuf,
+      opticalInstanceBoundaryIdBasePlusOneBuf:
+        bvh.opticalInstanceBoundaryIdBasePlusOneBuf,
+      opticalArenaVersion: this._lastBlasVersion,
       cascadeBufs:      this._cascadeBufs,
       probeOriginWorld: this._probeOriginWorld,
       roomSize:         this._roomSize,
@@ -1285,7 +1298,11 @@ export class RCSubsystem implements PipelineSubsystem {
 
 
 
-  private _uploadRestirTlasBuffers(tlas: NonNullable<RestirBvhSnapshot['tlas']>) {
+  private _uploadRestirTlasBuffers(snap: RestirBvhSnapshot) {
+    const tlas = snap.tlas;
+    if (tlas == null) {
+      throw new Error('[RCSubsystem] TLAS-only upload requires a TLAS snapshot.');
+    }
     const created: GPUBuffer[] = [];
     const upload = (label: string, data: ArrayBuffer): GPUBuffer => {
       const buffer = this._device.createBuffer({
@@ -1301,6 +1318,10 @@ export class RCSubsystem implements PipelineSubsystem {
     };
     try {
       return {
+        opticalInstanceBoundaryIdBasePlusOneBuf: upload(
+          'rc-restir-optical-instance-boundary-base',
+          snap.opticalInstanceBoundaryIdBasePlusOne,
+        ),
         tlasNodesBuf: upload('rc-restir-tlas-nodes', tlas.nodes),
         tlasInstanceIndicesBuf: upload('rc-restir-tlas-inst', tlas.instanceIndices),
         tlasBlasRootsBuf: upload('rc-restir-tlas-blas', tlas.blasRoots),
@@ -1345,6 +1366,14 @@ export class RCSubsystem implements PipelineSubsystem {
           : {}),
         materialsBuf: upload('rc-restir-bvh-materials', matFloats.buffer as ArrayBuffer),
         triMaterialIdBuf: upload('rc-restir-bvh-tri-mat', snap.triMaterialIds),
+        opticalTriangleIdentityBuf: upload(
+          'rc-restir-optical-triangle-identity',
+          snap.opticalTriangleIdentity,
+        ),
+        opticalInstanceBoundaryIdBasePlusOneBuf: upload(
+          'rc-restir-optical-instance-boundary-base',
+          snap.opticalInstanceBoundaryIdBasePlusOne,
+        ),
         ...(tlas != null
           ? {
               tlasNodesBuf: upload('rc-restir-tlas-nodes', tlas.nodes),
@@ -1399,6 +1428,14 @@ export class RCSubsystem implements PipelineSubsystem {
         bvhNormalsBuf: keep(this._uploadAttribute(bvh.normals, 'rc-bvh-normals')),
         materialsBuf: keep(this._uploadAttribute(bvh.materials, 'rc-bvh-materials')),
         triMaterialIdBuf: keep(this._uploadAttribute(bvh.triMaterialId, 'rc-bvh-tri-mat-id')),
+        opticalTriangleIdentityBuf: keep(this._uploadAttribute(
+          bvh.opticalTriangleIdentity,
+          'rc-bvh-optical-triangle-identity',
+        )),
+        opticalInstanceBoundaryIdBasePlusOneBuf: keep(this._uploadAttribute(
+          bvh.opticalInstanceBoundaryIdBasePlusOne,
+          'rc-bvh-optical-instance-boundary-base',
+        )),
       };
     } catch (error) {
       destroyGpuBuffers(created);

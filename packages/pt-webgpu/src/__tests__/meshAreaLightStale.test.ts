@@ -88,6 +88,7 @@ function displacedEmitterScene(positions: Float32Array): Scene {
           },
           wrapS: 'clamp-to-edge',
           wrapT: 'clamp-to-edge',
+          mipFilter: 'none',
         },
         displacementScale: 1,
         displacementSubdivisions: 1,

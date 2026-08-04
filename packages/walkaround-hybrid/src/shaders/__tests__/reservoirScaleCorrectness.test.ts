@@ -2,12 +2,12 @@ import type { Scene } from '@vitrum/core';
 import { describe, expect, it } from 'vitest';
 import { validateHybridEngineOptions } from '../../HybridEngineConfig.js';
 import {
-  sceneRequiresExactGiCameraPrefixes,
-  sceneTransitionRequiresGiScaleReplan,
+  sceneRequiresFullRateGlassShading,
 } from '../../reservoirScalePolicy.js';
 import { RESERVOIR_GI_WGSL } from '../reservoirGi.wgsl.js';
 import { RESTIR_GI_MATERIAL_WGSL } from '../restirGiMaterial.wgsl.js';
 import { RESTIR_PHAT_WGSL } from '../restirPHat.wgsl.js';
+import { RESERVOIR_DI_WGSL } from '../reservoirDi.wgsl.js';
 import { RIS_WGSL } from '../ris.wgsl.js';
 import { RIS_GI_WGSL } from '../risGi.wgsl.js';
 import { SHADING_TERMS_WGSL } from '../shadingTerms.wgsl.js';
@@ -167,19 +167,31 @@ describe('scaled ReSTIR-DI receiver-independent estimator', () => {
     expect(sourceTargetBody).toContain('sampleEmitterLeAtXi(');
     expect(sourceTargetBody).toContain('envRadiance(');
     expect(sourceTargetBody).not.toMatch(/PrimarySurface|BRDF|Visibility|traceScene/);
-    expect(RIS_WGSL).toContain('let pX = emitterSelPmf * ls.pdfArea;');
-    expect(RIS_WGSL).toContain('w = pHat / envSample.pdf;');
+    expect(RIS_WGSL).toContain('reservoirDiInitialCandidateLogWeight(');
+    expect(RIS_WGSL).toContain('reservoirDiPositiveLog2(emitterSelPmf)');
     expect(RIS_WGSL).toContain(
-      'r.w_sum / (f32(r.M) * pHat)',
+      'finaliseReservoirDIFromNativeWrs(&r, wrs, pHat)',
     );
-    expect(TEMPORAL_WGSL).toContain('max(0.0, previous.w_sum)');
-    expect(SPATIAL_WGSL).toContain('max(0.0, neighbor.w_sum)');
+    expect(RESERVOIR_DI_WGSL).toContain(
+      'r.logEstimatorNumerator + log2(f32(r.M))',
+    );
+    expect(TEMPORAL_WGSL).toContain(
+      'reservoirDiCoarseReuseLogWeight(previous)',
+    );
+    expect(SPATIAL_WGSL).toContain(
+      'reservoirDiCoarseReuseLogWeight(neighbor)',
+    );
     expect(SHADING_TERMS_WGSL).toContain(
-      'return Le * brdf * G * r.W * shadowTint;',
+      'let geometryLogW = restirShadeAppendPositiveFactor(r.logW, G);',
     );
     expect(SHADING_TERMS_WGSL).toContain(
-      'return envColor * brdfE * r.W * shadowTint;',
+      'r.logW, envColor, layeredBrdfE, shadowTint',
     );
+    expect(SHADING_TERMS_WGSL).toContain(
+      'geometryLogW, Le, layeredBrdf, shadowTint,',
+    );
+    expect(SHADING_TERMS_WGSL).toContain('restirShadeDirectionalVolumeLog(');
+    expect(SHADING_TERMS_WGSL).not.toMatch(/\br\.W\b/);
   });
 });
 
@@ -255,63 +267,39 @@ describe('scaled ReSTIR-GI shift compatibility', () => {
       'g.receiverMaterialKey == receiverMaterialKey',
     );
     expect(SHADING_TERMS_WGSL).toContain(
-      'domainJacobian = grisDomainToCanonicalJacobian(',
+      'logDomainJacobian = grisLogDomainToCanonicalJacobian(',
     );
     expect(SHADING_TERMS_WGSL).toContain(
-      'grisVisibility = grisProxyVisibilityAt(',
+      'restirShadeAppendLogFactor(g.logW, logDomainJacobian)',
     );
     expect(SHADING_TERMS_WGSL).toContain(
-      'Lo_indirect = sampleDDGIAtPoint(pos, normal) * INV_PI;',
+      'grisTint = grisProxyTintAt(',
+    );
+    expect(SHADING_TERMS_WGSL).toContain(
+      'Lo_indirect = restirShadeAggregateDiffuseDemodulated(',
+    );
+    expect(SHADING_TERMS_WGSL).toContain(
+      'sampleDDGIAtPoint(pos, normal) * INV_PI,',
     );
   });
 });
 
-describe('unshiftable camera-prefix and learned-layout policy', () => {
+describe('full-rate camera-prefix and learned-layout policy', () => {
   const sceneWithMaterial = (material: Record<string, unknown>): Scene => ({
     primitives: [{ kind: 'mesh', material }] as unknown as Scene['primitives'],
     emitters: [],
     environment: { kind: 'none' },
   });
 
-  it('forces exact scale for numeric or mapped transmission, not opaque material', () => {
-    expect(sceneRequiresExactGiCameraPrefixes(
+  it('requires full-rate shading for positive scalar transmission only', () => {
+    expect(sceneRequiresFullRateGlassShading(
       sceneWithMaterial({ transmission: 0 }),
     )).toBe(false);
-    expect(sceneRequiresExactGiCameraPrefixes(
+    expect(sceneRequiresFullRateGlassShading(
       sceneWithMaterial({ transmission: 0.01 }),
     )).toBe(true);
-    expect(sceneRequiresExactGiCameraPrefixes(
+    expect(sceneRequiresFullRateGlassShading(
       sceneWithMaterial({ transmission: 0, transmissionMap: {} }),
-    )).toBe(true);
-  });
-
-  it('replans both when adding glass to a coarse grid and when auto mode removes the last glass', () => {
-    const opaque = sceneWithMaterial({ transmission: 0 });
-    const glass = sceneWithMaterial({ transmission: 1 });
-
-    expect(sceneTransitionRequiresGiScaleReplan(
-      opaque,
-      glass,
-      2,
-      undefined,
-    )).toBe(true);
-    expect(sceneTransitionRequiresGiScaleReplan(
-      glass,
-      opaque,
-      1,
-      undefined,
-    )).toBe(true);
-    expect(sceneTransitionRequiresGiScaleReplan(
-      glass,
-      opaque,
-      1,
-      1,
-    )).toBe(false);
-    expect(sceneTransitionRequiresGiScaleReplan(
-      opaque,
-      glass,
-      1,
-      undefined,
     )).toBe(false);
   });
 

@@ -728,7 +728,10 @@ describe('pt-webgpu coherent thin-film production closure', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('BSDF_LOBE_DELTA_REFLECTION');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('BSDF_LOBE_DELTA_TRANSMISSION');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'bdptEyeStackSetSpec(bounce, bs.sampledIsDelta);',
+      'bdptEyeStackSetSpec(',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'bs.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION,',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('if (!bs.sampledIsDelta) {');
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
@@ -795,7 +798,13 @@ describe('pt-webgpu coherent thin-film production closure', () => {
   });
 
   it('keeps non-film records byte-identical and appends LUTs sparsely', () => {
-    const plain = dielectricMaterial([]);
+    const plain: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0,
+      metallic: 0,
+      transmission: 1,
+      ior: 1.52,
+    };
     const film = dielectricMaterial([{ ior: 1.4, thicknessNm: 120 }]);
     const plainDirect = new Float32Array(materialToPackedVec4s(plain));
     const plainScene = buildPackedScene(scene(plain)).materials;
@@ -813,9 +822,9 @@ describe('pt-webgpu coherent thin-film production closure', () => {
       new Float32Array(materialToPackedVec4s(film, { thinFilmRgbLutBaseVec4: MATERIAL_VEC4_STRIDE })),
     );
     for (const token of [
-      'if (descriptorIndex >= arrayLength(&materials)) {',
-      'let lutBaseVec4 = u32(round(max(materials[descriptorIndex].z, 0.0)));',
-      'lutBaseVec4 == 0u || lutEndScalar > arrayLength(&materials) * 4u',
+      'if (descriptorIndex == MATERIAL_INVALID_INDEX) {',
+      'let lutBaseVec4 = materialRecordExactU32(',
+      '!materialSpanValid(lutBaseScalar, lutScalarCount, scalarCount)',
       'fn materialStorageScalar(scalarIndex: u32) -> f32 {',
     ]) {
       expect(PT_WEBGPU_TRACE_WGSL).toContain(token);
@@ -838,14 +847,12 @@ describe('pt-webgpu coherent thin-film production closure', () => {
 
     const transport = material.slice(transportStart);
     const descriptorGuard = transport.slice(
-      transport.indexOf('if (descriptorIndex >= arrayLength(&materials)) {'),
-      transport.indexOf('// The CPU validates this numeric f32'),
+      transport.indexOf('if (descriptorIndex == MATERIAL_INVALID_INDEX) {'),
+      transport.indexOf('let lutBaseVec4 = materialRecordExactU32('),
     );
     const lutGuard = transport.slice(
-      transport.indexOf(
-        'if (lutBaseVec4 == 0u || lutEndScalar > arrayLength(&materials) * 4u) {',
-      ),
-      transport.indexOf('let base0 = lutBaseVec4 * 4u +'),
+      transport.indexOf('lutBaseVec4 == MATERIAL_INVALID_INDEX ||'),
+      transport.indexOf('let bin0Offset = materialCheckedMulU32('),
     );
     for (const guard of [descriptorGuard, lutGuard]) {
       expect(guard).toContain('return thinFilmAbsorbedTransportRt();');

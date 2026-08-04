@@ -27,6 +27,7 @@
 
 import type { SceneEmitter, Vec3 } from '@vitrum/core';
 import {
+  buildRepresentedPmfF32,
   luminance,
   vecNormalize as normalize,
   tangentBasis,
@@ -81,34 +82,12 @@ const SPOT_LIGHT = 2;
 const DIR_LIGHT = 3;
 const POINT_LIGHT = 4;
 
-function selectionPowerF32(value: number, context: string): number {
+function selectionPower(value: number, context: string): number {
   if (!Number.isFinite(value) || value < 0) {
     throw new RangeError(`${context} selection power must be finite and non-negative.`);
   }
   if (value === 0) return 0;
-  const stored = Math.fround(value);
-  if (!(stored > 0) || !Number.isFinite(stored)) {
-    throw new RangeError(
-      `${context} selection power must survive finite positive RGBA32F storage.`,
-    );
-  }
-  return stored;
-}
-
-function addSelectionPowerF32(sum: number, value: number): number {
-  const next = Math.fround(sum + value);
-  if (!Number.isFinite(next)) {
-    throw new RangeError(
-      '@vitrum/pt-webgl2: analytic-light selection-power sum overflows float32.',
-    );
-  }
-  if (value > 0 && next === sum) {
-    throw new RangeError(
-      '@vitrum/pt-webgl2: a positive analytic-light selection power loses ' +
-        'proposal support in the cumulative float32 distribution.',
-    );
-  }
-  return next;
+  return value;
 }
 
 function finiteVec3F32(value: Vec3, context: string): Vec3 {
@@ -429,8 +408,8 @@ export function packLightsTexture(
   const pixelCount = Math.max(lights.length * LIGHT_PIXELS, 1);
   const dim = Math.ceil(Math.sqrt(pixelCount));
   const data = new Float32Array(dim * dim * 4);
-  let selectionPowerSum = 0;
   const selectionPowers: number[] = [];
+  const directionalSelectionPowers: number[] = [];
 
   for (let i = 0; i < lights.length; i += 1) {
     const l = lights[i]!;
@@ -473,11 +452,13 @@ export function packLightsTexture(
         data[base + cursor.k++] = u[0];
         data[base + cursor.k++] = u[1];
         data[base + cursor.k++] = u[2];
-        packedSelectionPower = selectionPowerF32(
+        packedSelectionPower = selectionPower(
           lum * area,
           `rect-area emitter "${l.id}"`,
         );
-        data[base + cursor.k++] = packedSelectionPower;
+        data[base + cursor.k++] = Math.fround(
+          Math.min(packedSelectionPower, 3.402823466e38),
+        );
         // s3: v / area  (full-span area = |u × v|)
         data[base + cursor.k++] = v[0];
         data[base + cursor.k++] = v[1];
@@ -514,11 +495,13 @@ export function packLightsTexture(
         data[base + cursor.k++] = u[0];
         data[base + cursor.k++] = u[1];
         data[base + cursor.k++] = u[2];
-        packedSelectionPower = selectionPowerF32(
+        packedSelectionPower = selectionPower(
           lum * area,
           `disc-area emitter "${l.id}"`,
         );
-        data[base + cursor.k++] = packedSelectionPower;
+        data[base + cursor.k++] = Math.fround(
+          Math.min(packedSelectionPower, 3.402823466e38),
+        );
         // s3: v / area
         data[base + cursor.k++] = v[0];
         data[base + cursor.k++] = v[1];
@@ -562,11 +545,13 @@ export function packLightsTexture(
         data[base + cursor.k++] = t[0];
         data[base + cursor.k++] = t[1];
         data[base + cursor.k++] = t[2];
-        packedSelectionPower = selectionPowerF32(
+        packedSelectionPower = selectionPower(
           lum,
           `spot emitter "${l.id}"`,
         );
-        data[base + cursor.k++] = packedSelectionPower;
+        data[base + cursor.k++] = Math.fround(
+          Math.min(packedSelectionPower, 3.402823466e38),
+        );
         // s3: v / reserved area (zero for the delta-position spot contract).
         data[base + cursor.k++] = b[0];
         data[base + cursor.k++] = b[1];
@@ -603,11 +588,13 @@ export function packLightsTexture(
         data[base + cursor.k++] = position[0];
         data[base + cursor.k++] = position[1];
         data[base + cursor.k++] = position[2];
-        packedSelectionPower = selectionPowerF32(
+        packedSelectionPower = selectionPower(
           lum,
           `point emitter "${l.id}"`,
         );
-        data[base + cursor.k++] = packedSelectionPower;
+        data[base + cursor.k++] = Math.fround(
+          Math.min(packedSelectionPower, 3.402823466e38),
+        );
         // s3 unused (zero); cursor advances over it
         cursor.k += 4;
         // s4: radius=0 / decay / distance / coneCos=0
@@ -642,11 +629,13 @@ export function packLightsTexture(
         data[base + cursor.k++] = dir[0];
         data[base + cursor.k++] = dir[1];
         data[base + cursor.k++] = dir[2];
-        packedSelectionPower = selectionPowerF32(
+        packedSelectionPower = selectionPower(
           lum,
           `directional emitter "${l.id}"`,
         );
-        data[base + cursor.k++] = packedSelectionPower;
+        data[base + cursor.k++] = Math.fround(
+          Math.min(packedSelectionPower, 3.402823466e38),
+        );
         const angularDiameter = packDirectionalAngularDiameter(
           l.angularDiameter,
           lightContext,
@@ -663,11 +652,8 @@ export function packLightsTexture(
       }
     }
 
-    selectionPowerSum = addSelectionPowerF32(
-      selectionPowerSum,
-      packedSelectionPower,
-    );
     selectionPowers.push(packedSelectionPower);
+    directionalSelectionPowers.push(l.kind === 'directional' ? packedSelectionPower : 0);
 
     // SHADOW-01 — s5.g (channel 21, the former IES padding slot) carries the
     // emitter castShadowDisabled flag for EVERY light kind. Default (castShadow
@@ -675,17 +661,23 @@ export function packLightsTexture(
     data[base + 21] = l.castShadow === false ? 1 : 0;
   }
 
-  for (const power of selectionPowers) {
-    if (
-      power > 0 &&
-      !(Math.fround(power / selectionPowerSum) > 0)
-    ) {
-      throw new RangeError(
-        '@vitrum/pt-webgl2: a positive analytic-light selection probability ' +
-          'collapses to zero in float32.',
-      );
+  const proposalPmf = buildRepresentedPmfF32(selectionPowers);
+  const directionalProposalPmf = buildRepresentedPmfF32(directionalSelectionPowers);
+  for (let i = 0; i < lights.length; i += 1) {
+    const base = i * LIGHT_PIXELS * 4;
+    // s4.r is otherwise reserved for every active analytic-light contract.
+    data[base + 16] = proposalPmf[i] ?? 0;
+    // s4.a is the spot cone lane, but is free for directional lights.
+    if (lights[i]!.kind === 'directional') {
+      data[base + 19] = directionalProposalPmf[i] ?? 0;
     }
   }
 
-  return { data, dim, kind: 'rgba32f', lightCount: lights.length };
+  return {
+    data,
+    dim,
+    kind: 'rgba32f',
+    lightCount: lights.length,
+    proposalWeights: new Float64Array(selectionPowers),
+  };
 }

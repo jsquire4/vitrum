@@ -31,6 +31,7 @@ import { MATERIAL_DECODE_WGSL } from '../materialDecode.wgsl.js';
 import { GGX_BRDF_WGSL } from '../ggxBrdf.wgsl.js';
 import { RESTIR_PHAT_WGSL } from '../restirPHat.wgsl.js';
 import { RESERVOIR_GI_WGSL } from '../reservoirGi.wgsl.js';
+import { NATIVE_GLASS_GI_WGSL } from '../risGiGlassWalk.wgsl.js';
 
 describe('B1 — real per-tri roughness/metalness decode', () => {
   it('materialDecode provides decodeRoughMetal + the bvh_material texel width', () => {
@@ -77,9 +78,14 @@ describe('B1 — metals and glass receive direct reflection', () => {
 
   it('direct, analytic, and sun estimators route glass through the reflection-only BRDF', () => {
     const helper = fnBody(SHADE_WGSL, 'evalDirectSurfaceBrdf');
-    expect(helper).toContain('if (isGlass)');
-    expect(helper).toContain('return evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
-    expect(helper).toContain('return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(helper).toContain('transmission: f32');
+    expect(helper).toContain(
+      'let mixedClosure = evalGGXReflectionWithTransmissionMix(',
+    );
+    expect(helper).toMatch(
+      /let reflectionClosure\s*=\s*evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame\(/,
+    );
+    expect(helper).toContain('return applyMaterialLayerTransmissionToBrdf(');
 
     for (const name of ['lo_direct', 'lo_analyticNEE', 'lo_sunNEE']) {
       const body = fnBody(SHADE_WGSL, name);
@@ -91,8 +97,7 @@ describe('B1 — metals and glass receive direct reflection', () => {
   it('ReSTIR target evaluation uses the same glass reflection-only domain', () => {
     expect(RESERVOIR_GI_WGSL).toContain('isGlass: bool');
     const body = fnBody(RESTIR_PHAT_WGSL, 'restir_di_eval_surface_brdf');
-    expect(body).toContain('if (surf.isGlass)');
-    expect(body).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(');
+    expect(body).toContain('evalGGXReflectionWithTransmissionMix(');
   });
 
   it('a dielectric interface has a non-zero normal-incidence reflection term', () => {
@@ -104,21 +109,19 @@ describe('B1 — metals and glass receive direct reflection', () => {
 });
 
 describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)', () => {
-  it('risGi / risGiNrc handle primary glass with a bounded refracted-GI walk', () => {
+  it('keeps ordinary GI shiftable while evaluating the glass camera prefix natively', () => {
     for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
       expect(src).not.toContain('if (isGlass || isMetal)');
-      expect(src).not.toContain(`if (isGlass) {
-    storeReservoirGI_rw(pixelIdxGi, emptyReservoirGI());
-    return;
-  }`);
       expect(src).not.toContain('if (grisOn && isGlass)');
-      expect(src).toContain('const GLASS_WALK_MAX_INTERFACES: u32 = 4u;');
-      expect(src).toContain('var rGlass: ReservoirGI = emptyReservoirGI();');
-      expect(src).toContain('rGlass.historyEpoch = currentGrisEpoch;');
-      expect(src).toContain('updateReservoirGIWithMetadata(');
-      expect(src).toContain('rGlass.xv = walkHitPos;');
-      expect(src).toContain('storeReservoirGI_rw(pixelIdxGi, rGlass);');
+      expect(src).not.toContain('var rGlass: ReservoirGI');
+      expect(src).not.toContain('GLASS_WALK_MAX_INTERFACES');
     }
+    expect(NATIVE_GLASS_GI_WGSL).toContain(
+      'const GLASS_WALK_MAX_INTERFACES: u32 = 8u;',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).toContain('fn lo_transmittedGI(');
+    expect(NATIVE_GLASS_GI_WGSL).toContain('var wrs = representedWrsInit();');
+    expect(SHADE_WGSL).toContain('let Lo_transmittedGI = lo_transmittedGI(');
   });
 
   it('the GI producer targets the declared one-bounce DDGI proxy', () => {
@@ -127,12 +130,16 @@ describe('B1 — glossy/metal GI reservoir (no empty-reservoir punt for metal)',
     // the canonical target re-evaluates the visible receiver's authored lobes.
     expect(RIS_GI_WGSL).toContain('let xsPayload = sampleRestirGIHitMaterialForHit(');
     expect(RIS_GI_WGSL).toContain('Lo = xsPayload.Lo;');
-    expect(RIS_GI_WGSL).toContain('pHat = restir_gi_receiver_phat_from_payload(');
-    expect(RIS_GI_WGSL).toContain(') * candidateVisibility;');
+    expect(RIS_GI_WGSL).toContain('let receiverPHat = restir_gi_receiver_phat_from_payload(');
+    expect(RIS_GI_WGSL).toContain(
+      'let logPHat = reservoirGiLogPositiveProduct(receiverPHat, candidateVisibility);',
+    );
     expect(RIS_GI_WGSL).toContain('let receiverPayload = sampleRestirDIMaterialPayloadForHit(');
-    expect(RIS_GI_WGSL).toContain('pSrc = alpha * pGuide + (1.0 - alpha) * pCos;');
-    expect(RIS_GI_WGSL).toContain('pSrc = cosTheta * INV_PI;');
-    expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
+    expect(RIS_GI_WGSL).toContain(
+      'logPSrc = reservoirGiLogProposalMixture(alpha, pGuide, pCos);',
+    );
+    expect(RIS_GI_WGSL).toContain('logPSrc = reservoirGiLogPositive(pCos);');
+    expect(RIS_GI_WGSL).toContain('let logWeight = logPHat - logPSrc;');
   });
 });
 
@@ -140,9 +147,20 @@ describe('B1 — glossy/metal specular indirect term', () => {
   it('preserves the (1-metallic) diffuse GI share for fractional metals', () => {
     const body = fnBody(SHADE_WGSL, 'lo_indirect');
     expect(body).toContain('metal:   f32');
-    expect(body).toContain('let diffuseWeight = 1.0 - clamp(metal, 0.0, 1.0);');
     expect(body).toContain(
-      'return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);',
+      'let diffuseWeight = (1.0 - clamp(metal, 0.0, 1.0)) *',
+    );
+    expect(body).toContain(
+      '(1.0 - clamp(transmission, 0.0, 1.0));',
+    );
+    expect(body).toMatch(
+      /restirShadeAppendPositiveFactor\(\s*contributionLogW,\s*diffuseWeight,\s*\)/,
+    );
+    expect(body).toContain(
+      'return wRestirGi * Lo_indirect + wRc * Lo_rcDemodulated;',
+    );
+    expect(body).not.toContain(
+      'return diffuseWeight * (wRestirGi',
     );
     expect(body).not.toContain('if (isGlass || isMetal)');
     expect(SHADE_WGSL).toContain('receiverMaterialKey,');
@@ -168,8 +186,12 @@ describe('B1 — glossy/metal specular indirect term', () => {
     expect(SHADE_WGSL).toContain('fn lo_indirectSpecular(');
     expect(SHADE_WGSL).toContain('evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi)');
     expect(SHADE_WGSL).toContain('let Lo_indirectSpec = lo_indirectSpecular(');
-    // It joins directRadiance (NOT the demodulated indirect channel).
-    expect(SHADE_WGSL).toMatch(/directRadiance\s*=[\s\S]*?Lo_indirectSpec/);
+    // It joins the visible direct lane (NOT the demodulated indirect channel),
+    // before the separately volume-composed transmitted-glass lane is added.
+    expect(SHADE_WGSL).toMatch(/visiblePrimaryDirect\s*=[\s\S]*?Lo_indirectSpec/);
+    expect(SHADE_WGSL).toContain(
+      'let directRadiance = visiblePrimaryDirect + Lo_transmittedGI;',
+    );
   });
 
   it('specular indirect is gated off for default-diffuse surfaces (invariant)', () => {
@@ -178,27 +200,39 @@ describe('B1 — glossy/metal specular indirect term', () => {
     expect(body).toContain('let specularDelta = max(');
     expect(body).toContain('specularDelta <= 0.0');
     expect(body).toContain('abs(anisotropy.x) <= 0.0');
-    expect(body).toContain('if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 0.0 && abs(anisotropy.x) <= 0.0 && clearcoat.x <= 0.0 && sheen.a <= 0.0 && iridescence.x <= 0.0)');
+    expect(body).toContain('if (transmission <= 0.0 && metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 0.0 && abs(anisotropy.x) <= 0.0 && clearcoat.x <= 0.0 && sheen.a <= 0.0 && iridescence.x <= 0.0)');
   });
 
   it('consumes valid GRIS samples for glossy and metal receivers', () => {
     const body = fnBody(SHADE_WGSL, 'lo_indirectSpecular');
     expect(body).not.toContain('if (ubo.grisReuse == 1u)');
-    expect(body).toContain('var grisVisibility = giReservoirVisibility(g);');
+    expect(body).toContain('var grisTint = vec3f(giReservoirVisibility(g));');
+    expect(body).toContain('grisTint = grisProxyTintAt(');
     expect(body).toContain('let toS = giReservoirDirectionVector(g, pos);');
     expect(body).toContain(
-      'return receiverLo * specBrdf * g.W * domainJacobian * grisVisibility;',
+      'let contributionLogW = restirShadeAppendLogFactor(',
     );
+    expect(body).toContain(
+      'physicalSpecularLog = restirShadeDirectionalVolumeLog(',
+    );
+    expect(body).toContain(
+      'return restirShadeExp2Clamped3(physicalSpecularLog);',
+    );
+    expect(body).toContain('grisTint,');
+    expect(body).not.toMatch(/\bg\.W\b/);
   });
 
-  it('does not reinterpret the post-glass transmission reservoir as primary reflection', () => {
+  it('does not reinterpret the native glass suffix as the shared reflection reservoir', () => {
     const consumer = fnBody(SHADE_WGSL, 'lo_indirectSpecular');
-    expect(consumer).toContain('if (isGlass) { return vec3f(0.0); }');
+    expect(consumer).not.toContain('if (isGlass) { return vec3f(0.0); }');
+    expect(consumer).toContain('transmission: f32');
     for (const producer of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
-      expect(producer).toContain('rGlass.xv = walkHitPos;');
-      expect(producer).toContain('rGlass.nv = walkHitNormal;');
-      expect(producer).toContain('Lo_g = Lo_g * glassPathThroughput;');
+      expect(producer).not.toContain('rGlass.');
     }
+    expect(NATIVE_GLASS_GI_WGSL).toContain('fn lo_transmittedGI(');
+    expect(NATIVE_GLASS_GI_WGSL).toContain(
+      'return transmittedReceiverDirect + clampedIndirect;',
+    );
   });
 });
 
@@ -206,23 +240,21 @@ describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
   it('materialDecode preserves IOR=0 and decodes finite bytes over [1,3]', () => {
     expect(MATERIAL_DECODE_WGSL).toContain('fn decodeIor(packed: u32) -> f32');
     expect(MATERIAL_DECODE_WGSL).toContain('(packed >> 8u) & 0xFFu');
-    expect(MATERIAL_DECODE_WGSL).toContain('if (byte == 0u) { return 1e6; }');
+    expect(MATERIAL_DECODE_WGSL).toContain('if (byte == 0u) { return 1e8; }');
     expect(MATERIAL_DECODE_WGSL).toContain('1.0 + f32(byte - 1u) / 254.0 * 2.0');
   });
 
-  it('risGi / risGiNrc glass walks no longer use a hardcoded IOR_GLASS=1.5 constant', () => {
+  it('the native glass walk uses per-triangle IOR instead of a hardcoded 1.5', () => {
     // The fixed `const IOR_GLASS: f32 = 1.5;` must be gone (replaced by decodeIor()).
-    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
-      expect(src).not.toContain('const IOR_GLASS: f32 = 1.5;');
-      // Per-tri decode must be present.
-      expect(src).toContain('decodeIor(glassPrimaryPacked)');
-    }
+    expect(NATIVE_GLASS_GI_WGSL).not.toContain('const IOR_GLASS: f32 = 1.5;');
+    expect(NATIVE_GLASS_GI_WGSL).toContain('decodeIor(glassPrimaryPacked)');
   });
 
-  it('risGi / risGiNrc glass walks bind bvh_material (group 1, binding 14)', () => {
-    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
-      expect(src).toContain('@group(1) @binding(14) var bvh_material: texture_2d<u32>;');
-    }
+  it('the shade pass provides the native glass walk material binding', () => {
+    expect(SHADE_WGSL).toContain(
+      '@group(1) @binding(14) var bvh_material: texture_2d<u32>;',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).toContain('textureLoad(\n    bvh_material,');
   });
 
   it('shade lo_transmittedGI no longer uses hardcoded GLASS_F0 = 0.04', () => {
@@ -232,30 +264,35 @@ describe('B1-ior-per-tri — per-triangle IOR lane structural pins', () => {
   });
 
   it('shade lo_transmittedGI does not reapply producer-owned interface Fresnel', () => {
-    const body = fnBody(SHADE_WGSL, 'lo_transmittedGI');
+    const body = fnBody(
+      NATIVE_GLASS_GI_WGSL,
+      'evaluateNativeGlassGiReceiver',
+    );
     expect(body).not.toContain('decodeIor(');
     expect(body).not.toContain('iorMinus1 / iorPlus1');
-    expect(body).toContain('camera-side dielectric throughput is already present in g.Lo');
+    expect(body).toContain('receiver.prefixTransfer * receiverResponse');
   });
 
-  it('shade lo_transmittedGI blends half-res GI reservoirs and uses the indirect clamp', () => {
-    const body = fnBody(SHADE_WGSL, 'lo_transmittedGI');
-    expect(body).toContain(
-      '(vec2f(gid) - vec2f(giSampleCenter)) / f32(giStride)',
+  it('shade lo_transmittedGI uses native WRS and clamps only its stochastic suffix', () => {
+    const body = fnBody(
+      NATIVE_GLASS_GI_WGSL,
+      'evaluateNativeGlassGiReceiver',
     );
-    expect(body).toContain('for (var k: u32 = 0u; k < 4u; k = k + 1u)');
-    expect(body).toContain('Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;');
-    expect(body).toContain('Lo_transmitted = Lo_transmitted / totalW;');
-    expect(body).toContain('let scaledTransmitted = Lo_transmitted * ubo.glassMixScale;');
-    expect(body).toContain('return min(scaledTransmitted, ubo.indirectFireflyClamp * ubo.glassMixScale);');
+    expect(body).toContain('var wrs = representedWrsInit();');
+    expect(body).toContain('let logWeight = logPHat - logPSrc;');
+    expect(body).toContain('finaliseGIReservoirFromNativeWrs(');
+    expect(body).toContain('let scaledIndirect = indirect * ubo.glassMixScale;');
+    expect(body).toContain('return transmittedReceiverDirect + clampedIndirect;');
+    expect(body).not.toContain('giSampleCenter');
+    expect(body).not.toMatch(/\bg\.W\b/);
   });
 
-  it('risGi / risGiNrc support authored rough dielectric transmission', () => {
-    for (const src of [RIS_GI_WGSL, RIS_GI_NRC_BODY]) {
-      expect(src).toContain('ggxSampleDielectricTransmission(');
-      expect(src).toContain('faceLayerRoughness(');
-      expect(src).not.toContain('GLASS_GI_MAX_ROUGHNESS');
-      expect(src).not.toContain('ROUGH_GLASS_THRESHOLD');
-    }
+  it('the native glass path supports authored rough dielectric transmission', () => {
+    expect(NATIVE_GLASS_GI_WGSL).toContain(
+      'ggxSampleDielectricTransmissionAnisotropyFrame(',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).toContain('faceLayerRoughness(');
+    expect(NATIVE_GLASS_GI_WGSL).not.toContain('GLASS_GI_MAX_ROUGHNESS');
+    expect(NATIVE_GLASS_GI_WGSL).not.toContain('ROUGH_GLASS_THRESHOLD');
   });
 });

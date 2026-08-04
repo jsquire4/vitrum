@@ -28,8 +28,19 @@ describe('Sprint 18 — shade.wgsl split output', () => {
   it('splits the final radiance into directRadiance + indirectRadiance', () => {
     expect(SHADE_WGSL).toContain('let directRadiance');
     expect(SHADE_WGSL).toContain('let indirectRadiance');
-    expect(SHADE_WGSL).toMatch(/let directRadiance\s*=\s*applyHomogeneousVolumeSingleScatter\(\s*\(Lo_emit/);
-    expect(SHADE_WGSL).toMatch(/let indirectRadiance\s*=\s*applyHomogeneousVolumeSingleScatter\(\s*Lo_indirect\s*\*\s*ao\s*\*\s*layerTransmission/);
+    expect(SHADE_WGSL).toContain(
+      'let aggregateSurfaceDirect = applyHomogeneousVolumeSingleScatter(',
+    );
+    expect(SHADE_WGSL).toContain(
+      'let visiblePrimaryDirect = aggregateSurfaceDirect + Lo_indirectSpec +',
+    );
+    expect(SHADE_WGSL).toContain(
+      'let directRadiance = visiblePrimaryDirect + Lo_transmittedGI;',
+    );
+    expect(SHADE_WGSL).toContain('let indirectRadiance = Lo_indirect * ao;');
+    expect(SHADE_WGSL).not.toMatch(
+      /applyHomogeneousVolumeSingleScatter\(\s*Lo_indirect/,
+    );
   });
 
   it('writes split outputs at the end of shadeMain', () => {
@@ -46,7 +57,9 @@ describe('T5 — explicit generic caustics plus stained-glass aperture', () => {
   it('shade calls the bounded refractive estimator and the flag-gated aperture', () => {
     expect(SHADE_WGSL).toMatch(/let Lo_refractiveCaustic\s*=\s*lo_refractive_caustic\(/);
     expect(SHADE_WGSL).toMatch(/let Lo_skyAperture\s*=\s*lo_sg_aperture\(/);
-    // Both Lo_sunCaustic and Lo_skyAperture still feed directRadiance × ao.
+    // Lo_refractiveCaustic and Lo_skyAperture are receiver-local sources and
+    // share the aggregate layer/volume lane. Exact-direction DI, analytic,
+    // sun, and specular-GI terms own their layer/volume response upstream.
     // (Lo_emitterGlow — camera-visible emitters, 2026-05-30 — joins Lo_emit
     // outside the AO term; it sits between Lo_emit and the AO-scaled group.)
     // H41 — Lo_analyticNEE (point/spot additive NEE) inserted between Lo_direct
@@ -54,15 +67,20 @@ describe('T5 — explicit generic caustics plus stained-glass aperture', () => {
     // item 4 (2026-06-10) — Lo_sunNEE (direct sun NEE, default-ON) inserted between
     // Lo_analyticNEE and Lo_sunCaustic in the AO-scaled group.
     // B1 — Lo_indirectSpec (glossy/metal specular indirect) joins the
-    // UN-demodulated, non-AO direct group alongside Lo_emit / Lo_emitterGlow
-    // (specular reflections are not albedo-demodulated and not GTAO-darkened).
+    // UN-demodulated, non-AO direct group after its exact-direction response.
     // B1 tail (2026-06-10) — Lo_transmittedGI (glass refracted-GI × Fresnel-T ×
     // Beer tint) joins the UN-demodulated, non-AO direct group alongside
     // Lo_indirectSpec; glass transmission is not GTAO-darkened.
-    // Phase-3D lightMap slice — Lo_lightMap is baked outgoing radiance and also
-    // joins the non-AO direct group.
+    // Phase-3D lightMap slice — Lo_lightMap is baked outgoing radiance in the
+    // same aggregate local-source lane as emission.
     expect(SHADE_WGSL).toMatch(
-      /directRadiance\s*=\s*applyHomogeneousVolumeSingleScatter\(\s*\(Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_lightMap\s*\+\s*Lo_indirectSpec\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\s*\+\s*Lo_refractiveCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao\)\s*\*\s*layerTransmission\s*\+\s*Lo_transmittedGI/,
+      /aggregateSurfaceDirect\s*=\s*applyHomogeneousVolumeSingleScatter\(\s*\(Lo_emit\s*\+\s*Lo_emitterGlow\s*\+\s*Lo_lightMap\s*\+\s*\(Lo_refractiveCaustic\s*\+\s*Lo_skyAperture\)\s*\*\s*ao\)\s*\*\s*layerTransmission/,
+    );
+    expect(SHADE_WGSL).toMatch(
+      /visiblePrimaryDirect\s*=\s*aggregateSurfaceDirect\s*\+\s*Lo_indirectSpec\s*\+\s*\(Lo_direct\s*\+\s*Lo_analyticNEE\s*\+\s*Lo_sunNEE\)\s*\*\s*ao/,
+    );
+    expect(SHADE_WGSL).toContain(
+      'let directRadiance = visiblePrimaryDirect + Lo_transmittedGI;',
     );
   });
 

@@ -75,7 +75,10 @@ import {
 import type { BGLCache } from './bindGroupLayouts.js';
 import type { UboRef, PassOwnedUboRef } from './bindGroupBuilders.js';
 import { buildLightTreeBindGroup } from './bindGroupBuilders.js';
-import { FrameCaptureHelper } from './frameCapture.js';
+import {
+  FrameCaptureHelper,
+  type CapturedOutputFrame,
+} from './frameCapture.js';
 import { readDenoiserTrainingInputsWalkaround } from '../util/gpuReadback.js';
 import type { HybridDenoiserTrainingCapture } from '../HybridEnginePublic.js';
 import {
@@ -159,6 +162,10 @@ import {
   type RestirDISnapshot,
 } from '../restir/restirDiStateSnapshot.js';
 import { RESERVOIR_DI_STRIDE_U32 } from '../restir/reservoirDiLayout.js';
+import {
+  RESTIR_RESERVOIR_LOG_ZERO,
+  RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1,
+} from '../restir/reservoirRepresentation.js';
 
 /**
  * Prepared reservoir restore. Candidate buffers are fully populated before
@@ -184,7 +191,7 @@ interface RestirGIHistoryEpochInspection {
 /**
  * Recover the global mutation epoch embedded in a persisted GI cohort.
  *
- * Invalid/zero-weight records are intentionally ignored: the shaders reject
+ * Invalid/no-estimator records are intentionally ignored: the shaders reject
  * them before reuse and producers may still stamp failed candidate attempts.
  * Every record that can survive the temporal pass must, however, belong to one
  * non-zero epoch. Accepting a mixed cohort would make only an arbitrary subset
@@ -208,12 +215,20 @@ function inspectRestirGIHistoryEpoch(
     for (let record = 0; record < recordCount; record += 1) {
       const base = record * snapshot.strideU32;
       const prefixSupport = data[base + 24]!;
+      const sampleFlags = data[base + 19]!;
+      const hasSelectedEstimator =
+        floats[base + 11]! > RESTIR_RESERVOIR_LOG_ZERO &&
+        floats[base + 23]! > 0 &&
+        floats[base + 26]! > RESTIR_RESERVOIR_LOG_ZERO;
+      const isShiftableTechnique =
+        prefixSupport === 1 &&
+        (sampleFlags & 1) === 0;
+      const isLocalSelectedEstimate =
+        (prefixSupport === 2 || (sampleFlags & 3) !== 0) &&
+        hasSelectedEstimator;
       const semanticallyLive =
         data[base + 15]! > 0 &&
-        floats[base + 7]! > 0 &&
-        floats[base + 23]! > 0 &&
-        (prefixSupport === 1 || prefixSupport === 2) &&
-        floats[base + 26]! > 0;
+        (isShiftableTechnique || isLocalSelectedEstimate);
       if (!semanticallyLive) continue;
 
       const recordEpoch = data[base + 27]!;
@@ -720,10 +735,10 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  spatial passes, AND shade compact their dispatch to the active-parity half
    *  (genuinely skipping the gap-parity BVH casts + candidate sampling) and
    *  ResolvePass reprojects the gap. The FULL-RATE temporal pass stays full-res:
-   *  it reads each gap pixel's carried-forward reservoir (RIS seeds it on the
-   *  frame that pixel is active; the parity flips each frame) and keeps refining
-   *  it against the reprojected history, so every pixel always has a VALID
-   *  reservoir for spatial/shade to consume. Resolved once in initialize() from
+   *  it treats the gap pixel's stale current slot as an empty current technique
+   *  and evaluates the reprojected previous reservoir exactly once, so every
+   *  pixel has a VALID reservoir for spatial/shade without duplicated support.
+   *  Resolved once in initialize() from
    *  the host flag; consumed per-frame as the motion-gated `cbActiveThisFrame`
    *  (forced full-rate above `_checkerboardMotionThresholdSq`) threaded into the
    *  UBO (frameParity / checkerboardOn), the ris/spatial/shade dispatch
@@ -731,6 +746,11 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    *  spatial+shade ~1.28× whole-frame speedup at static/slow-motion, bit-identical
    *  to full-rate under faster motion. */
   private _checkerboard = false;
+  /** Exact refractive camera prefixes are evaluated in shadeMain and cannot be
+   *  reconstructed for an unshaded checkerboard parity. Scene publication
+   *  toggles this live gate; configured checkerboard resources may remain
+   *  allocated, but dispatch is forced full-rate while transmission exists. */
+  private _cameraPrefixFullRateRequired = false;
   /** NRC (Müller et al. 2021) live cache subsystem. Non-null ONLY when the
    *  engine was created with `nrcEnabled` (full-tier). When null (default) the
    *  gi-ris pipeline is the verbatim 4-group DDGI pass and no NRC GPU resources
@@ -937,6 +957,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
       this.#readbackReservoir(device, r.reservoirGiSpatialBuffer),
     ]);
     return {
+      representationVersion:
+        RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1,
       halfW,
       halfH,
       strideU32: RESERVOIR_GI_STRIDE_U32,
@@ -1353,14 +1375,18 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
   ): Promise<RestirDISnapshot | null> {
     if (!this._initialized || device !== this._device) return null;
     const r = this._res.restirDI;
+    const width = Math.max(1, Math.floor(this._width / this._reservoirScale));
+    const height = Math.max(1, Math.floor(this._height / this._reservoirScale));
     const [current, previous, spatial] = await Promise.all([
       this.#readbackReservoir(device, r.reservoirCurrentBuffer),
       this.#readbackReservoir(device, r.reservoirPreviousBuffer),
       this.#readbackReservoir(device, r.reservoirSpatialBuffer),
     ]);
     return {
-      width: Math.max(1, Math.floor(this._width / this._reservoirScale)),
-      height: Math.max(1, Math.floor(this._height / this._reservoirScale)),
+      representationVersion:
+        RESTIR_RESERVOIR_REPRESENTATION_LOG_MASS_V1,
+      width,
+      height,
       strideU32: RESERVOIR_DI_STRIDE_U32,
       current,
       previous,
@@ -1665,7 +1691,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
    * Pipeline stall: submits copyTextureToBuffer + mapAsync.  Use for
    * debugging / screenshot export, not per-frame readback.
    */
-  async captureOutputFrame(): Promise<Float32Array | null> {
+  async captureOutputFrame(): Promise<CapturedOutputFrame | null> {
     if (!this._initialized) return null;
     const compositeUbo = this._compositeUboRef.buf;
     if (compositeUbo == null) return null;
@@ -1819,6 +1845,9 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
        *  (frameParity / checkerboardOn) across the UBO, the dispatch compaction, and
        *  the ResolvePass gap-fill. GPU-validated on dzn. */
       checkerboard?: boolean;
+      /** Force shade/RIS/spatial dispatches to full rate while a scene contains
+       *  a camera-visible material-transmission path. */
+      cameraPrefixFullRateRequired?: boolean;
       /** NRC (Müller et al. 2021) live cache — COMPILE-TIME structural gate.
        *  When true, the gi-ris pipeline is built with a 5th `@group(4)` NRC bind
        *  group + the inline-MLP-forward shader variant, and a per-engine
@@ -1975,6 +2004,8 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     // groups; it only flips two already-present UBO fields + the ResolvePass
     // gate — so it is resolved here and consumed at construction + per frame.
     this._checkerboard = options?.checkerboard ?? false;
+    this._cameraPrefixFullRateRequired =
+      options?.cameraPrefixFullRateRequired ?? false;
 
     // ── Resolve the NRC structural gate BEFORE compiling pipelines ─────────
     // nrcEnabled is a COMPILE-TIME decision: it selects
@@ -3053,6 +3084,17 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     return this._denoiserPassEnabled;
   }
 
+  /** Keep refractive camera-prefix evaluation at one invocation per internal
+   *  pixel. The configured checkerboard mode resumes automatically when the
+   *  scene no longer contains a transmission path. */
+  setCameraPrefixFullRateRequired(required: boolean): void {
+    if (this._cameraPrefixFullRateRequired === required) return;
+    this._cameraPrefixFullRateRequired = required;
+    // Switching dispatch density invalidates carried checkerboard pixels and
+    // every downstream temporal accumulator that consumed them.
+    this.requestAccumReset();
+  }
+
   /**
    * Runtime PPG train-pass cadence. The pass graph and buffers are unchanged;
    * this only changes the modulo gate checked in {@link renderFrame}. Clamped
@@ -3210,6 +3252,7 @@ export class WalkaroundGPUPipeline implements BvhUpdateSink {
     const checkerboardState = {
       active:
         this._checkerboard &&
+        !this._cameraPrefixFullRateRequired &&
         !this._temporalHistoryClearPending &&
         !this._temporalHistoryFullRatePending &&
         !(camMoveSqUpfront > this._checkerboardMotionThresholdSq),

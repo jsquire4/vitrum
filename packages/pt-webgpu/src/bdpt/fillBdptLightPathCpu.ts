@@ -1,12 +1,13 @@
 /**
  * CPU reference packing of one invocation-private BDPT light path.
- * Production writes the same seven-row columns into bounded private WGSL memory;
+ * Production writes the same eight-row columns into bounded private WGSL memory;
  * this flat array exists only so tests can inspect the byte/row contract.
- * Flattened row-minor as `idx = col * 7 + row` (matches WGSL `bdptLightPathIndex`):
+ * Flattened row-minor as `idx = col * 8 + row` (matches WGSL `bdptLightPathIndex`):
  * per light-vertex column, row 0 = pos (+ kind in .w), row 1 = normal + pdfFwd,
  * row 2 = throughput + pdfRev, row 3 = (A9) matId (.w) + wo-toward-prev (.xyz),
  * row 4 = hit-local material payload (triIndex, baryVW, instanceIndex),
- * row 5 = interface eta metadata, row 6 = both medium sides and budgets.
+ * row 5 = interface eta metadata, row 6 = both medium sides and remaining
+ * budgets, row 7 = both original medium caps.
  * Bounce 0 is the emitter (matId < 0 ⇒ Lambertian/emission profile).
  */
 
@@ -14,7 +15,7 @@ import { sampleBdptBounce0Cpu } from './bdptEmitterPickCpu.js';
 
 const KIND_INVALID = 3;
 const KIND_LIGHT = 0;
-const LIGHT_PATH_ROWS = 7;
+const LIGHT_PATH_ROWS = 8;
 /** A9 — row-3 .w sentinel marking the emitter vertex (Lambertian/emission). */
 const LV_EMITTER_MATID = -1;
 
@@ -27,6 +28,11 @@ export interface BdptMediumSideRow {
   readonly incidentRemainingDistance: number;
   readonly transmittedMatId: number;
   readonly transmittedRemainingDistance: number;
+}
+
+export interface BdptMediumCapRow {
+  readonly incidentInitialDistance: number;
+  readonly transmittedInitialDistance: number;
 }
 
 /** CPU oracle for WGSL row 6: two bitcast u32 IDs and two f32 budgets. */
@@ -57,8 +63,32 @@ export function readBdptMediumSideRow(
   };
 }
 
+/** CPU oracle for WGSL row 7: original incident/transmitted finite caps. */
+export function writeBdptMediumCapRow(
+  data: Float32Array,
+  col: number,
+  row: BdptMediumCapRow,
+): void {
+  const offset = bdptLightPathColumnIndex(col, 7);
+  data[offset + 0] = row.incidentInitialDistance;
+  data[offset + 1] = row.transmittedInitialDistance;
+  data[offset + 2] = 0;
+  data[offset + 3] = 0;
+}
 
-/** Flat vec4f light-path buffer contents (`col * 7 + row` ordering). */
+export function readBdptMediumCapRow(
+  data: Float32Array,
+  col: number,
+): BdptMediumCapRow {
+  const offset = bdptLightPathColumnIndex(col, 7);
+  return {
+    incidentInitialDistance: data[offset + 0]!,
+    transmittedInitialDistance: data[offset + 1]!,
+  };
+}
+
+
+/** Flat vec4f light-path buffer contents (`col * 8 + row` ordering). */
 export function packBdptLightPathColumns(
   width: number,
   bounce0: ReturnType<typeof sampleBdptBounce0Cpu>,
@@ -82,6 +112,10 @@ export function packBdptLightPathColumns(
       incidentRemainingDistance: Math.fround(3.402823e38),
       transmittedMatId: 0xffffffff,
       transmittedRemainingDistance: Math.fround(3.402823e38),
+    });
+    writeBdptMediumCapRow(data, col, {
+      incidentInitialDistance: Math.fround(3.402823e38),
+      transmittedInitialDistance: Math.fround(3.402823e38),
     });
   const o0 = bdptLightPathColumnIndex(col, 0);
   const o1 = bdptLightPathColumnIndex(col, 1);

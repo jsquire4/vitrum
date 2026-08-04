@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { asMat4, type Scene } from '@vitrum/core';
 import {
+  isRestirTlasOnlySnapshotChange,
   isRestirTlasOnlyRefit,
   makeRestirBvhSnapshot,
+  refreshRestirBvhSnapshot,
+  restirBvhSnapshotStateEqual,
 } from '../src/restir/restirBvhSnapshot.js';
 import type { SceneBVHBuffers } from '../src/restir/bvhTypes.js';
 import type { RestirMergedGeometryLike } from '../src/restir/bvhTypes.js';
@@ -24,6 +27,16 @@ function minimalSceneBVH(overrides: Partial<SceneBVHBuffers> = {}): SceneBVHBuff
     bvhNodes: { cpuData: new ArrayBuffer(32), byteLength: 32, count: 1 },
     bvhIndex: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
     bvhPositions: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
+    opticalTriangleIdentity: {
+      cpuData: new Uint32Array([0, 1]).buffer,
+      byteLength: 8,
+      count: 1,
+    },
+    opticalInstanceBoundaryIdBasePlusOne: {
+      cpuData: new Uint32Array([1]).buffer,
+      byteLength: 4,
+      count: 1,
+    },
     triangleMaterialIds: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhBeerColors: { cpuData: new ArrayBuffer(4), byteLength: 4, count: 1 },
     bvhEmissiveLe: { cpuData: new ArrayBuffer(16), byteLength: 16, count: 1 },
@@ -57,6 +70,26 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
     expect(snap.bvhMode).toBe('merged');
     expect(snap.tlasNodeCount).toBe(0);
     expect(snap.boundingBox.max.x).toBeCloseTo(2);
+  });
+
+  it('retains exact bytes on hosts where SharedArrayBuffer is unavailable', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'SharedArrayBuffer');
+    Object.defineProperty(globalThis, 'SharedArrayBuffer', {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+    try {
+      const snapshot = makeRestirBvhSnapshot(minimalSceneBVH());
+      expect(snapshot.bvhMode).toBe('merged');
+      expect(new Uint8Array(snapshot.bvhNodes)).toHaveLength(32);
+    } finally {
+      if (descriptor === undefined) {
+        Reflect.deleteProperty(globalThis, 'SharedArrayBuffer');
+      } else {
+        Object.defineProperty(globalThis, 'SharedArrayBuffer', descriptor);
+      }
+    }
   });
 
   it('bumps contentVersion when TLAS nodes change', () => {
@@ -114,6 +147,54 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
       },
     }));
     expect(snapA.contentVersion).not.toBe(snapB.contentVersion);
+  });
+
+  it('retains exact bytes so an in-place mutation cannot be hidden by compact version tags', () => {
+    const buffers = minimalSceneBVH();
+    const before = refreshRestirBvhSnapshot(null, buffers);
+    new Uint8Array(buffers.bvhNodes.cpuData)[7] = 91;
+    const after = refreshRestirBvhSnapshot(before, buffers);
+
+    expect(after).not.toBe(before);
+    expect(restirBvhSnapshotStateEqual(before, after)).toBe(false);
+
+    // Simulate a collision in every compact public tag. Exact retained bytes,
+    // not those tags, remain the equality authority.
+    Object.assign(after as {
+      contentVersion: number;
+      blasContentVersion: number;
+      tlasContentVersion: number;
+      materialContentVersion: number;
+    }, {
+      contentVersion: before.contentVersion,
+      blasContentVersion: before.blasContentVersion,
+      tlasContentVersion: before.tlasContentVersion,
+      materialContentVersion: before.materialContentVersion,
+    });
+    expect(restirBvhSnapshotStateEqual(before, after)).toBe(false);
+  });
+
+  it('shares one retained snapshot for unchanged DDGI and RC readers', () => {
+    const buffers = minimalSceneBVH();
+    const ddgi = makeRestirBvhSnapshot(buffers);
+    const rc = makeRestirBvhSnapshot(buffers);
+    expect(rc).toBe(ddgi);
+  });
+
+  it('carries and versions both exact optical-identity streams', () => {
+    const buffers = minimalSceneBVH();
+    const before = makeRestirBvhSnapshot(buffers);
+    expect(new Uint32Array(before.opticalTriangleIdentity)).toEqual(
+      new Uint32Array([0, 1]),
+    );
+    expect(new Uint32Array(before.opticalInstanceBoundaryIdBasePlusOne)).toEqual(
+      new Uint32Array([1]),
+    );
+
+    new Uint32Array(buffers.opticalTriangleIdentity.cpuData)[0] = 7;
+    const after = refreshRestirBvhSnapshot(before, buffers);
+    expect(after.blasContentVersion).not.toBe(before.blasContentVersion);
+    expect(restirBvhSnapshotStateEqual(before, after)).toBe(false);
   });
 
   it('carries authored tangents and bumps BLAS version when tangent payload changes', () => {
@@ -220,6 +301,7 @@ describe('makeRestirBvhSnapshot (PR-5.1)', () => {
         materialContentVersion: snapA.materialContentVersion ^ 1,
       }),
     ).toBe(false);
+    expect(isRestirTlasOnlySnapshotChange(snapA, snapB)).toBe(true);
   });
 
   it('uses world AABB for TLAS when scene is provided', () => {

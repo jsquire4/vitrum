@@ -6,6 +6,22 @@
 
 import type { Vec2, Vec3 } from './math.js';
 
+/**
+ * Finite float32 transport surrogate for the KHR_materials_ior value `0`,
+ * which denotes the infinite-IOR compatibility endpoint in the core contract.
+ * Around this magnitude, unit offsets round away in float32, so Fresnel tends
+ * to exactly one while Snell/Jacobian arithmetic remains finite.
+ */
+export const KHR_MATERIALS_IOR_INFINITY_APPROX = 100_000_000;
+
+/** Resolve a validated authored IOR into the finite value used by transport. */
+export function effectiveMaterialIor(ior: number | undefined): number {
+  const finiteIor = typeof ior === 'number' && Number.isFinite(ior) ? ior : 1.5;
+  return finiteIor === 0
+    ? KHR_MATERIALS_IOR_INFINITY_APPROX
+    : Math.max(finiteIor, 1);
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Spectral rendering types (RFE-01)
 // ────────────────────────────────────────────────────────────────────────────
@@ -578,9 +594,10 @@ export type TextureMipFilterMode = 'none' | 'nearest' | 'linear';
  * carries `KHR_texture_transform`. `wrapS` / `wrapT` carry sampler address
  * modes so host adapters do not silently drop glTF sampler semantics; omitted
  * means `repeat`, matching the glTF default. `magFilter`, `minFilter`, and
- * `mipFilter` preserve authored sampler intent; omitted means the source asset
- * did not specify that sampler field, so a backend may use its documented
- * default filter policy.
+ * `mipFilter` preserve authored sampler intent. Omitted mag/min fields use each
+ * backend's documented policy; omitted `mipFilter` has the library-wide
+ * default `linear`. Sources that explicitly encode no mip lookup must publish
+ * `mipFilter: 'none'`.
  *
  * Host adapters construct these; backends read `.handle` to upload/sample and
  * `.texCoord`/`.transform`/sampler metadata to resolve UVs. Use

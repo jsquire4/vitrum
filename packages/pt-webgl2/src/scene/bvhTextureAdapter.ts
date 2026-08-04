@@ -67,7 +67,11 @@ function assertScenePackHasSingleBlas(pack: ScenePackResult): void {
  * PURE: re-stride shared-bvh's flat arrays into the 4 BVH data-texture payloads.
  * No GL — directly unit-testable (CPU-traverse the output vs a brute-force oracle).
  */
-export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
+export function packBvhTextureData(
+  pack: BvhTexturePackSource,
+  opticalComponentIds?: Uint32Array,
+  representedPrimitiveInstanceIds?: Uint32Array,
+): BvhTextureData {
   const merged = isWorldSpaceMergeResult(pack);
   if (!merged) assertScenePackHasSingleBlas(pack);
 
@@ -79,6 +83,25 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
   const vertexCount = merged ? pack.vertexCount : pack.positions.length / 4;
   const triangleCount = pack.triangleCount;
   const triMaterialIds = merged ? pack.triMaterialId : pack.triMaterialIds;
+  if (
+    opticalComponentIds !== undefined &&
+    opticalComponentIds.length !== triangleCount
+  ) {
+    throw new RangeError(
+      `pt-webgl2: optical component id count ${opticalComponentIds.length} ` +
+        `must equal triangle count ${triangleCount}`,
+    );
+  }
+  if (
+    representedPrimitiveInstanceIds !== undefined &&
+    representedPrimitiveInstanceIds.length !== triangleCount
+  ) {
+    throw new RangeError(
+      `pt-webgl2: represented primitive-instance id count ` +
+        `${representedPrimitiveInstanceIds.length} must equal triangle count ` +
+        `${triangleCount}`,
+    );
+  }
 
   // bvhBounds — RGBA32F, 2 texels/node
   const boundsDim = squareDim(nodeCount * 2);
@@ -131,7 +154,7 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
     index[dst + 2] = pack.indices[src + 2]!;
   }
 
-  // materialIndex — RGBA32UI .x, PER-TRIANGLE. The GLSL reads
+  // materialIndex — RGBA32UI .x/.y, PER-TRIANGLE. The GLSL reads
   // `uTexelFetch1D(materialIndexAttribute, surfaceHit.faceIndices.w).r` — indexed by the
   // triangle index stored in faceIndices.w by intersectTriangles() in bvh_ray_functions.glsl.js
   // (line: `faceIndices = uvec4( indices.xyz, i )` where `i` is the loop index into the
@@ -144,6 +167,8 @@ export function packBvhTextureData(pack: BvhTexturePackSource): BvhTextureData {
   const materialIndex = new Uint32Array(materialIndexDim * materialIndexDim * 4);
   for (let t = 0; t < triangleCount; t += 1) {
     materialIndex[t * 4] = triMaterialIds[t]!;
+    materialIndex[t * 4 + 1] = opticalComponentIds?.[t] ?? 0;
+    materialIndex[t * 4 + 2] = representedPrimitiveInstanceIds?.[t] ?? 0;
   }
 
   return {

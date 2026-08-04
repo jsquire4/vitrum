@@ -84,33 +84,32 @@ fn combineReceiverIndependentTemporalDI(
   var previous = previousInput;
   scaleReservoirDIToM(&previous, ubo.temporalMClampDI);
   var combined = emptyReservoirDI();
+  var wrs = representedWrsInit();
   updateReservoirDI(
     &combined,
+    &wrs,
     current.lightId,
     current.xi,
-    max(0.0, current.w_sum),
+    reservoirDiCoarseReuseLogWeight(current),
     rng,
   );
   updateReservoirDI(
     &combined,
+    &wrs,
     previous.lightId,
     previous.xi,
-    max(0.0, previous.w_sum),
+    reservoirDiCoarseReuseLogWeight(previous),
     rng,
   );
   combined.areaM = reservoirDiSaturatingAddU32(current.areaM, previous.areaM);
   combined.envM = reservoirDiSaturatingAddU32(current.envM, previous.envM);
   combined.M = reservoirDiSaturatingAddU32(current.M, previous.M);
-  if (combined.M > 0u && combined.w_sum > 0.0) {
+  if (wrs.hasSelection) {
     let pHat = restir_di_coarse_proposal_phat(
       combined.lightId,
       combined.xi,
     );
-    combined.W = select(
-      0.0,
-      combined.w_sum / (f32(combined.M) * pHat),
-      pHat > 0.0,
-    );
+    finaliseReservoirDIFromNativeWrs(&combined, wrs, pHat);
   }
   return combined;
 }
@@ -123,6 +122,19 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
 
   let pixelIdx = gid.y * reservoirDims.x + gid.x;
   var current = loadReservoirDI_rw(pixelIdx);
+  // Sparse RIS does not write the complementary checkerboard parity. The bytes
+  // left in current are therefore the same terminal reservoir copied into
+  // previous at the end of the preceding frame, not a new proposal. Treating
+  // both as independent inputs doubles M/support and overstates confidence.
+  // Start gap pixels with no current technique; valid reprojected history is
+  // still evaluated below against the current receiver and carried once.
+  let checkerboardGap =
+    ubo.checkerboardOn == 1u &&
+    restirReservoirScaleValue() == 1u &&
+    ((gid.x + gid.y) & 1u) != ubo.frameParity;
+  if (checkerboardGap) {
+    current = emptyReservoirDI();
+  }
   if (restirReservoirScaleValue() > 1u) {
     let previous = loadReservoirDI_ro(pixelIdx);
     var coarseRng = pcgInit(
@@ -185,7 +197,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
     reservoirDiSupportForLight(current, current.lightId);
   var currentAtCurrent = 0.0;
   var currentAtPrevious = 0.0;
-  if (currentSupport > 0u && current.W > 0.0) {
+  if (currentSupport > 0u && reservoirDiHasEstimatorNumerator(current)) {
     currentAtCurrent = restir_di_compute_phat_xi(
       current.lightId,
       current.xi,
@@ -202,7 +214,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
     reservoirDiSupportForLight(previous, previous.lightId);
   var previousAtCurrent = 0.0;
   var previousAtPrevious = 0.0;
-  if (previousSupport > 0u && previous.W > 0.0) {
+  if (previousSupport > 0u && reservoirDiHasEstimatorNumerator(previous)) {
     previousAtCurrent = restir_di_compute_phat_xi(
       previous.lightId,
       previous.xi,
@@ -236,6 +248,10 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
       currentPreviousLogDensity,
       currentMaxLogDensity,
     );
+  let currentLogDenominator = reservoirDiLogSumExpFromMaxScale(
+    currentMaxLogDensity,
+    currentScaledDenominator,
+  );
 
   let previousCurrentLogDensity = reservoirDiLogWeightedDensity(
     reservoirDiSupportForLight(current, previous.lightId),
@@ -258,49 +274,49 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
       previousSourceLogDensity,
       previousMaxLogDensity,
     );
+  let previousLogDenominator = reservoirDiLogSumExpFromMaxScale(
+    previousMaxLogDensity,
+    previousScaledDenominator,
+  );
   let currentLogWeight = reservoirDiGeneralizedReuseLogWeight(
     currentSourceLogDensity,
-    currentMaxLogDensity,
-    currentScaledDenominator,
+    currentLogDenominator,
     currentAtCurrent,
-    current.W,
+    currentAtCurrent,
+    current.logEstimatorNumerator,
   );
   let previousLogWeight = reservoirDiGeneralizedReuseLogWeight(
     previousSourceLogDensity,
-    previousMaxLogDensity,
-    previousScaledDenominator,
+    previousLogDenominator,
     previousAtCurrent,
-    previous.W,
+    previousAtPrevious,
+    previous.logEstimatorNumerator,
   );
-  let maxCandidateLogWeight = max(currentLogWeight, previousLogWeight);
 
   var rng = pcgInit(gid.x ^ 12345u, gid.y ^ 67890u, ubo.frameSeed ^ 0xABCDu);
   var combined = emptyReservoirDI();
+  var wrs = representedWrsInit();
   updateReservoirDI(
     &combined,
+    &wrs,
     current.lightId,
     current.xi,
-    reservoirDiScaledDensityFromLog(
-      currentLogWeight,
-      maxCandidateLogWeight,
-    ),
+    currentLogWeight,
     &rng,
   );
   updateReservoirDI(
     &combined,
+    &wrs,
     previous.lightId,
     previous.xi,
-    reservoirDiScaledDensityFromLog(
-      previousLogWeight,
-      maxCandidateLogWeight,
-    ),
+    previousLogWeight,
     &rng,
   );
   combined.areaM = reservoirDiSaturatingAddU32(current.areaM, previous.areaM);
   combined.envM = reservoirDiSaturatingAddU32(current.envM, previous.envM);
   combined.M = reservoirDiSaturatingAddU32(current.M, previous.M);
   var selectedCanonicalDensity = 0.0;
-  if (combined.w_sum > 0.0) {
+  if (wrs.hasSelection) {
     selectedCanonicalDensity = restir_di_compute_phat_xi(
       combined.lightId,
       combined.xi,
@@ -309,7 +325,7 @@ fn temporalMain(@builtin(global_invocation_id) gid: vec3u) {
   }
   finaliseReservoirDIFromGeneralizedReuse(
     &combined,
-    maxCandidateLogWeight,
+    wrs,
     selectedCanonicalDensity,
   );
 

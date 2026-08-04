@@ -82,6 +82,20 @@ function emitterScene(intensity = 1): Scene {
   };
 }
 
+function meshEmitterScene(intensity = 1): Scene {
+  const scene = emitterScene();
+  return {
+    ...scene,
+    emitters: [{
+      kind: 'mesh-area',
+      id: 'panel',
+      meshId: 'triangle',
+      color: [0.25, 0.5, 1],
+      intensity,
+    }],
+  };
+}
+
 function makeOptions(): HybridEngineOptions {
   return {
     device: makeDeviceStub(),
@@ -118,9 +132,8 @@ function preparedParticipant(
   };
 }
 
-function seedEngine(fault?: InjectedFault) {
+function seedEngine(fault?: InjectedFault, scene: Scene = emitterScene()) {
   const engine = new HybridEngine(makeOptions());
-  const scene = emitterScene();
   const bvh = buildReSTIRSceneBVHForCoreScene(scene, { bvhMode: 'tlas' });
   const events: string[] = [];
 
@@ -294,6 +307,39 @@ describe('HybridEngine.updateEmitter transaction', () => {
         'rc:rollback',
         'ddgi:rollback',
       ]);
+    } finally {
+      f.engine.dispose();
+    }
+  });
+
+  it('restores the prior emissive ownership bytes when publication fails', () => {
+    const f = seedEngine(
+      { owner: 'pipeline', phase: 'commit' },
+      meshEmitterScene(2),
+    );
+    try {
+      const previousBytes = new Uint8Array(
+        f.bvh.bvhEmissiveLe.cpuData,
+      ).slice();
+      const previousFloats = new Float32Array(previousBytes.buffer);
+      expect(Array.from(previousFloats)).toEqual([0.5, 1, 2, 1]);
+
+      expect(() => f.engine.updateEmitter('panel', { intensity: 0 }))
+        .toThrow('pipeline commit fault');
+
+      expect(f.internals._bvhBuffers).toBe(f.bvh);
+      const restoredBytes = new Uint8Array(
+        f.internals._bvhBuffers!.bvhEmissiveLe.cpuData,
+      );
+      expect(Array.from(restoredBytes)).toEqual(Array.from(previousBytes));
+      expect(Array.from(new Float32Array(
+        f.internals._bvhBuffers!.bvhEmissiveLe.cpuData,
+      ))).toEqual([0.5, 1, 2, 1]);
+
+      const [candidate] =
+        f.pipeline.prepareEmitterLightingMutation.mock.calls[0]!;
+      expect(Array.from(new Float32Array(candidate.bvhEmissiveLe.cpuData)))
+        .toEqual([0, 0, 0, 0]);
     } finally {
       f.engine.dispose();
     }

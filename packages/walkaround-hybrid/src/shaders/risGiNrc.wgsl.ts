@@ -122,12 +122,8 @@ import type { WgslModule } from '../pipeline/wgslComposer.js';
 import { nrcEncodeHelpersWgsl } from '../neural/nrc/wgsl/nrcEncoding.wgsl.js';
 import { nrcSpreadTerminationWgsl } from '../neural/nrc/wgsl/spreadTermination.wgsl.js';
 import { nrcQueryWgsl, type NrcQueryWgslOptions } from '../neural/nrc/wgsl/nrcQuery.wgsl.js';
-import {
-  RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL,
-  RIS_GI_GLASS_RESERVOIR_LOOP_WGSL,
-  RIS_GI_GLASS_VISIBILITY_TAIL_WGSL,
-} from './risGiGlassWalk.wgsl.js';
 import { NRC_INDEPENDENT_SUFFIX_WGSL } from './nrcIndependentSuffix.wgsl.js';
+import { RESTIR_GI_DIELECTRIC_SUFFIX_WGSL } from './risGi.wgsl.js';
 import { reservoirGiAccessorsWgsl } from './reservoirGi.wgsl.js';
 
 /** Config the NRC gi-ris module bakes its sizes from. Must agree with the host
@@ -166,9 +162,9 @@ ${reservoirGiAccessorsWgsl({ storeReadWriteBinding: 'reservoirGiCurrent' })}
 // sampleDDGIAtPoint are now provided by the shared ddgiGridUbo module.
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
-@group(3) @binding(2) var ddgiSampler:    sampler;
 
 const M_GI_BASE: u32 = 8u;
+${RESTIR_GI_DIELECTRIC_SUFFIX_WGSL}
 ${NRC_INDEPENDENT_SUFFIX_WGSL}
 
 @compute @workgroup_size(8, 8, 1)
@@ -226,15 +222,12 @@ fn risGiMain(@builtin(global_invocation_id) gid: vec3u) {
     scalarMatColor.rgb,
     sampleTransmissionMapForHit(hit, scalarMatColor.a),
   );
-  let isGlass = materialHasTransmission(matColor.a);
   let currentGrisEpoch = bitcast<u32>(ubo.sunAngular.y);
-
-${RIS_GI_GLASS_TRANSPORT_PREFIX_WGSL}
-
-${RIS_GI_GLASS_RESERVOIR_LOOP_WGSL}
-
-${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
-  }
+  // Native camera-prefix transmission belongs to shadeMain's exact
+  // full-resolution primary ray and is never cached by NRC. The local NRC
+  // technique still represents the visible interface's ordinary reflection
+  // and continuous (1-transmission) opaque share; its exact-native flag keeps
+  // that receiver-direction-dependent estimate from being shifted.
 
   let receiverMaterialCoord = vec2u(
     hit.indices.w % BVH_MATERIAL_TEX_WIDTH,
@@ -255,6 +248,7 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
   );
 
   var r: ReservoirGI = emptyReservoirGI();
+  var giWrs = representedWrsInit();
   r.xv = pos;
   r.nv = normal;
   r.receiverMaterialKey = restir_gi_receiver_domain_key(
@@ -263,15 +257,23 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     hit.indices.w,
     select(0u, hit.instanceIndex, ubo.bvhMode == 1u),
     receiverPayload,
+    matColor.a,
   );
   r.historyEpoch = currentGrisEpoch;
+  r.prefixVertexCount = GI_PREFIX_RECONNECTABLE;
+  // NRC suffix radiance/spread is receiver-direction dependent and cannot be
+  // reconstructed from the stored sample at another receiver. Keep the whole
+  // native technique local, including an all-null M-attempt record.
+  r.sampleFlags = GI_SAMPLE_FLAG_LOCAL_TECHNIQUE;
 
   let tier_raw = textureLoad(gi_tier, vec2i(fullPx), 0).r;
   let tier = clamp(tier_raw, 1u, 4u);
   let M_GI = M_GI_BASE * tier / 2u;
 
   let ppgGuidedOn = ubo.ppgEnabled == 1u;
-  let alpha = select(0.0, ubo.ppgMixAlpha, ppgGuidedOn);
+  let alpha = represented_bernoulli_probability_f32(
+    select(0.0, ubo.ppgMixAlpha, ppgGuidedOn),
+  );
 
   // ── NRC: primary-vertex footprint a0 (Müller §5). The primary edge is
   // camera→primary hit; its spread term uses the camera's per-pixel
@@ -314,9 +316,12 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     ubo.frameSeed ^ 0x74656163u,
     0x68657221u,
   );
-  let nrcTeacherSelectedLocal = min(
-    u32(rand_f32(&nrcTeacherSelectRng) * f32(nrcTeacherBlockLength)),
-    nrcTeacherBlockLength - 1u,
+  // Exact uniform selection for arbitrary block lengths. A 24-bit float
+  // multiply gives some pixels one more random bucket when the length does not
+  // divide 2^24; the shared full-u32 rejection sampler removes that bias.
+  let nrcTeacherSelectedLocal = rand_bounded_u32(
+    &nrcTeacherSelectRng,
+    nrcTeacherBlockLength,
   );
   let nrcTeacherEligible =
     nrcCfg.recordCap > 0u &&
@@ -365,15 +370,23 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
 
     var xs:  vec3f;
     var ns:  vec3f;
+    var reservoirNs: vec3f;
     var Lo:  vec3f;
     var sampleKind: u32 = GI_SAMPLE_ENVIRONMENT;
 
     if (bounceHit.didHit) {
       sampleKind = GI_SAMPLE_SURFACE;
       xs = bounceRay.origin + wi * bounceHit.dist;
+      reservoirNs = bounceHit.normal;
       let smoothNs = restir_gi_smooth_normal_for_hit(bounceHit, bounceHit.normal);
-      ns = applyBumpMapForHit(bounceHit, applyNormalMapForHit(bounceHit, smoothNs));
-      let irrAtXs = min(sampleDDGIAtPoint(xs, ns), vec3f(ubo.restirGiIrrClamp));
+      ns = applyBumpMapForHit(
+        bounceHit,
+        applyNormalMapForHit(bounceHit, smoothNs),
+      );
+      let irrAtXs = min(
+        sampleDDGIAtPoint(xs, ns),
+        vec3f(ubo.restirGiIrrClamp),
+      );
       let xsRmCoord = vec2u(
         bounceHit.indices.w % BVH_MATERIAL_TEX_WIDTH,
         bounceHit.indices.w / BVH_MATERIAL_TEX_WIDTH,
@@ -387,12 +400,29 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         wi,
         xsMaterialWord,
       );
-      let ddgiProxyLo = xsPayload.Lo;
+      let xsTransmission = clamp(xsPayload.transmission, 0.0, 1.0);
+      var ddgiProxyLo = xsPayload.Lo;
+      if (
+        !decodeIsUnlitMaterial(xsMaterialWord) &&
+        xsTransmission > 0.0
+      ) {
+        // The cache key intentionally rejects transmissive candidates, but the
+        // non-cache fallback must still evaluate their complete bounded suffix.
+        // Reuse the ordinary RIS state machine verbatim so a second dielectric
+        // cannot collapse to one local DDGI payload or lose nested/TIR transport.
+        ddgiProxyLo = traceRestirGiDielectricSuffix(
+          bounceHit,
+          xs,
+          bounceHit.dist,
+          ns,
+          wi,
+          xsPayload.emissionLo,
+          xsPayload.opaqueLo,
+          xsTransmission,
+          &rng,
+        );
+      }
       let ddgiLo = ddgiProxyLo;
-      let xsTransmission = sampleTransmissionMapForHit(
-        bounceHit,
-        decodeMaterialColor(bounceHit.matColorPacked).a,
-      );
 
       // ── NRC cache termination (Müller §5) ──
       // The bounce edge pos→xs accumulates spread. The candidate's source pdf
@@ -414,18 +444,28 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
       var runningSum: f32 = 0.0;
       let cosArrive = abs(dot(ns, -wi));
       let pCosBounce = cosTheta * INV_PI;
-      var pSrcBounce = pCosBounce;
+      var logPSrcBounce = reservoirGiLogPositive(pCosBounce);
       if (alpha > 0.0) {
-        pSrcBounce = alpha * ppgEvalPdf(pos, wi) + (1.0 - alpha) * pCosBounce;
+        logPSrcBounce = reservoirGiLogProposalMixture(
+          alpha,
+          ppgEvalPdf(pos, wi),
+          pCosBounce,
+        );
       }
-      if (!nrcFinite(pSrcBounce) || !(pSrcBounce > 0.0)) {
+      if (!reservoirGiValidLog(logPSrcBounce)) {
         nrcRecordInvalidPdf();
         recordInvalidReservoirGICandidate(&r, GI_SAMPLE_SURFACE, currentGrisEpoch);
         continue;
       }
+      let pSrcBounce = reservoirGiRepresentPositiveLog(logPSrcBounce);
       let aX = nrcAccumulateSpread(&runningSum, bounceHit.dist, pSrcBounce, cosArrive);
-      // The cache key omits IOR/transmission; glass stays on its dedicated path.
-      if (nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC) && xsTransmission <= 0.3) {
+      // The cache key omits IOR/transmission. Require the canonical exact
+      // no-transmission classification so even weak partial glass stays on its
+      // dedicated transport path instead of aliasing an opaque cache entry.
+      if (
+        nrcShouldTerminateIntoCache(aX, a0, nrcCfg.spreadC) &&
+        !materialHasTransmission(xsTransmission)
+      ) {
         let xsAlbedo = xsPayload.albedo;
         // A6 — real mapped payload roughness (was hardcoded 1.0). The
         // diffuse-default invariant still yields rough≈0.85 for materials
@@ -468,25 +508,16 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
     } else {
       xs = pos + wi * walkaroundReconnectMaxDistance();
       ns = -wi;
+      reservoirNs = ns;
       // Wave 4 parity — directional IBL: sample the actual map along wi (same
       // as risGi.wgsl:264). envRadiance falls back to skyTint×skyIrradiance when
       // no HDRI is bound, preserving byte-identity with the scalar-sky path.
       Lo = envRadiance(wi);
     }
 
-    var candidateVisibility: f32 = 1.0;
-    var pHat: f32;
-    var tMax = INFINITY;
-    if (sampleKind == GI_SAMPLE_SURFACE) {
-      tMax = max(0.0, safe_length(xs - pos) - walkaroundRayEndMargin());
-    }
-    let shadowTint = traceSceneAlphaTintTransmittanceTextured(
-      ubo.bvhMode, ubo.tlasNodeCount,
-
-      pos + geoNormal * walkaroundRayOriginBias(), wi, tMax, ubo.triIntersectEpsilon,
-      bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-    );
-    candidateVisibility = clamp(luminance(shadowTint), 0.0, 1.0);
+    // Stochastic alpha occupancy was already consumed by the first-hit walk;
+    // native NRC candidates therefore carry unit segment visibility.
+    let candidateVisibility: f32 = 1.0;
     var receiverLo = Lo;
     if (sampleKind == GI_SAMPLE_ENVIRONMENT) {
       receiverLo = walkaroundScaleEnvironmentRadiance(
@@ -494,57 +525,51 @@ ${RIS_GI_GLASS_VISIBILITY_TAIL_WGSL}
         receiverPayload.envMapIntensity,
       );
     }
-    pHat = restir_gi_receiver_phat_from_payload(
+    let receiverPHat = restir_gi_receiver_phat_from_payload(
       pos,
       normal,
       receiverPayload.clearcoatNormal,
       safe_normalize(-primaryRay.direction),
       receiverPayload,
+      matColor.a,
       xs,
       receiverLo,
-    ) * candidateVisibility;
-    let invalidPHat = !nrcFinite(pHat) || !(pHat > 0.0)
-      || !nrcFinite(candidateVisibility) || !(candidateVisibility > 0.0);
-    if (invalidPHat) {
+    );
+    let logPHat = reservoirGiLogPositiveProduct(receiverPHat, candidateVisibility);
+    if (!reservoirGiValidLog(logPHat)) {
       nrcRecordInvalidPdf();
       recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
       continue;
     }
-
-    var pSrc: f32;
+    var logPSrc: f32;
+    let pCos = cosTheta * INV_PI;
     if (alpha > 0.0) {
-      let pCos = cosTheta * INV_PI;
       let pGuide = ppgEvalPdf(pos, wi);
-      pSrc = alpha * pGuide + (1.0 - alpha) * pCos;
+      logPSrc = reservoirGiLogProposalMixture(alpha, pGuide, pCos);
     } else {
-      pSrc = cosTheta * INV_PI;
+      logPSrc = reservoirGiLogPositive(pCos);
     }
-    if (!nrcFinite(pSrc) || !(pSrc > 0.0)) {
+    if (!reservoirGiValidLog(logPSrc)) {
       nrcRecordInvalidPdf();
       recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
       continue;
     }
-    let w = pHat / pSrc;
-    if (!nrcFinite(w) || !(w > 0.0)
-     || !nrcFinite(r.w_sum) || r.w_sum < 0.0
-     || w > 3.402823466e38 - r.w_sum) {
+    let logWeight = logPHat - logPSrc;
+    if (!reservoirGiValidLog(logWeight)) {
       nrcRecordInvalidPdf();
       recordInvalidReservoirGICandidate(&r, sampleKind, currentGrisEpoch);
       continue;
     }
     updateReservoirGIWithMetadata(
-      &r, xs, ns, Lo, sampleKind, wi,
-      pHat, candidateVisibility, currentGrisEpoch, w, &rng,
+      &r, &giWrs, xs, reservoirNs, Lo, sampleKind, wi,
+      GI_SAMPLE_FLAG_LOCAL_TECHNIQUE,
+      logPHat, candidateVisibility, currentGrisEpoch, logWeight, &rng,
     );
   }
 
-  if (nrcFinite(r.nativePHat) && r.nativePHat > 0.0
-   && nrcFinite(r.w_sum) && r.w_sum >= 0.0) {
-    finaliseGIReservoirWFromPHat(&r, ubo.restirGiWCap, r.nativePHat);
-  } else {
+  finaliseGIReservoirFromNativeWrs(&r, giWrs, ubo.restirGiWCap);
+  if (r.M > 0u && !reservoirGiHasEstimatorNumerator(r)) {
     nrcRecordInvalidPdf();
-    r.W = 0.0;
-    r.w_sum = 0.0;
   }
 
   // Write one matched input/teacher record if any candidate crossed the spread

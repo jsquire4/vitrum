@@ -334,7 +334,7 @@ describe('buildEquirectInfo', () => {
     expect(candidate.map!.data[7]).toBeGreaterThan(0);
   });
 
-  it('reports zero density for a bin flattened by the uploaded Float32 CDF', () => {
+  it('preserves tiny positive support in the represented 24-bit CDF', () => {
     const candidate = buildEquirectInfo({
       kind: 'hdri',
       hdri: {
@@ -343,9 +343,11 @@ describe('buildEquirectInfo', () => {
         data: new Float32Array([1, 1, 1, 1e-8, 1e-8, 1e-8]),
       },
     });
-    expect(candidate.conditional!.data[0]).toBe(1);
+    expect(candidate.conditional!.data[0]).toBe(1 - 2 ** -24);
     expect(candidate.conditional!.data[4]).toBe(1);
-    expect(candidate.map!.data[7]).toBe(0);
+    expect(candidate.map!.data[7]).toBeGreaterThan(0);
+    expect(candidate.map!.data[7]).toBe(Math.fround((2 ** -24) / (2 * Math.PI)));
+    expect(candidate.map!.data[7]! * (2 * Math.PI)).toBeCloseTo(2 ** -24, 14);
   });
 
   it('bakes procedural-sky environments into the equirect HDRI path', () => {
@@ -385,7 +387,13 @@ describe('buildEquirectInfo', () => {
 
     expect(skyOut.map).not.toBeNull();
     expect(skyOut.totalSum).toBe(0);
-    expect(Array.from(skyOut.map!.data).every((v) => v === 0)).toBe(true);
+    for (let texel = 0; texel < skyOut.map!.width * skyOut.map!.height; texel += 1) {
+      const base = texel * 4;
+      expect(Array.from(skyOut.map!.data.slice(base, base + 3))).toEqual([0, 0, 0]);
+      // A black source uses the deterministic uniform represented fallback;
+      // alpha remains the proposal density even though global selection mass is zero.
+      expect(skyOut.map!.data[base + 3]).toBeGreaterThan(0);
+    }
   });
 
   it('places the procedural-sky maximum near the authored sun direction', () => {

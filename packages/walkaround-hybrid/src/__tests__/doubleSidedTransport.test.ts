@@ -13,6 +13,10 @@ import {
 } from '../restir/packingHelpers.js';
 import { makeProbeUpdateRaysWGSL } from '../ddgi/wgsl/probeUpdateRays.wgsl.js';
 import { MATERIAL_ATLAS_WGSL } from '../shaders/materialAtlas.wgsl.js';
+import { NRC_INDEPENDENT_SUFFIX_WGSL } from '../shaders/nrcIndependentSuffix.wgsl.js';
+import { REFRACTIVE_CAUSTICS_WGSL } from '../shaders/refractiveCaustics.wgsl.js';
+import { RIS_GI_WGSL } from '../shaders/risGi.wgsl.js';
+import { NATIVE_GLASS_GI_WGSL } from '../shaders/risGiGlassWalk.wgsl.js';
 import { SCENE_TRAVERSAL_WGSL } from '../shaders/sceneTraversal.wgsl.js';
 import { SURFACE_TEXTURES_WGSL } from '../shaders/surfaceTextures.wgsl.js';
 import { TRANSPARENT_OIT_WGSL } from '../shaders/transparentOit.wgsl.js';
@@ -85,5 +89,111 @@ describe('walkaround double-sided transport', () => {
     expect(ddgi).toContain('fn ddgiMaterialSideAdmittedForHit(');
     expect(ddgi).toContain('(mat.flags & MATERIAL_FLAG_DOUBLE_SIDED) != 0u');
     expect(ddgi).toContain('mat.transmission > 0.0');
+  });
+
+  it('evaluates the authored opposite-face normal map at reciprocal sheet interfaces', () => {
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'fn applyFaceLayerNormalMapForSideForHit(',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'fn applyNormalMapForSideForHit(',
+    );
+    for (const source of [
+      RIS_GI_WGSL,
+      NRC_INDEPENDENT_SUFFIX_WGSL,
+      NATIVE_GLASS_GI_WGSL,
+      REFRACTIVE_CAUSTICS_WGSL,
+    ]) {
+      expect(source).toContain('applyNormalMapForSideForHit(');
+    }
+    expect(RIS_GI_WGSL).toContain('slabFrontFacing = !slabFrontFacing;');
+    expect(NRC_INDEPENDENT_SUFFIX_WGSL).toContain(
+      'slabFrontFacing = !slabFrontFacing;',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).toContain(
+      'primaryHit, primarySmoothNormal, slabFrontFacing,',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).toContain(
+      'walkHit, walkSmoothNormal, slabFrontFacing,',
+    );
+    expect(NATIVE_GLASS_GI_WGSL).not.toContain('slabNormal = -slabNormal;');
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain(
+      'let exitRoughness = faceLayerRoughness(mappedBaseRoughness, exitLayer);',
+    );
+    expect(REFRACTIVE_CAUSTICS_WGSL).toContain(
+      'hit, interfaceSmoothNormal, hit.side < 0.0,',
+    );
+  });
+
+  it('matches an actual reciprocal non-flat tangent frame, including mirrored TLAS handedness', () => {
+    type Vec3 = readonly [number, number, number];
+    const cross = (a: Vec3, b: Vec3): Vec3 => [
+      a[1] * b[2] - a[2] * b[1],
+      a[2] * b[0] - a[0] * b[2],
+      a[0] * b[1] - a[1] * b[0],
+    ];
+    const normalize = (v: Vec3): Vec3 => {
+      const inv = 1 / Math.hypot(...v);
+      return [v[0] * inv, v[1] * inv, v[2] * inv];
+    };
+    const mapped = (
+      normal: Vec3,
+      tangent: Vec3,
+      handedness: number,
+      sample: Vec3,
+    ): Vec3 => {
+      const bitangent = cross(normal, tangent).map(
+        (lane) => lane * handedness,
+      ) as unknown as Vec3;
+      return normalize([
+        tangent[0] * sample[0] + bitangent[0] * sample[1] + normal[0] * sample[2],
+        tangent[1] * sample[0] + bitangent[1] * sample[1] + normal[1] * sample[2],
+        tangent[2] * sample[0] + bitangent[2] * sample[1] + normal[2] * sample[2],
+      ]);
+    };
+    const nonFlatSample = normalize([0.37, -0.41, 0.83]);
+    const physicalFront: Vec3 = [0, 0, 1];
+    const actualBack: Vec3 = [0, 0, -1];
+
+    for (const mirrorSign of [1, -1]) {
+      for (const authoredHandedness of [1, -1]) {
+        const tangent: Vec3 = [mirrorSign, 0, 0];
+        const worldHandedness = authoredHandedness * mirrorSign;
+        const actual = mapped(
+          actualBack,
+          tangent,
+          worldHandedness,
+          nonFlatSample,
+        );
+        // materialNormalFrameForSideForHit flips the physical face-forward
+        // normal before materialTangentFrameForHit derives its bitangent.
+        const virtual = mapped(
+          physicalFront.map((lane) => -lane) as unknown as Vec3,
+          tangent,
+          worldHandedness,
+          nonFlatSample,
+        );
+        expect(virtual).toEqual(actual);
+        expect(mapped(
+          physicalFront,
+          tangent,
+          worldHandedness,
+          nonFlatSample,
+        )).not.toEqual(actual);
+      }
+    }
+
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'fn materialNormalFrameForSideForHit(',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'isFrontFace == (hit.side >= 0.0)',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'let sideNormal = materialNormalFrameForSideForHit(',
+    );
+    expect(MATERIAL_ATLAS_WGSL).toContain(
+      'authoredHandedness = authoredHandedness * tangentHandednessForLocalToWorld(',
+    );
   });
 });

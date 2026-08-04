@@ -87,10 +87,13 @@ export const bdpt_connection = /* glsl */`
 		bool hasTargetFace,
 		uint targetFaceIndex,
 		out vec3 attenColor
-	) {
-		attenColor = vec3( 1.0 );
-		if ( skipOcclusion ) return true;
-		vec3 dir  = lightPos - eyePos;
+		) {
+			attenColor = vec3( 1.0 );
+			if ( skipOcclusion ) return true;
+			// Every BDPT connection is a visibility ray. Do not inherit the random
+			// continuation classification from the eye path when applying castShadow.
+			state.isShadowRay = true;
+			vec3 dir  = lightPos - eyePos;
 		if ( ! bdptFiniteVec3( dir ) ) return false;
 		float len = vitrumLengthVec3( dir );
 		if ( ! ( len > RAY_OFFSET ) ) return false;
@@ -98,6 +101,7 @@ export const bdpt_connection = /* glsl */`
 		shadowRay.origin    = eyePos;
 		shadowRay.direction =
 			vitrumNormalizeVec3( dir, vec3( 0.0 ) );
+		setOrdinaryRayRange( shadowRay );
 			bool occluded = attenuateHit(
 				state,
 				shadowRay,
@@ -107,6 +111,53 @@ export const bdpt_connection = /* glsl */`
 				attenColor
 			);
 		return ! occluded;
+	}
+
+	// Reconcile the two independently consumed histories for the same open
+	// connection segment. A finite KHR volume cap belongs to the whole path
+	// through that represented boundary, so the connection remainder is
+	// H - eyeConsumed - lightConsumed, clamped at zero. Distinct stack topology
+	// or distinct entry-sampled caps cannot be combined without inventing state
+	// and therefore fail closed.
+	bool bdptReconcileConnectionMediumStacks(
+		inout MediumStack eyeStack,
+		const in MediumStack lightStack,
+		sampler2D tex,
+		inout FogMaterial eyeFog
+	) {
+		if ( eyeStack.count != lightStack.count ) return false;
+		for ( int i = 0; i < MEDIUM_STACK_CAPACITY; i ++ ) {
+			if ( i >= eyeStack.count ) break;
+			if (
+				eyeStack.boundaryIds[ i ] != lightStack.boundaryIds[ i ] ||
+				eyeStack.materialIds[ i ] != lightStack.materialIds[ i ] ||
+				eyeStack.hasAttenuationThicknesses[ i ] !=
+					lightStack.hasAttenuationThicknesses[ i ]
+			) return false;
+			if ( ! eyeStack.hasAttenuationThicknesses[ i ] ) continue;
+			float initialThickness =
+				eyeStack.initialAttenuationThicknesses[ i ];
+			float lightInitialThickness =
+				lightStack.initialAttenuationThicknesses[ i ];
+			float eyeRemaining = eyeStack.attenuationThicknesses[ i ];
+			float lightRemaining = lightStack.attenuationThicknesses[ i ];
+			if (
+				initialThickness != lightInitialThickness ||
+				isnan( initialThickness ) || isinf( initialThickness ) ||
+				! ( initialThickness >= eyeRemaining ) ||
+				! ( initialThickness >= lightRemaining ) ||
+				eyeRemaining < 0.0 || lightRemaining < 0.0
+			) return false;
+			float lightConsumed = initialThickness - lightRemaining;
+			// Algebraically max(H-eyeConsumed-lightConsumed, 0), arranged
+			// without adding two potentially huge finite consumed distances.
+			eyeStack.attenuationThicknesses[ i ] = max(
+				eyeRemaining - lightConsumed,
+				0.0
+			);
+		}
+		refreshMediumFromStack( eyeStack, tex, eyeFog );
+		return true;
 	}
 
 	// ── Full §10.3 power-heuristic MIS weight ─────────────────────────────────
@@ -158,7 +209,9 @@ export const bdpt_connection = /* glsl */`
 				mFwd[ i ] = l1.w;       // stored SA pdfFwd (no baked-in G)
 				mRev[ i ] = l2.w;       // stored SA pdfRev placeholder / patched straddle value
 				mMedium[ i ] = l3.w == BDPT_LV_MEDIUM_MATID;
-				mSpec[ i ] = l0.w == BDPT_KIND_DELTA;
+				mSpec[ i ] =
+					l0.w == BDPT_KIND_DELTA ||
+					l0.w == BDPT_KIND_NON_CONNECTABLE;
 				if ( i == c && l3.w >= 0.0 ) {
 					mSpec[ i ] = fwdEe <= 0.0 || revLc <= 0.0;
 				}
@@ -361,6 +414,7 @@ export const bdpt_connection = /* glsl */`
 		vec3 eyeThroughput,
 		SurfaceRecord eyeSurf,
 		RenderState eyeState,
+		uint eyeBoundaryId,
 		int eyeDepth,
 		vec3 bdptEyePos[ BDPT_MAX_EYE_DEPTH ],
 		vec3 bdptEyeNrm[ BDPT_MAX_EYE_DEPTH ],
@@ -385,10 +439,17 @@ export const bdpt_connection = /* glsl */`
                 vec4 lv5 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 5 ), 0 );
                 vec4 lv6 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 6 ), 0 );
                 vec4 lv7 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 7 ), 0 );
+		vec4 lv8 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 8 ), 0 );
+		vec4 lv9 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 9 ), 0 );
+		vec4 lv10 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 10 ), 0 );
+		vec4 lv11 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 11 ), 0 );
+		vec4 lv12 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 12 ), 0 );
+		vec4 lv13 = texelFetch( uBdptLightPathTex, ivec2( lightVtxIdx, 13 ), 0 );
 		if ( lv0.w == 3.0 ) return vec3( 0.0 ); // BDPT_KIND_INVALID
 		if (
 			! bdptStoredVertexRowsValid(
-				lv0, lv1, lv2, lv3, lv4, lv5, lv6, lv7
+				lv0, lv1, lv2, lv3, lv4, lv5, lv6, lv7,
+				lv8, lv9, lv10, lv11, lv12, lv13
 			) ||
 			! bdptFiniteVec3( eyePos ) ||
 			( ! eyeSurf.volumeParticle &&
@@ -406,6 +467,14 @@ export const bdpt_connection = /* glsl */`
 		vec3  lightThroughput = lv2.xyz;
 		vec3  lightWoPrev     = lv3.xyz;
 		float lightMatId      = lv3.w;
+		MediumStack lightIncidentStack;
+		FogMaterial lightIncidentMedium;
+		if (
+			! bdptUnpackMediumStack(
+				lv5, lv6, lv7, lv8, lv9, lv10, lv11, lv12, lv13,
+				lightIncidentStack, lightIncidentMedium
+			)
+		) return vec3( 0.0 );
 		bool lightIsMedium    = lightMatId == BDPT_LV_MEDIUM_MATID;
 		bool lightIsEndpoint  = lightVtxIdx == 0;
 		bool pointEndpoint = lightIsEndpoint && lightMatId == BDPT_LV_POINT_EMITTER_MATID;
@@ -445,6 +514,27 @@ export const bdpt_connection = /* glsl */`
 		if ( ! ( dist > RAY_OFFSET ) ) return vec3( 0.0 );
 			vec3 connDir =
 				vitrumNormalizeVec3( toLight, vec3( 0.0 ) ); // E_e → L_c
+			SurfaceRecord lightSurf;
+			if ( lightIsMedium ) {
+				if ( lv5.x <= 0.0 || lv7.y < 0.0 ) return vec3( 0.0 );
+				FogMaterial lightFog = readFogMaterialInfo(
+					materials, uint( round( lv7.y ) )
+				);
+				if (
+					! lightFog.fogVolume ||
+					lightIncidentStack.count <= 0 ||
+					lightIncidentStack.materialIds[
+						lightIncidentStack.count - 1
+					] != uint( round( lv7.y ) )
+				) return vec3( 0.0 );
+				setFogSurfaceRecord( lightFog, lightSurf );
+			} else if ( ! lightIsEndpoint ) {
+				if ( ! bdptLoadSurfaceRecord(
+					lightMatId, lv4, lv7.zw,
+					lightNormal, eyeState.wavelength,
+					lightIncidentStack, lightSurf
+				) ) return vec3( 0.0 );
+			}
 			vec3 visibilityOffset = connDir;
 			if ( ! eyeSurf.volumeParticle ) {
 				if (
@@ -479,12 +569,114 @@ export const bdpt_connection = /* glsl */`
 			gTerm = spotAttenuation * getDistanceAttenuation( dist, lv4.y, lv4.z );
 		}
 		if ( gTerm <= 0.0 || ! bdptFiniteFloat( gTerm ) ) return vec3( 0.0 );
-		vec3 bdptVisibilityColor;
-		if (
-				! bdptVisibilityAttenuation(
-					visibilityOrigin,
-					lightPos,
-				eyeState,
+			vec3 bdptVisibilityColor;
+			RenderState connectionState = eyeState;
+			#if ADVANCED_OPTICAL_TRANSPORT
+			// visibilityOrigin is already stepped to the connection side, so update a
+			// local stack for that side before tracing the open segment. The sampled eye
+			// continuation retains its independent state transition in renderMain.
+			bool connectionCrossesEyeBoundary =
+				! eyeSurf.volumeParticle &&
+				dot( connDir, eyeSurf.faceNormal ) < 0.0;
+			if ( connectionCrossesEyeBoundary ) {
+
+				MaterialControl eyeControl;
+				readMaterialControl( materials, eyeSurf.materialIndex, eyeControl );
+				if ( eyeControl.opticalVolume ) {
+
+					bool stackValid = eyeSurf.frontFace
+						? enterMedium(
+							connectionState.mediumStack, eyeBoundaryId,
+							eyeSurf.materialIndex,
+							eyeSurf.hasAttenuationThickness,
+							eyeSurf.attenuationThickness,
+							materials, connectionState.fogMaterial
+						)
+						: leaveMedium(
+							connectionState.mediumStack, eyeBoundaryId,
+							eyeSurf.materialIndex,
+							materials, connectionState.fogMaterial
+						);
+					if ( ! stackValid ) return vec3( 0.0 );
+
+				}
+
+			}
+
+			MediumStack lightConnectionStack = lightIncidentStack;
+			FogMaterial lightConnectionFog = lightIncidentMedium;
+			if ( lightIsEndpoint ) {
+				// Endpoint vertices have no predecessor incident segment. Classify
+				// the exact endpoint side selected by this connection direction.
+				if ( ! bvhBuildMediumStack(
+					lightPos, - connDir,
+					materialIndexAttribute, materials, attributesArray,
+					lightConnectionStack, lightConnectionFog
+				) ) return vec3( 0.0 );
+			} else if ( ! lightIsMedium ) {
+				bool connectionCrossesLightBoundary =
+					dot( - connDir, lightSurf.faceNormal ) < 0.0;
+				if ( connectionCrossesLightBoundary ) {
+					uint lightFaceIndex = meshLightSourceFaceIndex( lv7.zw );
+					uvec4 lightIdentity = uTexelFetch1D(
+						materialIndexAttribute, lightFaceIndex
+					);
+					uint lightMaterialIndex = uint(
+						max( floor( lightMatId + 0.5 ), 0.0 )
+					);
+					if ( lightIdentity.r != lightMaterialIndex ) {
+						return vec3( 0.0 );
+					}
+					MaterialControl lightControl;
+					readMaterialControl(
+						materials, lightMaterialIndex, lightControl
+					);
+					if ( lightControl.opticalVolume ) {
+						bool lightStackValid = lightSurf.frontFace
+							? enterMedium(
+								lightConnectionStack, lightIdentity.g,
+								lightMaterialIndex,
+								lightSurf.hasAttenuationThickness,
+								lightSurf.attenuationThickness,
+								materials, lightConnectionFog
+							)
+							: leaveMedium(
+								lightConnectionStack, lightIdentity.g,
+								lightMaterialIndex,
+								materials, lightConnectionFog
+							);
+						if ( ! lightStackValid ) return vec3( 0.0 );
+					}
+				}
+			}
+
+			// Visibility ignores castShadow:false media on both halves. Reconcile
+			// only the remaining shadow-casting histories, then trace using their
+			// cumulative finite-cap remainder.
+			MediumStack eyeVisibilityStack;
+			MediumStack lightVisibilityStack;
+			FogMaterial eyeVisibilityFog = connectionState.fogMaterial;
+			FogMaterial lightVisibilityFog = lightConnectionFog;
+			filterShadowMediumStack(
+				connectionState.mediumStack, materials,
+				eyeVisibilityStack, eyeVisibilityFog
+			);
+			filterShadowMediumStack(
+				lightConnectionStack, materials,
+				lightVisibilityStack, lightVisibilityFog
+			);
+			if ( ! bdptReconcileConnectionMediumStacks(
+				eyeVisibilityStack, lightVisibilityStack,
+				materials, eyeVisibilityFog
+			) ) return vec3( 0.0 );
+			connectionState.mediumStack = eyeVisibilityStack;
+			connectionState.fogMaterial = eyeVisibilityFog;
+			#endif
+			if (
+					! bdptVisibilityAttenuation(
+						visibilityOrigin,
+						lightPos,
+					connectionState,
 				lightIsEndpoint && lv4.x > 0.5,
 				hasTargetFace,
 				targetFaceIndex,
@@ -515,21 +707,6 @@ export const bdpt_connection = /* glsl */`
                 );
                 if ( eyeBsdfPdf <= 0.0 ) return vec3( 0.0 );
 		vec3 eyeBsdfCosTheta = eyeBsdfColor;
-
-                SurfaceRecord lightSurf;
-                if ( lightIsMedium ) {
-                        if ( lv5.x <= 0.0 || lv7.y < 0.0 ) return vec3( 0.0 );
-                        FogMaterial lightFog = readFogMaterialInfo(
-                                materials, uint( round( lv7.y ) )
-			);
-			lightFog.fogVolume = true;
-			setFogSurfaceRecord( lightFog, lightSurf );
-			} else if ( ! lightIsEndpoint ) {
-				if ( ! bdptLoadSurfaceRecord(
-					lightMatId, lv4, lv7.zw,
-					lightNormal, eyeState.wavelength, lightSurf
-				) ) return vec3( 0.0 );
-		}
 
 		// Surface bsdfResult returns f*cos; medium bsdfResult returns phase value.
 		// Inverse distance squared is applied separately exactly once in both measures.
@@ -695,24 +872,71 @@ export const bdpt_connection = /* glsl */`
                                 vec4 first4 = texelFetch(
                                         uBdptLightPathTex, ivec2( 1, 4 ), 0
                                 );
+				vec4 first5 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 5 ), 0
+				);
+				vec4 first6 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 6 ), 0
+				);
                                 vec4 first7 = texelFetch(
                                         uBdptLightPathTex, ivec2( 1, 7 ), 0
                                 );
+				vec4 first8 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 8 ), 0
+				);
+				vec4 first9 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 9 ), 0
+				);
+				vec4 first10 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 10 ), 0
+				);
+				vec4 first11 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 11 ), 0
+				);
+				vec4 first12 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 12 ), 0
+				);
+				vec4 first13 = texelFetch(
+					uBdptLightPathTex, ivec2( 1, 13 ), 0
+				);
                                 bool firstIsMedium =
                                         first3.w == BDPT_LV_MEDIUM_MATID;
                                 SurfaceRecord firstSurface;
                                 bool firstSurfaceValid = false;
+				MediumStack firstIncidentStack;
+				FogMaterial firstIncidentMedium;
+				bool firstIncidentStackValid = bdptUnpackMediumStack(
+					first5,
+					first6,
+					first7,
+					first8,
+					first9,
+					first10,
+					first11,
+					first12,
+					first13,
+					firstIncidentStack,
+					firstIncidentMedium
+				);
+				if ( ! firstIncidentStackValid ) return vec3( 0.0 );
                                 if ( firstIsMedium ) {
                                         if ( first7.y >= 0.0 ) {
                                                 FogMaterial firstFog = readFogMaterialInfo(
                                                         materials,
                                                         uint( round( first7.y ) )
                                                 );
-                                                firstFog.fogVolume = true;
-                                                setFogSurfaceRecord(
-                                                        firstFog, firstSurface
-                                                );
-                                                firstSurfaceValid = true;
+						if (
+							firstFog.fogVolume &&
+							firstIncidentStack.count > 0 &&
+							firstIncidentStack.materialIds[
+								firstIncidentStack.count - 1
+							] == uint( round( first7.y ) )
+						) {
+							setFogSurfaceRecord(
+								firstFog, firstSurface
+							);
+							firstSurfaceValid = true;
+						}
                                         }
                                 } else if ( first3.w >= 0.0 ) {
                                         firstSurfaceValid = bdptLoadSurfaceRecord(
@@ -721,6 +945,7 @@ export const bdpt_connection = /* glsl */`
 						first7.zw,
                                                 first1.xyz,
                                                 eyeState.wavelength,
+						firstIncidentStack,
                                                 firstSurface
                                         );
                                 }

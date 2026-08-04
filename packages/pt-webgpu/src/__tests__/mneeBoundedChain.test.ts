@@ -143,7 +143,7 @@ describe('bounded 3–8 vertex MNEE chain', () => {
     const code = PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL;
     expect(code).toContain('fn boundedManifoldCaustic(');
     expect(code).toContain('let maximumLength = min(params.mneeMaxChainLength, 8u);');
-    expect(code).toContain('let chainLength = 1u + min(');
+    expect(code).toContain('let chainLength = 1u + ptRandBoundedU32(rng, maximumLength);');
     expect(code).toContain('let lengthSelectionPdf = 1.0 / f32(maximumLength);');
     expect(code).toContain('let facet = mneeProposeConditionalFacet(');
     expect(code).toContain('let conditionalPdf = facets[pi].pdf * 0.5;');

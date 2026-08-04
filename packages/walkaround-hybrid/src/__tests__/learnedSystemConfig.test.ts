@@ -258,7 +258,7 @@ describe('learned-system option parsing', () => {
     });
   });
 
-  it('preserves valid learned-system cadence knobs and PPG mixture exactly', () => {
+  it('preserves valid learned-system cadence knobs and represents the PPG mixture exactly', () => {
     const cfg = parseHybridEngineOptions(baseOpts({
       ppgEnabled: true,
       nrcEnabled: true,
@@ -272,7 +272,7 @@ describe('learned-system option parsing', () => {
     expect(cfg.ppgEnabled).toBe(1);
     expect(cfg.nrcEnabled).toBe(1);
     expect(cfg.ppgDispatchInterval).toBe(2);
-    expect(cfg.ppgMixAlpha).toBe(0.35);
+    expect(cfg.ppgMixAlpha).toBe(Math.fround(Math.round(0.35 * 2 ** 24) / 2 ** 24));
     expect(cfg.nrcConfig.warmupSteps).toBe(3);
     expect(cfg.nrcConfig.spreadC).toBe(0.25);
     expect(cfg.nrcConfig.maxNrcResidentBytes).toBe(24_000_000);
@@ -362,6 +362,20 @@ describe('learned-system option parsing', () => {
         .toThrow(/ppgMixAlpha must be finite and strictly between 0 and 1/);
     },
   );
+
+  it('quantizes near-endpoint PPG mixture alphas onto exact supported 24-bit branches', () => {
+    const buckets = 2 ** 24;
+    expect(parseHybridEngineOptions(baseOpts({
+      ppgEnabled: true,
+      ppgMixAlpha: Number.MIN_VALUE,
+    })).ppgMixAlpha)
+      .toBe(1 / buckets);
+    expect(parseHybridEngineOptions(baseOpts({
+      ppgEnabled: true,
+      ppgMixAlpha: 1 - Number.EPSILON,
+    })).ppgMixAlpha)
+      .toBe((buckets - 1) / buckets);
+  });
 
   it('accepts PPG as a proposal composed with mandatory generalized reuse', () => {
     const cfg = parseHybridEngineOptions(baseOpts({ ppgEnabled: true }));

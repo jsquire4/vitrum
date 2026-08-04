@@ -33,6 +33,8 @@ export {
 export * from './sceneBvh.js';
 export * from './materialEntry.js';
 export * from './emitterClassify.js';
+export * from './opticalMediumTopology.js';
+export * from './opticalMediumBoundaryPacking.js';
 export * from './radianceFloat32.js';
 export {
   halfToFloat,
@@ -82,6 +84,7 @@ export {
 export * from './wgsl/octahedral.wgsl.js';
 export * from './wgsl/materialEntry.wgsl.js';
 export * from './wgsl/bvhIntersect.wgsl.js';
+export * from './wgsl/opticalWatertightTriangle.wgsl.js';
 export * from './wgsl/cwbvhIntersect.wgsl.js';
 export * from './wgsl/tlasTraversal.wgsl.js';
 export * from './wgsl/tlasSceneHitTraversal.wgsl.js';
@@ -95,8 +98,10 @@ export {
   fingerprintBufferExact,
   fingerprintBuffers,
   fingerprintBuffersExact,
+  fingerprintBuffersExactAndEqual,
   fingerprintTlasBuffers,
   isTlasOnlyVersionBump,
+  type ExactBufferFingerprintComparison,
 } from './bufferFingerprint.js';
 export {
   deriveSceneAABBFromBvhPositions,

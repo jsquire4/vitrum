@@ -22,16 +22,24 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  DTREE_HEADER_F32,
+  DTREE_NODE_F32,
   serialiseSTree,
   gpuTraverseSTreeLeaf,
   gpuTraverseDTreeLeaf,
 } from '../src/ppg/serialise.js';
 import { buildSTree, sTreeAccumulate } from '../src/ppg/sTree.js';
-import { dTreePdf, refineDTree, findDTreeLeaf } from '../src/ppg/dTree.js';
+import {
+  dTreePdf,
+  refineDTree,
+  findDTreeLeaf,
+  recomputeDTreeInteriorFlux,
+} from '../src/ppg/dTree.js';
 import type { AABB, STree } from '../src/ppg/types.js';
 import { RIS_GI_WGSL, RIS_GI_MODULE } from '../src/shaders/risGi.wgsl.js';
 import { PPG_PDF_WGSL } from '../src/ppg/ppgPdf.wgsl.js';
 import { PPG_MIS_ALPHA } from '../src/ppg/ppgConstants.js';
+import { buildPpgRepresentedQueryView } from '../src/ppg/ppgRepresentedProposal.js';
 import { WALKAROUND_UBO_SIZE_BYTES } from '../src/pipeline/constants.js';
 import { updateUBO } from '../src/pipeline/uboUpdater.js';
 import type { PipelineFrameInputs } from '../src/pipeline/WalkaroundGPUPipeline.js';
@@ -52,14 +60,159 @@ function dirToPpgUv(d: [number, number, number]): [number, number] {
   return [u, v];
 }
 
+function ppgUvToDir(uv: [number, number]): [number, number, number] {
+  const z = 1 - 2 * uv[0];
+  const r = Math.sqrt(Math.max(0, 1 - z * z));
+  const phi = 2 * Math.PI * (uv[1] - 0.5);
+  return [r * Math.cos(phi), r * Math.sin(phi), z];
+}
+
 function luminance(c: [number, number, number]): number {
   return c[0] * LUM_W[0] + c[1] * LUM_W[1] + c[2] * LUM_W[2];
 }
 
-// ── CPU port of ppgPdf.wgsl `ppgEvalPdf` (sTree descent → dTree leaf pdf) ────
-// Mirrors the WGSL EXACTLY, reading the serialised flat buffers (same code the
-// WGSL kernel executes). p_guide(ωi) = (leafFlux/totalFlux)/solidAngle, with a
-// 1/(4π) uniform fallback when the cell has no flux.
+// ── CPU port of ppgPdf.wgsl's represented dTree query contract ──────────────
+// The production query shader validates each local child partition before it
+// descends. On a partial count/pointer/patch corruption, both sampling and PDF
+// evaluation stop at the same current patch and interpret its published
+// subtree buckets as a local-uniform proposal. These helpers mirror that path.
+const REPRESENTED_BUCKETS = 2 ** 24;
+
+function queryNodeBase(dOff: number, nodeIndex: number): number {
+  return dOff + DTREE_HEADER_F32 + nodeIndex * DTREE_NODE_F32;
+}
+
+function queryNodeBucketCount(buf: Float32Array, base: number): number {
+  const kind = buf[base + 7]!;
+  const encoded = buf[base + (kind === 1 ? 6 : 5)]!;
+  if (
+    (kind !== 0 && kind !== 1) ||
+    !Number.isInteger(encoded) ||
+    encoded < 0 ||
+    encoded > REPRESENTED_BUCKETS
+  ) return -1;
+  return encoded;
+}
+
+function queryPatchValid(buf: Float32Array, base: number): boolean {
+  const u0 = buf[base + 0]!;
+  const v0 = buf[base + 1]!;
+  const u1 = buf[base + 2]!;
+  const v1 = buf[base + 3]!;
+  return u0 >= 0 && v0 >= 0 && u1 <= 1 && v1 <= 1 && u1 > u0 && v1 > v0;
+}
+
+function queryPatchSolidAngle(buf: Float32Array, base: number): number {
+  const du = Math.fround(buf[base + 2]! - buf[base + 0]!);
+  const dv = Math.fround(buf[base + 3]! - buf[base + 1]!);
+  return Math.fround(Math.fround(Math.fround(FOUR_PI) * du) * dv);
+}
+
+function queryChildrenValid(
+  buf: Float32Array,
+  dOff: number,
+  nodeCount: number,
+  nodeIndex: number,
+  base: number,
+): boolean {
+  if (!queryPatchValid(buf, base) || queryNodeBucketCount(buf, base) < 0) return false;
+  const firstChild = buf[base + 6]!;
+  if (
+    !Number.isInteger(firstChild) ||
+    firstChild <= nodeIndex ||
+    firstChild < 0 ||
+    firstChild + 3 >= nodeCount
+  ) return false;
+  const u0 = buf[base + 0]!;
+  const v0 = buf[base + 1]!;
+  const u1 = buf[base + 2]!;
+  const v1 = buf[base + 3]!;
+  const uMid = Math.fround(Math.fround(u0 + u1) * 0.5);
+  const vMid = Math.fround(Math.fround(v0 + v1) * 0.5);
+  let sum = 0;
+  for (let child = 0; child < 4; child += 1) {
+    const childBase = queryNodeBase(dOff, firstChild + child);
+    const buckets = queryNodeBucketCount(buf, childBase);
+    if (!queryPatchValid(buf, childBase) || buckets < 0) return false;
+    const right = (child & 1) !== 0;
+    const bottom = (child & 2) !== 0;
+    if (
+      buf[childBase + 0] !== (right ? uMid : u0) ||
+      buf[childBase + 1] !== (bottom ? vMid : v0) ||
+      buf[childBase + 2] !== (right ? u1 : uMid) ||
+      buf[childBase + 3] !== (bottom ? v1 : vMid)
+    ) return false;
+    sum += buckets;
+  }
+  return sum === queryNodeBucketCount(buf, base);
+}
+
+function queryRootValid(buf: Float32Array, dOff: number): boolean {
+  const nodeCount = buf[dOff]!;
+  const rootBase = queryNodeBase(dOff, 0);
+  return Number.isInteger(nodeCount) && nodeCount >= 1 &&
+    queryNodeBucketCount(buf, rootBase) === REPRESENTED_BUCKETS &&
+    queryPatchValid(buf, rootBase) &&
+    buf[rootBase + 0] === 0 && buf[rootBase + 1] === 0 &&
+    buf[rootBase + 2] === 1 && buf[rootBase + 3] === 1;
+}
+
+function queryDistributionBase(
+  buf: Float32Array,
+  dOff: number,
+  uv: [number, number],
+): number {
+  const nodeCount = buf[dOff]!;
+  let nodeIndex = 0;
+  let fallbackBase = queryNodeBase(dOff, 0);
+  for (let step = 0; step < 32; step += 1) {
+    const base = queryNodeBase(dOff, nodeIndex);
+    fallbackBase = base;
+    if (buf[base + 7] === 1) return base;
+    if (!queryChildrenValid(buf, dOff, nodeCount, nodeIndex, base)) return base;
+    const uMid = Math.fround(Math.fround(buf[base + 0]! + buf[base + 2]!) * 0.5);
+    const vMid = Math.fround(Math.fround(buf[base + 1]! + buf[base + 3]!) * 0.5);
+    const firstChild = buf[base + 6]!;
+    nodeIndex = firstChild + (uv[0] >= uMid ? 1 : 0) + (uv[1] >= vMid ? 2 : 0);
+  }
+  return fallbackBase;
+}
+
+function gpuPortSampleGuideUv(
+  dTreeBuf: Float32Array,
+  dOff: number,
+  selectionBucket: number,
+  jitter: [number, number],
+): [number, number] {
+  if (!queryRootValid(dTreeBuf, dOff)) return jitter;
+  const nodeCount = dTreeBuf[dOff]!;
+  let nodeIndex = 0;
+  let remaining = Math.max(0, Math.min(REPRESENTED_BUCKETS - 1, selectionBucket | 0));
+  let base = queryNodeBase(dOff, 0);
+  for (let step = 0; step < 32; step += 1) {
+    base = queryNodeBase(dOff, nodeIndex);
+    if (dTreeBuf[base + 7] === 1) break;
+    if (!queryChildrenValid(dTreeBuf, dOff, nodeCount, nodeIndex, base)) break;
+    const firstChild = dTreeBuf[base + 6]!;
+    let selected = false;
+    for (let child = 0; child < 4; child += 1) {
+      const childBase = queryNodeBase(dOff, firstChild + child);
+      const buckets = queryNodeBucketCount(dTreeBuf, childBase);
+      if (remaining < buckets) {
+        nodeIndex = firstChild + child;
+        selected = true;
+        break;
+      }
+      remaining -= buckets;
+    }
+    if (!selected) break;
+  }
+  return [
+    dTreeBuf[base + 0]! + jitter[0] * (dTreeBuf[base + 2]! - dTreeBuf[base + 0]!),
+    dTreeBuf[base + 1]! + jitter[1] * (dTreeBuf[base + 3]! - dTreeBuf[base + 1]!),
+  ];
+}
+
 function gpuPortEvalPdf(
   sTreeBuf: Float32Array,
   dTreeBuf: Float32Array,
@@ -70,16 +223,15 @@ function gpuPortEvalPdf(
   const sBase = gpuTraverseSTreeLeaf(sTreeBuf, pos);
   const dTreeIndex = sTreeBuf[sBase + 10]! | 0;
   const dOff = dTreeOffsets[dTreeIndex]!;
-  const totalFlux = dTreeBuf[dOff + 2]!;
-  if (totalFlux <= 0) return 1 / FOUR_PI;
+  if (!queryRootValid(dTreeBuf, dOff)) return Math.fround(1 / Math.fround(FOUR_PI));
   const guideUV = dirToPpgUv(wi);
-  // gpuTraverseDTreeLeaf takes the per-cell sub-buffer; slice the cell block.
-  const cellBuf = dTreeBuf.subarray(dOff);
-  const leafBase = gpuTraverseDTreeLeaf(cellBuf, guideUV);
-  const leafFlux = cellBuf[leafBase + 4]!;
-  const solidAng = cellBuf[leafBase + 5]!;
-  if (!(leafFlux > 0) || !(solidAng > 0)) return 1 / FOUR_PI;
-  return (leafFlux / totalFlux) / solidAng;
+  const distributionBase = queryDistributionBase(dTreeBuf, dOff, guideUV);
+  const distributionBuckets = queryNodeBucketCount(dTreeBuf, distributionBase);
+  const solidAng = queryPatchSolidAngle(dTreeBuf, distributionBase);
+  if (!(distributionBuckets > 0) || !(solidAng > 0)) return 0;
+  return Math.fround(
+    Math.fround(distributionBuckets / REPRESENTED_BUCKETS) / solidAng,
+  );
 }
 
 // ── The exact gi-ris explicit RIS weight (CPU port of risGi.wgsl) ───────────
@@ -184,7 +336,9 @@ describe('W9 gi-ris — ppg-ON explicit RIS weight uses the mixture pdf (α > 0)
 describe('W9 gi-ris — GPU-port p_guide matches CPU dTreePdf oracle', () => {
   it('every probe direction agrees with dTreePdf on the trained cell', () => {
     const sTree = buildTrainedSTree();
-    const { sTreeBuf, dTreeBuf, dTreeOffsets } = serialiseSTree(sTree);
+    const { sTreeBuf, dTreeBuf, dTreeOffsets } = buildPpgRepresentedQueryView(
+      serialiseSTree(sTree),
+    );
     const pos: [number, number, number] = [0, 0, 0];
 
     // The CPU oracle for this position: descend sTree, get that cell's dTree.
@@ -238,9 +392,85 @@ describe('W9 gi-ris — GPU-port p_guide matches CPU dTreePdf oracle', () => {
 
   it('a fresh (untrained) cell falls back to the uniform 1/(4π) guide pdf', () => {
     const sTree = buildSTree(SCENE_AABB); // no accumulation → totalFlux = 0
-    const { sTreeBuf, dTreeBuf, dTreeOffsets } = serialiseSTree(sTree);
+    const { sTreeBuf, dTreeBuf, dTreeOffsets } = buildPpgRepresentedQueryView(
+      serialiseSTree(sTree),
+    );
     const p = gpuPortEvalPdf(sTreeBuf, dTreeBuf, dTreeOffsets, [0, 0, 0], [0, 0, 1]);
-    expect(p).toBeCloseTo(1 / FOUR_PI, 9);
+    expect(p).toBe(Math.fround(1 / Math.fround(FOUR_PI)));
+  });
+
+  it('keeps the defensive partial-root fallback sampler/PDF pair uniform', () => {
+    const sTree = buildTrainedSTree();
+    const { sTreeBuf, dTreeBuf, dTreeOffsets } = buildPpgRepresentedQueryView(
+      serialiseSTree(sTree),
+    );
+    const dTreeIndex = sTreeBuf[gpuTraverseSTreeLeaf(sTreeBuf, [0, 0, 0]) + 10]! | 0;
+    const rootBase = dTreeOffsets[dTreeIndex]! + 4;
+    const dOff = dTreeOffsets[dTreeIndex]!;
+    expect(dTreeBuf[rootBase + 7]).toBe(0);
+    dTreeBuf[rootBase + 5] = 123; // impossible in a valid query view
+
+    const sampledUv = gpuPortSampleGuideUv(dTreeBuf, dOff, 7, [0.2, 0.8]);
+    expect(sampledUv).toEqual([0.2, 0.8]);
+
+    const p = gpuPortEvalPdf(
+      sTreeBuf,
+      dTreeBuf,
+      dTreeOffsets,
+      [0, 0, 0],
+      [0, 0, 1],
+    );
+    expect(p).toBe(Math.fround(1 / Math.fround(FOUR_PI)));
+  });
+
+  it.each([
+    ['child bucket sum', (buf: Float32Array, childBase: number, dOff: number) => {
+      const grandchild = queryNodeBase(dOff, buf[childBase + 6]!);
+      buf[grandchild + 6] = buf[grandchild + 6]! + 1;
+    }],
+    ['child pointer', (buf: Float32Array, childBase: number, _dOff: number) => {
+      buf[childBase + 6] = 1.5;
+    }],
+    ['child patch', (buf: Float32Array, childBase: number, dOff: number) => {
+      const grandchild = queryNodeBase(dOff, buf[childBase + 6]!);
+      buf[grandchild + 0] = Math.fround(buf[grandchild + 0]! + 0.01);
+    }],
+  ])('keeps a partial lower-level %s corruption sampler/PDF symmetric', (_label, corrupt) => {
+    const sTree = buildSTree(SCENE_AABB, 2);
+    const dTree = sTree.dTrees[0]!;
+    for (let index = 0; index < dTree.nodes.length; index += 1) {
+      const node = dTree.nodes[index]!;
+      if (node.isLeaf) node.flux = index >= 5 && index <= 8 ? 4 : 1;
+    }
+    recomputeDTreeInteriorFlux(dTree);
+    const query = buildPpgRepresentedQueryView(serialiseSTree(sTree));
+    const dOff = query.dTreeOffsets[0]!;
+    const rootBase = queryNodeBase(dOff, 0);
+    const firstChildIndex = query.dTreeBuf[rootBase + 6]!;
+    const firstChildBase = queryNodeBase(dOff, firstChildIndex);
+    const firstChildBuckets = queryNodeBucketCount(query.dTreeBuf, firstChildBase);
+    expect(firstChildBuckets).toBeGreaterThan(0);
+    expect(firstChildBuckets).toBeLessThan(REPRESENTED_BUCKETS);
+
+    corrupt(query.dTreeBuf, firstChildBase, dOff);
+    const sampledUv = gpuPortSampleGuideUv(query.dTreeBuf, dOff, 0, [0.25, 0.75]);
+    expect(sampledUv[0]).toBeGreaterThanOrEqual(query.dTreeBuf[firstChildBase + 0]!);
+    expect(sampledUv[0]).toBeLessThan(query.dTreeBuf[firstChildBase + 2]!);
+    expect(sampledUv[1]).toBeGreaterThanOrEqual(query.dTreeBuf[firstChildBase + 1]!);
+    expect(sampledUv[1]).toBeLessThan(query.dTreeBuf[firstChildBase + 3]!);
+
+    const expected = Math.fround(
+      Math.fround(firstChildBuckets / REPRESENTED_BUCKETS) /
+        queryPatchSolidAngle(query.dTreeBuf, firstChildBase),
+    );
+    const evaluated = gpuPortEvalPdf(
+      query.sTreeBuf,
+      query.dTreeBuf,
+      query.dTreeOffsets,
+      [0, 0, 0],
+      ppgUvToDir(sampledUv),
+    );
+    expect(evaluated).toBe(expected);
   });
 });
 
@@ -406,20 +636,26 @@ describe('W9 gi-ris — WGSL structure pins', () => {
     expect(RIS_GI_WGSL).toMatch(/if \(alpha > 0\.0\) \{\s*\n\s*let bern = rand_f32/);
   });
 
-  it('risGi computes the explicit mixture weight w = p̂ / p_src on the α>0 path', () => {
+  it('risGi computes the proposal-mixture weight in the log domain on the α>0 path', () => {
     expect(RIS_GI_WGSL).toContain('let pGuide = ppgEvalPdf(pos, wi)');
-    expect(RIS_GI_WGSL).toContain('pSrc = alpha * pGuide + (1.0 - alpha) * pCos');
-    expect(RIS_GI_WGSL).toContain('if (!reservoirGiFinite(pSrc) || !(pSrc > 0.0))');
-    expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
+    expect(RIS_GI_WGSL).toContain(
+      'logPSrc = reservoirGiLogProposalMixture(alpha, pGuide, pCos);',
+    );
+    expect(RIS_GI_WGSL).toContain('if (!reservoirGiValidLog(logPSrc))');
+    expect(RIS_GI_WGSL).toContain('let logWeight = logPHat - logPSrc;');
   });
 
   it('risGi keeps the generalized proxy target on the α==0 path', () => {
-    expect(RIS_GI_WGSL).toMatch(/} else {\s*\n\s*pSrc = cosTheta \* INV_PI;/);
-    expect(RIS_GI_WGSL).toContain('let w = pHat / pSrc;');
-    expect(RIS_GI_WGSL).toContain(
-      'pHat = restir_gi_receiver_phat_from_payload(',
+    expect(RIS_GI_WGSL).toMatch(
+      /} else {\s*\n\s*logPSrc = reservoirGiLogPositive\(pCos\);/,
     );
-    expect(RIS_GI_WGSL).toContain(') * candidateVisibility;');
+    expect(RIS_GI_WGSL).toContain('let logWeight = logPHat - logPSrc;');
+    expect(RIS_GI_WGSL).toContain(
+      'let receiverPHat = restir_gi_receiver_phat_from_payload(',
+    );
+    expect(RIS_GI_WGSL).toContain(
+      'let logPHat = reservoirGiLogPositiveProduct(receiverPHat, candidateVisibility);',
+    );
   });
 
   it('risGi requires the ppgPdf module', () => {
@@ -435,10 +671,14 @@ describe('W9 gi-ris — WGSL structure pins', () => {
     expect(PPG_PDF_WGSL).not.toContain('@group(3) @binding(8)');
   });
 
-  it('ppgPdf evaluates p_guide as (leafFlux/totalFlux)/solidAngle (mirrors dTreePdf)', () => {
-    expect(PPG_PDF_WGSL).toContain('if (!(leafFlux > 0.0) || !(solidAng > 0.0))');
-    expect(PPG_PDF_WGSL).toContain('(leafFlux / totalFlux) / solidAng');
+  it('ppgPdf evaluates the exact represented leaf mass divided by solid angle', () => {
+    expect(PPG_PDF_WGSL).toContain(
+      'if (distributionBuckets == 0u) { return 0.0; }',
+    );
+    expect(PPG_PDF_WGSL).toContain(
+      '(f32(distributionBuckets) * PPG_INV_REPRESENTED_BUCKETS) / solidAng',
+    );
     expect(PPG_PDF_WGSL).not.toContain('max(solidAng, 1e-12)');
-    expect(PPG_PDF_WGSL).toContain('if (totalFlux <= 0.0) { return 1.0 / PPG_FOUR_PI; }');
+    expect(PPG_PDF_WGSL).toContain('!ppgDTreeRootValidGi(dOff)');
   });
 });

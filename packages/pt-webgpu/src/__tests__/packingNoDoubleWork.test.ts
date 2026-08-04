@@ -102,7 +102,7 @@ function makeProceduralSkyScene(): Scene {
     ],
     environment: {
       kind: 'procedural-sky',
-      sunDirection: [0.5, 0.8, 0.2],
+      sunDirection: [0, 1, 0],
       turbidity: 3,
       rayleigh: 1,
       mieCoefficient: 0.005,

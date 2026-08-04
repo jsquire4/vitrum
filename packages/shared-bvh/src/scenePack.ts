@@ -98,6 +98,10 @@ export interface ScenePackResult {
   readonly colors: Float32Array;
   readonly indices: Uint32Array;
   readonly triMaterialIds: Uint32Array;
+  /** Source triangle ordinal, parallel to the BVH-reordered triangle stream. */
+  readonly triangleSourceIndices: Uint32Array;
+  /** `scene.primitives` ordinal, parallel to the BVH-reordered triangle stream. */
+  readonly trianglePrimitiveIndices: Uint32Array;
   readonly bvhNodes: Float32Array;
   readonly triangleCount: number;
   readonly tlasNodes: Uint32Array;
@@ -105,6 +109,14 @@ export interface ScenePackResult {
   readonly tlasBlasRoots: Uint32Array;
   readonly tlasInstanceWorldToLocal: Float32Array;
   readonly tlasInstanceLocalToWorld: Float32Array;
+  /**
+   * `scene.primitives` ordinal for each canonical instance slot addressed by
+   * `IntersectionResult.instanceIndex`. Present even in direct-BLAS mode,
+   * where the sole implicit instance occupies slot zero.
+   */
+  readonly instancePrimitiveIndices: Uint32Array;
+  /** Source instance ordinal within its primitive, parallel to the array above. */
+  readonly instanceSourceIndices: Uint32Array;
   readonly tlasNodeCount: number;
   readonly primitiveTlasBindings: readonly PrimitiveTlasBinding[];
   readonly warnings: readonly string[];
@@ -307,6 +319,7 @@ interface PackedPrimitiveSlice {
   readonly localColors: Float32Array;
   readonly indexWords: readonly number[];
   readonly triMaterialIds: readonly number[];
+  readonly reorderedToSourceTriangle: Uint32Array;
   readonly bvhNodeWords: readonly number[];
   readonly vertexCount: number;
   readonly triCount: number;
@@ -476,6 +489,7 @@ function packOneMeshLikePrimitive(
       localColors,
       indexWords,
       triMaterialIds,
+      reorderedToSourceTriangle: localBvh.reorderedToSourceTriangle,
       bvhNodeWords,
       vertexCount,
       triCount,
@@ -707,6 +721,8 @@ interface SplicedPackBuffers {
   readonly colors: Float32Array;
   readonly indices: Uint32Array;
   readonly triMaterialIds: Uint32Array;
+  readonly triangleSourceIndices: Uint32Array;
+  readonly trianglePrimitiveIndices: Uint32Array;
   readonly bvhNodes: Float32Array;
   readonly triangleCount: number;
 }
@@ -765,6 +781,33 @@ function finalizeSplicedPack(
     };
   }
   const tlasBuild = buildTlasFromInstances(collected.instances);
+  const primitiveIndexById = new Map(
+    scene.primitives.map((primitive, index) => [primitive.id, index] as const),
+  );
+  const trianglePrimitiveIndices = new Uint32Array(buffers.triangleCount);
+  const instancePrimitiveIndices: number[] = [];
+  const instanceSourceIndices: number[] = [];
+  for (const binding of primitiveTlasBindings) {
+    const primitiveIndex = primitiveIndexById.get(binding.primitiveId);
+    if (primitiveIndex === undefined) {
+      const pack = packSceneFromCore(scene, opts);
+      return {
+        ok: true,
+        pack,
+        strategy: 'full',
+        currentWarnings: pack.warnings,
+      };
+    }
+    trianglePrimitiveIndices.fill(
+      primitiveIndex,
+      binding.triStart,
+      binding.triStart + binding.triCount,
+    );
+    for (const sourceIndex of binding.instanceSourceIndices) {
+      instancePrimitiveIndices.push(primitiveIndex);
+      instanceSourceIndices.push(sourceIndex);
+    }
+  }
   const currentWarnings = mergePackWarnings(
     [],
     [...sliceWarnings, ...collected.warnings],
@@ -777,6 +820,8 @@ function finalizeSplicedPack(
     colors: buffers.colors,
     indices: buffers.indices,
     triMaterialIds: buffers.triMaterialIds,
+    triangleSourceIndices: buffers.triangleSourceIndices,
+    trianglePrimitiveIndices,
     bvhNodes: buffers.bvhNodes,
     triangleCount: buffers.triangleCount,
     tlasNodes: tlasBuild.tlasNodes,
@@ -784,6 +829,8 @@ function finalizeSplicedPack(
     tlasBlasRoots: tlasBuild.tlasBlasRoots,
     tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+    instancePrimitiveIndices: Uint32Array.from(instancePrimitiveIndices),
+    instanceSourceIndices: Uint32Array.from(instanceSourceIndices),
     tlasNodeCount: tlasBuild.tlasNodeCount,
     primitiveTlasBindings,
     warnings: mergePackWarnings(prev.warnings, currentWarnings),
@@ -837,6 +884,8 @@ function spliceResizedPrimitiveBlasIntoPack(
   const colors = new Float32Array(newTotalVerts * VERTEX_STRIDE_F32);
   const indices = new Uint32Array(newTotalTris * 4);
   const triMaterialIds = new Uint32Array(newTotalTris);
+  const triangleSourceIndices = new Uint32Array(newTotalTris);
+  const trianglePrimitiveIndices = new Uint32Array(newTotalTris);
   const newNodeView = new Uint32Array(newTotalNodes * BVH_NODE_FLOATS);
   const prevNodeView = new Uint32Array(
     prev.bvhNodes.buffer,
@@ -872,15 +921,22 @@ function spliceResizedPrimitiveBlasIntoPack(
   // — they reference vertices before oldVertStart).
   indices.set(prevIndices.subarray(0, oldTriStart * 4), 0);
   triMaterialIds.set(prev.triMaterialIds.subarray(0, oldTriStart), 0);
+  triangleSourceIndices.set(prev.triangleSourceIndices.subarray(0, oldTriStart), 0);
+  trianglePrimitiveIndices.set(prev.trianglePrimitiveIndices.subarray(0, oldTriStart), 0);
   // Changed primitive's new index words rebased to its (unchanged) vertexStart.
   const newTriStart = oldTriStart; // unchanged for the spliced primitive
   _rebaseIndexWords(indices, newTriStart * 4, slice.indexWords, binding.vertexStart);
   for (let t = 0; t < slice.triMaterialIds.length; t += 1) {
     triMaterialIds[newTriStart + t] = slice.triMaterialIds[t] ?? 0;
+    triangleSourceIndices[newTriStart + t] = slice.reorderedToSourceTriangle[t] ?? t;
+    trianglePrimitiveIndices[newTriStart + t] =
+      prev.trianglePrimitiveIndices[oldTriStart] ?? 0;
   }
   // Downstream triangles: copy with vertex refs shifted by deltaVert.
   for (let t = oldTriEnd; t < prevTotalTris; t += 1) {
     _copyVec4Strided(indices, triMaterialIds, prevIndices, prev.triMaterialIds, t, t + deltaTri, deltaVert);
+    triangleSourceIndices[t + deltaTri] = prev.triangleSourceIndices[t] ?? 0;
+    trianglePrimitiveIndices[t + deltaTri] = prev.trianglePrimitiveIndices[t] ?? 0;
   }
 
   // ── BVH nodes (BVH_NODE_FLOATS words/node) ───────────────────────────────
@@ -930,7 +986,11 @@ function spliceResizedPrimitiveBlasIntoPack(
     prev,
     scene,
     opts,
-    { positions, normals, uvs, tangents, colors, indices, triMaterialIds, bvhNodes, triangleCount: newTotalTris },
+    {
+      positions, normals, uvs, tangents, colors, indices, triMaterialIds,
+      triangleSourceIndices, trianglePrimitiveIndices, bvhNodes,
+      triangleCount: newTotalTris,
+    },
     primitiveTlasBindings,
     slice.warnings,
   );
@@ -974,6 +1034,8 @@ function splicePrimitiveBlasIntoPack(
   const colors = new Float32Array(prev.colors);
   const indices = new Uint32Array(prev.indices);
   const triMaterialIds = new Uint32Array(prev.triMaterialIds);
+  const triangleSourceIndices = new Uint32Array(prev.triangleSourceIndices);
+  const trianglePrimitiveIndices = new Uint32Array(prev.trianglePrimitiveIndices);
   const bvhNodes = new Float32Array(prev.bvhNodes);
 
   const vertOff = binding.vertexStart * VERTEX_STRIDE_F32;
@@ -987,6 +1049,8 @@ function splicePrimitiveBlasIntoPack(
   _rebaseIndexWords(indices, indexOff, slice.indexWords, binding.vertexStart);
   for (let t = 0; t < slice.triMaterialIds.length; t += 1) {
     triMaterialIds[binding.triStart + t] = slice.triMaterialIds[t] ?? 0;
+    triangleSourceIndices[binding.triStart + t] =
+      slice.reorderedToSourceTriangle[t] ?? t;
   }
 
   const nodeWordStart = nodeStart * BVH_NODE_FLOATS;
@@ -1009,7 +1073,11 @@ function splicePrimitiveBlasIntoPack(
     prev,
     scene,
     opts,
-    { positions, normals, uvs, tangents, colors, indices, triMaterialIds, bvhNodes, triangleCount: prev.triangleCount },
+    {
+      positions, normals, uvs, tangents, colors, indices, triMaterialIds,
+      triangleSourceIndices, trianglePrimitiveIndices, bvhNodes,
+      triangleCount: prev.triangleCount,
+    },
     primitiveTlasBindings,
     slice.warnings,
   );
@@ -1036,12 +1104,17 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
   const colors: number[] = [];
   const indices: number[] = [];
   const triMaterialIds: number[] = [];
+  const triangleSourceIndices: number[] = [];
+  const trianglePrimitiveIndices: number[] = [];
   const bvhNodeWords: number[] = [];
   const pendingTlasInstances: PendingTlasInstance[] = [];
+  const packedInstancePrimitiveIndices: number[] = [];
+  const packedInstanceSourceIndices: number[] = [];
   const primitiveTlasBindings: PrimitiveTlasBinding[] = [];
   const warnings: string[] = [];
 
-  for (const primitive of scene.primitives) {
+  for (let primitiveIndex = 0; primitiveIndex < scene.primitives.length; primitiveIndex += 1) {
+    const primitive = scene.primitives[primitiveIndex]!;
     if (!isMeshLike(primitive)) {
       warnings.push(
         `Primitive "${primitive.id}" (${primitive.kind}) skipped; scenePack supports mesh, skinned-mesh, and instanced-mesh only.`,
@@ -1132,6 +1205,8 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     }
     for (let i = 0; i < slice.triMaterialIds.length; i += 1) {
       triMaterialIds.push(slice.triMaterialIds[i] ?? matId);
+      triangleSourceIndices.push(slice.reorderedToSourceTriangle[i] ?? i);
+      trianglePrimitiveIndices.push(primitiveIndex);
     }
 
     for (let n = 0; n + 7 < slice.bvhNodeWords.length; n += BVH_NODE_FLOATS) {
@@ -1150,6 +1225,10 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     }
 
     pendingTlasInstances.push(...primitiveInstances);
+    for (const sourceIndex of instanceSourceIndices) {
+      packedInstancePrimitiveIndices.push(primitiveIndex);
+      packedInstanceSourceIndices.push(sourceIndex);
+    }
     primitiveTlasBindings.push({
       primitiveId: primitive.id,
       primitiveKind: primitive.kind,
@@ -1202,6 +1281,8 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     colors: packedColors,
     indices: packedIndices,
     triMaterialIds: packedTriMaterialIds,
+    triangleSourceIndices: Uint32Array.from(triangleSourceIndices),
+    trianglePrimitiveIndices: Uint32Array.from(trianglePrimitiveIndices),
     bvhNodes: packedBvhNodes,
     triangleCount: packedTriMaterialIds.length,
     tlasNodes: tlasBuild.tlasNodes,
@@ -1209,6 +1290,8 @@ export function packSceneFromCore(scene: Scene, opts: ScenePackOptions): ScenePa
     tlasBlasRoots: tlasBuild.tlasBlasRoots,
     tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
     tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+    instancePrimitiveIndices: Uint32Array.from(packedInstancePrimitiveIndices),
+    instanceSourceIndices: Uint32Array.from(packedInstanceSourceIndices),
     tlasNodeCount: tlasBuild.tlasNodeCount,
     primitiveTlasBindings: buildTlasTree ? primitiveTlasBindings : [],
     warnings: mergePackWarnings([], warnings),
@@ -1554,6 +1637,17 @@ export function rebuildTlasReuseBlas(
   if (!collected.ok) {
     return { ok: false, reason: collected.reason };
   }
+  // An empty TLAS is also the direct-BLAS sentinel in every scene-pack
+  // consumer. Reusing the old BLAS forest after all live placements became
+  // singular would therefore publish root-zero geometry at identity. Force
+  // the caller through a full pack, which omits BLASes with no surviving
+  // placement, instead of manufacturing that ambiguous representation.
+  if (collected.instances.length === 0) {
+    return {
+      ok: false,
+      reason: 'no invertible TLAS instances remain; full rebuild required',
+    };
+  }
 
   // Verify that one-or-more exact source-index memberships changed. Comparing
   // only counts misses swaps such as [0,2] → [1,2].
@@ -1590,6 +1684,30 @@ export function rebuildTlasReuseBlas(
           instanceCount: instanceSourceIndices.length,
         };
   });
+  const primitiveIndexById = new Map(
+    scene.primitives.map((primitive, index) => [primitive.id, index] as const),
+  );
+  const instancePrimitiveIndices: number[] = [];
+  const instanceSourceIndices: number[] = [];
+  const trianglePrimitiveIndices = new Uint32Array(prev.triangleCount);
+  for (const binding of primitiveTlasBindings) {
+    const primitiveIndex = primitiveIndexById.get(binding.primitiveId);
+    if (primitiveIndex === undefined) {
+      return {
+        ok: false,
+        reason: `primitive "${binding.primitiveId}" has no current scene ordinal`,
+      };
+    }
+    trianglePrimitiveIndices.fill(
+      primitiveIndex,
+      binding.triStart,
+      binding.triStart + binding.triCount,
+    );
+    for (const sourceIndex of binding.instanceSourceIndices) {
+      instancePrimitiveIndices.push(primitiveIndex);
+      instanceSourceIndices.push(sourceIndex);
+    }
+  }
 
   return {
     ok: true,
@@ -1603,6 +1721,8 @@ export function rebuildTlasReuseBlas(
       colors: prev.colors,
       indices: prev.indices,
       triMaterialIds: prev.triMaterialIds,
+      triangleSourceIndices: prev.triangleSourceIndices,
+      trianglePrimitiveIndices,
       bvhNodes: prev.bvhNodes,
       triangleCount: prev.triangleCount,
       // TLAS rebuilt from the new instance list.
@@ -1611,6 +1731,8 @@ export function rebuildTlasReuseBlas(
       tlasBlasRoots: tlasBuild.tlasBlasRoots,
       tlasInstanceWorldToLocal: tlasBuild.tlasInstanceWorldToLocal,
       tlasInstanceLocalToWorld: tlasBuild.tlasInstanceLocalToWorld,
+      instancePrimitiveIndices: Uint32Array.from(instancePrimitiveIndices),
+      instanceSourceIndices: Uint32Array.from(instanceSourceIndices),
       tlasNodeCount: tlasBuild.tlasNodeCount,
       primitiveTlasBindings,
       warnings: mergePackWarnings(prev.warnings, collected.warnings),

@@ -125,8 +125,7 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
     expect(packed.positions[2]).toBeCloseTo(TZ, 4);
   });
 
-  it('packs REST-POSE positions when boneCount = 0 (no crash)', () => {
-    // A skinned-mesh with empty bones array — solveSkin is skipped, rest pose used.
+  it('rejects an empty skinned-mesh bone palette at the canonical scene boundary', () => {
     const restPositions = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
     const restNormals = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
     const vCount = restPositions.length / 3;
@@ -145,15 +144,9 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
       material: { baseColor: [0.5, 0.5, 0.5], roughness: 0.5, metallic: 0 },
     };
     const scene = makeScene(prim);
-    // Must not throw.
-    const packed = buildPackedScene(scene, {});
-    // Should equal rest pose.
-    expect(packed.positions[0]).toBeCloseTo(0, 4);
-    expect(packed.positions[1]).toBeCloseTo(0, 4);
-    expect(packed.positions[2]).toBeCloseTo(0, 4);
-    expect(packed.positions[4]).toBeCloseTo(1, 4);
+    expect(() => buildPackedScene(scene, {})).toThrow(/bones must not be empty/);
   });
-  it('applies active morphs on a zero-bone rest-pose primitive', () => {
+  it('rejects morph-only skinned primitives without a bone palette', () => {
     const influenceWidth = 8;
     const skinIndices = new Uint32Array(3 * influenceWidth);
     const skinWeights = new Float32Array(3 * influenceWidth);
@@ -182,11 +175,9 @@ describe('buildPackedScene — Item 1: skinned-mesh LBS at ingestion', () => {
       morphWeights: new Float32Array([1]),
     };
 
-    const packed = buildPackedScene(makeScene(prim), {});
-
-    expect(packed.positions[0]).toBeCloseTo(2, 4);
-    expect(packed.uvs[0]).toBeCloseTo(0.25, 4);
-    expect(packed.uvs[1]).toBeCloseTo(0.125, 4);
+    expect(() => buildPackedScene(makeScene(prim), {})).toThrow(
+      /bones must not be empty/,
+    );
   });
 
 

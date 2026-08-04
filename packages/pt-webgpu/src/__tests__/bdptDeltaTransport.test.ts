@@ -68,7 +68,7 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       'result.sampledEventPdf = (reflectionProbability / lobeWeightSum) * bs.pdf;',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
-      'result.sampledEventPdf = transmissionProbability / lobeWeightSum;',
+      'extensionProbabilities.x * transmissionProbability;',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain('result.sampledIsDelta = true;');
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
@@ -90,8 +90,10 @@ describe('BDPT sampled-event delta/transmission transport', () => {
     ].map((match) => normalize(match[1]!));
     expect(directPdfAssignments).toEqual([
       '0.0',
-      'reflectionProbability / lobeWeightSum',
-      'transmissionProbability / lobeWeightSum',
+      'extensionProbabilities.x * reflectionProbability',
+      'extensionProbabilities.x * transmissionProbability',
+      '0.0',
+      'jointPdfFwd',
     ]);
 
     const directThroughputAssignments = [
@@ -99,7 +101,7 @@ describe('BDPT sampled-event delta/transmission transport', () => {
         /result\.throughputMul\s*=\s*([^;]+);/g,
       ),
     ].map((match) => normalize(match[1]!));
-    expect(directThroughputAssignments).toHaveLength(3);
+    expect(directThroughputAssignments).toHaveLength(5);
     expect(directThroughputAssignments[0]).toBe('vec3f(0.0)');
     expect(directThroughputAssignments[1]).toContain(
       'microfacetInterface.reflectance',
@@ -107,6 +109,8 @@ describe('BDPT sampled-event delta/transmission transport', () => {
     expect(directThroughputAssignments[2]).toContain(
       'microfacetInterface.baseTransmittance',
     );
+    expect(directThroughputAssignments[3]).toBe('vec3f(0.0)');
+    expect(directThroughputAssignments[4]).toBe('compoundThroughput');
   });
 
   it('normalizes partial-transmission lobes and preserves their expected contributions', () => {
@@ -182,10 +186,10 @@ describe('BDPT sampled-event delta/transmission transport', () => {
     );
 
     const samplerStart = PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
-      'if (xiLobe < 1.0) {',
+      'if (rand_f32(rng) < extensionProbabilities.x) {',
     );
     const extensionStart = PT_WEBGPU_PATH_TRACE_BSDF_WGSL.indexOf(
-      '} else if (xiLobe < 1.0 + clearcoatWeight) {',
+      '} else if (rand_f32(rng) < extensionProbabilities.w) {',
       samplerStart,
     );
     const dielectricSampler = PT_WEBGPU_PATH_TRACE_BSDF_WGSL.slice(samplerStart, extensionStart);
@@ -214,10 +218,10 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       'surfaceThroughputMul = bsPrev.throughputMul;',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'surfaceRayOrigin = bsPrev.newRayOrigin;',
+      'surfaceRayOrigin = prevPos;',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
-      'sampledDelta = bsPrev.sampledIsDelta;',
+      'bsPrev.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION;',
     );
     expect(PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL).toContain(
       'var incomingPathThroughput = prevThroughput;',
@@ -286,7 +290,10 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       'bdptPrevScatterPdf * bdptEyeSegmentForwardDensity,',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
-      'bdptEyeStackSetSpec(bounce, bs.sampledIsDelta);',
+      'bdptEyeStackSetSpec(',
+    );
+    expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
+      'bs.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION,',
     );
     expect(PT_WEBGPU_PATH_TRACE_KERNEL_WGSL).toContain(
       'let scatterPdfFwd = bs.sampledEventPdf;',
@@ -313,7 +320,7 @@ describe('BDPT sampled-event delta/transmission transport', () => {
       'let eventProbabilities = bsdfDielectricFiniteEventProbabilities(',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
-      'eventProbabilities.x * pdfSpec + eventProbabilities.y * nDotL * INV_PI +',
+      'let baseDensity = eventProbabilities.x * pdfSpec +',
     );
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
       'eventProbabilities.z *',
@@ -345,7 +352,7 @@ describe('BDPT sampled-event delta/transmission transport', () => {
     ]) {
       expect(source).toContain('bdptMediumLayer(');
       expect(source).toContain('remainingDistance');
-      expect(source).toContain('exp(');
+      expect(source).toContain('materialBeer(');
     }
 
     const outerSigma = [0.1, 0.2, 0.3] as const;

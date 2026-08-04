@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertRestirDISnapshot,
+  coldMigrateLegacyRestirDISnapshot,
   isValidRestirDISnapshot,
   type RestirDISnapshot,
 } from '../restirDiStateSnapshot.js';
@@ -38,6 +39,7 @@ function snapshot(): RestirDISnapshot {
   setFiniteEmitterRecord(previous, 1);
   setFiniteEmitterRecord(spatial, 2);
   return {
+    representationVersion: 1,
     width: 2,
     height: 2,
     strideU32: RESERVOIR_DI_STRIDE_U32,
@@ -54,7 +56,29 @@ describe('ReSTIR-DI state snapshot validation', () => {
     expect(isValidRestirDISnapshot(value)).toBe(true);
   });
 
-  it('rejects shape, non-finite, negative, and non-zero-padding corruption', () => {
+  it('accepts both cold-zero and canonical live-empty records', () => {
+    const value = snapshot();
+    value.current.fill(0, 0, RESERVOIR_DI_STRIDE_U32);
+    const floats = new Float32Array(value.current.buffer);
+    const logZero = -Math.fround(3.4028234663852886e38);
+    floats[2] = logZero;
+    floats[3] = logZero;
+    expect(() => assertRestirDISnapshot(value)).not.toThrow();
+
+    floats[3] = 0;
+    expect(() => assertRestirDISnapshot(value)).toThrow(/non-empty/);
+  });
+
+  it('rejects a missing or stale semantic representation marker', () => {
+    expect(
+      isValidRestirDISnapshot({
+        ...snapshot(),
+        representationVersion: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it('rejects shape, non-finite, inconsistent-log, and non-zero-padding corruption', () => {
     expect(
       isValidRestirDISnapshot({
         ...snapshot(),
@@ -66,9 +90,13 @@ describe('ReSTIR-DI state snapshot validation', () => {
     new Float32Array(nonFinite.current.buffer)[2] = Number.NaN;
     expect(() => assertRestirDISnapshot(nonFinite)).toThrow(/non-finite/);
 
-    const negative = snapshot();
-    new Float32Array(negative.current.buffer)[3] = -1;
-    expect(() => assertRestirDISnapshot(negative)).toThrow(/negative/);
+    const inconsistentLog = snapshot();
+    new Float32Array(inconsistentLog.current.buffer)[3] = -Math.fround(
+      3.4028234663852886e38,
+    );
+    expect(() => assertRestirDISnapshot(inconsistentLog)).toThrow(
+      /inconsistent logarithmic/,
+    );
 
     const padding = snapshot();
     padding.current[63] = 1;
@@ -125,5 +153,21 @@ describe('ReSTIR-DI state snapshot validation', () => {
     saturated.current[6] = 0xffff_fffe;
     saturated.current[7] = 2;
     expect(() => assertRestirDISnapshot(saturated)).not.toThrow();
+  });
+
+  it('cold-migrates a structurally valid legacy cohort without reusing weights', () => {
+    const legacy = snapshot();
+    const migrated = coldMigrateLegacyRestirDISnapshot({
+      width: legacy.width,
+      height: legacy.height,
+      strideU32: legacy.strideU32,
+      current: legacy.current,
+      previous: legacy.previous,
+      spatial: legacy.spatial,
+    });
+    expect(migrated.representationVersion).toBe(1);
+    expect([...migrated.current]).toEqual(new Array(64).fill(0));
+    expect([...migrated.previous]).toEqual(new Array(64).fill(0));
+    expect([...migrated.spatial]).toEqual(new Array(64).fill(0));
   });
 });

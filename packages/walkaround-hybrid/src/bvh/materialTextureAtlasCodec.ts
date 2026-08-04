@@ -48,8 +48,18 @@ export function materialTextureAtlasEncodingForDataType(
   }
 }
 
+/**
+ * Optional `texture-formats-tier1` formats are implemented by current WebGPU
+ * runtimes even though Deno's bundled WebGPU declaration can lag the spec and
+ * omit them from `GPUTextureFormat`.
+ */
+export type MaterialTextureAtlasGpuFormat =
+  | GPUTextureFormat
+  | 'rgba16unorm'
+  | 'rgba16snorm';
+
 export function materialTextureAtlasEncodingForGpuFormat(
-  format: GPUTextureFormat,
+  format: MaterialTextureAtlasGpuFormat,
 ): MaterialTextureAtlasEncoding {
   switch (format) {
     case 'r8unorm':
@@ -121,7 +131,6 @@ export function materialTextureAtlasFloatToHalf(value: number): number {
     const shift = -unbiased - 14;
     const significand = mantissa | 0x800000;
     const round = (1 << (shift + 12)) - 1;
-    const halfway = 1 << (shift + 11);
     return sign | ((significand + round + ((significand >>> (shift + 13)) & 1)) >>> (shift + 13));
   }
   let halfExponent = unbiased + 15;

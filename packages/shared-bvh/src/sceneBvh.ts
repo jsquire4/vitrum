@@ -15,6 +15,11 @@ import { clonePlainAabb, type PlainAabb } from './aabb.js';
 import { materialSig } from './materialSignature.js';
 import { mergeWorldSpaceFromCore } from './worldSpaceMerge.js';
 import { coreMaterialToMaterialEntry, packMaterials } from './materialEntry.js';
+import {
+  analyzeOpticalMediumTopology,
+  lowerTransmissiveAnalyticPrimitives,
+} from './opticalMediumTopology.js';
+import { packMergedOpticalMediumBoundaryIds } from './opticalMediumBoundaryPacking.js';
 
 export interface SceneBvhBuffers {
   /** Flat BVHNode array: bounds (6 f32) + rightChild/triOffset + splitAxis/triCount. */
@@ -25,6 +30,10 @@ export interface SceneBvhBuffers {
   normals: Float32Array;
   /** One u32 per triangle, material index. */
   triMaterialId: Uint32Array;
+  /** Interleaved vec2u optical component/range identity per BVH triangle. */
+  opticalTriangleIdentity: Uint32Array;
+  /** Encoded optical boundary base plus one for merged instance zero. */
+  opticalInstanceBoundaryIdBasePlusOne: Uint32Array;
   /** Deduped core materials in scene order, indexed by {@link triMaterialId}. */
   materials: readonly MaterialSpec[];
   /**
@@ -115,7 +124,15 @@ export class SceneBvh {
     // H34-g: start timing BEFORE the expensive merge so onSlowRebuild can fire.
     const t0 = performance.now();
 
-    const merged = mergeWorldSpaceFromCore(scene, {
+    // Every authored-transmissive analytic is first lowered to the canonical
+    // triangle representation used by exact source-feature exclusion. Analyze
+    // and merge that same scene so topology IDs cannot drift from geometry.
+    const transportScene = lowerTransmissiveAnalyticPrimitives(scene);
+    const opticalAnalysis = analyzeOpticalMediumTopology(transportScene, {
+      analyticGeometry: 'generated-triangle',
+      transformArithmetic: 'merged-world-f64-to-f32',
+    });
+    const merged = mergeWorldSpaceFromCore(transportScene, {
       positionStride: 4,
       filter: DDGI_CORE_MESH_FILTER,
       splitMaterialsByCastShadow: true,
@@ -147,6 +164,20 @@ export class SceneBvh {
     // canonical MaterialEntry bytes the DDGI consumer uploads. In particular,
     // the material byte stream includes its true-u32 flags lane, so additions
     // to the shared GPU ABI cannot silently drift out of a parallel field list.
+    const opticalIds = packMergedOpticalMediumBoundaryIds(
+      transportScene,
+      merged,
+      opticalAnalysis,
+    );
+    const opticalTriangleIdentity = new Uint32Array(
+      merged.triangleCount * 2,
+    );
+    for (let triangle = 0; triangle < merged.triangleCount; triangle += 1) {
+      opticalTriangleIdentity[triangle * 2] =
+        opticalIds.triangleComponentIndexPlusOne[triangle]!;
+      opticalTriangleIdentity[triangle * 2 + 1] =
+        opticalIds.triangleRepresentedPrimitiveInstanceIds[triangle]!;
+    }
     const materialEntries = packMaterials(
       merged.materials.map(coreMaterialToMaterialEntry),
     );
@@ -157,6 +188,9 @@ export class SceneBvh {
       indices: merged.indices,
       normals: merged.normals,
       triMaterialId: merged.triMaterialId,
+      opticalTriangleIdentity,
+      opticalInstanceBoundaryIdBasePlusOne:
+        opticalIds.instanceBoundaryIdBasePlusOne,
       materialEntries,
       materialSignatures,
     };
@@ -171,6 +205,10 @@ export class SceneBvh {
             indices: this._buffers.indices,
             normals: this._buffers.normals,
             triMaterialId: this._buffers.triMaterialId,
+            opticalTriangleIdentity:
+              this._buffers.opticalTriangleIdentity,
+            opticalInstanceBoundaryIdBasePlusOne:
+              this._buffers.opticalInstanceBoundaryIdBasePlusOne,
             materialEntries: this._lastMaterialEntries,
             materialSignatures: this._lastMaterialSignatures,
           } satisfies PackedSceneBvhFingerprintState
@@ -196,6 +234,9 @@ export class SceneBvh {
       indices: merged.indices,
       normals: merged.normals,
       triMaterialId: merged.triMaterialId,
+      opticalTriangleIdentity,
+      opticalInstanceBoundaryIdBasePlusOne:
+        opticalIds.instanceBoundaryIdBasePlusOne,
       materials: merged.materials,
       coreMaterials: merged.materials,
       boundingBox: clonePlainAabb(merged.boundingBox),

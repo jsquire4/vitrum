@@ -111,6 +111,39 @@ describe('HybridEngine incremental validation scope', () => {
     }
   });
 
+  it('still re-runs the optical proof when a patch activates transmission', () => {
+    let geometryReads = 0;
+    let opticalProofs = 0;
+    const scene = trappedScene(() => {
+      geometryReads += 1;
+    });
+    const engine = new HybridEngine(makeOptions());
+    const internals = engine as unknown as MutableHybridInternals;
+    internals._state = 'ready';
+    internals._lastScene = scene;
+    internals._renderScene = scene;
+    internals._bvhBuffers = null;
+    (internals as unknown as {
+      preflightOpticalMediumTopology: () => never;
+    }).preflightOpticalMediumTopology = () => {
+      opticalProofs += 1;
+      throw new Error('optical-proof-invoked');
+    };
+    internals._routePrimitiveUpdate = () => {
+      throw new Error('route-must-not-run-before-optical-proof');
+    };
+
+    try {
+      expect(() => engine.updatePrimitive('triangle', {
+        material: { transmission: 1 },
+      })).toThrow('optical-proof-invoked');
+      expect(opticalProofs).toBe(1);
+      expect(geometryReads).toBe(0);
+    } finally {
+      engine.dispose();
+    }
+  });
+
   it('emitter patch reaches manifest validation without rescanning geometry', () => {
     let geometryReads = 0;
     const scene = trappedScene(() => {

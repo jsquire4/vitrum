@@ -96,6 +96,25 @@ const { integral: Y_INTEGRAL, cdf: Y_CDF } = buildIntegralAndCdf(CIE_Y_TABLE);
 const { integral: X_INTEGRAL, cdf: X_CDF } = buildIntegralAndCdf(CIE_X_TABLE);
 const { integral: Z_INTEGRAL, cdf: Z_CDF } = buildIntegralAndCdf(CIE_Z_TABLE);
 
+/**
+ * Exact X/Y/Z strategy widths realized by the shader RNG's 24-bit uniform
+ * domain. Three equal non-zero integer widths cannot sum to 2^24; the
+ * cumulative-f32 selector used by the GLSL implementation assigns the two
+ * rounded-up widths to X/Y and the exact remainder to Z.
+ */
+export const HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS = Object.freeze(
+  [5_592_406, 5_592_406, 5_592_404] as const,
+);
+export const HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT = 16_777_216;
+export const HERO_WAVELENGTH_MIS_STRATEGY_PMF = Object.freeze([
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[0] /
+    HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[1] /
+    HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT,
+  HERO_WAVELENGTH_MIS_STRATEGY_BUCKETS[2] /
+    HERO_WAVELENGTH_MIS_STRATEGY_BUCKET_COUNT,
+] as const);
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /**
@@ -200,15 +219,19 @@ export function _sampleCmfCdfInverseForTest(
  * misMixturePdf — evaluate the balance-heuristic mixture PDF at λ.
  *
  * Used by the MIS estimator to weight a sampled wavelength regardless of
- * which underlying strategy (X, Y, or Z) drew it. The mixture is uniform
- * over the three strategies (each picked with probability 1/3), so:
+ * which underlying strategy (X, Y, or Z) drew it. The intended equal mixture
+ * is represented on the shader RNG's 2^24-point lattice by the exported
+ * X/Y/Z strategy PMF, so:
  *
- *   pdf_mis(λ) = (pdf_X(λ) + pdf_Y(λ) + pdf_Z(λ)) / 3
- *             = (X(λ)/∫X + Y(λ)/∫Y + Z(λ)/∫Z) / 3
+ *   pdf_mis(λ) = q_X pdf_X(λ) + q_Y pdf_Y(λ) + q_Z pdf_Z(λ)
  */
-function misMixturePdf(lambdaNm: number): number {
+export function heroWavelengthMisMixturePdf(lambdaNm: number): number {
   const [x, y, z] = sampleCMF(lambdaNm);
-  return (x / X_INTEGRAL + y / Y_INTEGRAL + z / Z_INTEGRAL) / 3;
+  return (
+    HERO_WAVELENGTH_MIS_STRATEGY_PMF[0] * (x / X_INTEGRAL) +
+    HERO_WAVELENGTH_MIS_STRATEGY_PMF[1] * (y / Y_INTEGRAL) +
+    HERO_WAVELENGTH_MIS_STRATEGY_PMF[2] * (z / Z_INTEGRAL)
+  );
 }
 
 export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number } {
@@ -227,14 +250,14 @@ export function sampleHeroWavelength(u: number): { lambdaNm: number; pdf: number
  * strong green/yellow bias and slow blue convergence.
  *
  * One-sample MIS distributes the sample budget across all three CMFs. With
- * uniform strategy selection, ~⅓ of samples land near the X peak (~600 nm,
+ * the nearest representable equal strategy selection, ~⅓ of samples land near the X peak (~600 nm,
  * red-orange), ~⅓ near Y (~555 nm, green), and ~⅓ near Z (~445 nm, blue) —
  * giving every chromatic region adequate coverage.
  *
  * The estimator weight uses the **mixture pdf** evaluated at the sampled λ,
  * not the per-strategy pdf:
  *
- *   pdf_mis(λ) = (pdf_X(λ) + pdf_Y(λ) + pdf_Z(λ)) / 3
+ *   pdf_mis(λ) = q_X pdf_X(λ) + q_Y pdf_Y(λ) + q_Z pdf_Z(λ)
  *
  * This is the balance-heuristic combination — variance-optimal for additive
  * estimators when individual strategy variances are similar.
@@ -256,14 +279,16 @@ export function sampleHeroWavelengthMIS(
   requireUnitRandom(uStrategy, 'sampleHeroWavelengthMIS.uStrategy');
   requireUnitRandom(uLambda, 'sampleHeroWavelengthMIS.uLambda');
   let lambdaNm: number;
-  if (s < 1 / 3) {
+  const xCutoff = HERO_WAVELENGTH_MIS_STRATEGY_PMF[0];
+  const yCutoff = xCutoff + HERO_WAVELENGTH_MIS_STRATEGY_PMF[1];
+  if (s < xCutoff) {
     lambdaNm = sampleCmfCdfInverse(uLambda, CIE_X_TABLE, X_CDF, X_INTEGRAL).lambdaNm;
-  } else if (s < 2 / 3) {
+  } else if (s < yCutoff) {
     lambdaNm = sampleCmfCdfInverse(uLambda, CIE_Y_TABLE, Y_CDF, Y_INTEGRAL).lambdaNm;
   } else {
     lambdaNm = sampleCmfCdfInverse(uLambda, CIE_Z_TABLE, Z_CDF, Z_INTEGRAL).lambdaNm;
   }
-  return { lambdaNm, pdf: misMixturePdf(lambdaNm) };
+  return { lambdaNm, pdf: heroWavelengthMisMixturePdf(lambdaNm) };
 }
 
 /**

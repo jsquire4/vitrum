@@ -443,7 +443,7 @@ export function buildPreparedAccumBindGroup(
 
 /**
  * Resources for the SHADE hybrid-layers bind group (bindings 0-5 only): the
- * DDGI irradiance/visibility textures + sampler + UBO, plus the RC cascade-0 /
+ * DDGI irradiance/visibility textures + UBO, plus the RC cascade-0 /
  * params buffers. The shade pass does NOT bind the PPG guided-sampling trees
  * (those are gi-ris-only, bindings 6-8) — so this narrower type lets the shade
  * caller supply exactly what it uses, instead of padding the PPG slots with a
@@ -454,7 +454,6 @@ interface ShadeHybridLayersResources {
   ddgiVisTex: GPUTexture | null;
   ddgiPlaceholderRgba16f: GPUTexture;
   ddgiPlaceholderVisRgba16f: GPUTexture;
-  ddgiSampler: GPUSampler;
   ddgiUboBuffer: GPUBuffer;
   // W8 Phase 3 (2026-05-18) — RC cascade-0 + params. Both fields are
   // always-present GPUBuffers (a 16-byte and a 64-byte placeholder
@@ -499,7 +498,6 @@ export function buildHybridLayersBindGroup(
     entries: [
       { binding: 0, resource: textureView(irrTex, viewCache) },
       { binding: 1, resource: textureView(visTex, viewCache) },
-      { binding: 2, resource: r.ddgiSampler },
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
       { binding: 4, resource: { buffer: r.rcCascade0Buffer } },
       { binding: 5, resource: { buffer: r.rcParamsBuffer } },
@@ -527,7 +525,6 @@ export function buildShadeHybridLayersBindGroup(
     entries: [
       { binding: 0, resource: textureView(irrTex, viewCache) },
       { binding: 1, resource: textureView(visTex, viewCache) },
-      { binding: 2, resource: r.ddgiSampler },
       { binding: 3, resource: { buffer: r.ddgiUboBuffer } },
       { binding: 4, resource: { buffer: r.rcCascade0Buffer } },
       { binding: 5, resource: { buffer: r.rcParamsBuffer } },
@@ -735,7 +732,6 @@ export function buildTransparentOitBindGroup(
   cache: BGLCache,
   ddgiIrradianceView: GPUTextureView,
   ddgiVisibilityView: GPUTextureView,
-  ddgiSampler: GPUSampler,
   ddgiUboBuffer: GPUBuffer,
   rcCascade0Buffer: GPUBuffer,
   rcParamsBuffer: GPUBuffer,
@@ -745,7 +741,6 @@ export function buildTransparentOitBindGroup(
   return buildBindGroupFromTable(device, 'transparentOit', getTransparentOitBindGroupLayout(device, cache), [
     ddgiIrradianceView,
     ddgiVisibilityView,
-    ddgiSampler,
     { buffer: ddgiUboBuffer },
     { buffer: rcCascade0Buffer },
     { buffer: rcParamsBuffer },

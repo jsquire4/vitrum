@@ -13,12 +13,14 @@
 // Provenance: gkjohnson/three-gpu-pathtracer (MIT) — `MaterialsTexture.js`.
 // CREDITS.md attributes the absorbed fork.
 
-import type {
-  MaterialSpec,
-  TextureFilterMode,
-  TextureMipFilterMode,
-  TextureWrapMode,
-  Vec3,
+import {
+  effectiveMaterialIor,
+  validateMaterialSpec,
+  type MaterialSpec,
+  type TextureFilterMode,
+  type TextureMipFilterMode,
+  type TextureWrapMode,
+  type Vec3,
 } from '@vitrum/core';
 import { packRadianceRgbScaleF32 } from '@vitrum/shared-bvh';
 import {
@@ -37,10 +39,14 @@ import type {
   TextureSampleColorSpace,
 } from './texturesArray.js';
 import {
+  snapshotMaterialTextureInputs,
   textureColorSpaceForMapKey,
   textureStorageClassForMapKey,
 } from './texturesArray.js';
-import { requireNonNegativeFloat32 } from './float32Policy.js';
+import {
+  requireFiniteFloat32,
+  requireNonNegativeFloat32,
+} from './float32Policy.js';
 import { materialEmissionExcludedFromMeshNee } from './meshEmitterPolicy.js';
 
 import {
@@ -85,8 +91,6 @@ type PackedMaterialSpec = MaterialSpec & {
   readonly meshEmitterCastShadowDisabled?: boolean;
 };
 
-/** TRANSLUCENT_BIT — flag (s14.a) bit set for intrinsically scattering media. */
-const TRANSLUCENT_BIT = 1 << 4;
 /** UNLIT_BIT — flag (s14.a) bit set for terminal base-color unlit shading. */
 const UNLIT_BIT = 1 << 5;
 /** DOUBLE_SIDED_BIT — authored surface emission is visible from both orientations. */
@@ -116,33 +120,39 @@ function squareDim(texelCount: number): number {
   return Math.max(1, Math.ceil(Math.sqrt(Math.max(1, texelCount))));
 }
 
-function finiteOr(value: number | undefined, fallback: number): number {
-  return Number.isFinite(value) ? Number(value) : fallback;
-}
-
-function nonNegativeFinite(value: number | undefined, fallback = 0.0): number {
-  return Math.max(0.0, finiteOr(value, fallback));
-}
-
 function resolveSssMedium(
   m: PackedMaterialSpec,
   attenuationColor: Vec3,
   attenuationDistance: number,
+  context: string,
 ): { readonly active: boolean; readonly sigmaTMax: number; readonly sigmaS: Vec3 } {
-  const scalarSigmaS = nonNegativeFinite(m.scatteringCoefficient, 0.0);
+  const scalarSigmaS = requireNonNegativeFloat32(
+    m.scatteringCoefficient ?? 0.0,
+    `${context}.scatteringCoefficient`,
+  );
   const sigmaS: Vec3 = m.scatteringCoefficientRGB
     ? [
-        nonNegativeFinite(m.scatteringCoefficientRGB[0], 0.0),
-        nonNegativeFinite(m.scatteringCoefficientRGB[1], 0.0),
-        nonNegativeFinite(m.scatteringCoefficientRGB[2], 0.0),
+        requireNonNegativeFloat32(m.scatteringCoefficientRGB[0], `${context}.scatteringCoefficientRGB[0]`),
+        requireNonNegativeFloat32(m.scatteringCoefficientRGB[1], `${context}.scatteringCoefficientRGB[1]`),
+        requireNonNegativeFloat32(m.scatteringCoefficientRGB[2], `${context}.scatteringCoefficientRGB[2]`),
       ]
     : [scalarSigmaS, scalarSigmaS, scalarSigmaS];
   const sigmaA = sharedSigmaAFromAttenuation(attenuationColor, attenuationDistance);
-  const sigmaTMax = Math.max(
-    sigmaA[0] + sigmaS[0],
-    sigmaA[1] + sigmaS[1],
-    sigmaA[2] + sigmaS[2],
-  );
+  const sigmaAMax = Math.max(sigmaA[0], sigmaA[1], sigmaA[2]);
+  // A zero attenuation-color channel has the exact Beer coefficient +Infinity.
+  // It must remain exactly black for every positive distance, but +Infinity is
+  // not a usable exponential free-flight proposal: decoding sigmaS / sigmaTMax
+  // would collapse every finite scattering lane and the survival ratio would
+  // form Inf - Inf. Sample from the largest *finite* represented extinction
+  // instead. Infinite channels are deterministic zero-survival lanes and are
+  // still evaluated by the authored Beer law in the shader.
+  let finiteSigmaTMax = 0.0;
+  for (let channel = 0; channel < 3; channel += 1) {
+    const sigmaT = sigmaA[channel]! + sigmaS[channel]!;
+    if (Number.isFinite(sigmaT)) {
+      finiteSigmaTMax = Math.max(finiteSigmaTMax, sigmaT);
+    }
+  }
   const sigmaSMax = Math.max(sigmaS[0], sigmaS[1], sigmaS[2]);
   // Free-flight sampling uses one scalar majorant for both RGB and hero-
   // wavelength paths.  The shader interpolates the packed 32-sample spectral
@@ -156,21 +166,34 @@ function resolveSssMedium(
       const t = s / spectralDenom;
       const lambdaNm = SPECTRAL_GRID_START_NM +
         t * (SPECTRAL_GRID_END_NM - SPECTRAL_GRID_START_NM);
-      spectralSigmaAMax = Math.max(
-        spectralSigmaAMax,
+      const spectralSigmaA = requireNonNegativeFloat32(
         sharedSampleSpectralCurve(
           m.spectralAttenuation,
           lambdaNm,
           PT_WEBGL2_SPECTRAL_CURVE_OPTIONS,
         ),
+        `${context}.spectralAttenuation sample ${s}`,
       );
+      if (Number.isFinite(spectralSigmaA)) {
+        spectralSigmaAMax = Math.max(spectralSigmaAMax, spectralSigmaA);
+      }
     }
   }
   return {
-    // Any authored positive scattering coefficient is a medium. Do not erase
-    // dim media behind an arbitrary activation epsilon.
-    active: sigmaSMax > 0,
-    sigmaTMax: Math.max(sigmaTMax, spectralSigmaAMax + sigmaSMax, 0.0),
+    // Closed transmissive regions own geometric Beer transport whenever any
+    // absorption/scattering channel is authored, even at thickness=0. The
+    // latter means "derive distance from the closed boundary", not "thin
+    // sheet". Preserve an explicitly authored spectral curve as a bulk signal
+    // even if its current samples are all zero so mutation cannot silently
+    // change the topology class.
+    active:
+      sigmaSMax > 0 ||
+      sigmaAMax > 0 ||
+      m.spectralAttenuation != null,
+    sigmaTMax: requireNonNegativeFloat32(
+      Math.max(finiteSigmaTMax, spectralSigmaAMax + sigmaSMax, 0.0),
+      `${context} derived sigmaT majorant`,
+    ),
     sigmaS,
   };
 }
@@ -208,6 +231,51 @@ const MIP_FILTER_INDEX: Readonly<Record<TextureMipFilterMode, number>> = {
   nearest: 1,
   linear: 2,
 };
+
+// Largest positive binary32 integer strictly inside GLSL ES's signed-int
+// conversion range. Every selector/policy lane is round-tripped float -> int.
+const GLSL_INT_MAX_EXACT_F32 = 2_147_483_520;
+
+function requireExactGlslInt(
+  value: unknown,
+  context: string,
+  minimum = 0,
+): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isSafeInteger(value) ||
+    value < minimum ||
+    value > GLSL_INT_MAX_EXACT_F32 ||
+    Math.fround(value) !== value
+  ) {
+    throw new RangeError(
+      `${context} must be an exact float32 integer in ` +
+        `[${minimum}, ${GLSL_INT_MAX_EXACT_F32}] (got ${String(value)}).`,
+    );
+  }
+  return value;
+}
+
+function packedSamplerPolicyLane(
+  payload: unknown,
+  mode: number,
+  context: string,
+): number {
+  const exactPayload = requireExactGlslInt(payload, `${context} payload`);
+  const packed = BigInt(exactPayload) * 4n + BigInt(mode);
+  if (packed > BigInt(GLSL_INT_MAX_EXACT_F32)) {
+    throw new RangeError(`${context} exceeds the GLSL signed-int descriptor range.`);
+  }
+  return requireExactGlslInt(Number(packed), context);
+}
+
+function requireScaleFloat32(value: number, context: string): number {
+  const stored = requireFiniteFloat32(value, context);
+  if (value !== 0 && stored === 0) {
+    throw new RangeError(`${context} underflows WebGL float32 storage.`);
+  }
+  return stored;
+}
 
 /**
  * Pack a list of core `MaterialSpec`s into the RGBA32F material square the
@@ -253,6 +321,45 @@ interface PackMaterialsTextureOptions {
   readonly uvLayerByTexCoord?: ReadonlyMap<number, number>;
 }
 
+const PRIVATE_MATERIAL_FLAGS = new Set([
+  'castShadow',
+  'vertexColors',
+  'meshEmitterCastShadowDisabled',
+]);
+
+function validatedPackedMaterial(
+  source: MaterialSpec,
+  materialIndex: number,
+): PackedMaterialSpec {
+  if (source == null || typeof source !== 'object' || Array.isArray(source)) {
+    throw new TypeError(`pt-webgl2 material ${materialIndex} must be a material record.`);
+  }
+  const sourceRecord = source as unknown as Record<PropertyKey, unknown>;
+  const publicRecord: Record<PropertyKey, unknown> = {};
+  const privateFlags: Record<string, boolean> = {};
+  for (const key of Reflect.ownKeys(source)) {
+    const value = sourceRecord[key];
+    if (typeof key === 'string' && PRIVATE_MATERIAL_FLAGS.has(key)) {
+      if (value !== undefined && typeof value !== 'boolean') {
+        throw new TypeError(
+          `pt-webgl2 material ${materialIndex}.${key} must be boolean when supplied.`,
+        );
+      }
+      if (value !== undefined) privateFlags[key] = value;
+    } else {
+      Object.defineProperty(publicRecord, key, {
+        value,
+        enumerable: Object.prototype.propertyIsEnumerable.call(source, key),
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  const publicMaterial = publicRecord as unknown as MaterialSpec;
+  validateMaterialSpec(publicMaterial, `pt-webgl2 material ${materialIndex}`);
+  return { ...publicMaterial, ...privateFlags } as PackedMaterialSpec;
+}
+
 export function assertThinFilmLayerLimit(
   m: MaterialSpec,
   context = 'material',
@@ -274,13 +381,22 @@ function mapLayer(
   colorSpace: TextureSampleColorSpace,
 ): number {
   if (ref?.handle == null || layerOf == null) return -1;
-  return layerMapFor(layerOf, storageClass, colorSpace)?.get(ref.handle) ?? -1;
+  const mapped = layerMapFor(layerOf, storageClass, colorSpace)?.get(ref.handle);
+  if (mapped == null) return -1;
+  return requireExactGlslInt(
+    mapped,
+    `pt-webgl2 ${storageClass}/${colorSpace} material texture layer`,
+    -1,
+  );
 }
 
 function defaultUvAttributeLayer(texCoord: number): number {
   if (texCoord === 0) return 2;
   if (texCoord === 1) return 4;
-  return 5 + (texCoord - 2);
+  return requireExactGlslInt(
+    5 + (texCoord - 2),
+    `pt-webgl2 default UV attribute layer for texCoord ${texCoord}`,
+  );
 }
 
 function resolveUvAttributeLayer(
@@ -300,14 +416,18 @@ function resolveUvAttributeLayer(
       `pt-webgl2: scene UV layout has no attribute layer for TextureRef.texCoord ${texCoord}`,
     );
   }
-  return layer;
+  return requireExactGlslInt(
+    layer,
+    `pt-webgl2 UV attribute layer for TextureRef.texCoord ${texCoord}`,
+  );
 }
 
 /**
  * Write the 2-texel UV-transform encoding the GLSL `readTextureTransform` reads
  * (row1 = (m00,m01,m02) at material texel `texelIdx`; row2 = (m10,m11,m12) at
- * `texelIdx+1`), reproducing THREE's `Matrix3.setUvTransform` (center 0):
- *   row1 = (sx·cos, sx·sin, offsetX),  row2 = (−sy·sin, sy·cos, offsetY).
+ * `texelIdx+1`) for the core `rotate(uv * scale, rotation) + offset`
+ * contract:
+ *   row1 = (sx·cos, −sy·sin, offsetX), row2 = (sx·sin, sy·cos, offsetY).
  * Identity (no transform) → row1=(1,0,0), row2=(0,1,0).
  */
 function writeTransform(
@@ -317,16 +437,32 @@ function writeTransform(
   ref: { transform?: { offset?: readonly number[]; scale?: readonly number[]; rotation?: number } } | undefined,
 ): void {
   const t = ref?.transform;
-  const sx = t?.scale?.[0] ?? 1;
-  const sy = t?.scale?.[1] ?? 1;
-  const ox = t?.offset?.[0] ?? 0;
-  const oy = t?.offset?.[1] ?? 0;
-  const r = t?.rotation ?? 0;
-  const c = Math.cos(r);
-  const s = Math.sin(r);
+  const context = `pt-webgl2 material texture transform texel ${texelIdx}`;
+  const component = (value: number, name: string): number => {
+    const stored = requireFiniteFloat32(value, `${context} ${name}`);
+    if (value !== 0 && stored === 0) {
+      throw new RangeError(`${context} ${name} underflows WebGL float32 storage.`);
+    }
+    return stored;
+  };
+  const sx = component(t?.scale?.[0] ?? 1, 'scale.x');
+  const sy = component(t?.scale?.[1] ?? 1, 'scale.y');
+  const ox = component(t?.offset?.[0] ?? 0, 'offset.x');
+  const oy = component(t?.offset?.[1] ?? 0, 'offset.y');
+  const r = component(t?.rotation ?? 0, 'rotation');
+  const c = requireFiniteFloat32(Math.cos(r), `${context} cos(rotation)`);
+  const s = requireFiniteFloat32(Math.sin(r), `${context} sin(rotation)`);
+  const row = (value: number, name: string): number =>
+    requireFiniteFloat32(value, `${context} ${name}`);
   const o = base + texelIdx * 4;
-  data[o] = sx * c; data[o + 1] = sx * s; data[o + 2] = ox; data[o + 3] = 0;
-  data[o + 4] = -sy * s; data[o + 5] = sy * c; data[o + 6] = oy; data[o + 7] = 0;
+  data[o] = row(sx * c, 'row0.x');
+  data[o + 1] = row(-sy * s, 'row0.y');
+  data[o + 2] = ox;
+  data[o + 3] = 0;
+  data[o + 4] = row(sx * s, 'row1.x');
+  data[o + 5] = row(sy * c, 'row1.y');
+  data[o + 6] = oy;
+  data[o + 7] = 0;
 }
 
 function writeSamplerPolicy(
@@ -358,13 +494,29 @@ function writeSamplerPolicy(
   // policy modulo four while carrying the source-rectangle offset. A zero
   // extent is the low-level helper's legacy common-size mode; production atlas
   // builds always supply exact placement metadata.
-  data[offset] = WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'] + width * 4;
-  data[offset + 1] = WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'] + height * 4;
-  data[offset + 2] = MIP_FILTER_INDEX[ref?.mipFilter ?? 'none'] + offsetX * 4;
-  data[offset + 3] =
+  data[offset] = packedSamplerPolicyLane(
+    width,
+    WRAP_MODE_INDEX[ref?.wrapS ?? 'repeat'],
+    'pt-webgl2 material sampler policy width/wrapS',
+  );
+  data[offset + 1] = packedSamplerPolicyLane(
+    height,
+    WRAP_MODE_INDEX[ref?.wrapT ?? 'repeat'],
+    'pt-webgl2 material sampler policy height/wrapT',
+  );
+  data[offset + 2] = packedSamplerPolicyLane(
+    offsetX,
+    MIP_FILTER_INDEX[ref?.mipFilter ?? 'linear'],
+    'pt-webgl2 material sampler policy offsetX/mipFilter',
+  );
+  const filterPair =
     FILTER_MODE_INDEX[ref?.magFilter ?? 'nearest'] +
-    FILTER_MODE_INDEX[ref?.minFilter ?? 'nearest'] * 2 +
-    offsetY * 4;
+    FILTER_MODE_INDEX[ref?.minFilter ?? 'nearest'] * 2;
+  data[offset + 3] = packedSamplerPolicyLane(
+    offsetY,
+    filterPair,
+    'pt-webgl2 material sampler policy offsetY/minMagFilter',
+  );
 }
 
 // ── D10.8: per-section packer helpers ────────────────────────────────────
@@ -470,7 +622,7 @@ function packScalarSlots(
   const color = m.baseColor;
   const metalness = m.metallic ?? 0.0;
   const roughness = m.roughness ?? 0.0;
-  const ior = m.ior ?? 1.5; // THREE's default f0=0.04 ⇒ ior 1.5
+  const ior = effectiveMaterialIor(m.ior); // default 1.5; authored 0 is the infinite-IOR endpoint
   const transmission = m.transmission ?? 0.0;
   // Contract default: pt-webgpu (materialTextures.ts) and walkaround-hybrid both
   // default emissiveIntensity to 1.0 when the field is absent; 0.0 would silently
@@ -482,10 +634,16 @@ function packScalarSlots(
   );
   const emissiveIntensity = packedEmission.scale;
   const emissive: Vec3 = packedEmission.value;
-  const normalScale = m.normalScale ?? 1.0; // core carries a scalar; fork stores (x,y)
+  const normalScale = requireScaleFloat32(
+    m.normalScale ?? 1.0,
+    `pt-webgl2 material ${materialIndex}.normalScale`,
+  ); // core carries a scalar; fork stores (x,y)
   const clearcoat = m.clearcoat ?? 0.0;
   const clearcoatRoughness = m.clearcoatRoughness ?? 0.0;
-  const clearcoatNormalScale = m.clearcoatNormalScale ?? 1.0;
+  const clearcoatNormalScale = requireScaleFloat32(
+    m.clearcoatNormalScale ?? 1.0,
+    `pt-webgl2 material ${materialIndex}.clearcoatNormalScale`,
+  );
   const sheen = m.sheen ?? 0.0;
   const sheenColor: Vec3 = m.sheenColor ?? [0.0, 0.0, 0.0];
   const sheenRoughness = m.sheenRoughness ?? 0.0;
@@ -495,17 +653,36 @@ function packScalarSlots(
   const specularColor: Vec3 = m.specularColor ?? DEFAULT_SPECULAR_COLOR;
   const specularIntensity = m.specularIntensity ?? 1.0;
   const anisotropy = Math.max(0.0, Math.min(1.0, m.anisotropy ?? 0.0));
-  const anisotropyRotation = m.anisotropyRotation ?? 0.0;
+  const anisotropyRotation = requireScaleFloat32(
+    m.anisotropyRotation ?? 0.0,
+    `pt-webgl2 material ${materialIndex}.anisotropyRotation`,
+  );
   const attenuationColor: Vec3 = m.attenuationColor ?? DEFAULT_ATTENUATION_COLOR;
   const attenuationDistance = m.attenuationDistance ?? Infinity;
-  const sssMedium = resolveSssMedium(m, attenuationColor, attenuationDistance);
+  const sssMedium = resolveSssMedium(
+    m,
+    attenuationColor,
+    attenuationDistance,
+    `pt-webgl2 material ${materialIndex}`,
+  );
   const thickness = m.thickness ?? 0.0;
   const opacity = m.opacity ?? 1.0;
   const alphaTest = m.alphaMode === 'mask' ? (m.alphaCutoff ?? 0.5) : 0.0;
   const transparent = m.alphaMode === 'blend';
 
-  // isThinFilm — fork: thickness===0 && attenuationDistance===Infinity.
-  const isThinFilm = thickness === 0.0 && attenuationDistance === Infinity;
+
+  // Only transmissive material participates in the sheet-vs-solid topology
+  // decision. A positive thickness or any authored bulk optical coefficient
+  // then requires a closed geometric region. Clear zero-thickness
+  // transmission is the sole virtual-sheet case; attenuation-only and
+  // spectral-only glass retain geometric Beer distance even when no
+  // representative thickness cap was authored.
+  const hasBulkTransmission = transmission > 0.0 &&
+    (thickness > 0.0 || sssMedium.active);
+  // A sheet is a transmissive zero-thickness interface. Opaque materials are
+  // neither sheets nor bulk media and must not enter the compound-interface
+  // sampling path merely because they have no authored volume thickness.
+  const isThinFilm = transmission > 0.0 && !hasBulkTransmission;
 
   // sample 0 — color.rgb / map
   data[index++] = color[0];
@@ -608,7 +785,6 @@ function packScalarSlots(
   {
     let flags = Number(transparent);
     if (m.doubleSided === true) flags |= DOUBLE_SIDED_BIT;
-    if (sssMedium.active) flags |= TRANSLUCENT_BIT;
     if (m.shadingModel === 'unlit') flags |= UNLIT_BIT;
     if (m.meshEmitterCastShadowDisabled === true) flags |= MESH_EMITTER_CAST_SHADOW_DISABLED_BIT;
     if (materialEmissionExcludedFromMeshNee(m)) flags |= MESH_EMITTER_NEE_DISABLED_BIT;
@@ -616,9 +792,15 @@ function packScalarSlots(
   }
 
   // sample 15 — sssSigmaT / sssAnisotropyG / dispersionStrength / thinFilmEnabled
-  const scatteringAnisotropy = m.scatteringAnisotropy ?? 0.0;
+  const scatteringAnisotropy = requireFiniteFloat32(
+    m.scatteringAnisotropy ?? 0.0,
+    `pt-webgl2 material ${materialIndex}.scatteringAnisotropy`,
+  );
   const dispersionAbbe = m.dispersionAbbeNumber ?? 0.0;
-  const dispersionStrength = dispersionStrengthFromAbbe(ior, dispersionAbbe);
+  const dispersionStrength = requireNonNegativeFloat32(
+    dispersionStrengthFromAbbe(ior, dispersionAbbe),
+    `pt-webgl2 material ${materialIndex} derived dispersion strength`,
+  );
   const thinFilmLayerCount = assertThinFilmLayerLimit(m);
   const thinFilmEnabled = thinFilmLayerCount > 0 ? 1.0 : 0.0;
   data[index++] = sssMedium.sigmaTMax;
@@ -640,7 +822,8 @@ function packScalarSlots(
   const hasFrontLayer = frontLayer != null;
   const hasBackLayer = backLayer != null;
   const thinFilmIncidentIor = m.thinFilmStack?.incidentIor ?? 1.0;
-  const thinFilmAngleDependent = m.thinFilmStack?.angleDependent ?? false;
+  const thinFilmAngleDependent =
+    m.thinFilmStack != null && m.thinFilmStack.angleDependent !== false;
   const packedFeatureFlags =
     (hasSpectral ? 1 : 0) | (hasFrontLayer ? 2 : 0) | (hasBackLayer ? 4 : 0);
   data[index++] = thinFilmIncidentIor;
@@ -650,8 +833,10 @@ function packScalarSlots(
 
   // sample 18 — frontLayerTransmission.rgb / frontLayerRoughness
   const frontTx: Vec3 = frontLayer?.transmission ?? [1.0, 1.0, 1.0];
-  const frontRoughness =
-    frontLayer && Number.isFinite(frontLayer.roughness) ? Number(frontLayer.roughness) : -1.0;
+  const frontRoughness = requireFiniteFloat32(
+    frontLayer?.roughness ?? -1.0,
+    `pt-webgl2 material ${materialIndex}.frontLayer.roughness`,
+  );
   data[index++] = frontTx[0];
   data[index++] = frontTx[1];
   data[index++] = frontTx[2];
@@ -659,8 +844,10 @@ function packScalarSlots(
 
   // sample 19 — backLayerTransmission.rgb / backLayerRoughness
   const backTx: Vec3 = backLayer?.transmission ?? [1.0, 1.0, 1.0];
-  const backRoughness =
-    backLayer && Number.isFinite(backLayer.roughness) ? Number(backLayer.roughness) : -1.0;
+  const backRoughness = requireFiniteFloat32(
+    backLayer?.roughness ?? -1.0,
+    `pt-webgl2 material ${materialIndex}.backLayer.roughness`,
+  );
   data[index++] = backTx[0];
   data[index++] = backTx[1];
   data[index++] = backTx[2];
@@ -673,7 +860,12 @@ function packScalarSlots(
  * D10.8: Write samples 20..27 (32 floats): uniform-grid spectral attenuation μ(λ), 380..780nm.
  * Returns the updated index (always base + 28*4 = base + 112).
  */
-function packSpectralGrid(data: Float32Array, index: number, m: MaterialSpec): number {
+function packSpectralGrid(
+  data: Float32Array,
+  index: number,
+  m: MaterialSpec,
+  materialIndex: number,
+): number {
   const spectralCurve = m.spectralAttenuation ?? null;
   const hasSpectral = spectralCurve != null;
   const spectralDenom = Math.max(SPECTRAL_GRID_SAMPLE_COUNT - 1, 1);
@@ -681,10 +873,13 @@ function packSpectralGrid(data: Float32Array, index: number, m: MaterialSpec): n
     if (hasSpectral) {
       const t = s / spectralDenom;
       const lambdaNm = SPECTRAL_GRID_START_NM + t * (SPECTRAL_GRID_END_NM - SPECTRAL_GRID_START_NM);
-      data[index++] = sharedSampleSpectralCurve(
-        spectralCurve,
-        lambdaNm,
-        PT_WEBGL2_SPECTRAL_CURVE_OPTIONS,
+      data[index++] = requireNonNegativeFloat32(
+        sharedSampleSpectralCurve(
+          spectralCurve,
+          lambdaNm,
+          PT_WEBGL2_SPECTRAL_CURVE_OPTIONS,
+        ),
+        `pt-webgl2 material ${materialIndex} spectral attenuation sample ${s}`,
       );
     } else {
       data[index++] = 0.0;
@@ -698,15 +893,29 @@ function packSpectralGrid(data: Float32Array, index: number, m: MaterialSpec): n
  * thin-film layer payload [ior, thicknessNm, extinction]×35 + pad.
  * Returns the updated index (always base + 55*4 = base + 220).
  */
-function packThinFilm(data: Float32Array, index: number, m: MaterialSpec): number {
+function packThinFilm(
+  data: Float32Array,
+  index: number,
+  m: MaterialSpec,
+  materialIndex: number,
+): number {
   const thinFilmLayers = m.thinFilmStack?.layers ?? [];
   const thinFilmLayerCount = assertThinFilmLayerLimit(m);
   for (let layerIdx = 0; layerIdx < THIN_FILM_LAYER_LIMIT; layerIdx += 1) {
     if (layerIdx < thinFilmLayerCount) {
       const layer = thinFilmLayers[layerIdx]!;
-      data[index++] = layer.ior ?? 1.0;
-      data[index++] = layer.thicknessNm ?? 0.0;
-      data[index++] = layer.extinctionCoefficient ?? 0.0;
+      data[index++] = requireNonNegativeFloat32(
+        layer.ior ?? 1.0,
+        `pt-webgl2 material ${materialIndex}.thinFilmStack.layers[${layerIdx}].ior`,
+      );
+      data[index++] = requireNonNegativeFloat32(
+        layer.thicknessNm ?? 0.0,
+        `pt-webgl2 material ${materialIndex}.thinFilmStack.layers[${layerIdx}].thicknessNm`,
+      );
+      data[index++] = requireNonNegativeFloat32(
+        layer.extinctionCoefficient ?? 0.0,
+        `pt-webgl2 material ${materialIndex}.thinFilmStack.layers[${layerIdx}].extinctionCoefficient`,
+      );
     } else {
       data[index++] = 0.0;
       data[index++] = 0.0;
@@ -733,6 +942,7 @@ function packTextureTransforms(
   data: Float32Array,
   base: number,
   m: MaterialSpec,
+  materialIndex: number,
   envMapIntensity: number,
   lightMapIntensity: number,
   ids: LayerIds,
@@ -781,7 +991,10 @@ function packTextureTransforms(
   data[d3++] = envMapIntensity;
   data[d3++] = m.aoMapIntensity ?? 1.0;
   data[d3++] = lightMapIntensity;
-  data[d3++] = m.bumpScale ?? 1.0;
+  data[d3++] = requireScaleFloat32(
+    m.bumpScale ?? 1.0,
+    `pt-webgl2 material ${materialIndex}.bumpScale`,
+  );
   data[d3++] = 0.0;
   // D3 — ao/light/bump transforms at texels 87/89/91 (2 texels per mat3).
   if (ids.ao >= 0) writeTransform(data, base, MATERIAL_AO_TRANSFORM_TEXEL, m.aoMap);
@@ -819,9 +1032,15 @@ function packTextureTransforms(
   // overrides; when absent the shader falls back to the ordinary normalMap path.
   const layerNormal = base + MATERIAL_LAYER_NORMAL_TEXEL_OFFSET * 4;
   data[layerNormal] = ids.frontLayerNormal;
-  data[layerNormal + 1] = m.frontLayer?.normalScale ?? 1.0;
+  data[layerNormal + 1] = requireScaleFloat32(
+    m.frontLayer?.normalScale ?? 1.0,
+    `pt-webgl2 material ${materialIndex}.frontLayer.normalScale`,
+  );
   data[layerNormal + 2] = ids.backLayerNormal;
-  data[layerNormal + 3] = m.backLayer?.normalScale ?? 1.0;
+  data[layerNormal + 3] = requireScaleFloat32(
+    m.backLayer?.normalScale ?? 1.0,
+    `pt-webgl2 material ${materialIndex}.backLayer.normalScale`,
+  );
   if (ids.frontLayerNormal >= 0) {
     writeTransform(data, base, MATERIAL_LAYER_NORMAL_TEXEL_OFFSET + 1, m.frontLayer?.normalMap);
   }
@@ -852,18 +1071,48 @@ function packSpectralReflectance(
   data: Float32Array,
   base: number,
   m: MaterialSpec,
+  materialIndex: number,
 ): void {
-  const baseColor = m.baseColor ?? [1, 1, 1];
+  const baseColor = m.baseColor;
   const [c0, c1, c2] = rgbToSpectralCoefficients(
-    finiteOr(baseColor[0], 1),
-    finiteOr(baseColor[1], 1),
-    finiteOr(baseColor[2], 1),
+    baseColor[0],
+    baseColor[1],
+    baseColor[2],
   );
   const offset = base + MATERIAL_SPECTRAL_REFLECTANCE_TEXEL_OFFSET * 4;
-  data[offset] = finiteOr(c0, 0);
-  data[offset + 1] = finiteOr(c1, 0);
-  data[offset + 2] = finiteOr(c2, 0);
+  data[offset] = requireFiniteFloat32(
+    c0,
+    `pt-webgl2 material ${materialIndex} spectral reflectance coefficient 0`,
+  );
+  data[offset + 1] = requireFiniteFloat32(
+    c1,
+    `pt-webgl2 material ${materialIndex} spectral reflectance coefficient 1`,
+  );
+  data[offset + 2] = requireFiniteFloat32(
+    c2,
+    `pt-webgl2 material ${materialIndex} spectral reflectance coefficient 2`,
+  );
   data[offset + 3] = 1;
+}
+
+function validatePackedMaterialStorage(
+  data: Float32Array,
+  materialCount: number,
+): void {
+  const attenuationDistanceLane = 12 * 4 + 3;
+  for (let materialIndex = 0; materialIndex < materialCount; materialIndex += 1) {
+    const base = materialIndex * MATERIAL_STRIDE;
+    for (let lane = 0; lane < MATERIAL_STRIDE; lane += 1) {
+      const value = data[base + lane]!;
+      if (Number.isFinite(value)) continue;
+      if (lane === attenuationDistanceLane && value === Number.POSITIVE_INFINITY) continue;
+      throw new RangeError(
+        `pt-webgl2 material ${materialIndex} packed lane ${lane} must be finite float32` +
+          (lane === attenuationDistanceLane ? ' or the +Infinity attenuation-distance ABI' : '') +
+          ` (got ${String(value)}).`,
+      );
+    }
+  }
 }
 
 export function packMaterialsTexture(
@@ -871,27 +1120,40 @@ export function packMaterialsTexture(
   layerOf?: TextureLayerLookup,
   options: PackMaterialsTextureOptions = {},
 ): MaterialsTextureData {
-  const materialCount = materials.length;
+  const materialSnapshot = snapshotMaterialTextureInputs(materials);
+  const materialCount = materialSnapshot.length;
+  const packedMaterials = new Array<PackedMaterialSpec>(materialCount);
   const envMapIntensities = new Float32Array(materialCount);
   const lightMapIntensities = new Float32Array(materialCount);
   for (let materialIndex = 0; materialIndex < materialCount; materialIndex += 1) {
+    const material = validatedPackedMaterial(
+      materialSnapshot[materialIndex]!,
+      materialIndex,
+    );
+    packedMaterials[materialIndex] = material;
     envMapIntensities[materialIndex] = requireNonNegativeFloat32(
-      materials[materialIndex]!.envMapIntensity ?? 1,
+      material.envMapIntensity ?? 1,
       `pt-webgl2 material ${materialIndex}.envMapIntensity`,
     );
     lightMapIntensities[materialIndex] = requireNonNegativeFloat32(
-      materials[materialIndex]!.lightMapIntensity ?? 1,
+      material.lightMapIntensity ?? 1,
       `pt-webgl2 material ${materialIndex}.lightMapIntensity`,
     );
-    assertThinFilmLayerLimit(materials[materialIndex]!, `material ${materialIndex}`);
+    assertThinFilmLayerLimit(material, `material ${materialIndex}`);
   }
   const pixelCount = materialCount * MATERIAL_PIXELS;
+  if (!Number.isSafeInteger(pixelCount)) {
+    throw new RangeError('pt-webgl2: material texture texel count exceeds JavaScript safe integers.');
+  }
   const dim = squareDim(pixelCount);
+  if (!Number.isSafeInteger(dim * dim * 4)) {
+    throw new RangeError('pt-webgl2: material texture allocation exceeds JavaScript safe integers.');
+  }
   const data = new Float32Array(dim * dim * 4);
 
   let index = 0;
   for (let i = 0; i < materialCount; i += 1) {
-    const source = materials[i]!;
+    const source = packedMaterials[i]!;
     const m = (options.vertexColorMaterialIds?.has(i) === true
       ? { ...source, vertexColors: true }
       : source) as PackedMaterialSpec;
@@ -902,14 +1164,15 @@ export function packMaterialsTexture(
     // samples 0..19: scalar fields, layer ids, SSS, thin-film metadata
     index = packScalarSlots(data, index, m, ids, i);
     // samples 20..27: spectral attenuation grid
-    index = packSpectralGrid(data, index, m);
+    index = packSpectralGrid(data, index, m, i);
     // samples 28..54: thin-film layer payload
-    index = packThinFilm(data, index, m);
+    index = packThinFilm(data, index, m, i);
     // samples 55..92: texture-transform mat3s + D3 ao/light/bump auxiliary block
     packTextureTransforms(
       data,
       base,
       m,
+      i,
       envMapIntensities[i]!,
       lightMapIntensities[i]!,
       ids,
@@ -917,10 +1180,11 @@ export function packMaterialsTexture(
       layerOf,
     );
     // sample 111: per-material Jakob-Hanika spectral reflectance coefficients.
-    packSpectralReflectance(data, base, m);
+    packSpectralReflectance(data, base, m, i);
 
     index = base + MATERIAL_STRIDE;
   }
 
+  validatePackedMaterialStorage(data, materialCount);
   return { data, dim, kind: 'rgba32f', materialCount };
 }

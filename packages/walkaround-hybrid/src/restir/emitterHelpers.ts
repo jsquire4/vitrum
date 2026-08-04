@@ -541,26 +541,27 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
   let out = 0;
   for (const e of emitters) {
     if (e.kind === 'point') {
-      const [r, g, b] = e.color;
-      const i = e.intensity;
+      const [r, g, b] = packRadianceRgbScaleF32(
+        e.color,
+        e.intensity,
+        `analytic point emitter ${String(e.id)}`,
+      ).scaled;
       const [px, py, pz] = e.position;
       const dist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
       const decay = typeof e.decay === 'number' ? e.decay : 2;
       data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
-      data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
+      data[out * S + 4]  = r; data[out * S + 5] = g; data[out * S + 6] = b; data[out * S + 7] = 0;
       data[out * S + 8]  = 0;  data[out * S + 9]  = 0;  data[out * S + 10] = 0;  data[out * S + 11] = 1;
       data[out * S + 12] = 0;  data[out * S + 13] = e.castShadow === false ? 1 : 0;  data[out * S + 14] = dist;  data[out * S + 15] = decay;
       out++;
     } else if (e.kind === 'spot') {
-      const [r, g, b] = e.color;
-      const i = e.intensity;
+      const [r, g, b] = packRadianceRgbScaleF32(
+        e.color,
+        e.intensity,
+        `analytic spot emitter ${String(e.id)}`,
+      ).scaled;
       const [px, py, pz] = e.position;
-      const dirRaw = e.direction;
-      const dx = dirRaw[0], dy = dirRaw[1], dz = dirRaw[2];
-      const dLen = Math.sqrt(dx * dx + dy * dy + dz * dz);
-      const nx = dLen > 1e-8 ? dx / dLen : 0;
-      const ny = dLen > 1e-8 ? dy / dLen : -1;
-      const nz = dLen > 1e-8 ? dz / dLen : 0;
+      const [nx, ny, nz] = normalizeDirectionF32(e.direction) ?? [0, -1, 0];
       const outerHalf = e.angle;
       const penumbra = e.penumbra ?? 0;
       const innerHalf = outerHalf * (1 - penumbra);
@@ -569,7 +570,7 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
       const dist = typeof e.distance === 'number' && e.distance > 0 ? e.distance : 0;
       const decay = typeof e.decay === 'number' ? e.decay : 2;
       data[out * S + 0]  = px;  data[out * S + 1]  = py;  data[out * S + 2]  = pz;  data[out * S + 3]  = 0;
-      data[out * S + 4]  = r * i; data[out * S + 5] = g * i; data[out * S + 6] = b * i; data[out * S + 7] = 0;
+      data[out * S + 4]  = r; data[out * S + 5] = g; data[out * S + 6] = b; data[out * S + 7] = 0;
       data[out * S + 8]  = nx;  data[out * S + 9]  = ny;  data[out * S + 10] = nz;  data[out * S + 11] = cosInner;
       data[out * S + 12] = cosOuter; data[out * S + 13] = e.castShadow === false ? 1 : 0; data[out * S + 14] = dist; data[out * S + 15] = decay;
       out++;
@@ -586,7 +587,13 @@ export function packAnalyticPointSpotEmitters(scene: Scene): PackedAnalyticLight
     const solidAngle = axisLen2 > 0.25
       ? 2 * Math.PI * Math.max(0, 1 - data[base + 12]!)
       : 4 * Math.PI;
-    return power * solidAngle;
+    const weight = power * solidAngle;
+    if (!Number.isFinite(weight) || weight < 0) {
+      throw new RangeError(
+        `analytic light ${index} alias weight must be finite and non-negative.`,
+      );
+    }
+    return weight;
   });
   const alias = buildAliasTable(weights);
   new Uint8Array(data.buffer).set(

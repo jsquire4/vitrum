@@ -4,6 +4,7 @@ import {
   fingerprintBufferExact,
   fingerprintBuffers,
   fingerprintBuffersExact,
+  fingerprintBuffersExactAndEqual,
   fingerprintPackedSceneBvhState,
   isTlasOnlyVersionBump,
   packedSceneBvhStateEqual,
@@ -24,6 +25,8 @@ function packedSceneState(
     indices: new Uint32Array([0, 1, 2]),
     normals: new Float32Array([0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0]),
     triMaterialId: new Uint32Array([0]),
+    opticalTriangleIdentity: new Uint32Array([0, 1]),
+    opticalInstanceBoundaryIdBasePlusOne: new Uint32Array([1]),
     materialEntries,
   };
 }
@@ -63,6 +66,57 @@ describe('bufferFingerprint', () => {
     expect(fingerprintBuffersExact(a.buffer)).not.toBe(fingerprintBuffersExact(b.buffer));
   });
 
+  it('hashes and collision-safely compares retained exact buffer parts in one pass', () => {
+    const current = [
+      new Uint8Array([1, 2, 3]),
+      new Uint32Array([4, 5, 6]),
+    ] as const;
+    const equal = fingerprintBuffersExactAndEqual(current, [
+      current[0].slice(),
+      current[1].slice(),
+    ]);
+    expect(equal).toEqual({
+      fingerprint: fingerprintBuffersExact(...current),
+      equal: true,
+    });
+
+    const changed = current[1].slice();
+    changed[1] = 99;
+    const unequal = fingerprintBuffersExactAndEqual(current, [
+      current[0].slice(),
+      changed,
+    ]);
+    expect(unequal.fingerprint).toBe(fingerprintBuffersExact(...current));
+    expect(unequal.equal).toBe(false);
+
+    expect(
+      fingerprintBuffersExactAndEqual(current, [current[0]]),
+    ).toEqual({
+      fingerprint: fingerprintBuffersExact(...current),
+      equal: false,
+    });
+  });
+
+  it('accepts ordinary ArrayBuffers when SharedArrayBuffer is absent from the host', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'SharedArrayBuffer');
+    Object.defineProperty(globalThis, 'SharedArrayBuffer', {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
+    try {
+      const bytes = new Uint8Array([1, 2, 3, 4]);
+      expect(fingerprintBufferExact(bytes.buffer)).toBeTypeOf('number');
+      expect(fingerprintBuffersExactAndEqual([bytes], [bytes.slice()]).equal).toBe(true);
+    } finally {
+      if (descriptor === undefined) {
+        Reflect.deleteProperty(globalThis, 'SharedArrayBuffer');
+      } else {
+        Object.defineProperty(globalThis, 'SharedArrayBuffer', descriptor);
+      }
+    }
+  });
+
   it('packed SceneBvh fingerprint covers every published byte buffer', () => {
     const baseline = packedSceneState();
     const baselineFingerprint = fingerprintPackedSceneBvhState(baseline);
@@ -72,6 +126,14 @@ describe('bufferFingerprint', () => {
       ['indices', { ...baseline, indices: new Uint32Array([0, 2, 1]) }],
       ['normals', { ...baseline, normals: new Float32Array([0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0]) }],
       ['triMaterialId', { ...baseline, triMaterialId: new Uint32Array([1]) }],
+      ['opticalTriangleIdentity', {
+        ...baseline,
+        opticalTriangleIdentity: new Uint32Array([2, 1]),
+      }],
+      ['opticalInstanceBoundaryIdBasePlusOne', {
+        ...baseline,
+        opticalInstanceBoundaryIdBasePlusOne: new Uint32Array([2]),
+      }],
       ['materialEntries', {
         ...baseline,
         materialEntries: packMaterials([{ baseColor: [0.5, 1, 1] }]),

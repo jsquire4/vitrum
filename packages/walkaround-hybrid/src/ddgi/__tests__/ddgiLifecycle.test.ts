@@ -4,16 +4,16 @@ import { DDGI } from '../DDGI.js';
 import type { SceneBVHBuffers } from '../../restir/bvhCore.js';
 import { packMaterialTextureAtlas } from '../../pipeline/materialTextureAtlas.js';
 
-function makeBoxScene(): Scene {
+function makeBoxScene(extent = 1): Scene {
   return {
     primitives: [{
       kind: 'mesh',
       id: 'box',
       positions: new Float32Array([
-        -1, -1, -1,
-         1, -1, -1,
-        -1,  1, -1,
-         1,  1,  1,
+        -extent, -extent, -extent,
+         extent, -extent, -extent,
+        -extent,  extent, -extent,
+         extent,  extent,  extent,
       ]),
       normals: new Float32Array([
         0, 0, 1,
@@ -74,6 +74,8 @@ function makeRestirBuffers(
     bvhNodes: cpu([blasSeed, 1, 2, 3, 4, 5, 6, 7]),
     bvhPositions: cpu([blasSeed, 1, 2, 3]),
     bvhIndex: cpu([0, 1, 2, 0]),
+    opticalTriangleIdentity: cpu([0, 0]),
+    opticalInstanceBoundaryIdBasePlusOne: cpu([1]),
     bvhNormals: cpu([0, 0, 1, 0]),
     bvhTangents: cpu([1, 0, 0, 1]),
     bvhColors: cpu([1, 1, 1, 1]),
@@ -144,6 +146,89 @@ describe('DDGI owned update lifecycle', () => {
 
     expect(runFrame).toHaveBeenCalledTimes(2);
     expect(ddgi.warmupFrame).toBe(1);
+    expect(ddgi.ready).toBe(true);
+    ddgi.dispose();
+  });
+
+  it('restarts warmup and arms every stratum when standalone bounds replace the atlas cohort', async () => {
+    const ddgi = new DDGI();
+    vi.spyOn(ddgi.pass, 'init').mockResolvedValue(true);
+    const runFrame = vi.spyOn(ddgi.pass, 'runFrame').mockResolvedValue(true);
+    const reallocate = vi.spyOn(ddgi.pass, 'reallocateGridAtlases');
+    ddgi.setProbeUpdateDivisor(2);
+
+    await ddgi.updateFrame({ coreScene: scene, device, enabled: true });
+    const lifecycle = ddgi as unknown as {
+      _frame: number;
+      _ready: boolean;
+      _lastFrameTs: number;
+    };
+    lifecycle._frame = 2;
+    lifecycle._ready = true;
+    const previousGeneration = ddgi.pass.fullBlendGeneration;
+
+    lifecycle._lastFrameTs = 0;
+    await ddgi.updateFrame({
+      coreScene: makeBoxScene(8),
+      device,
+      enabled: true,
+    });
+
+    expect(reallocate).toHaveBeenCalledTimes(2);
+    expect(runFrame.mock.calls.at(-1)?.slice(1)).toEqual([0, 2]);
+    expect(ddgi.warmupFrame).toBe(1);
+    expect(ddgi.ready).toBe(false);
+    expect(ddgi.pass.fullBlendGeneration).not.toBe(previousGeneration);
+    expect(ddgi.pass.pendingFullBlendCount).toBe(2);
+    ddgi.dispose();
+  });
+
+  it('wraps the long-running frame index as an unsigned 32-bit cadence counter', () => {
+    const ddgi = new DDGI();
+    const lifecycle = ddgi as unknown as {
+      _frame: number;
+      _advanceFrameIndex(): void;
+    };
+    lifecycle._frame = 0xffff_ffff;
+
+    lifecycle._advanceFrameIndex();
+
+    expect(ddgi.warmupFrame).toBe(0);
+    ddgi.dispose();
+  });
+
+  it('restarts partial stratum coverage when the probe divisor changes', async () => {
+    const ddgi = new DDGI();
+    vi.spyOn(ddgi.pass, 'init').mockResolvedValue(true);
+    const runFrame = vi.spyOn(ddgi.pass, 'runFrame').mockResolvedValue(true);
+
+    // Accept half of the default stride=8 cycle: offsets 0,1,2,3 only.
+    for (let frame = 0; frame < 4; frame += 1) {
+      (ddgi as unknown as { _lastFrameTs: number })._lastFrameTs = 0;
+      await ddgi.updateFrame({ coreScene: scene, device, enabled: true });
+    }
+    expect(runFrame.mock.calls.map((call) => call.slice(1))).toEqual([
+      [0, 8], [1, 8], [2, 8], [3, 8],
+    ]);
+    expect(ddgi.warmupFrame).toBe(4);
+    expect(ddgi.ready).toBe(false);
+
+    ddgi.setProbeUpdateDivisor(2);
+    expect(ddgi.warmupFrame).toBe(0);
+    expect(ddgi.ready).toBe(false);
+
+    for (let frame = 0; frame < 2; frame += 1) {
+      (ddgi as unknown as { _lastFrameTs: number })._lastFrameTs = 0;
+      await ddgi.updateFrame({ coreScene: scene, device, enabled: true });
+      expect(ddgi.ready).toBe(frame === 1);
+    }
+    expect(runFrame.mock.calls.slice(4).map((call) => call.slice(1)))
+      .toEqual([[0, 2], [1, 2]]);
+    expect(ddgi.warmupFrame).toBe(2);
+
+    // Once a complete atlas is ready, a cadence-only change does not erase it.
+    ddgi.setProbeUpdateDivisor(4);
+    expect(ddgi.warmupFrame).toBe(2);
     expect(ddgi.ready).toBe(true);
     ddgi.dispose();
   });

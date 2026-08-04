@@ -29,7 +29,7 @@
  * survivors, each `REGIR_FLOATS_PER_SURVIVOR = 2` floats:
  *   survivor j of cell c at float `regirGridFloatOffset + (c*K + j)*2`:
  *     [+0] emitterIndex (f32; < 0 ⇒ empty slot)
- *     [+1] pSel — the EFFECTIVE per-cell selection pmf of that emitter
+ *     [+1] log2PSel — log2 represented effective source density
  *
  * ─── Unbiasedness (CRITICAL) ─────────────────────────────────────────────────
  * The cell target is the packed light-tree leaf importance
@@ -38,18 +38,14 @@
  * scalar for uniform emitters, UV-local/map-aware for emissive-map micro-emitters.
  * This is power × proximity at the cell centroid `x_c`, NO BRDF (the receiver BRDF
  * is unknown at grid-build time; it enters later in the RIS p̂). Each sub-reservoir
- * runs WRS over `M` tree draws: candidate `e_i` is drawn with source pdf
- * `p_tree(e_i | x_c)`, RIS weight `w_i = q̂_c(e_i)/p_tree(e_i|x_c)`. The survivor
- * `e*` is (in expectation) distributed ∝ `q̂_c`, and `wSum/M` is an unbiased
- * estimate `Ŝ` of `S_c = Σ_e q̂_c(e)`. The stored selection pmf is therefore
- *     pSel(e*) = q̂_c(e*) / Ŝ = q̂_c(e*) · M / wSum,
- * the standard RIS relation (Bitterli 2020 §3): a WRS reservoir is an importance
- * sampler whose effective pdf is `target / normalisation-estimate`. Σ_e pSel(e)
- * → 1 (a valid pmf). When RIS draws candidate `e*` from cell `c`, it uses EXACTLY
- * this `pSel` as the source pmf in `w = p̂ / (pSel · pdfArea)` — the SAME unbiased
- * discipline as the light-tree path, just with a different (grid-amortised)
- * source distribution. The `1/K` does NOT enter the weight: RIS draws ONE
- * candidate from ONE uniformly-chosen survivor; it is not summing over the K.
+ * runs WRS over `M` tree draws: candidate occurrence `i` is drawn with source
+ * PMF `p_tree_i` and gets weight `q̂_c(e_i)/p_tree_i`. Integer branch buckets
+ * realise an occurrence probability `r_i`, tracked through every replace/keep
+ * decision. The stored density is `log2PSel_i = log2(M · r_i · p_tree_i)`.
+ * Thus `Σ_i r_i F_i/pSel_i = (1/M) Σ_i F_i/p_tree_i` for every realised
+ * candidate batch. Positive-power leaves whose centroid cone target is zero
+ * receive minimum-normal q̂ support. The `1/K` does not enter the weight because
+ * RIS draws one of K iid survivors.
  *
  * Mirrors `regirBuildSurvivorCPU` / `regirCellPmfExact` in
  * `@vitrum/shared-samplers/src/regir.ts` byte-for-byte.
@@ -62,7 +58,11 @@
 import type { WgslModule } from '../pipeline/wgslComposer.js';
 // D5.5/I2.4: template-interpolate REGIR_FLOATS_PER_SURVIVOR from the shared-samplers
 // TS constant so the WGSL value is always in sync with the host value.
-import { REGIR_FLOATS_PER_SURVIVOR } from '@vitrum/shared-samplers';
+import {
+  REGIR_FLOATS_PER_SURVIVOR,
+  REGIR_LOG2_PSEL_INVALID,
+  lightTreeTraversalWgsl,
+} from '@vitrum/shared-samplers';
 
 // D8-6 (complexity-sweep 2026-07-20, T4-3): the cell-index → world-centroid math
 // is byte-identical between the REGIR read kernel (`regir_cell_centroid`) and the
@@ -90,10 +90,12 @@ export const REGIR_WGSL = /* wgsl */ `// =======================================
 // ============================================================
 
 const REGIR_FLOATS_PER_SURVIVOR: u32 = ${REGIR_FLOATS_PER_SURVIVOR}u;
+const REGIR_LOG2_PSEL_INVALID: f32 = ${REGIR_LOG2_PSEL_INVALID};
+const REGIR_F32_MAX: f32 = 3.402823466e38;
 
 struct ReGIRCellSample {
   emitterIndex: i32,
-  pSel:         f32,   // effective per-cell selection pmf of the chosen emitter
+  log2PSel:     f32,
 };
 
 // World position → flat cell index. Clamps to the grid AABB so points just
@@ -116,24 +118,29 @@ fn regir_survivor_base(cellIdx: u32, j: u32) -> u32 {
 }
 
 // ── Cell sampling (RIS read path) ────────────────────────────────────────────
-// Pick one of the cell K survivors uniformly and return its emitter + pSel.
-// The 1/K factor does NOT enter pSel (RIS draws ONE candidate; see header). An
-// empty survivor (pSel <= 0) returns emitterIndex < 0 so the caller skips it.
+// Pick one of the cell K survivors uniformly and return its emitter + log2PSel.
+// Empty slots are identified only by emitterIndex < 0. A negative log density
+// is valid; malformed/sentinel log lanes are rejected by a separate check.
 fn regir_sample_cell(p: vec3f, rng: ptr<function, u32>) -> ReGIRCellSample {
   var out: ReGIRCellSample;
   out.emitterIndex = -1;
-  out.pSel = 0.0;
+  out.log2PSel = REGIR_LOG2_PSEL_INVALID;
   let k = ubo.regirSurvivorsPerCell;
   if (k == 0u) { return out; }
   let cellIdx = regir_cell_index(p);
-  // Uniform among K survivors.
-  let j = min(u32(rand_f32(rng) * f32(k)), k - 1u);
+  // Exactly uniform among K survivors, including non-divisors of 2^24.
+  let j = rand_bounded_u32(rng, k);
   let base = regir_survivor_base(cellIdx, j);
   let emitterF = lightTree[base + 0u];
-  let pSel = lightTree[base + 1u];
-  if (emitterF < 0.0 || pSel <= 0.0) { return out; }
+  let log2PSel = lightTree[base + 1u];
+  if (!(
+    emitterF >= 0.0 && emitterF <= 16777215.0 && floor(emitterF) == emitterF
+  )) { return out; }
+  if (!(log2PSel > REGIR_LOG2_PSEL_INVALID && log2PSel <= REGIR_F32_MAX)) {
+    return out;
+  }
   out.emitterIndex = i32(emitterF);
-  out.pSel = pSel;
+  out.log2PSel = log2PSel;
   return out;
 }
 
@@ -151,6 +158,17 @@ export const REGIR_MODULE: WgslModule = {
   requires: ['lightTree'],
 };
 
+// Instantiate the same represented-support traversal used by RIS and
+// pt-webgpu, but point it at ReGIR's read_write alias of the combined buffer.
+// ReGIR's wrapper below only adds qHat recovery from the returned leaf index.
+const REGIR_BUILD_LIGHT_TREE_WGSL = lightTreeTraversalWgsl({
+  storageVariable: 'regirGridRW',
+  helperPrefix: 'rb_lt',
+  strideConstantName: 'RB_LIGHT_TREE_STRIDE',
+  sampleStructName: 'RBLightTreeSelection',
+  sampleFunctionName: 'rb_sampleLightTree',
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Grid-build compute pass (write path). Standalone module: its own bind group
 // declarations (the combined buffer as read_write + ubo), the WRS
@@ -164,10 +182,11 @@ export const REGIR_BUILD_WGSL = /* wgsl */ `// =================================
 // ReGIR grid-build kernel. One workgroup-invocation per (cell × survivor):
 // dispatched as a 1-D grid of size numCells × K. Each invocation runs one WRS
 // sub-reservoir over the light tree seeded at the cell centroid and writes its
-// survivor (emitterIndex + pSel) into the grid region of the combined buffer.
+// survivor (emitterIndex + log2PSel) into the grid region of the combined buffer.
 // ============================================================
 
 const REGIR_FLOATS_PER_SURVIVOR: u32 = ${REGIR_FLOATS_PER_SURVIVOR}u;
+const REGIR_LOG2_PSEL_INVALID: f32 = ${REGIR_LOG2_PSEL_INVALID};
 
 // The combined light-tree + grid buffer, bound READ_WRITE here (the build pass
 // reads the tree region for sampleLightTree, writes the grid region). RIS binds
@@ -175,85 +194,20 @@ const REGIR_FLOATS_PER_SURVIVOR: u32 = ${REGIR_FLOATS_PER_SURVIVOR}u;
 @group(0) @binding(0) var<storage, read_write> regirGridRW: array<f32>;
 @group(0) @binding(1) var<uniform>             ubo:         WalkaroundUBO;
 
-const REGIR_BUILD_STRIDE: u32 = 16u; // light-tree node stride (must match LIGHT_TREE_STRIDE; B8 12→16)
+${REGIR_BUILD_LIGHT_TREE_WGSL}
 
-fn rb_dist2ToAabb(p: vec3f, bmin: vec3f, bmax: vec3f) -> f32 {
-  let d = max(max(bmin - p, vec3f(0.0)), p - bmax);
-  return dot(d, d);
-}
-
-// B8 — orientation-cone factor, mirroring lt_coneFactor (lightTree.wgsl) so the
-// ReGIR grid-build descent culls oriented emitters identically to the RIS
-// read-path descent. Full-sphere node (axis length 0) ⇒ 1 (no culling).
-fn rb_coneFactor(axis: vec3f, cosThetaO: f32, cosThetaOE: f32, p: vec3f, c: vec3f) -> f32 {
-  let al = dot(axis, axis);
-  if (al < 1e-12) { return 1.0; }
-  let dv = p - c;
-  let dl2 = dot(dv, dv);
-  if (dl2 < 1e-12) { return 1.0; }
-  let d = dv * inverseSqrt(dl2);
-  let a = axis * inverseSqrt(al);
-  let cosTheta = dot(a, d);
-  if (cosTheta < cosThetaOE) { return 0.0; }
-  if (cosTheta >= cosThetaO) { return 1.0; }
-  let sinTheta  = sqrt(max(0.0, 1.0 - cosTheta * cosTheta));
-  let sinThetaO = sqrt(max(0.0, 1.0 - cosThetaO * cosThetaO));
-  return max(0.0, cosTheta * cosThetaO + sinTheta * sinThetaO);
-}
-
-fn rb_importance(base: u32, p: vec3f, dist2Floor: f32) -> f32 {
-  let power = regirGridRW[base + 1u];
-  if (power <= 0.0) { return 0.0; }
-  let bmin = vec3f(regirGridRW[base + 4u], regirGridRW[base + 5u], regirGridRW[base + 6u]);
-  let bmax = vec3f(regirGridRW[base + 7u], regirGridRW[base + 8u], regirGridRW[base + 9u]);
-  let d2 = max(rb_dist2ToAabb(p, bmin, bmax), dist2Floor);
-  let axis = vec3f(regirGridRW[base + 10u], regirGridRW[base + 11u], regirGridRW[base + 12u]);
-  let cosThetaO  = regirGridRW[base + 13u];
-  let cosThetaOE = regirGridRW[base + 14u];
-  let center = 0.5 * (bmin + bmax);
-  return (power / d2) * rb_coneFactor(axis, cosThetaO, cosThetaOE, p, center);
-}
-
-// Light-tree descent reading the tree region of the combined buffer. Mirrors
-// sampleLightTree (lightTree.wgsl) byte-for-byte, but also returns the chosen
-// leaf's packed light-tree importance as qHat. That preserves map-aware
-// emissive-map powers carried by treeInput.powers instead of falling back to
-// scalar EmitterTri.Le.
-struct RBTreeSample { emitterIndex: i32, pdf: f32, qHat: f32 };
+// The generated traversal returns the exact leaf node index. ReGIR adds only
+// the leaf target evaluation; selection and qHat therefore share the same
+// canonical AABB/cone/saturation implementation.
+struct RBTreeSample { emitterIndex: i32, pdf: f32, qHat: f32, nodeIndex: u32 };
 fn rb_sample_tree(p: vec3f, dist2Floor: f32, nodeCount: u32, rng: ptr<function, u32>) -> RBTreeSample {
-  var nodeIdx: u32 = 0u;
-  var pdf: f32 = 1.0;
-  for (var guard: u32 = 0u; guard < nodeCount + 1u; guard = guard + 1u) {
-    let base = nodeIdx * REGIR_BUILD_STRIDE;
-    let leftChild  = i32(regirGridRW[base + 2u]);
-    let rightChild = i32(regirGridRW[base + 3u]);
-    if (leftChild < 0 || rightChild < 0) {
-      var s: RBTreeSample;
-      s.emitterIndex = i32(regirGridRW[base + 0u]);
-      s.pdf = pdf;
-      s.qHat = rb_importance(base, p, dist2Floor);
-      return s;
-    }
-    let lBase = u32(leftChild) * REGIR_BUILD_STRIDE;
-    let rBase = u32(rightChild) * REGIR_BUILD_STRIDE;
-    let impL = rb_importance(lBase, p, dist2Floor);
-    let impR = rb_importance(rBase, p, dist2Floor);
-    let sum = impL + impR;
-    let pL = select(0.5, impL / sum, sum > 0.0);
-    if (rand_f32(rng) < pL) {
-      pdf = pdf * pL;
-      nodeIdx = u32(leftChild);
-    } else {
-      pdf = pdf * (1.0 - pL);
-      nodeIdx = u32(rightChild);
-    }
-  }
-  let base = nodeIdx * REGIR_BUILD_STRIDE;
-  var s: RBTreeSample;
-  s.emitterIndex = i32(regirGridRW[base + 0u]);
-  s.pdf = pdf;
-  s.qHat = rb_importance(base, p, dist2Floor);
-  return s;
+  let draw = rb_sampleLightTree(p, dist2Floor, nodeCount, rng);
+  var result: RBTreeSample;
+  result.emitterIndex = draw.emitterIndex;
+  result.pdf = draw.pdf;
+  result.qHat = rb_lt_importance(draw.nodeIndex * RB_LIGHT_TREE_STRIDE, p, dist2Floor);
+  result.nodeIndex = draw.nodeIndex;
+  return result;
 }
 
 ${regirCellCentroidWgsl('rb_cell_centroid')}
@@ -279,34 +233,54 @@ fn regirBuildMain(@builtin(global_invocation_id) gid: vec3u) {
     survivorJ ^ (ubo.frameSeed * 40503u),
     ubo.frameSeed ^ 0x9e3779b9u);
 
-  // WRS over M tree draws. Source pdf = tree selection pmf at xc; target = q̂_c.
-  var wSum: f32 = 0.0;
+  // Represented WRS over M tree draws. The generic primitive records the actual
+  // integer-bucket occurrence probability in compensated log2 form.
+  var wrs = representedWrsInit();
   var chosen: i32 = -1;
-  var chosenQHat: f32 = 0.0;
+  var chosenTreePmf: f32 = 0.0;
   for (var i: u32 = 0u; i < M; i = i + 1u) {
     let draw = rb_sample_tree(xc, dist2Floor, ubo.lightTreeNodeCount, &rng);
     if (draw.emitterIndex < 0 || draw.pdf <= 0.0) { continue; }
-    let qHat = draw.qHat;
-    if (qHat <= 0.0) { continue; }
-    let w = qHat / draw.pdf;
-    wSum = wSum + w;
-    if (rand_f32(&rng) * wSum < w) {
+    let leafBase = draw.nodeIndex * RB_LIGHT_TREE_STRIDE;
+    let leafPower = regirGridRW[leafBase + 1u];
+    if (!(leafPower > 0.0)) { continue; }
+    // The represented tree reserves support for this leaf even when its cone
+    // importance is zero at xc, so WRS must not discard that reachable draw.
+    let qHat = max(draw.qHat, rb_lt_F32_MIN_NORMAL);
+    let logWeight = log2(qHat) - log2(draw.pdf);
+    if (representedWrsUpdate(&wrs, logWeight, &rng)) {
       chosen = draw.emitterIndex;
-      chosenQHat = qHat;
+      chosenTreePmf = draw.pdf;
     }
   }
 
-  // Effective selection pmf = q̂(e*) / Ŝ, Ŝ = wSum / M (unbiased S_c estimate).
+  // Persist the represented effective density in log2 form.
   let base = ubo.regirGridFloatOffset
            + (cellIdx * k + survivorJ) * REGIR_FLOATS_PER_SURVIVOR;
-  if (chosen < 0 || wSum <= 0.0) {
+  if (chosen < 0 || !wrs.hasSelection || !(chosenTreePmf > 0.0)) {
     regirGridRW[base + 0u] = -1.0; // empty slot
-    regirGridRW[base + 1u] = 0.0;
+    regirGridRW[base + 1u] = REGIR_LOG2_PSEL_INVALID;
     return;
   }
-  let pSel = (chosenQHat * f32(M)) / wSum;
+  let occurrenceLog = representedWrsLogSelectionProbabilityParts(wrs);
+  var densityLog = representedWrsAddLogTerm(
+    occurrenceLog.x,
+    occurrenceLog.y,
+    log2(f32(M)),
+  );
+  densityLog = representedWrsAddLogTerm(
+    densityLog.x,
+    densityLog.y,
+    log2(chosenTreePmf),
+  );
+  let log2PSel = densityLog.x + densityLog.y;
+  if (!(log2PSel > REGIR_LOG2_PSEL_INVALID && log2PSel <= rb_lt_F32_MAX)) {
+    regirGridRW[base + 0u] = -1.0;
+    regirGridRW[base + 1u] = REGIR_LOG2_PSEL_INVALID;
+    return;
+  }
   regirGridRW[base + 0u] = f32(chosen);
-  regirGridRW[base + 1u] = pSel;
+  regirGridRW[base + 1u] = log2PSel;
 }
 
 `;

@@ -83,6 +83,19 @@ function assertFinitePayload(
   }
 }
 
+/**
+ * WebGPU uploads must preserve a typed-array view's byte offset and length.
+ * Deno's WebGPU declarations reject SharedArrayBuffer-backed views, so copy
+ * only that uncommon case into an ArrayBuffer-backed view.
+ */
+function gpuUploadFloat32View(
+  values: Float32Array,
+): Float32Array<ArrayBuffer> {
+  return values.buffer instanceof ArrayBuffer
+    ? values as Float32Array<ArrayBuffer>
+    : new Float32Array(values);
+}
+
 /** Write the EnvParams uniform. */
 function writeParams(
   device: GPUDevice,
@@ -254,9 +267,11 @@ export function uploadEnvironment(
   assertFinitePayload(data.pdf, 'pdf', true);
   assertFinitePayload(data.marginal, 'marginal CDF', false);
   assertFinitePayload(data.conditional, 'conditional CDF', false);
-  const next = createEnvironmentTextureSet(device, width, height, false);
   const marginalR = extractR(data.marginal, height);
   const conditionalR = extractR(data.conditional, pixels);
+  const mapUpload = gpuUploadFloat32View(data.map);
+  const pdfUpload = gpuUploadFloat32View(data.pdf);
+  const next = createEnvironmentTextureSet(device, width, height, false);
 
   try {
     // Keep radiance and its importance density in independent full-range
@@ -264,13 +279,13 @@ export function uploadEnvironment(
     // and narrow-lobe PDFs into infinity, invalidating both MIS and radiometry.
     device.queue.writeTexture(
       { texture: next.map },
-      data.map.buffer,
+      mapUpload,
       { bytesPerRow: width * 4 * 4, rowsPerImage: height },
       { width, height, depthOrArrayLayers: 1 },
     );
     device.queue.writeTexture(
       { texture: next.pdf },
-      data.pdf.buffer,
+      pdfUpload,
       { bytesPerRow: width * 4, rowsPerImage: height },
       { width, height, depthOrArrayLayers: 1 },
     );

@@ -19,6 +19,7 @@ import {
 } from '../restir/bvhCore.js';
 import type { CollectedBvhMutation } from '../pipeline/CollectingBvhUpdateSink.js';
 import type { ResolvedFrameResourcePlan } from '../pipeline/frameResourcePlan.js';
+import { createWalkaroundWebGpuTextureSource } from '../materialTextureSource.js';
 
 function makeDeviceStub(): GPUDevice {
   return {
@@ -164,7 +165,7 @@ function instancedScene(transmission = 0): Scene {
           roughness: 0.5,
           metallic: 0,
           transmission,
-          ...(transmission > 0 ? { ior: 1.5, thickness: 0.1 } : {}),
+          ...(transmission > 0 ? { ior: 1.5, thickness: 0 } : {}),
         },
         instances: [mat4Translate(0)],
       },
@@ -206,6 +207,7 @@ function makePipeline() {
     finalize: vi.fn(),
   }));
   const requestAccumReset = vi.fn();
+  const setCameraPrefixFullRateRequired = vi.fn();
   const resize = vi.fn();
   const prepareSceneMutation = vi.fn((
     mutation: CollectedBvhMutation,
@@ -312,6 +314,7 @@ function makePipeline() {
     updateDirectionalEnvironment,
     getEnvBindings,
     requestAccumReset,
+    setCameraPrefixFullRateRequired,
     resize,
   };
 }
@@ -431,18 +434,10 @@ interface SeededEngine {
 
 interface HybridEngineInternals {
   _state: string;
-  _internalWidth: number;
-  _internalHeight: number;
   _lastScene: Scene | null;
   _renderScene: Scene | null;
   _bvhBuffers: SceneBVHBuffers | null;
   _frameResourceResolution: ResolvedFrameResourcePlan;
-  _resolveFrameResourceResolution(
-    width: number,
-    height: number,
-    oldPersistentBytes?: number,
-    forcedReservoirScale?: number,
-  ): ResolvedFrameResourcePlan;
   _pipeline: unknown;
   _ddgi: unknown;
   _rc: unknown;
@@ -487,60 +482,6 @@ function storedBvh(engine: HybridEngine): SceneBVHBuffers {
   const buffers = (engine as unknown as HybridEngineInternals)._bvhBuffers;
   if (buffers == null) throw new Error('expected seeded BVH buffers');
   return buffers;
-}
-
-function forceResourcePolicyTransition(
-  engine: HybridEngine,
-  current: {
-    readonly width: number;
-    readonly height: number;
-    readonly reservoirScale: number;
-    readonly persistentBytes: number;
-  },
-  next: {
-    readonly width: number;
-    readonly height: number;
-    readonly reservoirScale: number;
-    readonly persistentBytes: number;
-  },
-): {
-  readonly currentPlan: ResolvedFrameResourcePlan;
-  readonly nextPlan: ResolvedFrameResourcePlan;
-  readonly resolve: MockInstance;
-} {
-  const state = engine as unknown as HybridEngineInternals;
-  const makePlan = (
-    source: typeof current,
-    oldPersistentBytes: number,
-  ): ResolvedFrameResourcePlan => ({
-    ...state._frameResourceResolution,
-    requestedWidth: 64,
-    requestedHeight: 64,
-    effectiveWidth: source.width,
-    effectiveHeight: source.height,
-    resolutionDownscale: 64 / source.width,
-    restirDiWidth: Math.max(1, Math.floor(source.width / source.reservoirScale)),
-    restirDiHeight: Math.max(1, Math.floor(source.height / source.reservoirScale)),
-    restirGiWidth: Math.max(1, Math.floor(source.width / (2 * source.reservoirScale))),
-    restirGiHeight: Math.max(1, Math.floor(source.height / (2 * source.reservoirScale))),
-    restirReservoirScale: source.reservoirScale,
-    persistentBytes: source.persistentBytes,
-    resizePeakBytes: oldPersistentBytes + source.persistentBytes,
-    footprint: {
-      ...state._frameResourceResolution.footprint,
-      width: source.width,
-      height: source.height,
-      persistentBytes: source.persistentBytes,
-    },
-  });
-  const currentPlan = makePlan(current, 0);
-  const nextPlan = makePlan(next, current.persistentBytes);
-  state._internalWidth = current.width;
-  state._internalHeight = current.height;
-  state._frameResourceResolution = currentPlan;
-  const resolve = vi.fn(() => nextPlan);
-  state._resolveFrameResourceResolution = resolve;
-  return { currentPlan, nextPlan, resolve };
 }
 
 function unpackUvFromVec4W(stream: Float32Array, vertexIndex: number): [number, number] {
@@ -609,7 +550,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(uv2[0]).toBeCloseTo(0.75, 4);
       expect(uv2[1]).toBeCloseTo(0.875, 4);
       expect(buffers.materialTextureAtlas.baseColorMetaData[0]).toBe(0);
-      expect(buffers.materialTextureAtlas.baseColorMetaData[1]).toBe(16);
+      expect(buffers.materialTextureAtlas.baseColorMetaData[1]).toBe(528);
     },
   );
 
@@ -938,29 +879,29 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('atomically replans opaque-to-transmission material edits to scale 1', () => {
+  it('enables full-rate camera-prefix shading after an opaque-to-transmission material commit without resizing reservoirs', () => {
     const { engine, pipeline } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    const { nextPlan, resolve } = forceResourcePolicyTransition(
-      engine,
-      { width: 64, height: 64, reservoirScale: 2, persistentBytes: 200 },
-      { width: 32, height: 32, reservoirScale: 1, persistentBytes: 180 },
-    );
+    const state = engine as unknown as HybridEngineInternals;
+    const planBefore = state._frameResourceResolution;
     try {
       engine.updatePrimitive('mesh-a', {
         material: {
           transmission: 1,
           ior: 1.5,
-          thickness: 0.1,
+          thickness: 0,
         },
       });
 
-      expect(resolve).toHaveBeenCalledWith(64, 64, 200, 1);
-      expect(pipeline.prepareSceneMutationAndResize).toHaveBeenCalledTimes(1);
-      expect(pipeline.resize).toHaveBeenCalledWith(32, 32, 1);
-      const state = engine as unknown as HybridEngineInternals;
-      expect(state._frameResourceResolution).toBe(nextPlan);
-      expect(state._internalWidth).toBe(32);
-      expect(state._internalHeight).toBe(32);
+      expect(pipeline.setCameraPrefixFullRateRequired).toHaveBeenCalledOnce();
+      expect(pipeline.setCameraPrefixFullRateRequired).toHaveBeenCalledWith(true);
+      expect(pipeline.prepareSceneMutationAndResize).not.toHaveBeenCalled();
+      expect(pipeline.resize).not.toHaveBeenCalled();
+      expect(state._frameResourceResolution).toBe(planBefore);
+      const pipelineParticipant = pipeline.prepareSceneMutation.mock.results[0]?.value as {
+        commit: ReturnType<typeof vi.fn>;
+      };
+      expect(pipeline.setCameraPrefixFullRateRequired.mock.invocationCallOrder[0])
+        .toBeGreaterThan(pipelineParticipant.commit.mock.invocationCallOrder[0]!);
       const material = (storedScene(engine).primitives[0] as Extract<
         ScenePrimitive,
         { kind: 'mesh' }
@@ -971,7 +912,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('atomically replans removal of the final transmission dependency in auto mode', () => {
+  it('restores configured checkerboard eligibility after the final transmission material commits without resizing reservoirs', () => {
     const opaque = baseScene();
     const first = opaque.primitives[0] as Extract<ScenePrimitive, { kind: 'mesh' }>;
     const glassScene: Scene = {
@@ -983,30 +924,25 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
             ...first.material,
             transmission: 1,
             ior: 1.5,
-            thickness: 0.1,
+            thickness: 0,
           },
         },
         ...opaque.primitives.slice(1),
       ],
     };
     const { engine, pipeline } = seedEngine(glassScene, { bvhMode: 'tlas' });
-    const { nextPlan, resolve } = forceResourcePolicyTransition(
-      engine,
-      { width: 32, height: 32, reservoirScale: 1, persistentBytes: 180 },
-      { width: 64, height: 64, reservoirScale: 2, persistentBytes: 200 },
-    );
+    const state = engine as unknown as HybridEngineInternals;
+    const planBefore = state._frameResourceResolution;
     try {
       engine.updatePrimitive('mesh-a', {
         material: { transmission: 0 },
       });
 
-      expect(resolve).toHaveBeenCalledWith(64, 64, 180, undefined);
-      expect(pipeline.prepareSceneMutationAndResize).toHaveBeenCalledTimes(1);
-      expect(pipeline.resize).toHaveBeenCalledWith(64, 64, 2);
-      const state = engine as unknown as HybridEngineInternals;
-      expect(state._frameResourceResolution).toBe(nextPlan);
-      expect(state._internalWidth).toBe(64);
-      expect(state._internalHeight).toBe(64);
+      expect(pipeline.setCameraPrefixFullRateRequired).toHaveBeenCalledOnce();
+      expect(pipeline.setCameraPrefixFullRateRequired).toHaveBeenCalledWith(false);
+      expect(pipeline.prepareSceneMutationAndResize).not.toHaveBeenCalled();
+      expect(pipeline.resize).not.toHaveBeenCalled();
+      expect(state._frameResourceResolution).toBe(planBefore);
       const material = (storedScene(engine).primitives[0] as Extract<
         ScenePrimitive,
         { kind: 'mesh' }
@@ -1017,36 +953,31 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('atomically replans a mixed instances+material opaque-to-transmission patch', () => {
+  it('toggles full-rate shading after a mixed instances+material opaque-to-transmission commit', () => {
     const { engine, pipeline, buffers } = seedEngine(
       instancedScene(),
       { bvhMode: 'tlas' },
     );
     const setScene = vi.spyOn(engine, 'setScene');
-    const { nextPlan, resolve } = forceResourcePolicyTransition(
-      engine,
-      { width: 64, height: 64, reservoirScale: 2, persistentBytes: 200 },
-      { width: 32, height: 32, reservoirScale: 1, persistentBytes: 180 },
-    );
+    const state = engine as unknown as HybridEngineInternals;
+    const planBefore = state._frameResourceResolution;
     try {
       engine.updatePrimitive('mesh-a', {
         instances: [mat4Translate(0), mat4Translate(2)],
         material: {
           transmission: 1,
           ior: 1.5,
-          thickness: 0.1,
+          thickness: 0,
         },
       });
 
       expect(setScene).not.toHaveBeenCalled();
-      expect(resolve).toHaveBeenCalledWith(64, 64, 200, 1);
-      expect(pipeline.prepareSceneMutationAndResize).toHaveBeenCalledTimes(1);
+      expect(pipeline.setCameraPrefixFullRateRequired).toHaveBeenCalledWith(true);
+      expect(pipeline.prepareSceneMutationAndResize).not.toHaveBeenCalled();
+      expect(pipeline.resize).not.toHaveBeenCalled();
       expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
       expect(storedBvh(engine)).not.toBe(buffers);
-      const state = engine as unknown as HybridEngineInternals;
-      expect(state._frameResourceResolution).toBe(nextPlan);
-      expect(state._internalWidth).toBe(32);
-      expect(state._internalHeight).toBe(32);
+      expect(state._frameResourceResolution).toBe(planBefore);
       const primitive = storedScene(engine).primitives[0];
       expect(primitive?.kind).toBe('instanced-mesh');
       if (primitive?.kind === 'instanced-mesh') {
@@ -1059,17 +990,40 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('atomically replans a mixed instances+material final-transmission removal', () => {
+  it('omits an instanced BLAS when a wholesale membership patch leaves no placement', () => {
+    const source = instancedScene();
+    const scene: Scene = {
+      ...source,
+      primitives: [source.primitives[0]!],
+    };
+    const { engine, pipeline } = seedEngine(scene, { bvhMode: 'tlas' });
+    try {
+      engine.updatePrimitive('mesh-a', {
+        instances: [],
+      });
+
+      const next = storedBvh(engine);
+      expect(next.bvhMode).toBe('tlas');
+      expect(next.tlas?.nodeCount).toBe(0);
+      expect(next.bvhNodes.count).toBe(0);
+      expect(next.bvhIndex.count).toBe(0);
+      expect(next.bvhPositions.count).toBe(0);
+      expect(next.primitiveTlasBindings).toEqual([]);
+      expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
+      expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledWith(next);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('toggles full-rate shading after a mixed instances+material final-transmission removal', () => {
     const { engine, pipeline, buffers } = seedEngine(
       instancedScene(1),
       { bvhMode: 'tlas' },
     );
     const setScene = vi.spyOn(engine, 'setScene');
-    const { nextPlan, resolve } = forceResourcePolicyTransition(
-      engine,
-      { width: 32, height: 32, reservoirScale: 1, persistentBytes: 180 },
-      { width: 64, height: 64, reservoirScale: 2, persistentBytes: 200 },
-    );
+    const state = engine as unknown as HybridEngineInternals;
+    const planBefore = state._frameResourceResolution;
     try {
       engine.updatePrimitive('mesh-a', {
         instances: [mat4Translate(1), mat4Translate(3)],
@@ -1077,14 +1031,12 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       });
 
       expect(setScene).not.toHaveBeenCalled();
-      expect(resolve).toHaveBeenCalledWith(64, 64, 180, undefined);
-      expect(pipeline.prepareSceneMutationAndResize).toHaveBeenCalledTimes(1);
+      expect(pipeline.setCameraPrefixFullRateRequired).toHaveBeenCalledWith(false);
+      expect(pipeline.prepareSceneMutationAndResize).not.toHaveBeenCalled();
+      expect(pipeline.resize).not.toHaveBeenCalled();
       expect(pipeline.replaceBvhAndEmitters).toHaveBeenCalledTimes(1);
       expect(storedBvh(engine)).not.toBe(buffers);
-      const state = engine as unknown as HybridEngineInternals;
-      expect(state._frameResourceResolution).toBe(nextPlan);
-      expect(state._internalWidth).toBe(64);
-      expect(state._internalHeight).toBe(64);
+      expect(state._frameResourceResolution).toBe(planBefore);
       const primitive = storedScene(engine).primitives[0];
       expect(primitive?.kind).toBe('instanced-mesh');
       if (primitive?.kind === 'instanced-mesh') {
@@ -1098,25 +1050,22 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
   });
 
   it.each(['preparation', 'publication'] as const)(
-    'rolls back a mixed whole-scene policy transition on %s failure',
+    'does not publish a mixed whole-scene full-rate-policy toggle on %s failure',
     (failurePhase) => {
       const { engine, pipeline, ddgi, buffers } = seedEngine(
         instancedScene(),
         { bvhMode: 'tlas' },
       );
-      const { currentPlan } = forceResourcePolicyTransition(
-        engine,
-        { width: 64, height: 64, reservoirScale: 2, persistentBytes: 200 },
-        { width: 32, height: 32, reservoirScale: 1, persistentBytes: 180 },
-      );
+      const state = engine as unknown as HybridEngineInternals;
+      const planBefore = state._frameResourceResolution;
       const sceneBefore = engine.getScene();
       const pipelineRollback = vi.fn();
       if (failurePhase === 'preparation') {
-        pipeline.prepareSceneMutationAndResize.mockImplementationOnce(() => {
+        pipeline.prepareSceneMutation.mockImplementationOnce(() => {
           throw new Error('injected whole-scene preparation failure');
         });
       } else {
-        pipeline.prepareSceneMutationAndResize.mockImplementationOnce(() => ({
+        pipeline.prepareSceneMutation.mockImplementationOnce(() => ({
           commit: vi.fn((): void => {
             throw new Error('injected whole-scene publication failure');
           }),
@@ -1131,16 +1080,14 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           material: {
             transmission: 1,
             ior: 1.5,
-            thickness: 0.1,
+            thickness: 0,
           },
         })).toThrow(`injected whole-scene ${failurePhase} failure`);
 
-        const state = engine as unknown as HybridEngineInternals;
         expect(engine.getScene()).toBe(sceneBefore);
         expect(storedBvh(engine)).toBe(buffers);
-        expect(state._frameResourceResolution).toBe(currentPlan);
-        expect(state._internalWidth).toBe(64);
-        expect(state._internalHeight).toBe(64);
+        expect(state._frameResourceResolution).toBe(planBefore);
+        expect(pipeline.setCameraPrefixFullRateRequired).not.toHaveBeenCalled();
         expect(pipeline.replaceBvhAndEmitters).not.toHaveBeenCalled();
         expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
         const ddgiParticipant = ddgi.prepareSceneMutation.mock.results[0]?.value as
@@ -1156,34 +1103,29 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     },
   );
 
-  it('keeps scene, BVH, plan, and temporal state live when policy-transition preparation fails', () => {
+  it('keeps scene, BVH, reservoir plan, temporal state, and full-rate policy live when material preparation fails', () => {
     const { engine, pipeline, ddgi, buffers } = seedEngine(baseScene(), {
       bvhMode: 'tlas',
     });
-    const { currentPlan } = forceResourcePolicyTransition(
-      engine,
-      { width: 64, height: 64, reservoirScale: 2, persistentBytes: 200 },
-      { width: 32, height: 32, reservoirScale: 1, persistentBytes: 180 },
-    );
+    const state = engine as unknown as HybridEngineInternals;
+    const planBefore = state._frameResourceResolution;
     const sceneBefore = engine.getScene();
-    pipeline.prepareSceneMutationAndResize.mockImplementationOnce(() => {
-      throw new Error('injected frame-generation allocation failure');
+    pipeline.prepareSceneMutation.mockImplementationOnce(() => {
+      throw new Error('injected scene-mutation preparation failure');
     });
     try {
       expect(() => engine.updatePrimitive('mesh-a', {
         material: {
           transmission: 1,
           ior: 1.5,
-          thickness: 0.1,
+          thickness: 0,
         },
-      })).toThrow('injected frame-generation allocation failure');
+      })).toThrow('injected scene-mutation preparation failure');
 
-      const state = engine as unknown as HybridEngineInternals;
       expect(engine.getScene()).toBe(sceneBefore);
       expect(storedBvh(engine)).toBe(buffers);
-      expect(state._frameResourceResolution).toBe(currentPlan);
-      expect(state._internalWidth).toBe(64);
-      expect(state._internalHeight).toBe(64);
+      expect(state._frameResourceResolution).toBe(planBefore);
+      expect(pipeline.setCameraPrefixFullRateRequired).not.toHaveBeenCalled();
       expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
       expect(pipeline.resize).not.toHaveBeenCalled();
       expect(ddgi.syncRestirBvhBuffers).not.toHaveBeenCalled();
@@ -1271,6 +1213,54 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(engine.getScene()).toBe(previous);
       expect(pipeline.refreshMaterialTextureAtlas).not.toHaveBeenCalled();
       expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('rejects a GPU-only light-map update without disturbing live scene or temporal state', () => {
+    const { engine, pipeline, ddgi, buffers } = seedEngine(baseScene(), {
+      bvhMode: 'tlas',
+    });
+    const gpuOnlyLightMap = createWalkaroundWebGpuTextureSource(
+      {} as GPUDevice,
+      {
+        width: 1,
+        height: 1,
+        depthOrArrayLayers: 1,
+        mipLevelCount: 1,
+        sampleCount: 1,
+        dimension: '2d',
+        format: 'rgba32float',
+        usage: 0x04,
+        createView: () => ({} as GPUTextureView),
+        destroy: () => undefined,
+      } as unknown as GPUTexture,
+      { format: 'rgba32float', colorSpace: 'linear' },
+    );
+    const sceneBefore = engine.getScene();
+    const renderSceneBefore = storedRenderScene(engine);
+    const state = engine as unknown as HybridEngineInternals;
+    const planBefore = state._frameResourceResolution;
+
+    try {
+      expect(() => engine.updatePrimitive('mesh-a', {
+        material: {
+          lightMap: { handle: gpuOnlyLightMap },
+          lightMapIntensity: 2,
+        },
+      })).toThrow(/lightMap uses a GPU source without the exact cpuMirror/);
+
+      expect(engine.getScene()).toBe(sceneBefore);
+      expect(storedRenderScene(engine)).toBe(renderSceneBefore);
+      expect(storedBvh(engine)).toBe(buffers);
+      expect(state._frameResourceResolution).toBe(planBefore);
+      expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
+      expect(pipeline.refreshMaterialTextureAtlas).not.toHaveBeenCalled();
+      expect(pipeline.updateEmitters).not.toHaveBeenCalled();
+      expect(pipeline.requestAccumReset).not.toHaveBeenCalled();
+      expect(ddgi.syncRestirBvhBuffers).not.toHaveBeenCalled();
+      expect(ddgi.invalidateProbeCache).not.toHaveBeenCalled();
     } finally {
       engine.dispose();
     }
@@ -1491,6 +1481,29 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
         w.code === 'walkaround-hybrid.alpha-blend-approximation',
       );
       expect(alphaWarnings).toHaveLength(0);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updatePrimitive(material) rejects covered physical transmission transactionally', () => {
+    const sourceScene = baseScene();
+    const { engine, pipeline } = seedEngine(sourceScene, { bvhMode: 'tlas' });
+    try {
+      expect(() => engine.updatePrimitive('mesh-a', {
+        material: {
+          alphaMode: 'blend',
+          opacity: 0.5,
+          transmission: 0.75,
+          ior: 1.5,
+        },
+      })).toThrow(
+        /combines alphaMode:'blend' coverage with physical transmission/,
+      );
+
+      expect(storedScene(engine)).toBe(sourceScene);
+      expect(pipeline.prepareSceneMutation).not.toHaveBeenCalled();
+      expect(pipeline.prepareSceneMutationAndResize).not.toHaveBeenCalled();
     } finally {
       engine.dispose();
     }
@@ -1785,30 +1798,46 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
     }
   });
 
-  it('updatePrimitive(material) rejects a non-finite atlas texture transform before mutation', () => {
+  it('updatePrimitive(material) rejects non-finite, overflowing, and underflowing atlas transforms atomically', () => {
     const { engine, pipeline, warnings } = seedEngine(baseScene(), { bvhMode: 'tlas' });
-    const baseColorMap = textureRefWithSource({
-      handle: baseColorMapHandle(192),
-      transform: {
-        offset: [Number.NaN, 0.25],
-        scale: [2, Number.POSITIVE_INFINITY],
+    const transforms = [
+      {
+        offset: [Number.NaN, 0.25] as const,
+        scale: [2, Number.POSITIVE_INFINITY] as const,
         rotation: Number.NEGATIVE_INFINITY,
       },
-    }, {
-        path: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
-        textureIndex: 7,
-        imageIndex: 8,
-        samplerIndex: 9,
-    });
+      {
+        offset: [Number.MAX_VALUE, 0.25] as const,
+        scale: [2, 1] as const,
+        rotation: 0,
+      },
+      {
+        offset: [Number.MIN_VALUE, 0.25] as const,
+        scale: [2, 1] as const,
+        rotation: 0,
+      },
+    ];
     try {
-      expect(() => engine.updatePrimitive('mesh-a', {
-        material: {
-          baseColor: [1, 1, 1],
-          roughness: 0.5,
-          metallic: 0,
-          baseColorMap,
-        },
-      })).toThrow(RangeError);
+      for (const transform of transforms) {
+        const baseColorMap = textureRefWithSource({
+          handle: baseColorMapHandle(192),
+          transform,
+        }, {
+          path: 'materials[0].pbrMetallicRoughness.baseColorTexture.extensions.KHR_texture_transform',
+          textureIndex: 7,
+          imageIndex: 8,
+          samplerIndex: 9,
+        });
+        expect(() => engine.updatePrimitive('mesh-a', {
+          material: {
+            baseColor: [1, 1, 1],
+            roughness: 0.5,
+            metallic: 0,
+            baseColorMap,
+          },
+        })).toThrow(RangeError);
+        expect(storedBvh(engine).coreMaterials[0]?.baseColorMap).toBeUndefined();
+      }
 
       expect(warnings).toHaveLength(0);
       expect(pipeline.refreshBvhMaterialSlice).not.toHaveBeenCalled();
@@ -2228,7 +2257,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: {
             ...prim.material,
-            displacementMap: { handle: baseColorMapHandle(255) },
+            displacementMap: { handle: baseColorMapHandle(255), mipFilter: 'none' },
             displacementScale: 0,
             displacementBias: 0,
           },
@@ -2267,7 +2296,7 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
           uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
           material: {
             ...prim.material,
-            displacementMap: { handle: baseColorMapHandle(255) },
+            displacementMap: { handle: baseColorMapHandle(255), mipFilter: 'none' },
             displacementScale: 0.5,
             displacementBias: 0,
             displacementSubdivisions: 0,
@@ -2341,11 +2370,75 @@ describe('HybridEngine mutation matrix (non-GPU seam)', () => {
       expect(emissive[0]).toBeCloseTo(0, 5);
       expect(emissive[1]).toBeCloseTo(3, 5);
       expect(emissive[2]).toBeCloseTo(0, 5);
+      expect(emissive[3]).toBe(1);
 
       const stored = new Float32Array(storedBvh(engine).bvhEmissiveLe.cpuData);
       expect(stored[0]).toBeCloseTo(0, 5);
       expect(stored[1]).toBeCloseTo(3, 5);
       expect(stored[2]).toBeCloseTo(0, 5);
+      expect(stored[3]).toBe(1);
+    } finally {
+      engine.dispose();
+    }
+  });
+
+  it('updateEmitter publishes add, remove, and mesh-owner moves in emissive alpha', () => {
+    const { engine, pipeline } = seedEngine(baseScene([{
+      kind: 'mesh-area',
+      id: 'panel-light',
+      meshId: 'mesh-a',
+      color: [0.25, 0.5, 1],
+      intensity: 0,
+    }]), { bvhMode: 'tlas' });
+    const rows = () => {
+      const values = new Float32Array(storedBvh(engine).bvhEmissiveLe.cpuData);
+      return [
+        Array.from(values.subarray(0, 4)),
+        Array.from(values.subarray(4, 8)),
+      ];
+    };
+    const uploadedRows = (callIndex: number) => {
+      const [payload] = pipeline.cameraVisibleEmissiveUpload.mock.calls[callIndex] as [{
+        data: ArrayBuffer;
+      }];
+      const values = new Float32Array(payload.data);
+      return [
+        Array.from(values.subarray(0, 4)),
+        Array.from(values.subarray(4, 8)),
+      ];
+    };
+    try {
+      expect(rows()).toEqual([
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+      ]);
+
+      // Zero-to-positive adds this triangle to the live NEE proposal.
+      engine.updateEmitter('panel-light', { intensity: 2 });
+      expect(rows()).toEqual([
+        [0.5, 1, 2, 1],
+        [0, 0, 0, 0],
+      ]);
+      expect(uploadedRows(0)).toEqual(rows());
+
+      // Positive-to-zero removes ownership while retaining camera Le = 0.
+      engine.updateEmitter('panel-light', { intensity: 0 });
+      expect(rows()).toEqual([
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+      ]);
+      expect(uploadedRows(1)).toEqual(rows());
+
+      engine.updateEmitter('panel-light', { intensity: 2 });
+      expect(uploadedRows(2)).toEqual(rows());
+
+      // A meshId patch transfers ownership atomically between triangle slots.
+      engine.updateEmitter('panel-light', { meshId: 'mesh-b' });
+      expect(rows()).toEqual([
+        [0, 0, 0, 0],
+        [0.5, 1, 2, 1],
+      ]);
+      expect(uploadedRows(3)).toEqual(rows());
     } finally {
       engine.dispose();
     }

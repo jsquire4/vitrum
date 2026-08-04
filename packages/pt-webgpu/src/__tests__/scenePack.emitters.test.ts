@@ -474,6 +474,7 @@ describe('buildPackedScene emitter + environment packing', () => {
             },
             wrapS: 'clamp-to-edge',
             wrapT: 'clamp-to-edge',
+            mipFilter: 'none',
           },
           displacementScale: 1,
           displacementBias: 0,
@@ -523,7 +524,7 @@ describe('buildPackedScene emitter + environment packing', () => {
     ))).toBe(true);
   });
 
-  it('omits singular mesh-emitter instances exactly as TLAS publication does', () => {
+  it('rejects singular mesh-emitter instances at the canonical scene boundary', () => {
     const scene = quadScene('instanced-mesh');
     const primitive = scene.primitives[0]!;
     if (primitive.kind !== 'instanced-mesh') throw new Error('test fixture');
@@ -537,12 +538,9 @@ describe('buildPackedScene emitter + environment packing', () => {
       ...scene,
       primitives: [{ ...primitive, instances: [primitive.instances[0]!, singular] }],
     };
-    const packed = buildPackedScene(candidate);
-    expect(packed.tlasInstanceIndices.length).toBe(1);
-    expect(packed.meshAreaLightCount).toBe(2);
-    expect(packed.warnings).toEqual(expect.arrayContaining([
-      expect.stringMatching(/skipped a non-invertible instance transform/),
-    ]));
+    expect(() => buildPackedScene(candidate)).toThrow(
+      /must have an invertible linear transform/,
+    );
   });
 
   it('rejects low-level unsupported scene content instead of packing a filtered subset', () => {
@@ -590,13 +588,14 @@ describe('buildPackedScene emitter + environment packing', () => {
     expect(on.materials.length).toBe(off.materials.length);
   });
 
-  it('cameraVisibleEmitters does NOT re-attach when the emitter has no matching primitive (meshId mismatch)', () => {
+  it('rejects camera-visible mesh emitters with no matching primitive', () => {
     const scene: Scene = {
       ...baseScene(),
       emitters: [{ kind: 'mesh-area', id: 'm', meshId: 'no-such-mesh', color: [1, 1, 1], intensity: 9 }],
     };
-    const on = buildPackedScene(scene, { cameraVisibleEmitters: true });
-    expect([on.materials[4], on.materials[5], on.materials[6]]).toEqual([0, 0, 0]);
+    expect(() => buildPackedScene(scene, { cameraVisibleEmitters: true })).toThrow(
+      /meshId references missing primitive/,
+    );
   });
 
   it('packs HDRI map payload and CDF', () => {

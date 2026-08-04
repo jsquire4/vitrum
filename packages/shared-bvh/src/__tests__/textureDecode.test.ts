@@ -55,4 +55,15 @@ describe('resolveReadableTexture color-space inference', () => {
     expect(resolved?.needsSrgbDecode).toBe(false);
     expect(resolved?.decode(Number(data[2]))).toBe(8);
   });
+
+  it('rejects overlong hinted payloads instead of classifying bytes the atlas drops', () => {
+    const resolved = resolveReadableTexture(
+      { width: 1, height: 1, data: new Float32Array([0, 0, 0, 1]) },
+      'srgb',
+      3,
+      'float32',
+      'linear',
+    );
+    expect(resolved).toBeNull();
+  });
 });

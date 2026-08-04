@@ -64,8 +64,8 @@ export interface FrameParamsSceneInputs {
   readonly environmentTint: readonly [number, number, number];
   /** H14-E: map-backed environment-radiance intensity lane. */
   readonly environmentHdriIntensity: number;
-  /** Integrated luminance of the intensity-scaled HDRI for distant-light selection. */
-  readonly environmentLightTreePower: number;
+  /** Exact represented PMF for the optional environment distant-light candidate. */
+  readonly environmentDistantProposalPmf: number;
   /**
    * H6: HDRI dome CCW Y-rotation in radians (default 0).
    * Packed into params.environmentTint.w (the previously-zero .w lane — no layout
@@ -198,8 +198,8 @@ export function packFrameParams(
     config.directLightingMode === 'summed-expectation' ? 1 : 0;
   paramsF32[FrameParamsSlot.rayOriginBias] =
     ptWebgpuRayOriginBias(sceneRadius, sb.sceneCenter);
-  paramsF32[FrameParamsSlot.environmentDistantPower] =
-    sb.environmentLightTreePower;
+  paramsF32[FrameParamsSlot.environmentDistantProposalPmf] =
+    sb.environmentDistantProposalPmf;
   // H14-E: HDRI intensity lives in its own f32 slot (slot 31).
   paramsF32[FrameParamsSlot.environmentHdriIntensity] =
     assertPtWebgpuEnvironmentScaleF32(

@@ -1,4 +1,5 @@
-import type { MaterialSpec } from '@vitrum/core';
+import { effectiveMaterialIor, type MaterialSpec } from '@vitrum/core';
+import { materialDefinesBulkOpticalMedium } from '@vitrum/shared-bvh';
 import {
   CIE_D65_TABLE,
   CIE_LAMBDA_MIN,
@@ -94,7 +95,7 @@ function physicalCosine(ior: Complex, transverse: number): Complex {
 }
 
 function materialIorAtWavelength(material: MaterialSpec, wavelengthNm: number): number {
-  const baseIor = Math.max(1, material.ior ?? 1.5);
+  const baseIor = effectiveMaterialIor(material.ior);
   const abbe = material.dispersionAbbeNumber;
   if (!(abbe != null && Number.isFinite(abbe) && abbe > 0 && baseIor > 1)) return baseIor;
   const bNm2 = dispersionStrengthFromAbbe(baseIor, abbe);
@@ -257,6 +258,66 @@ function writeRgb(out: Float32Array, texel: number, rgb: Rgb, alpha = 0): void {
   out[base + 3] = alpha;
 }
 
+/** True when the core contract activates a participating transmissive volume. */
+export function materialHasParticipatingMedium(
+  material: MaterialSpec | undefined,
+): boolean {
+  if (material == null || !(material.transmission != null && material.transmission > 0)) {
+    return false;
+  }
+  if (material.scatteringCoefficientRGB != null) {
+    return material.scatteringCoefficientRGB.some((value) => value > 0);
+  }
+  return (material.scatteringCoefficient ?? 0) > 0;
+}
+
+/** Actual positive RGB Beer absorption, not mere presence of a clear payload. */
+export function materialHasPositiveRgbAbsorption(
+  material: MaterialSpec | undefined,
+): boolean {
+  const color = material?.attenuationColor;
+  const distance = material?.attenuationDistance;
+  return color != null && distance != null && Number.isFinite(distance) &&
+    distance > 0 && (color[0] < 1 || color[1] < 1 || color[2] < 1);
+}
+
+/**
+ * Reference length encoded in the realtime optical header.
+ *
+ * Ordinary volume materials use authored `thickness`, matching the pre-raised
+ * Beer tint. A zero-thickness participating medium is still volumetric under
+ * the core contract; use its finite attenuation distance as the reference (or
+ * one scene unit for identity absorption) so geometric segment transport can
+ * retain a positive topology lane without adding another atlas texel.
+ */
+export function materialOpticalReferenceDistance(
+  material: MaterialSpec | undefined,
+): number {
+  if (material == null) return 0;
+  const thickness = Math.max(0, material.thickness ?? 0);
+  if (thickness > 0) return thickness;
+  if (!materialDefinesBulkOpticalMedium(material)) return 0;
+  if (materialHasPositiveRgbAbsorption(material)) {
+    return material.attenuationDistance!;
+  }
+  return 1;
+}
+
+/** RGB Beer reference paired with {@link materialOpticalReferenceDistance}. */
+export function materialRealtimeBeerReference(
+  material: MaterialSpec,
+): Rgb | null {
+  if (
+    !(material.transmission != null && material.transmission > 0) ||
+    !materialDefinesBulkOpticalMedium(material) ||
+    (material.thickness ?? 0) > 0
+  ) {
+    return null;
+  }
+  if (materialHasPositiveRgbAbsorption(material)) return material.attenuationColor!;
+  return [1, 1, 1];
+}
+
 /**
  * Preintegrate spectral attenuation and thin-film transport into the fixed
  * material-meta ABI. The spectral grid is the same 32-sample 380–780 nm grid
@@ -275,13 +336,21 @@ export function packMaterialOpticalMeta(material: MaterialSpec | undefined): Flo
   // The fourth header lane carries the authored homogeneous-medium path
   // length. Thin-film layer count is a CPU validation concern and is not
   // needed by the preintegrated shader lookup.
-  out[3] = Math.max(0, material.thickness ?? 0);
+  const referenceDistance = materialOpticalReferenceDistance(material);
+  // Positive = authored thickness cap (thicknessMap may scale it). Negative =
+  // synthetic topology/reference distance for a zero-thickness bulk medium;
+  // shaders use closed-geometry segment distance and must ignore thicknessMap.
+  out[3] = referenceDistance === 0
+    ? 0
+    : (material.thickness ?? 0) > 0
+      ? referenceDistance
+      : -referenceDistance;
 
   writeRgb(out, MATERIAL_OPTICAL_RELATIVE_OFFSETS.DISPERSION_IOR_RGB, [
     materialIorAtWavelength(material, 610),
     materialIorAtWavelength(material, 550),
     materialIorAtWavelength(material, 460),
-  ], Math.max(1, material.ior ?? 1.5));
+  ], effectiveMaterialIor(material.ior));
 
   if (hasSpectral) {
     for (let i = 0; i < MATERIAL_OPTICAL_SPECTRAL_SAMPLE_COUNT; i += 1) {

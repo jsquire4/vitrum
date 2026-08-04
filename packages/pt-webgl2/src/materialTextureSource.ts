@@ -87,15 +87,58 @@ function dataTypeBytes(dataType: PtWebgl2TextureDataType): number {
   return dataType === 'uint8' ? 1 : dataType === 'float32' ? 4 : 2;
 }
 
+function hasSharedArrayBufferBacking(data: ArrayLike<number>): boolean {
+  if (!ArrayBuffer.isView(data)) return false;
+  const inputBuffer = data.buffer;
+  return typeof SharedArrayBuffer !== 'undefined' &&
+    inputBuffer instanceof SharedArrayBuffer;
+}
+
 function immutableNumericSnapshot(
   data: ArrayLike<number>,
   dataType: PtWebgl2TextureDataType,
+  length: number,
 ): ArrayLike<number> {
+  if (hasSharedArrayBufferBacking(data)) {
+    throw new TypeError(
+      'createPtWebgl2TextureSource: SharedArrayBuffer-backed material texels are not accepted; ' +
+      'a concurrently mutable buffer cannot provide an exact immutable snapshot.',
+    );
+  }
   const snapshot = dataType === 'uint8'
-    ? Uint8Array.from(data)
+    ? new Uint8Array(length)
     : dataType === 'float32'
-      ? Float32Array.from(data)
-      : Uint16Array.from(data);
+      ? new Float32Array(length)
+      : new Uint16Array(length);
+  const integerMax = dataType === 'uint8'
+    ? 255
+    : dataType === 'float32'
+      ? null
+      : 65535;
+  // Read each host-authored element exactly once. Validating one traversal and
+  // then calling TypedArray.from(data) would re-enter getter-backed ArrayLikes,
+  // allowing the stored value to differ from the value that passed validation.
+  for (let index = 0; index < length; index += 1) {
+    const value = Number(data[index]);
+    const packed = Math.fround(value);
+    if (!Number.isFinite(value) || !Number.isFinite(packed)) {
+      throw new RangeError(
+        `createPtWebgl2TextureSource: data[${index}] must be finite and representable as f32.`,
+      );
+    }
+    if (dataType === 'float32' && value !== 0 && packed === 0) {
+      throw new RangeError(
+        `createPtWebgl2TextureSource: data[${index}] must not underflow to zero as f32.`,
+      );
+    }
+    if (integerMax != null && (!Number.isInteger(value) || value < 0 || value > integerMax)) {
+      throw new RangeError(
+        `createPtWebgl2TextureSource: data[${index}] must be an integer in [0, ${integerMax}] ` +
+        `for ${dataType}.`,
+      );
+    }
+    snapshot[index] = value;
+  }
   const target = Object.create(null) as { readonly length: number };
   Object.defineProperty(target, 'length', {
     value: snapshot.length,
@@ -119,8 +162,8 @@ function immutableNumericSnapshot(
       if (typeof property === 'string' && /^(0|[1-9][0-9]*)$/.test(property)) {
         return snapshot[Number(property)];
       }
-        const reflected: unknown = Reflect.get(current, property, receiver);
-        return reflected;
+      const reflected: unknown = Reflect.get(current, property, receiver);
+      return reflected;
     },
     set() {
       throw new TypeError('PtWebgl2TextureSource data is immutable.');
@@ -143,22 +186,29 @@ function createMirror(
   }
   const width = assertPositiveDimension(input.width, 'createPtWebgl2TextureSource: width');
   const height = assertPositiveDimension(input.height, 'createPtWebgl2TextureSource: height');
-  if (![1, 2, 3, 4].includes(input.channels)) {
+  const channels = input.channels;
+  const dataType = input.dataType;
+  const sourceData = input.data;
+  if (![1, 2, 3, 4].includes(channels)) {
     throw new RangeError(
-      `createPtWebgl2TextureSource: channels must be 1, 2, 3, or 4; received ${String(input.channels)}.`,
+      `createPtWebgl2TextureSource: channels must be 1, 2, 3, or 4; received ${String(channels)}.`,
     );
   }
-  if (!['uint8', 'uint16', 'float16', 'half-float', 'float32'].includes(input.dataType)) {
+  if (!['uint8', 'uint16', 'float16', 'half-float', 'float32'].includes(dataType)) {
     throw new RangeError(
-      `createPtWebgl2TextureSource: unsupported dataType ${String(input.dataType)}.`,
+      `createPtWebgl2TextureSource: unsupported dataType ${String(dataType)}.`,
     );
   }
-  if (input.data == null || typeof input.data.length !== 'number') {
+  if (sourceData == null) {
+    throw new TypeError('createPtWebgl2TextureSource: data must be array-like.');
+  }
+  const sourceLength = sourceData.length;
+  if (typeof sourceLength !== 'number') {
     throw new TypeError('createPtWebgl2TextureSource: data must be array-like.');
   }
   const pixelCount = width * height;
-  const expectedLength = pixelCount * input.channels;
-  const snapshotBytes = expectedLength * dataTypeBytes(input.dataType);
+  const expectedLength = pixelCount * channels;
+  const snapshotBytes = expectedLength * dataTypeBytes(dataType);
   if (
     !Number.isSafeInteger(pixelCount) ||
     !Number.isSafeInteger(expectedLength) ||
@@ -170,38 +220,19 @@ function createMirror(
       `${PT_WEBGL2_TEXTURE_SNAPSHOT_BUDGET_BYTES}-byte budget.`,
     );
   }
-  if (!Number.isSafeInteger(input.data.length) || input.data.length !== expectedLength) {
+  if (!Number.isSafeInteger(sourceLength) || sourceLength !== expectedLength) {
     throw new RangeError(
       `createPtWebgl2TextureSource: data length must be exactly ${expectedLength}; ` +
-      `received ${String(input.data.length)}.`,
+      `received ${String(sourceLength)}.`,
     );
-  }
-  const integerMax = input.dataType === 'uint8'
-    ? 255
-    : input.dataType === 'float32'
-      ? null
-      : 65535;
-  for (let index = 0; index < input.data.length; index += 1) {
-    const value = Number(input.data[index]);
-    if (!Number.isFinite(value) || !Number.isFinite(Math.fround(value))) {
-      throw new RangeError(
-        `createPtWebgl2TextureSource: data[${index}] must be finite and representable as f32.`,
-      );
-    }
-    if (integerMax != null && (!Number.isInteger(value) || value < 0 || value > integerMax)) {
-      throw new RangeError(
-        `createPtWebgl2TextureSource: data[${index}] must be an integer in [0, ${integerMax}] ` +
-        `for ${input.dataType}.`,
-      );
-    }
   }
   return Object.freeze({
     width,
     height,
-    channels: input.channels,
-    dataType: input.dataType,
+    channels,
+    dataType,
     colorSpace,
-    data: immutableNumericSnapshot(input.data, input.dataType),
+    data: immutableNumericSnapshot(sourceData, dataType, expectedLength),
   });
 }
 
@@ -251,6 +282,21 @@ function snapshotBrowserSource(
     browserSourceDimension(source, 'height'),
     'createPtWebgl2TextureSource: browser source height',
   );
+  // Browser readback allocates width×height×4 bytes before createMirror gets a
+  // chance to enforce its snapshot budget. Preflight the exact readback shape
+  // here so an oversized image cannot force an unbounded canvas/ImageData
+  // allocation first.
+  const readbackBytes = BigInt(width) * BigInt(height) * 4n;
+  if (
+    readbackBytes > BigInt(Number.MAX_SAFE_INTEGER) ||
+    readbackBytes > BigInt(PT_WEBGL2_TEXTURE_SNAPSHOT_BUDGET_BYTES)
+  ) {
+    throw new RangeError(
+      `createPtWebgl2TextureSource: immutable browser snapshot requires ` +
+        `${readbackBytes.toString()} bytes, above the ` +
+        `${PT_WEBGL2_TEXTURE_SNAPSHOT_BUDGET_BYTES}-byte budget.`,
+    );
+  }
   const surface = createReadbackSurface(width, height);
   const context = surface.getContext('2d', { willReadFrequently: true });
   if (context == null) {
@@ -283,10 +329,7 @@ function snapshotBrowserSource(
 
 function isRawInput(value: unknown): value is PtWebgl2RawTextureSourceInput {
   if (value == null || typeof value !== 'object') return false;
-  const candidate = value as Partial<PtWebgl2RawTextureSourceInput>;
-  return candidate.data != null &&
-    candidate.channels != null &&
-    candidate.dataType != null;
+  return 'data' in value && 'channels' in value && 'dataType' in value;
 }
 
 function isImageDataInput(value: unknown): value is {
@@ -303,15 +346,18 @@ function snapshotImageData(
   source: { readonly width: number; readonly height: number; readonly data: ArrayLike<number> },
   colorSpace: PtWebgl2TextureColorSpace,
 ): PtWebgl2TextureCpuMirror {
-  const backingType = Object.prototype.toString.call(source.data);
+  const width = source.width;
+  const height = source.height;
+  const data = source.data;
+  const backingType = Object.prototype.toString.call(data);
   return createMirror({
-    width: source.width,
-    height: source.height,
+    width,
+    height,
     channels: 4,
     dataType: backingType === '[object Uint8ClampedArray]' || backingType === '[object Uint8Array]'
       ? 'uint8'
       : 'float32',
-    data: source.data,
+    data,
   }, colorSpace);
 }
 
@@ -326,20 +372,21 @@ export function createPtWebgl2TextureSource(
   if (options == null || typeof options !== 'object' || Array.isArray(options)) {
     throw new TypeError('createPtWebgl2TextureSource: options must be an object.');
   }
-  if (options.colorSpace !== 'srgb' && options.colorSpace !== 'linear') {
+  const colorSpace = options.colorSpace;
+  if (colorSpace !== 'srgb' && colorSpace !== 'linear') {
     throw new RangeError(
       `createPtWebgl2TextureSource: colorSpace must be "srgb" or "linear"; ` +
-      `received ${String(options.colorSpace)}.`,
+      `received ${String(colorSpace)}.`,
     );
   }
   if (source == null || typeof source !== 'object') {
     throw new TypeError('createPtWebgl2TextureSource: source must be a pixel payload or TexImageSource.');
   }
   const cpuMirror = isRawInput(source)
-    ? createMirror(source, options.colorSpace)
+    ? createMirror(source, colorSpace)
     : isImageDataInput(source)
-      ? snapshotImageData(source, options.colorSpace)
-      : snapshotBrowserSource(source, options.colorSpace);
+      ? snapshotImageData(source, colorSpace)
+      : snapshotBrowserSource(source, colorSpace);
   if (!Number.isSafeInteger(nextPtWebgl2TextureSourceId)) {
     throw new RangeError('createPtWebgl2TextureSource: descriptor identity space is exhausted.');
   }

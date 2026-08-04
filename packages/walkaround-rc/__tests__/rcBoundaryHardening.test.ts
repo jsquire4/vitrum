@@ -89,6 +89,8 @@ function validDispatch(device: GPUDevice): RCDispatchOptsRaw {
     bvhNormalsBuf: buffer('normals', 48),
     materialsBuf: buffer('materials', 64),
     triMaterialIdBuf: buffer('tri-material', 4),
+    opticalTriangleIdentityBuf: buffer('optical-triangle-identity', 8),
+    opticalInstanceBoundaryIdBasePlusOneBuf: buffer('optical-instance-base', 4),
     cascadeBufs: [buffer('cascade', 256)],
     probeOriginWorld: [0, 0, 0],
     roomSize: [1, 1, 1],

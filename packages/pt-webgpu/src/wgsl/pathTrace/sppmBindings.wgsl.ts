@@ -768,10 +768,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   }
   if (availableLightCount == 0u) { return; }
 
-  let pick = u32(min(
-    floor(rand_f32(&rng) * f32(availableLightCount)),
-    f32(availableLightCount - 1u),
-  ));
+  let pick = ptRandBoundedU32(&rng, availableLightCount);
   let lightSelectInvPdf = f32(availableLightCount);
 
   var photonOrigin = vec3f(0.0);
@@ -792,7 +789,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     if (current == pick) {
       let dBase = dirIdx * 2u;
       let dDirAD = directionalLights[dBase];        // .xyz = toward-light dir, .w = angularDiameter
-      let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance,        .w = mean irradiance
+      let dIrrMean = directionalLights[dBase + 1u]; // .rgb = irradiance, .w = represented PMF
       let extent = sppmStats.sceneExtent;
       // castShadow:false is sign-encoded as -1-angularDiameter. Selected SPPM
       // sources are shadow-casting, but decode the shared ABI before sampling
@@ -1005,28 +1002,56 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
   }
 
   // ── Trace the photon path ──────────────────────────────────────────────────
-  var ray = Ray(
-    photonOrigin + photonDir * ptRayOriginBias(),
-    photonDir,
-  );
+  var ray = Ray(photonOrigin, photonDir);
   var flux = photonFlux;
   let maxBounces = SPPM_PHOTON_MAX_BOUNCES;
   var photonMediumDepth = 0u;
-  var photonMediumMatIds: array<u32, 8>;
-  var photonMediumIors: array<f32, 8>;
-  var photonMediumSigmaT: array<vec3f, 8>;
-  var photonMediumSigmaS: array<vec3f, 8>;
-  var photonMediumPhaseG: array<f32, 8>;
-  var photonMediumRemainingDistance: array<f32, 8>;
-  var photonMediumBoundaryKinds: array<u32, 8>;
-  var photonMediumBoundaryIndices: array<u32, 8>;
+  var photonMediumMatIds: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumIors: array<f32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumSigmaT: array<vec3f, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumSigmaS: array<vec3f, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumPhaseG: array<f32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumRemainingDistance: array<f32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumBoundaryKinds: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumBoundaryIndices: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
+  var photonMediumBoundaryComponents: array<u32, OPTICAL_MEDIUM_STACK_LIMIT>;
   var hadDeltaChainEvent = false;
+  let photonContainment = opticalContainmentAlongRay(photonOrigin, photonDir);
+  if (!photonContainment.valid) { return; }
+  photonMediumDepth = photonContainment.depth;
+  for (var mediumIndex = 0u; mediumIndex < photonMediumDepth; mediumIndex = mediumIndex + 1u) {
+    let launchMatId = photonContainment.matIds[mediumIndex];
+    let launchMat = materialAtOpticalBoundary(
+      launchMatId,
+      photonContainment.triIndices[mediumIndex],
+      photonContainment.baryVWs[mediumIndex],
+      photonContainment.instanceIndices[mediumIndex],
+    );
+    let launchSigmaA = sppmMaterialSigmaA(
+      launchMatId, launchMat, photonHeroLambda,
+    );
+    let launchSigmaS = sppmMaterialSigmaS(launchMat, photonHeroLambda);
+    let launchBoundary = photonContainment.boundaries[mediumIndex];
+    photonMediumMatIds[mediumIndex] = launchMatId;
+    photonMediumIors[mediumIndex] = max(launchMat.ior, 1e-4);
+    photonMediumSigmaT[mediumIndex] = max(
+      launchSigmaA + launchSigmaS, vec3f(0.0),
+    );
+    photonMediumSigmaS[mediumIndex] = launchSigmaS;
+    photonMediumPhaseG[mediumIndex] = clamp(
+      launchMat.scatteringAnisotropy, -0.999999, 0.999999,
+    );
+    photonMediumRemainingDistance[mediumIndex] =
+      materialAttenuationDistance(INFINITY, launchMat);
+    photonMediumBoundaryKinds[mediumIndex] = launchBoundary.x;
+    photonMediumBoundaryIndices[mediumIndex] = launchBoundary.y;
+    photonMediumBoundaryComponents[mediumIndex] = launchBoundary.z;
+  }
 
   for (var bounce = 0u; bounce < 8u; bounce = bounce + 1u) {
     if (bounce >= maxBounces) { break; }
-    let alphaTraceOrigin = ray.origin;
-    var alphaAdvance = 0.0;
-    var hit = traceClosest(ray, ptRayTMin(), INFINITY);
+    var alphaCursor = ptRayTMin();
+    var hit = traceClosest(ray, alphaCursor, INFINITY);
     let alphaSurfaceHitLimit = sceneSurfaceHitLimit();
     var alphaSurfaceHitCount = 0u;
     var alphaTraversalValid = true;
@@ -1042,14 +1067,15 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       if (!alphaTestPassThrough(
         hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
       )) { break; }
-      let alphaStep = hit.dist + ptRayTMin();
-      alphaAdvance = alphaAdvance + alphaStep;
-      ray.origin = ray.origin + ray.direction * alphaStep;
-      hit = traceClosest(ray, ptRayTMin(), INFINITY);
+      let nextAlphaCursor = hit.dist;
+      if (!(nextAlphaCursor > alphaCursor)) {
+        alphaTraversalValid = false;
+        break;
+      }
+      alphaCursor = nextAlphaCursor;
+      hit = traceClosest(ray, alphaCursor, INFINITY);
     }
-    ray.origin = alphaTraceOrigin;
     if (!alphaTraversalValid) { break; }
-    if (hit.didHit) { hit.dist = hit.dist + alphaAdvance; }
     if (!hit.didHit) { break; }
     // Point/spot range and decay are properties of the source edge. Photon
     // density already supplies physical inverse-square spreading, so replace
@@ -1063,79 +1089,39 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       if (max(flux.r, max(flux.g, flux.b)) <= 0.0) { break; }
     }
 
-    // A light may start inside a closed medium and see its back face first.
-    // Seed that exact boundary before sampling this first segment; an unowned
-    // merged mesh hit is rejected because its entry/exit object is unknowable.
-    if (photonMediumDepth == 0u && !hit.frontFace) {
-      let inferredMatId = hitMaterialId(hit);
-      var inferredMat = decodeMaterial(inferredMatId);
-      let inferredThickness = sampleVolumeThicknessTexture(
-        inferredMatId, hit.triIndex, hit.baryVW, hit.instanceIndex,
-      );
-      if (inferredThickness >= 0.0) {
-        inferredMat.volumeThickness = max(
-          inferredMat.volumeThickness * inferredThickness, 0.0,
-        );
-        inferredMat.hasVolumeThickness = true;
-      }
-      let inferredTransmission = clamp(
-        inferredMat.transmission * sampleTransmissionTexture(
-          inferredMatId, hit.triIndex, hit.baryVW, hit.instanceIndex,
-        ),
-        0.0, 1.0,
-      );
-      if (inferredMat.isTranslucent && inferredTransmission > 0.0) {
-        let inferredBoundary = mediumBoundaryIdentity(
-          hit.triIndex, hit.instanceIndex,
-        );
-        if (!mediumBoundaryIsValid(inferredBoundary)) { break; }
-        let inferredSigmaA = sppmMaterialSigmaA(
-          inferredMatId, inferredMat, photonHeroLambda,
-        );
-        let inferredSigmaS = sppmMaterialSigmaS(
-          inferredMat, photonHeroLambda,
-        );
-        photonMediumMatIds[0u] = inferredMatId;
-        photonMediumIors[0u] = max(inferredMat.ior, 1e-4);
-        photonMediumSigmaT[0u] = max(
-          inferredSigmaA + inferredSigmaS, vec3f(0.0),
-        );
-        photonMediumSigmaS[0u] = inferredSigmaS;
-        photonMediumPhaseG[0u] = clamp(
-          inferredMat.scatteringAnisotropy, -0.999999, 0.999999,
-        );
-        photonMediumRemainingDistance[0u] =
-          materialAttenuationDistance(INFINITY, inferredMat);
-        photonMediumBoundaryKinds[0u] = inferredBoundary.x;
-        photonMediumBoundaryIndices[0u] = inferredBoundary.y;
-        photonMediumDepth = 1u;
-      }
-    }
-
     if (photonMediumDepth > 0u) {
       let mediumIndex = photonMediumDepth - 1u;
       let photonSigmaT = photonMediumSigmaT[mediumIndex];
       let photonSigmaS = photonMediumSigmaS[mediumIndex];
-      let photonHeroSigmaT = select(
-        max(photonSigmaT.x, max(photonSigmaT.y, photonSigmaT.z)),
-        photonSigmaT.x,
-        params.spectralEnabled != 0u,
+      var photonFlightRate = photonSigmaT.x;
+      if (params.spectralEnabled == 0u) {
+        let photonFlightChannel = ptRandBoundedU32(&rng, 3u);
+        if (photonFlightChannel == 1u) { photonFlightRate = photonSigmaT.y; }
+        if (photonFlightChannel == 2u) { photonFlightRate = photonSigmaT.z; }
+      }
+      let mediumSegmentDistance = min(
+        hit.dist, photonMediumRemainingDistance[mediumIndex],
       );
-      if (photonHeroSigmaT > 0.0) {
-        let mediumSegmentDistance = min(
-          hit.dist, photonMediumRemainingDistance[mediumIndex],
-        );
+      if (mediumSegmentDistance > 0.0 && photonFlightRate > PT_F32_MAX) {
+        flux = vec3f(0.0);
+        break;
+      }
+      if (photonFlightRate > 0.0) {
         let xiFlight = rand_f32(&rng);
         let freeFlightDist =
-          -log(max(1.0 - xiFlight, 1e-9)) / photonHeroSigmaT;
+          -log(max(1.0 - xiFlight, 1e-9)) / photonFlightRate;
         if (freeFlightDist < mediumSegmentDistance) {
           // Sample the same hero-channel distance density used by the eye walk.
           // sigma_s * T / p_t leaves photon flux in the correct collision
           // measure; the gather supplies phase [sr^-1] and sphere volume [m^3].
-          let transmittance = exp(-photonSigmaT * freeFlightDist);
-          let pdfHero = photonHeroSigmaT *
-            exp(-photonHeroSigmaT * freeFlightDist);
-          flux = flux * photonSigmaS * transmittance / max(pdfHero, 1e-9);
+          let trueTransmittance = materialBeer(photonSigmaT, freeFlightDist);
+          let collisionPdf = select(
+            materialRgbCollisionPdf(photonSigmaT, freeFlightDist),
+            materialExtinctionDensityLane(photonFlightRate, freeFlightDist),
+            params.spectralEnabled != 0u,
+          );
+          if (!(collisionPdf > 0.0)) { break; }
+          flux = flux * photonSigmaS * trueTransmittance / collisionPdf;
           if (hadDeltaChainEvent &&
               max(flux.r, max(flux.g, flux.b)) > 0.0) {
             let scatterPos = ray.origin + ray.direction * freeFlightDist;
@@ -1157,9 +1143,27 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
         // Reaching the surface already carried hero survival probability.
         // Divide channel transmittance by that probability, exactly as the eye
         // free-flight walk does, rather than multiplying Beer attenuation twice.
-        flux = flux * exp(
-          -(photonSigmaT - vec3f(photonHeroSigmaT)) * mediumSegmentDistance,
+        let trueTransmittance = materialBeer(photonSigmaT, mediumSegmentDistance);
+        let survivalPdf = select(
+          materialRgbSurvivalPdf(photonSigmaT, mediumSegmentDistance),
+          materialBeerLane(photonFlightRate, mediumSegmentDistance),
+          params.spectralEnabled != 0u,
         );
+        if (!(survivalPdf > 0.0)) { break; }
+        flux = flux * trueTransmittance / survivalPdf;
+        photonMediumRemainingDistance[mediumIndex] = max(
+          photonMediumRemainingDistance[mediumIndex] - mediumSegmentDistance,
+          0.0,
+        );
+      } else {
+        let trueTransmittance = materialBeer(photonSigmaT, mediumSegmentDistance);
+        let survivalPdf = select(
+          materialRgbSurvivalPdf(photonSigmaT, mediumSegmentDistance),
+          1.0,
+          params.spectralEnabled != 0u,
+        );
+        if (!(survivalPdf > 0.0)) { break; }
+        flux = flux * trueTransmittance / survivalPdf;
         photonMediumRemainingDistance[mediumIndex] = max(
           photonMediumRemainingDistance[mediumIndex] - mediumSegmentDistance,
           0.0,
@@ -1170,20 +1174,28 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
 
     let matId = hitMaterialId(hit);
     var mat = decodeMaterial(matId);
-    let hp = ray.origin + ray.direction * hit.dist;
+    let hp = hit.position;
     let frontFace = hit.frontFace;
-    var normal = select(-hit.normal, hit.normal, frontFace);
+    let interfaceBaseNormal = select(-hit.normal, hit.normal, frontFace);
+    var normal = interfaceBaseNormal;
     normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex, frontFace);
     normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex);
+    var oppositeNormal = -interfaceBaseNormal;
+    oppositeNormal = applyNormalMap(
+      matId, hit.triIndex, hit.baryVW, oppositeNormal, hit.instanceIndex, !frontFace,
+    );
+    oppositeNormal = applyBumpMap(
+      matId, hit.triIndex, hit.baryVW, oppositeNormal, hit.instanceIndex,
+    );
     var clearcoatNormal = applyClearcoatNormalMap(
-      matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex,
+      matId, hit.triIndex, hit.baryVW, interfaceBaseNormal, hit.instanceIndex,
     );
     var baseColor = mat.baseColor *
       sampleVertexColor(hit.triIndex, hit.baryVW).rgb *
       sampleBaseColorTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex).rgb;
     baseColor = baseColor * sampleAoFactor(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);
     let ormSample = sampleOrmTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex);
-    let roughness = clamp(mat.roughness * ormSample.g, 0.0, 1.0);
+    var roughness = clamp(mat.roughness * ormSample.g, 0.0, 1.0);
     let metallic = clamp(mat.metallic * ormSample.b, 0.0, 1.0);
     let transmission = clamp(
       mat.transmission * sampleTransmissionTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex),
@@ -1192,11 +1204,10 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     let volumeThicknessSample = sampleVolumeThicknessTexture(
       matId, hit.triIndex, hit.baryVW, hit.instanceIndex,
     );
-    if (volumeThicknessSample >= 0.0) {
+    if (volumeThicknessSample >= 0.0 && mat.hasVolumeThickness) {
       mat.volumeThickness = max(
         mat.volumeThickness * volumeThicknessSample, 0.0,
       );
-      mat.hasVolumeThickness = true;
     }
     mat.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
     mat.clearcoatRoughness = clamp(mat.clearcoatRoughness * sampleClearcoatRoughnessTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
@@ -1217,6 +1228,38 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       vec3f(0.0),
     );
     mat.specularIntensity = clamp(mat.specularIntensity * sampleSpecularIntensityTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
+    let layerTx = clamp(
+      select(mat.backLayerTx, mat.frontLayerTx, frontFace),
+      vec3f(0.0), vec3f(1.0),
+    );
+    let oppositeLayerTx = clamp(
+      select(mat.frontLayerTx, mat.backLayerTx, frontFace),
+      vec3f(0.0), vec3f(1.0),
+    );
+    let layerRoughness = select(
+      mat.backLayerRoughness, mat.frontLayerRoughness, frontFace,
+    );
+    let oppositeLayerRoughness = select(
+      mat.frontLayerRoughness, mat.backLayerRoughness, frontFace,
+    );
+    var oppositeRoughness = roughness;
+    if (layerRoughness >= 0.0) {
+      roughness = clamp(layerRoughness, 0.0, 1.0);
+    }
+    if (oppositeLayerRoughness >= 0.0) {
+      oppositeRoughness = clamp(oppositeLayerRoughness, 0.0, 1.0);
+    }
+    let layerW = select(
+      layerTx,
+      activeLayerWeightRgb(layerTx, photonHeroLambda, true),
+      params.spectralEnabled != 0u && luminance(layerTx) < 0.999,
+    );
+    let oppositeLayerW = select(
+      oppositeLayerTx,
+      activeLayerWeightRgb(oppositeLayerTx, photonHeroLambda, true),
+      params.spectralEnabled != 0u && luminance(oppositeLayerTx) < 0.999,
+    );
+    baseColor = baseColor * layerW;
     var materialIor = mat.ior;
     if (params.spectralEnabled != 0u) {
       baseColor = vec3f(spectralCombinedReflectanceAtHero(
@@ -1267,7 +1310,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     }
     var transmittedIor = max(materialIor, 1e-4);
     let hitBoundary = mediumBoundaryIdentity(hit.triIndex, hit.instanceIndex);
-    let crossesMedium = mat.isTranslucent && transmission > 0.0;
+    let crossesMedium = mat.isBulkMedium;
     if (crossesMedium && !mediumBoundaryIsValid(hitBoundary)) { break; }
     if (!frontFace) {
       transmittedIor = 1.0;
@@ -1278,6 +1321,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
           !mediumBoundaryMatches(
             photonMediumBoundaryKinds[photonMediumDepth - 1u],
             photonMediumBoundaryIndices[photonMediumDepth - 1u],
+            photonMediumBoundaryComponents[photonMediumDepth - 1u],
             hitBoundary,
           )
         ) {
@@ -1315,7 +1359,8 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       mat.iridescence, mat.iridescenceIor,
       mat.iridescenceThicknessMin, mat.iridescenceThicknessMax,
       mat.specularColor, mat.specularIntensity,
-      thinFilm, mat.isTranslucent,
+      thinFilm, mat.isThinSheet, oppositeNormal, oppositeRoughness,
+      oppositeLayerW, mat.isBulkMedium,
       mat.clearcoat, mat.clearcoatRoughness, mat.sheen, mat.sheenRoughness,
       mat.sheenColor, anisoStrength, anisoRotation,
     );
@@ -1330,7 +1375,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
     if (bs.enteredMedium) {
       let sigmaA = sppmMaterialSigmaA(matId, mat, photonHeroLambda);
       let sigmaS = sppmMaterialSigmaS(mat, photonHeroLambda);
-      if (photonMediumDepth < 8u) {
+      if (photonMediumDepth < OPTICAL_MEDIUM_STACK_LIMIT) {
         photonMediumMatIds[photonMediumDepth] = matId;
         photonMediumIors[photonMediumDepth] = max(materialIor, 1e-4);
         photonMediumSigmaT[photonMediumDepth] = max(
@@ -1344,6 +1389,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
           materialAttenuationDistance(INFINITY, mat);
         photonMediumBoundaryKinds[photonMediumDepth] = hitBoundary.x;
         photonMediumBoundaryIndices[photonMediumDepth] = hitBoundary.y;
+        photonMediumBoundaryComponents[photonMediumDepth] = hitBoundary.z;
         photonMediumDepth = photonMediumDepth + 1u;
       } else {
         break;
@@ -1355,6 +1401,7 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
         !mediumBoundaryMatches(
           photonMediumBoundaryKinds[photonMediumDepth - 1u],
           photonMediumBoundaryIndices[photonMediumDepth - 1u],
+          photonMediumBoundaryComponents[photonMediumDepth - 1u],
           hitBoundary,
         )
       ) {
@@ -1362,7 +1409,17 @@ fn sppmEmitPhotons(@builtin(global_invocation_id) gid: vec3u) {
       }
       photonMediumDepth = photonMediumDepth - 1u;
     }
-    ray.origin = bs.newRayOrigin;
+    let crossedTransmissiveInterface =
+      bs.sampledLobe == BSDF_LOBE_DELTA_TRANSMISSION ||
+      bs.sampledLobe == BSDF_LOBE_ROUGH_TRANSMISSION ||
+      bs.sampledLobe == BSDF_LOBE_COMPOUND_THIN_SHEET_TRANSMISSION;
+    if (crossedTransmissiveInterface) {
+      if (!opticalSetContinuationSourceFromHit(hit)) { break; }
+      ray.origin = hp;
+    } else {
+      opticalClearContinuationSource();
+      ray.origin = bs.newRayOrigin;
+    }
     ray.direction = bs.newRayDir;
   }
 }

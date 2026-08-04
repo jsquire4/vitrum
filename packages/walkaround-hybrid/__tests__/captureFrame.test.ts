@@ -26,6 +26,16 @@ import type { HybridEngineOptions } from '../src/HybridEngineOptions.js';
 import { createWalkaroundEngine_Hybrid } from '../src/index.js';
 import { WalkaroundGPUPipeline } from '../src/pipeline/WalkaroundGPUPipeline.js';
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 // ── Shared stub device (minimal, used by tests 1–2) ─────────────────────────
 
 function makeStubDevice(): GPUDevice {
@@ -144,6 +154,36 @@ describe('captureFrame walkaround-hybrid', () => {
     expect(typeof engine.captureFrame).toBe('function');
     engine.dispose();
   });
+
+  it('returns the captured generation dimensions when setSize runs during readback', async () => {
+    const engine = await createWalkaroundEngine_Hybrid(
+      MINIMAL_OPTS as HybridEngineOptions,
+    );
+    const gate = deferred<{
+      width: number;
+      height: number;
+      rgba: Float32Array;
+    } | null>();
+    const pipeline = {
+      captureOutputFrame: vi.fn(() => gate.promise),
+      resize: vi.fn(),
+    };
+    (engine as unknown as { _pipeline: typeof pipeline | null })._pipeline =
+      pipeline;
+
+    const pending = engine.captureFrame!({ colorSpace: 'output' });
+    engine.setSize!(32, 48);
+    gate.resolve({
+      width: 64,
+      height: 64,
+      rgba: new Float32Array(64 * 64 * 4),
+    });
+
+    await expect(pending).resolves.toMatchObject({ width: 64, height: 64 });
+    expect(pipeline.resize).toHaveBeenCalledOnce();
+    (engine as unknown as { _pipeline: null })._pipeline = null;
+    engine.dispose();
+  });
 });
 
 // ── Test 3: WalkaroundGPUPipeline.captureOutputFrame mock-device harness ──────
@@ -152,12 +192,19 @@ describe('captureFrame walkaround-hybrid', () => {
  * Build a mock device suitable for inspecting captureOutputFrame internals.
  *
  * The mock simulates a fully-initialised pipeline by:
- *   - returning a mock render pipeline from createRenderPipelineAsync
+ *   - returning a mock render pipeline from createRenderPipeline
  *   - providing a staging buffer whose mapAsync resolves and getMappedRange
  *     returns a zeroed buffer (all pixels rgba8=0,0,0,0)
  *   - tracking beginRenderPass, draw, copyTextureToBuffer calls
  */
-function makeCaptureHarness(W: number, H: number) {
+function makeCaptureHarness(
+  W: number,
+  H: number,
+  options: {
+    readonly mapPromise?: Promise<void>;
+    readonly asyncPipelinePromise?: Promise<GPURenderPipeline>;
+  } = {},
+) {
   const drawCalls: Array<[number, number, number, number]> = [];
   const copyToBufferCalls: Array<{ bytesPerRow: number; width: number; height: number }> = [];
   const renderPassBeginCalls: number[] = [];
@@ -171,7 +218,7 @@ function makeCaptureHarness(W: number, H: number) {
 
   const stagingBuffer = {
     destroy: vi.fn(),
-    mapAsync: vi.fn(() => Promise.resolve()),
+    mapAsync: vi.fn(() => options.mapPromise ?? Promise.resolve()),
     getMappedRange: vi.fn(() => mappedData.slice(0)),
     unmap: vi.fn(),
     size: readSize,
@@ -260,10 +307,12 @@ function makeCaptureHarness(W: number, H: number) {
     createShaderModule: vi.fn(() => ({ getCompilationInfo: vi.fn(async () => ({ messages: [] })) })),
     createComputePipeline: vi.fn(() => ({})),
     createComputePipelineAsync: vi.fn(() => Promise.resolve({})),
-    createRenderPipeline: vi.fn(() => mockPipeline),
-    createRenderPipelineAsync: vi.fn((desc: GPURenderPipelineDescriptor) => {
+    createRenderPipeline: vi.fn((desc: GPURenderPipelineDescriptor) => {
       renderPipelineDescriptors.push(desc);
-      return Promise.resolve(mockPipeline);
+      return mockPipeline;
+    }),
+    createRenderPipelineAsync: vi.fn((_desc: GPURenderPipelineDescriptor) => {
+      return options.asyncPipelinePromise ?? Promise.resolve(mockPipeline);
     }),
     createBindGroupLayout: vi.fn(() => mockBgl),
     createPipelineLayout: vi.fn(() => ({})),
@@ -335,10 +384,11 @@ describe('WalkaroundGPUPipeline.captureOutputFrame — mock-device harness', () 
 
     const result = await (pipeline as unknown as WalkaroundGPUPipeline).captureOutputFrame();
 
-    // The result is a Float32Array (all zeros since mapping returns zeroed data).
+    // The captured payload is all zeros since mapping returns zeroed data.
     expect(result).not.toBeNull();
-    expect(result).toBeInstanceOf(Float32Array);
-    expect(result!.length).toBe(W * H * 4);
+    expect(result).toMatchObject({ width: W, height: H });
+    expect(result!.rgba).toBeInstanceOf(Float32Array);
+    expect(result!.rgba.length).toBe(W * H * 4);
 
     // beginRenderPass was called at least once (the capture pass).
     expect(harness.renderPassBeginCalls.length).toBeGreaterThanOrEqual(1);
@@ -353,6 +403,7 @@ describe('WalkaroundGPUPipeline.captureOutputFrame — mock-device harness', () 
     expect(copyCall.width).toBe(W);
     expect(copyCall.height).toBe(H);
     expect(harness.renderPipelineDescriptors).toHaveLength(1);
+    expect(harness.device.createRenderPipelineAsync).not.toHaveBeenCalled();
     expect(
       harness.renderPipelineDescriptors[0]?.fragment?.constants,
     ).toEqual({
@@ -400,13 +451,105 @@ describe('WalkaroundGPUPipeline.captureOutputFrame — mock-device harness', () 
 
     expect(result).not.toBeNull();
     // All channels should decode to 255/255 = 1.0.
-    for (let i = 0; i < result!.length; i++) {
-      expect(result![i]).toBeCloseTo(1.0, 5);
+    for (let i = 0; i < result!.rgba.length; i++) {
+      expect(result!.rgba[i]).toBeCloseTo(1.0, 5);
     }
 
     // Null out _res and _initialized before dispose (same reason as the geometry test).
     pipeline['_initialized'] = false;
     pipeline['_res'] = null;
     (pipeline as unknown as WalkaroundGPUPipeline).dispose();
+  });
+
+  it('encodes before any deferred pipeline/map boundary and survives dispose', async () => {
+    const W = 3;
+    const H = 2;
+    const mapGate = deferred<void>();
+    const asyncPipelineGate = deferred<GPURenderPipeline>();
+    const harness = makeCaptureHarness(W, H, {
+      mapPromise: mapGate.promise,
+      asyncPipelinePromise: asyncPipelineGate.promise,
+    });
+    const pipeline = new WalkaroundGPUPipeline(
+      harness.device,
+      W,
+      H,
+    ) as unknown as Record<string, unknown>;
+    pipeline['_initialized'] = true;
+    pipeline['_width'] = W;
+    pipeline['_height'] = H;
+    pipeline['_swapChainFormat'] = 'bgra8unorm';
+    pipeline['_compositeUboRef'] = { buf: { destroy: vi.fn() } };
+    pipeline['_compositePass'] = { pipeline: {} };
+    pipeline['_res'] = {
+      common: { resolvedTexture: { createView: vi.fn(() => ({})) } },
+    };
+    pipeline['_bglCache'] = {};
+
+    const pending = (pipeline as unknown as WalkaroundGPUPipeline)
+      .captureOutputFrame();
+
+    expect(harness.device.createRenderPipelineAsync).not.toHaveBeenCalled();
+    expect(harness.device.queue.submit).toHaveBeenCalledOnce();
+    expect(harness.stagingBuffer.mapAsync).toHaveBeenCalledOnce();
+
+    // Teardown after an accepted submit may retire the borrowed frame resources;
+    // the pending capture owns only its staging readback from this point onward.
+    pipeline['_initialized'] = false;
+    pipeline['_res'] = null;
+    (pipeline as unknown as WalkaroundGPUPipeline).dispose();
+    expect(harness.offscreenTex.destroy).toHaveBeenCalledOnce();
+    mapGate.resolve();
+
+    await expect(pending).resolves.toMatchObject({ width: W, height: H });
+    expect(harness.stagingBuffer.destroy).toHaveBeenCalledOnce();
+  });
+
+  it('preserves the previous offscreen generation when resize allocation fails', async () => {
+    const W = 4;
+    const H = 4;
+    const harness = makeCaptureHarness(W, H);
+    const pipeline = new WalkaroundGPUPipeline(
+      harness.device,
+      W,
+      H,
+    ) as unknown as Record<string, unknown>;
+    pipeline['_initialized'] = true;
+    pipeline['_width'] = W;
+    pipeline['_height'] = H;
+    pipeline['_swapChainFormat'] = 'rgba8unorm';
+    pipeline['_compositeUboRef'] = { buf: { destroy: vi.fn() } };
+    pipeline['_compositePass'] = { pipeline: {} };
+    pipeline['_res'] = {
+      common: { resolvedTexture: { createView: vi.fn(() => ({})) } },
+    };
+    pipeline['_bglCache'] = {};
+
+    await expect(
+      (pipeline as unknown as WalkaroundGPUPipeline).captureOutputFrame(),
+    ).resolves.toMatchObject({ width: W, height: H });
+    expect(harness.offscreenTex.destroy).not.toHaveBeenCalled();
+
+    pipeline['_width'] = W + 1;
+    pipeline['_height'] = H + 1;
+    vi.mocked(harness.device.createTexture).mockImplementationOnce(() => {
+      throw new Error('capture target allocation failed');
+    });
+    await expect(
+      (pipeline as unknown as WalkaroundGPUPipeline).captureOutputFrame(),
+    ).rejects.toThrow('capture target allocation failed');
+    expect(harness.offscreenTex.destroy).not.toHaveBeenCalled();
+
+    pipeline['_width'] = W;
+    pipeline['_height'] = H;
+    await expect(
+      (pipeline as unknown as WalkaroundGPUPipeline).captureOutputFrame(),
+    ).resolves.toMatchObject({ width: W, height: H });
+    expect(harness.offscreenTex.destroy).not.toHaveBeenCalled();
+
+    pipeline['_initialized'] = false;
+    pipeline['_res'] = null;
+    (pipeline as unknown as WalkaroundGPUPipeline).dispose();
+    expect(harness.offscreenTex.destroy).toHaveBeenCalledOnce();
   });
 });

@@ -194,7 +194,7 @@ describe('H14-F: buffer-ceiling warns fire at most once per engine instance', ()
       'var<private> bdptEyeStackPrivate: array<BdptEyeVtx, 8>;',
     );
     expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(
-      'var<private> bdptLightPath: array<vec4f, 56>;',
+      'var<private> bdptLightPath: array<vec4f, 64>;',
     );
 
     warnSpy.mockRestore();

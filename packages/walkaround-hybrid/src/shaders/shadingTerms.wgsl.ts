@@ -35,7 +35,7 @@
  *     tlasInstanceWorldToLocal : array<vec4f>   @group(1) @binding(9)
  *     tlasInstanceLocalToWorld : array<vec4f>   @group(1) @binding(10)
  *     bvh_normal     : array<vec4f>             @group(1) @binding(11)
- *     bvh_emissive   : texture_2d<f32>          @group(1) @binding(12)
+ *     restir_gi_bvh_emissive : texture_2d<f32>  @group(1) @binding(12)
  *     analytic_lights: texture_2d<f32>          @group(1) @binding(13)
  *     bvh_material   : texture_2d<u32>          @group(1) @binding(14)
  *
@@ -77,6 +77,7 @@
  */
 import { analyticLightFalloffWgsl } from './analyticLightFalloff.wgsl.js';
 import { giBilinearWeightsWgsl, giBilinearCornerSelectWgsl } from './giBilinearGather.wgsl.js';
+import { NATIVE_GLASS_GI_WGSL } from './risGiGlassWalk.wgsl.js';
 
 export const SHADING_TERMS_WGSL = /* wgsl */ `// ── Stained-glass sun glow for primary glass hits ─────────────────────────
 //
@@ -89,6 +90,271 @@ export const SHADING_TERMS_WGSL = /* wgsl */ `// ── Stained-glass sun glow f
 // gated behind the same opt-in sun-caustic flag as the other cathedral-window
 // direct-light terms, so ordinary glass scenes do not receive un-authored sun
 // radiance from HybridEngineOptions.primaryLightIntensity.
+// Reservoir weights deliberately remain logarithmic until every positive
+// radiometric factor has been incorporated. Converting logW to a linear f32
+// first would discard otherwise representable products in both directions:
+// e.g. 2^-200 * 2^100 and 2^200 * 2^-100 are both 2^-100.
+const RESTIR_SHADE_MAX_FINITE_F32: f32 = 3.402823466e38;
+const RESTIR_SHADE_LOG_ZERO: f32 = -3.402823466e38;
+const RESTIR_SHADE_LOG2_OVERFLOW_F32: f32 = 128.0;
+const RESTIR_SHADE_LOG2_ROUND_TO_ZERO_F32: f32 = -150.0;
+
+fn restirShadeFinite(value: f32) -> bool {
+  return value >= -RESTIR_SHADE_MAX_FINITE_F32 &&
+    value <= RESTIR_SHADE_MAX_FINITE_F32;
+}
+
+fn restirShadeValidLog(value: f32) -> bool {
+  return value > RESTIR_SHADE_LOG_ZERO && restirShadeFinite(value);
+}
+
+fn restirShadeAppendLogFactor(logValue: f32, logFactor: f32) -> f32 {
+  if (!restirShadeValidLog(logValue) || !restirShadeValidLog(logFactor)) {
+    return RESTIR_SHADE_LOG_ZERO;
+  }
+  let result = logValue + logFactor;
+  if (result != result) { return RESTIR_SHADE_LOG_ZERO; }
+  if (result > RESTIR_SHADE_MAX_FINITE_F32) {
+    return RESTIR_SHADE_MAX_FINITE_F32;
+  }
+  if (result <= RESTIR_SHADE_LOG_ZERO) {
+    return RESTIR_SHADE_LOG_ZERO;
+  }
+  return result;
+}
+
+fn restirShadeAppendPositiveFactor(logValue: f32, factor: f32) -> f32 {
+  if (!restirShadeValidLog(logValue) ||
+      !restirShadeFinite(factor) ||
+      !(factor > 0.0)) {
+    return RESTIR_SHADE_LOG_ZERO;
+  }
+  return restirShadeAppendLogFactor(logValue, log2(factor));
+}
+
+fn restirShadeRemovePositiveFactor(logValue: f32, factor: f32) -> f32 {
+  if (!restirShadeValidLog(logValue) ||
+      !restirShadeFinite(factor) ||
+      !(factor > 0.0)) {
+    return RESTIR_SHADE_LOG_ZERO;
+  }
+  let result = logValue - log2(factor);
+  if (result != result) { return RESTIR_SHADE_LOG_ZERO; }
+  if (result > RESTIR_SHADE_MAX_FINITE_F32) {
+    return RESTIR_SHADE_MAX_FINITE_F32;
+  }
+  if (result <= RESTIR_SHADE_LOG_ZERO) {
+    return RESTIR_SHADE_LOG_ZERO;
+  }
+  return result;
+}
+
+fn restirShadeLogProductChannel(
+  logScale: f32,
+  a: f32,
+  b: f32,
+  c: f32,
+) -> f32 {
+  var result = restirShadeAppendPositiveFactor(logScale, a);
+  result = restirShadeAppendPositiveFactor(result, b);
+  result = restirShadeAppendPositiveFactor(result, c);
+  return result;
+}
+
+fn restirShadeLogProduct3(
+  logScale: f32,
+  a: vec3f,
+  b: vec3f,
+  c: vec3f,
+) -> vec3f {
+  return vec3f(
+    restirShadeLogProductChannel(logScale, a.x, b.x, c.x),
+    restirShadeLogProductChannel(logScale, a.y, b.y, c.y),
+    restirShadeLogProductChannel(logScale, a.z, b.z, c.z),
+  );
+}
+
+fn restirShadeLogAdd(a: f32, b: f32) -> f32 {
+  if (!restirShadeValidLog(a)) { return b; }
+  if (!restirShadeValidLog(b)) { return a; }
+  let hi = max(a, b);
+  let lo = min(a, b);
+  let result = hi + log2(1.0 + exp2(lo - hi));
+  if (result != result) { return RESTIR_SHADE_LOG_ZERO; }
+  return min(result, RESTIR_SHADE_MAX_FINITE_F32);
+}
+
+fn restirShadeLogAdd3(a: vec3f, b: vec3f) -> vec3f {
+  return vec3f(
+    restirShadeLogAdd(a.x, b.x),
+    restirShadeLogAdd(a.y, b.y),
+    restirShadeLogAdd(a.z, b.z),
+  );
+}
+
+fn restirShadeExp2Clamped(logValue: f32) -> f32 {
+  if (!restirShadeValidLog(logValue) ||
+      logValue <= RESTIR_SHADE_LOG2_ROUND_TO_ZERO_F32) {
+    return 0.0;
+  }
+  if (logValue >= RESTIR_SHADE_LOG2_OVERFLOW_F32) {
+    return RESTIR_SHADE_MAX_FINITE_F32;
+  }
+  return min(exp2(logValue), RESTIR_SHADE_MAX_FINITE_F32);
+}
+
+fn restirShadeExp2Clamped3(logValue: vec3f) -> vec3f {
+  return vec3f(
+    restirShadeExp2Clamped(logValue.x),
+    restirShadeExp2Clamped(logValue.y),
+    restirShadeExp2Clamped(logValue.z),
+  );
+}
+
+fn restirShadeNormaliseLogSum(logSum: vec3f, denominator: f32) -> vec3f {
+  if (!restirShadeFinite(denominator) || !(denominator > 0.0)) {
+    return vec3f(RESTIR_SHADE_LOG_ZERO);
+  }
+  return vec3f(
+    restirShadeRemovePositiveFactor(logSum.x, denominator),
+    restirShadeRemovePositiveFactor(logSum.y, denominator),
+    restirShadeRemovePositiveFactor(logSum.z, denominator),
+  );
+}
+
+fn restirShadeAppendPositiveFactor3(
+  logValue: vec3f,
+  factor: vec3f,
+) -> vec3f {
+  return vec3f(
+    restirShadeAppendPositiveFactor(logValue.x, factor.x),
+    restirShadeAppendPositiveFactor(logValue.y, factor.y),
+    restirShadeAppendPositiveFactor(logValue.z, factor.z),
+  );
+}
+
+// Log-domain form of applyHomogeneousVolumeSingleScatterDirectional. GI
+// contributions remain logarithmic until after bilinear accumulation, so this
+// evaluates the same linear operator without introducing an exp2 endpoint per
+// candidate. Every input contribution is non-negative.
+fn restirShadeDirectionalVolumeLog(
+  logRadiance: vec3f,
+  albedo: vec3f,
+  scatter: vec4f,
+  pathLength: f32,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+) -> vec3f {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  if (all(sigmaS <= vec3f(0.0)) || pathLength <= 0.0) {
+    return logRadiance;
+  }
+
+  var logLuminance = RESTIR_SHADE_LOG_ZERO;
+  logLuminance = restirShadeLogAdd(
+    logLuminance,
+    restirShadeAppendPositiveFactor(logRadiance.x, 0.2126),
+  );
+  logLuminance = restirShadeLogAdd(
+    logLuminance,
+    restirShadeAppendPositiveFactor(logRadiance.y, 0.7152),
+  );
+  logLuminance = restirShadeLogAdd(
+    logLuminance,
+    restirShadeAppendPositiveFactor(logRadiance.z, 0.0722),
+  );
+  let phase = henyeyGreensteinPhase(
+    dot(safe_normalize(-wi), safe_normalize(wo)),
+    scatter.a,
+  );
+  var logSource = vec3f(logLuminance);
+  logSource = restirShadeAppendPositiveFactor3(
+    logSource,
+    max(albedo, vec3f(0.0)),
+  );
+  logSource = vec3f(
+    restirShadeAppendPositiveFactor(logSource.x, phase),
+    restirShadeAppendPositiveFactor(logSource.y, phase),
+    restirShadeAppendPositiveFactor(logSource.z, phase),
+  );
+
+  let projectedCosine = abs(dot(
+    safe_normalize(normal),
+    safe_normalize(wo),
+  ));
+  if (projectedCosine <= 0.0) { return logSource; }
+  let distance = pathLength / projectedCosine;
+  let transmittance = homogeneousBeerTransmittanceRgb(sigmaS, distance);
+  let logAttenuated = restirShadeAppendPositiveFactor3(
+    logRadiance,
+    transmittance,
+  );
+  let logScattered = restirShadeAppendPositiveFactor3(
+    logSource,
+    vec3f(1.0) - transmittance,
+  );
+  return restirShadeLogAdd3(logAttenuated, logScattered);
+}
+
+fn restirShadeDemodulateLog(
+  logPhysicalRadiance: vec3f,
+  albedo: vec3f,
+) -> vec3f {
+  return vec3f(
+    restirShadeRemovePositiveFactor(logPhysicalRadiance.x, albedo.x),
+    restirShadeRemovePositiveFactor(logPhysicalRadiance.y, albedo.y),
+    restirShadeRemovePositiveFactor(logPhysicalRadiance.z, albedo.z),
+  );
+}
+
+fn restirShadeDemodulateChannel(value: f32, albedo: f32) -> f32 {
+  if (!restirShadeFinite(value) || value < 0.0 ||
+      !restirShadeFinite(albedo) || !(albedo > 0.0)) {
+    return 0.0;
+  }
+  return min(value / albedo, RESTIR_SHADE_MAX_FINITE_F32);
+}
+
+fn restirShadeDemodulate(
+  physicalRadiance: vec3f,
+  albedo: vec3f,
+) -> vec3f {
+  return vec3f(
+    restirShadeDemodulateChannel(physicalRadiance.x, albedo.x),
+    restirShadeDemodulateChannel(physicalRadiance.y, albedo.y),
+    restirShadeDemodulateChannel(physicalRadiance.z, albedo.z),
+  );
+}
+
+// DDGI fallback and RC are already integrated over direction. They retain the
+// aggregate volume overload, but still own the same diffuse/material factors
+// before being safely demodulated for the indirect buffer.
+fn restirShadeAggregateDiffuseDemodulated(
+  lighting: vec3f,
+  albedo: vec3f,
+  diffuseWeight: f32,
+  layerTransmission: vec3f,
+  scatter: vec4f,
+  pathLength: f32,
+  normal: vec3f,
+  wo: vec3f,
+) -> vec3f {
+  let sigmaS = max(scatter.rgb, vec3f(0.0));
+  if (all(sigmaS <= vec3f(0.0)) || pathLength <= 0.0) {
+    return lighting * diffuseWeight * layerTransmission;
+  }
+  let physical = applyHomogeneousVolumeSingleScatter(
+    lighting * albedo * diffuseWeight * layerTransmission,
+    albedo,
+    scatter,
+    pathLength,
+    normal,
+    wo,
+  );
+  return restirShadeDemodulate(physical, albedo);
+}
+
 fn lo_emit(
   matColor:         vec4f,
   normal:           vec3f,
@@ -113,9 +379,24 @@ fn lo_emit(
     f32((beerPacked >> 16u) & 0xFFu) / 255.0,
     f32((beerPacked >>  8u) & 0xFFu) / 255.0,
   );
+  var thicknessMapScale = 1.0;
+  let thicknessMap = sampleMaterialAtlasRawAtOffset(
+    triIndex,
+    MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
+    uv,
+    uv1,
+  );
+  if (thicknessMap.valid != 0u) {
+    thicknessMapScale = materialOpticalThicknessMapScale(
+      triIndex,
+      thicknessMap.value.g,
+    );
+  }
   beerAlbedo = applyThicknessMapToBeerTint(triIndex, uv, uv1, beerAlbedo);
   beerAlbedo = materialSpectralAttenuation(
-    triIndex, materialOpticalThickness(triIndex), beerAlbedo,
+    triIndex,
+    materialOpticalThickness(triIndex) * thicknessMapScale,
+    beerAlbedo,
   );
   return beerAlbedo * trans * ubo.sunIntensity * sunDot * texMod;
 }
@@ -124,7 +405,7 @@ fn lo_emit(
 //
 // Emissive-mesh surfaces are NEE-only in walkaround (the ReSTIR-DI emitter list
 // lights RECEIVERS); their own pixels render black to the camera. This returns
-// the hit triangle's HDR emissive radiance Le from the per-triangle bvh_emissive
+// the hit triangle's HDR emissive radiance Le from the canonical GI emissive
 // texture so the emitter glows directly. The texel layout matches bvh_beer
 // (BVH_BEER_TEX_WIDTH width; both per-triangle textures share it).
 //
@@ -133,7 +414,7 @@ fn lo_emit(
 // transmissive case, while packBVHEmissiveLe packs the emissive branch ONLY.
 fn lo_emitterGlow(triIndex: u32) -> vec3f {
   let coord = vec2u(triIndex % BVH_BEER_TEX_WIDTH, triIndex / BVH_BEER_TEX_WIDTH);
-  return textureLoad(bvh_emissive, vec2i(coord), 0).rgb;
+  return textureLoad(restir_gi_bvh_emissive, vec2i(coord), 0).rgb;
 }
 
 // --- H41: Analytic point/spot NEE (ADDITIVE, separate from RIS area-emitter pool) ---
@@ -148,8 +429,9 @@ fn lo_emitterGlow(triIndex: u32) -> vec3f {
 // division-by-zero at the light position. Spot falloff: smoothstep from
 // cosOuter to cosInner. Point: cosInner=1, cosOuter=0 → smoothstep(0,1,x) = x²(3-2x) is not 1 at x≥1, so use cosOuter < cosInner always.
 //
-// Shadow: deterministic shadow ray (not stochastic — no variance per pixel,
-// no need for reservoir denoising). skipGlass=true (same as lo_direct).
+// Shadow: deterministic RGB alpha/material-transmission traversal (not
+// stochastic — no variance per pixel, no need for reservoir denoising).
+// Manifold mode delegates material transmission to its explicit path estimator.
 //
 // Metals receive their conductor lobe; glass receives reflection-only while
 // its transmission remains owned by the bounded dielectric transport path.
@@ -162,10 +444,9 @@ fn manifoldNeeOwnsMaterialTransmission() -> bool {
   return ubo.sunAngular.z >= 1.5;
 }
 
-// Direct illumination at a transmissive dielectric is reflection-only at the
-// primary interface. Its base color belongs to Beer/transmission transport and
-// must not create an opaque Lambertian lobe, but its Fresnel/GGX, clearcoat,
-// sheen, and iridescence reflection families remain visible.
+// Direct illumination follows the continuous transmission mix: the opaque
+// base response fades with (1-transmission), while reflection remains present
+// and the complementary BTDF is evaluated by the explicit glass transport.
 fn evalDirectSurfaceBrdf(
   albedo: vec3f,
   rough: f32,
@@ -182,23 +463,30 @@ fn evalDirectSurfaceBrdf(
   clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
-  isGlass: bool,
+  transmission: f32,
+  layerTransmission: vec3f,
+  reflectionLayerTransmission: vec3f,
 ) -> vec3f {
-  if (isGlass) {
-    return evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
+  let mixedClosure = evalGGXReflectionWithTransmissionMix(
+    albedo, rough, metal, specular.rgb, specular.a,
+    anisotropy.x, anisotropy.y, iridescence,
+    clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb,
+    anisotropyTangent, anisotropyBitangent,
+    normal, clearcoatNormal, wo, wi, transmission,
+  );
+  let reflectionClosure =
+    evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
       albedo, rough, metal, specular.rgb, specular.a,
       anisotropy.x, anisotropy.y, iridescence,
       clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb,
       anisotropyTangent, anisotropyBitangent,
       normal, clearcoatNormal, wo, wi,
     );
-  }
-  return evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
-    albedo, rough, metal, specular.rgb, specular.a,
-    anisotropy.x, anisotropy.y, iridescence,
-    clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb,
-    anisotropyTangent, anisotropyBitangent,
-    normal, clearcoatNormal, wo, wi,
+  return applyMaterialLayerTransmissionToBrdf(
+    mixedClosure,
+    reflectionClosure,
+    layerTransmission,
+    reflectionLayerTransmission,
   );
 }
 
@@ -255,6 +543,7 @@ fn lo_analyticNEE(
   normal:   vec3f,
   clearcoatNormal: vec3f,
   geoNormal: vec3f,
+  shadowContainingMedia: MaterialShadowContainingMedia,
   albedo:   vec3f,
   rough:    f32,
   metal:    f32,
@@ -267,7 +556,11 @@ fn lo_analyticNEE(
   sheen:    vec4f,
   sheenRoughness: f32,
   wo:       vec3f,
-  isGlass:  bool,
+  transmission: f32,
+  layerTransmission: vec3f,
+  reflectionLayerTransmission: vec3f,
+  volumeScattering: vec4f,
+  bulkThickness: f32,
   isMetal:  bool,
 ) -> vec3f {
   // Opaque materials receive the full BRDF. Glass receives its Fresnel/GGX
@@ -334,25 +627,33 @@ fn lo_analyticNEE(
 
     var shadowT = vec3f(1.0);
     if (!castShadowDisabled) {
-      // Shadow ray — same pattern as lo_direct (offset along geo normal, skipGlass=true).
+      // Shadow ray — same ownership-aware RGB traversal as lo_direct, offset
+      // along the geometric normal.
       // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry
       // and attenuate through readable alpha-blend coverage in the material atlas;
       // transparent glass additionally applies the Beer/material tint per channel.
-      shadowT = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
+      shadowT = traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(
         ubo.bvhMode, ubo.tlasNodeCount,
 
         pos + geoNormal * walkaroundRayOriginBias(), wi,
         max(0.0, dist - walkaroundRayEndMargin()), ubo.triIntersectEpsilon,
         bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+        shadowContainingMedia,
         manifoldNeeOwnsMaterialTransmission());
       if (max(max(shadowT.x, shadowT.y), shadowT.z) <= 0.0) { continue; }
     }
 
     // Authored range/decay falloff; default decay=2 preserves inverse-square.
     let attenuation = analyticPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
-    let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, isGlass);
+    let layeredBrdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, transmission, layerTransmission, reflectionLayerTransmission);
+    let unvolumedContribution = lightLe * shadowT * layeredBrdf *
+      cone * attenuation * estimatorWeight;
+    let contribution = applyHomogeneousVolumeSingleScatterDirectional(
+      unvolumedContribution, albedo, volumeScattering, bulkThickness,
+      normal, wo, wi,
+    );
     // evalGGX* already includes the receiver cosine; nDotL is only a gate here.
-    Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;
+    Lo += contribution;
   }
   return Lo;
 }
@@ -369,6 +670,7 @@ fn lo_direct(
   normal:   vec3f,
   clearcoatNormal: vec3f,
   geoNormal: vec3f,
+  shadowContainingMedia: MaterialShadowContainingMedia,
   wo:       vec3f,
   albedo:   vec3f,
   rough:    f32,
@@ -382,22 +684,25 @@ fn lo_direct(
   sheen:    vec4f,
   sheenRoughness: f32,
   envMapIntensity: f32,
-  isGlass:  bool,
+  transmission: f32,
+  layerTransmission: vec3f,
+  reflectionLayerTransmission: vec3f,
+  volumeScattering: vec4f,
+  bulkThickness: f32,
   isMetal:  bool,
   rng:      ptr<function, u32>,
 ) -> vec3f {
   // Glass is deliberately not an early-out: evalDirectSurfaceBrdf retains its
   // Fresnel/GGX reflection lobe without inventing an opaque diffuse lobe.
   let r = loadSpatialDI(pixelIdx);
-  if (r.W <= 0.0 || r.M == 0u) { return vec3f(0.0); }
+  if (r.M == 0u || !restirShadeValidLog(r.logW)) { return vec3f(0.0); }
   let lid = r.lightId;
 
   // Wave 4 — ENV_SAMPLE_SENTINEL: the reservoir's winning candidate was an HDRI
   // importance-sampled direction. Decode xi → world direction and shade with the
-  // env radiance × BRDF × W (no shadow ray — visibility was already tested in RIS;
-  // the W already bakes in occlusion via the w_sum=0 zero-out on occlusion, matching
-  // the existing emitter DI pattern where visibility is resolved in ris.wgsl before
-  // storing the reservoir).
+  // env radiance × BRDF × exp2(logW). Visibility is evaluated here at the
+  // target receiver and was deliberately not baked into the source reservoir,
+  // so temporal/spatial shifts cannot carry stale source occlusion.
   if (lid == ENV_SAMPLE_SENTINEL) {
     if (!envHasMap()) { return vec3f(0.0); }
     let envDir = envDirFromXi(r.xi);
@@ -407,20 +712,23 @@ fn lo_direct(
       envRadiance(envDir),
       envMapIntensity,
     );
-    let brdfE = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, envDir, isGlass);
-    let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
+    let layeredBrdfE = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, envDir, transmission, layerTransmission, reflectionLayerTransmission);
+    let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(
       ubo.bvhMode, ubo.tlasNodeCount,
 
       pos + geoNormal * walkaroundRayOriginBias(), envDir, INFINITY,
       ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      shadowContainingMedia,
       manifoldNeeOwnsMaterialTransmission());
     let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
     if (shadowScalar <= 0.0) { return vec3f(0.0); }
-    if (restirReservoirScaleValue() > 1u) {
-      return envColor * brdfE * r.W * shadowTint;
-    }
-    return envColor * brdfE * r.W * (shadowTint / vec3f(shadowScalar));
+    let responseLog = restirShadeDirectionalVolumeLog(
+      restirShadeLogProduct3(r.logW, envColor, layeredBrdfE, shadowTint),
+      albedo, volumeScattering, bulkThickness,
+      normal, wo, envDir,
+    );
+    return restirShadeExp2Clamped3(responseLog);
   }
 
   if (lid >= ubo.emitterCount) { return vec3f(0.0); }
@@ -437,37 +745,49 @@ fn lo_direct(
   let nlDotL = emitterTriCosineTowardReceiver(e, -wi);
   if (nDotL <= 0.0 || nlDotL <= 0.0) { return vec3f(0.0); }
   if (!emitterTriCastShadowDisabled(e)) {
-    // skipGlass=true: matches pre-canonical ReSTIR shadow-ray glass filter
-    // (light passes through glass; per-channel tinted-visibility handles tint).
+    // The ownership-aware RGB walk carries alpha, material tint, and Beer
+    // attenuation unless manifold NEE explicitly owns material transmission.
     // WS1 — offset the shadow-ray origin along the GEOMETRIC normal (the smooth
     // shading normal can dip below the surface near silhouettes → self-hit).
     // SHADOW-01 / ALPHA-03 — DI shadow rays skip castShadow:false geometry,
     // apply atlas-backed texture-alpha cutouts, and carry glass Beer tint through
-    // the material atlas. The producer scalarizes that RGB visibility for the
-    // reservoir W; divide by the same scalar here so the final contribution
-    // preserves color instead of becoming gray attenuation.
-    let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
+    // the material atlas. This target tint is applied exactly once; the
+    // reservoir stores no source-receiver visibility term.
+    let shadowTint = traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(
       ubo.bvhMode, ubo.tlasNodeCount,
 
       pos + geoNormal * walkaroundRayOriginBias(), wi,
       max(0.0, dist - walkaroundRayEndMargin()), ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      shadowContainingMedia,
       manifoldNeeOwnsMaterialTransmission());
     let shadowScalar = clamp(luminance(shadowTint), 0.0, 1.0);
     if (shadowScalar <= 0.0) { return vec3f(0.0); }
-    let shadowColorCorrection = shadowTint / vec3f(shadowScalar);
     let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
-    let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, isGlass);
+    let layeredBrdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, transmission, layerTransmission, reflectionLayerTransmission);
     let Le = sampleEmitterLeAtXi(e, r.xi);
-    if (restirReservoirScaleValue() > 1u) {
-      return Le * brdf * G * r.W * shadowTint;
-    }
-    return Le * brdf * G * r.W * shadowColorCorrection;
+    let geometryLogW = restirShadeAppendPositiveFactor(r.logW, G);
+    let responseLog = restirShadeDirectionalVolumeLog(
+      restirShadeLogProduct3(
+        geometryLogW, Le, layeredBrdf, shadowTint,
+      ),
+      albedo, volumeScattering, bulkThickness,
+      normal, wo, wi,
+    );
+    return restirShadeExp2Clamped3(responseLog);
   }
   let G    = emitterGeometry(nlDotL, dist * dist, ubo.emitterDist2Floor);
-  let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, isGlass);
+  let layeredBrdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, wi, transmission, layerTransmission, reflectionLayerTransmission);
   let Le = sampleEmitterLeAtXi(e, r.xi);
-  return Le * brdf * G * r.W;
+  let geometryLogW = restirShadeAppendPositiveFactor(r.logW, G);
+  let responseLog = restirShadeDirectionalVolumeLog(
+    restirShadeLogProduct3(
+      geometryLogW, Le, layeredBrdf, vec3f(1.0),
+    ),
+    albedo, volumeScattering, bulkThickness,
+    normal, wo, wi,
+  );
+  return restirShadeExp2Clamped3(responseLog);
 }
 
 // --- Direct sun NEE (default-on, item 4 plan/residue-closure-plan-2026-06-10.md) ----
@@ -498,30 +818,20 @@ fn lo_direct(
 // probes are placed at grid positions, not at primary-hit surfaces.
 //
 // ── lo_sg_caustic relationship ────────────────────────────────────────────────
-// lo_sg_caustic (SG_FLAG_SUN_CAUSTIC, stained-glass flag) also traces a ray toward
-// the sun, but: (a) it only fires when the stainedGlassFlags bit is set (default
-// OFF), (b) it applies a glass-tinted tinted-visibility traversal
-// (bvhTraceTintedVisibility) + a causticBoost multiplier designed for stained-glass
-// calibration, (c) it excludes glass-or-metal receivers. lo_sunNEE instead
-// retains conductor and dielectric reflection lobes. When the
-// stained-glass flag is set on a scene, both lo_sg_caustic AND lo_sunNEE can fire on
-// the same opaque pixel — lo_sg_caustic adds tinted-glass-transmitted caustic light,
-// lo_sunNEE adds direct (unobstructed or opaque-occluded) sun NEE. They are
-// physically disjoint estimators on the same direct-sun term with different
-// visibility functions: lo_sunNEE uses binary opaque occlusion (skipGlass=true so
-// glass panes do NOT shadow here — the shadow test is conservative), while
-// lo_sg_caustic uses the tinted multi-glass traversal. Typical stained-glass scenes
-// have only glass geometry between the sun and floor/wall receivers, so the
-// lo_sunNEE shadow ray through glass passes (skipGlass=true ⇒ glass is transparent
-// to NEE), and lo_sg_caustic picks up the tinted coloured contribution. For generic
-// opaque scenes with no stained-glass flag set, lo_sg_caustic returns vec3f(0) and
-// lo_sunNEE is the sole direct-sun term.
+// lo_sg_caustic (SG_FLAG_SUN_CAUSTIC, stained-glass flag) is an opt-in stylized
+// enhancement of this same direct-sun family. The default lo_sunNEE path owns
+// physically tinted alpha/transmission visibility for every eligible receiver;
+// the stained-glass lane adds its authored causticBoost treatment only when the
+// host explicitly enables it. With the flag off, lo_sunNEE is the sole direct-sun
+// term. With it on, the caustic lane is intentionally additive rather than an
+// independent unbiased estimator.
 fn lo_sunNEE(
   gid:       vec2u,
   pos:       vec3f,
   normal:    vec3f,
   clearcoatNormal: vec3f,
   geoNormal: vec3f,
+  shadowContainingMedia: MaterialShadowContainingMedia,
   albedo:    vec3f,
   rough:     f32,
   metal:     f32,
@@ -534,7 +844,11 @@ fn lo_sunNEE(
   sheen:     vec4f,
   sheenRoughness: f32,
   wo:        vec3f,
-  isGlass:   bool,
+  transmission: f32,
+  layerTransmission: vec3f,
+  reflectionLayerTransmission: vec3f,
+  volumeScattering: vec4f,
+  bulkThickness: f32,
 ) -> vec3f {
   // Skip if sun is absent (no directional emitter or intensity essentially zero).
   if (!(ubo.sunIntensity > 0.0)) { return vec3f(0.0); }
@@ -563,22 +877,29 @@ fn lo_sunNEE(
   // attenuate through readable alpha-blend coverage in the material atlas.
   var sunShadowT = vec3f(1.0);
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
-    sunShadowT = traceSceneAlphaTintTransmittanceTexturedWithOwnership(
+    sunShadowT = traceSceneAlphaTintTransmittanceTexturedWithContainingMedia(
       ubo.bvhMode, ubo.tlasNodeCount,
 
       pos + geoNormal * walkaroundRayOriginBias(), toSun, INFINITY,
       ubo.triIntersectEpsilon,
       bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+      shadowContainingMedia,
       manifoldNeeOwnsMaterialTransmission());
     if (max(max(sunShadowT.x, sunShadowT.y), sunShadowT.z) <= 0.0) { return vec3f(0.0); }
   }
 
   // Opaque full-BRDF / glass reflection-only evaluation. The helper already
   // folds in nDotSun as its NdotL term.
-  let brdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, toSun, isGlass);
+  let layeredBrdf = evalDirectSurfaceBrdf(albedo, rough, metal, specular, anisotropy, anisotropyTangent, anisotropyBitangent, iridescence, clearcoat, sheen, sheenRoughness, normal, clearcoatNormal, wo, toSun, transmission, layerTransmission, reflectionLayerTransmission);
+  let unvolumedContribution = vec3f(ubo.sunIntensity) *
+    sunShadowT * layeredBrdf;
+  let contribution = applyHomogeneousVolumeSingleScatterDirectional(
+    unvolumedContribution, albedo, volumeScattering, bulkThickness,
+    normal, wo, toSun,
+  );
   // Sun irradiance: ubo.sunIntensity is the directional emitter intensity.
   // No distance falloff — directional lights have infinite distance.
-  return vec3f(ubo.sunIntensity) * brdf * sunShadowT;
+  return contribution;
 }
 
 // T5 — the sun-caustic + sky-aperture stained-glass-specific lighting terms
@@ -597,14 +918,16 @@ fn lo_sunNEE(
 // The result is per-pixel screen-space — the probe grid stops being
 // the per-pixel basis, so cell artefacts go away.
 //
-// Lo_indirect_lighting = Lo * W * cos(N, wi) * INV_PI  (albedo-demodulated)
-//   - Lo, W from the GI reservoir (half-res; bilinear-blend across 4 cells)
+// Lo_indirect_lighting = Lo * exp2(logW) * cos(N, wi) * INV_PI
+//   - Lo, logW from the GI reservoir (half-res; bilinear-blend across 4 cells)
 //   - cos × INV_PI is the receiver Lambertian BRDF response
-//   - albedo is intentionally OMITTED here (Item 24 — Schied 2017 §4.1
-//     albedo demodulation). The à-trous chain filters the pure lighting
-//     signal; indirectCombine re-multiplies by albedo after denoising.
-// Gating: glass/metal surfaces skip this (their Lo_emit drives).
-//         The reservoir was empty-stored by risGi in those cases.
+//   - each directional sample first receives albedo, the continuous
+//     metal/transmission diffuse share, face-layer transfer, and volume response;
+//     safe demodulation then removes albedo for the Schied 2017 §4.1 denoiser
+//     contract, and indirectCombine re-multiplies it after filtering.
+// Pure conductors or fully transmissive receivers naturally produce zero diffuse
+// weight. Intermediate materials retain their physical continuous share; native
+// camera-prefix transmission and specular GI remain separate lanes.
 //
 // Sprint 18 follow-up — bilinear blend across 4 surrounding half-res
 // reservoirs.  The original nearest-neighbour read halfPx = gid/2u made
@@ -633,25 +956,47 @@ fn coarseGiDomainCompatible(
   receiverNormal: vec3f,
   receiverMaterialKey: u32,
 ) -> bool {
-  if (restirReservoirScaleValue() == 1u) { return true; }
   return
     g.receiverMaterialKey == receiverMaterialKey &&
     dot(receiverNormal, g.nv) >= ubo.restirGiSpatialNormalDotMin &&
     abs(dot(receiverPosition - g.xv, g.nv))
       <= ubo.restirGiSpatialCoplanarTol;
 }
+
+fn giReservoirAtNativeReceiver(g: ReservoirGI, receiverPosition: vec3f) -> bool {
+  // RIS and shade use the same primary-ray generator and intersection path for
+  // the center pixel. Exact equality identifies the only receiver at which an
+  // angular/NRC Lo was actually evaluated; a geometric tolerance would still
+  // admit a different thin-film angle or volume path length.
+  return all(receiverPosition == g.xv);
+}
+
+fn giReservoirRequiresNativeReceiver(g: ReservoirGI) -> bool {
+  return (g.sampleFlags & (
+    GI_SAMPLE_FLAG_LOCAL_TECHNIQUE |
+    GI_SAMPLE_FLAG_LOCAL_ESTIMATOR
+  )) != 0u;
+}
 fn lo_indirect(
   gid:     vec2u,
   dims:    vec2u,
   pos:     vec3f,
   normal:  vec3f,
+  geoNormal: vec3f,
+  wo:      vec3f,
+  albedo:  vec3f,
+  layerTransmission: vec3f,
+  volumeScattering: vec4f,
+  bulkThickness: f32,
   receiverMaterialKey: u32,
   envMapIntensity: f32,
-  isGlass: bool,
+  transmission: f32,
   metal:   f32,
 ) -> vec3f {
-  if (isGlass) { return vec3f(0.0); }
   var Lo_indirect = vec3f(0.0);
+  var indirectLogSum = vec3f(RESTIR_SHADE_LOG_ZERO);
+  let diffuseWeight = (1.0 - clamp(metal, 0.0, 1.0)) *
+    (1.0 - clamp(transmission, 0.0, 1.0));
 ${giBilinearWeightsWgsl()}
   var totalW: f32 = 0.0;
   // Confidence accumulator — bilinear-weighted ReSTIR-GI sample count over the
@@ -666,29 +1011,39 @@ ${giBilinearWeightsWgsl()}
 ${giBilinearCornerSelectWgsl()}
     let giIdx = hy * halfDims.x + hx;
     let g = loadReservoirGI_rw(giIdx);
-    if (g.W <= 0.0 || g.M == 0u) { continue; }
+    if (g.M == 0u || !restirShadeValidLog(g.logW)) { continue; }
+    if (g.historyEpoch != bitcast<u32>(ubo.sunAngular.y)) { continue; }
     if (g.prefixVertexCount != GI_PREFIX_RECONNECTABLE) { continue; }
     if (!coarseGiDomainCompatible(g, pos, normal, receiverMaterialKey)) { continue; }
-    var domainJacobian = 1.0;
-    var grisVisibility = giReservoirVisibility(g);
-    if (restirReservoirScaleValue() > 1u) {
-      domainJacobian = grisDomainToCanonicalJacobian(
+    let atNativeReceiver = giReservoirAtNativeReceiver(g, pos);
+    if (giReservoirRequiresNativeReceiver(g) && !atNativeReceiver) { continue; }
+    if (g.sampleKind == GI_SAMPLE_SURFACE
+     && !grisSurfaceSuffixReceiverSupported(pos, g.xs, g.ns)) { continue; }
+    var logDomainJacobian = 0.0;
+    var grisTint = vec3f(giReservoirVisibility(g));
+    let recastTint = !atNativeReceiver ||
+      (g.sampleFlags & GI_SAMPLE_FLAG_RECAST_TINT) != 0u;
+    if (!atNativeReceiver) {
+      logDomainJacobian = grisLogDomainToCanonicalJacobian(
         g.xv,
         pos,
         g.sampleKind,
         g.xs,
         g.ns,
       );
-      grisVisibility = grisProxyVisibilityAt(
+    }
+    if (recastTint) {
+      grisTint = grisProxyTintAt(
         pos,
         normal,
+        geoNormal,
         g.sampleKind,
         g.xs,
         g.wi_recon,
       );
     }
-    if (!(domainJacobian > 0.0)) { continue; }
-    if (grisVisibility <= 0.0) { continue; }
+    if (!restirShadeValidLog(logDomainJacobian)) { continue; }
+    if (max(grisTint.r, max(grisTint.g, grisTint.b)) <= 0.0) { continue; }
     let toS = giReservoirDirectionVector(g, pos);
     let distS = safe_length(toS);
     if (!(distS > 0.0)) { continue; }
@@ -701,30 +1056,78 @@ ${giBilinearCornerSelectWgsl()}
         envMapIntensity,
       );
     }
-    // Item 24: omit albedo here; indirectCombine applies it post-denoising.
-    Lo_indirect = Lo_indirect + receiverLo * INV_PI * cosTheta * g.W * domainJacobian * grisVisibility * bw;
+    // Build the physical diffuse response for this candidate before volume.
+    // The directional operator is linear for non-negative radiance, so each
+    // distinct bilinear wi must be processed before accumulation. Demodulation
+    // happens afterward solely to preserve the denoiser buffer contract.
+    var contributionLogW = restirShadeAppendLogFactor(g.logW, logDomainJacobian);
+    contributionLogW = restirShadeAppendPositiveFactor(contributionLogW, INV_PI);
+    contributionLogW = restirShadeAppendPositiveFactor(contributionLogW, cosTheta);
+    contributionLogW = restirShadeAppendPositiveFactor(contributionLogW, bw);
+    contributionLogW = restirShadeAppendPositiveFactor(
+      contributionLogW,
+      diffuseWeight,
+    );
+    var physicalDiffuseLog = restirShadeLogProduct3(
+      contributionLogW,
+      receiverLo,
+      grisTint,
+      albedo,
+    );
+    physicalDiffuseLog = restirShadeAppendPositiveFactor3(
+      physicalDiffuseLog,
+      layerTransmission,
+    );
+    physicalDiffuseLog = restirShadeDirectionalVolumeLog(
+      physicalDiffuseLog,
+      albedo,
+      volumeScattering,
+      bulkThickness,
+      normal,
+      wo,
+      wi,
+    );
+    let demodulatedDiffuseLog = restirShadeDemodulateLog(
+      physicalDiffuseLog,
+      albedo,
+    );
+    indirectLogSum = restirShadeLogAdd3(
+      indirectLogSum,
+      demodulatedDiffuseLog,
+    );
     Maccum = Maccum + f32(g.M) * bw;
     totalW = totalW + bw;
   }
   // Effective per-pixel ReSTIR-GI sample count (bilinear-averaged M). 0 when no
   // valid reservoir contributed — that pixel has *no* ReSTIR estimate, so the
-  // confidence-ratio below hands full weight to RC (or, if RC is also off,
-  // returns 0).
+  // receiver-local DDGI fallback below becomes Lo_indirect. RC may then blend
+  // with that fallback when it is enabled and carries energy.
   var Meff: f32 = 0.0;
   if (totalW > 0.0) {
-    Lo_indirect = Lo_indirect / totalW;
+    Lo_indirect = restirShadeExp2Clamped3(
+      restirShadeNormaliseLogSum(indirectLogSum, totalW),
+    );
     Meff = Maccum / totalW;
-  } else if (restirReservoirScaleValue() > 1u) {
-    // Deterministic discontinuity fallback: never transplant a source-domain
-    // reservoir normalization across an incompatible depth/normal boundary.
-    // The DDGI atlas is receiver-local and therefore remains well-defined.
-    Lo_indirect = sampleDDGIAtPoint(pos, normal) * INV_PI;
+  } else {
+    // Deterministic discontinuity/local-suffix fallback: never transplant a
+    // source-domain reservoir normalization or angular Lo across receivers.
+    // The DDGI atlas is receiver-local and remains well-defined at every scale.
+    Lo_indirect = restirShadeAggregateDiffuseDemodulated(
+      sampleDDGIAtPoint(pos, normal) * INV_PI,
+      albedo,
+      diffuseWeight,
+      layerTransmission,
+      volumeScattering,
+      bulkThickness,
+      normal,
+      wo,
+    );
   }
   // W8 Phase 3 — confidence-ratio (balance-heuristic) composition with the
   // Sannikov 2023 Radiance Cascades cascade-0 estimate. Both estimators
-  // integrate the SAME diffuse-indirect radiance, so any convex blend
-  // (w_restir + w_rc == 1) is unbiased; we choose the blend per-pixel by each
-  // estimator's reliability instead of a single host scalar.
+  // estimate the SAME diffuse-indirect signal. Their reliability-weighted convex
+  // blend is a deliberate bias/variance heuristic (RC itself is biased), chosen
+  // per pixel instead of by a single host scalar.
   //
   // Confidence proxies (both ∈ [0,1]):
   //   c_restir = m            — ReSTIR-GI's normalised effective sample count
@@ -746,8 +1149,8 @@ ${giBilinearCornerSelectWgsl()}
   //
   // Balance heuristic: w_rc = c_rc / (c_rc + c_restir), w_restir = 1 - w_rc.
   // Degenerate guard: when neither estimator is confident (c_rc + c_restir ≈ 0,
-  // i.e. no valid reservoir AND rcWeight 0) we force w_restir = 1 — Lo_indirect
-  // is 0 there anyway, so the pixel stays 0.
+  // i.e. no valid reservoir AND rcWeight 0) we force w_restir = 1. In that
+  // case Lo_indirect is the receiver-local DDGI fallback computed above.
   //
   // rc-disabled bit-identity: the host binds an all-zero rcParams placeholder
   // when RC is off (DDGIBindingState.setRCInputs(null)), so rcParams.enabled==0
@@ -755,6 +1158,16 @@ ${giBilinearCornerSelectWgsl()}
   // w_rc==0, w_restir==1.0 exactly ⇒ result == Lo_indirect, byte-for-byte
   // identical to the pre-Phase-3 path.
   let Lo_rc = sampleCascadeC0(pos, normal);
+  let Lo_rcDemodulated = restirShadeAggregateDiffuseDemodulated(
+    Lo_rc,
+    albedo,
+    diffuseWeight,
+    layerTransmission,
+    volumeScattering,
+    bulkThickness,
+    normal,
+    wo,
+  );
   let m = clamp(Meff / f32(max(ubo.restirGiMClamp, 1u)), 0.0, 1.0);
   let cRestir = m;
   // RC-has-energy gate (algorithm-combination-fitness fix, 2026-06-07):
@@ -777,72 +1190,15 @@ ${giBilinearCornerSelectWgsl()}
   var wRc = 0.0;
   if (cSum > 0.0) { wRc = cRc / cSum; }
   let wRestirGi = 1.0 - wRc;
-  // Metallic is a continuous PBR blend, not a surface-classification bit.
-  // Preserve the dielectric diffuse share for fractional metals and suppress
-  // it only at the pure-conductor endpoint. The separate specular-indirect
-  // estimator consumes the complementary GGX/conductor response.
-  let diffuseWeight = 1.0 - clamp(metal, 0.0, 1.0);
-  return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);
+  // Every lane above already owns the continuous metal/transmission diffuse
+  // share, layer transfer, volume response, and safe demodulation exactly once.
+  return wRestirGi * Lo_indirect + wRc * Lo_rcDemodulated;
 }
 
-// --- Glass TRANSMITTED GI — bounded dielectric-prefix reservoir consumption --
-//
-// risGi follows the camera ray through up to four dielectric interfaces, with
-// Snell refraction at every boundary, nested-medium IOR state, RGB Fresnel,
-// mapped transmission, and actual-segment Beer/spectral attenuation. The full
-// camera-prefix throughput is already folded into each stored g.Lo and its
-// matching p-hat. This consumer therefore applies only the post-glass diffuse
-// receiver's cosine/π estimator; applying Fresnel or Beer here would count the
-// camera prefix twice. Budget overflow and TIR produce an empty reservoir.
-fn lo_transmittedGI(
-  gid:     vec2u,
-  dims:    vec2u,
-  isGlass: bool,
-) -> vec3f {
-  if (!isGlass) { return vec3f(0.0); }
-  // A camera-transmission prefix is tied to its exact primary ray and cannot be
-  // reconnection-shifted without storing the complete refractive prefix.
-  // Scene preflight forces reservoir scale 1 whenever this lane is reachable.
-  if (restirReservoirScaleValue() > 1u) { return vec3f(0.0); }
-
-  // Match lo_indirect's 4-neighbour half-res blend for transmission too. The
-  // previous nearest-neighbour lookup made an entire 2x2 full-res quad inherit
-  // one post-glass GI reservoir, which over-promoted rare W-tail samples on large
-  // panes and failed the bounded glass/no-glass radiometric A/B.
-${giBilinearWeightsWgsl()}
-  var Lo_transmitted = vec3f(0.0);
-  var totalW: f32 = 0.0;
-  for (var k: u32 = 0u; k < 4u; k = k + 1u) {
-${giBilinearCornerSelectWgsl()}
-
-    let giIdx = hy * halfDims.x + hx;
-    let g = loadReservoirGI_rw(giIdx);
-    if (g.W <= 0.0 || g.M == 0u) { continue; }
-    if (g.prefixVertexCount != GI_PREFIX_CAMERA_TRANSMISSION) { continue; }
-
-    // Direction from the post-glass diffuse receiver vertex xv toward the stored
-    // reconnect sample xs. The receiver's Lambertian albedo was folded into g.Lo
-    // by risGi; this consumer applies the remaining cosine/π transport. The
-    // camera-side dielectric throughput is already present in g.Lo.
-    let grisVisibility = giReservoirVisibility(g);
-    if (grisVisibility <= 0.0) { continue; }
-    let toS = giReservoirDirectionVector(g, g.xv);
-    let distS = safe_length(toS);
-    if (!(distS > 0.0)) { continue; }
-    let wi = safe_normalize(toS);
-    let cosTheta = max(0.0, dot(g.nv, wi));
-    Lo_transmitted = Lo_transmitted + g.Lo * INV_PI * cosTheta * g.W * grisVisibility * bw;
-    totalW = totalW + bw;
-  }
-  if (totalW > 0.0) {
-    Lo_transmitted = Lo_transmitted / totalW;
-  }
-  // glassMixScale is the explicit host-facing strength of this bounded realtime
-  // estimator. It is not a substitute for transport terms; those were applied
-  // per interface by the producer above.
-  let scaledTransmitted = Lo_transmitted * ubo.glassMixScale;
-  return min(scaledTransmitted, ubo.indirectFireflyClamp * ubo.glassMixScale);
-}
+// Camera-prefix glass transport is evaluated at the exact full-resolution
+// primary pixel and consumed immediately. It never enters the half-resolution
+// GI reservoir or any temporal/spatial/bilinear reuse path.
+${NATIVE_GLASS_GI_WGSL}
 
 // --- B1: Glossy/metal SPECULAR indirect (ReSTIR-GI sample × GGX specular lobe) -
 //
@@ -860,10 +1216,11 @@ ${giBilinearCornerSelectWgsl()}
 // NOT proportional to the diffuse albedo, so it must bypass indirectCombine's
 // albedo re-modulation; metals carry their reflectance tint in the specular F0).
 //
-// Consistency: this reuses the SAME reservoir sample (xs, Lo, W) that the
+// Consistency: this reuses the SAME reservoir sample (xs, Lo, logW) that the
 // diffuse target selected — a deterministic BSDF re-weighting of a chosen
 // sample (the same pattern lo_emit / lo_emitterGlow use), NOT a second
-// estimator, so there is no p̂/consumption mismatch. Single nearest GI reservoir
+// estimator. p-hat remains an importance target; this final physical integrand
+// owns its exact reflection layer and directional volume response. Single nearest GI reservoir
 // (no bilinear blend) — the specular lobe is higher-frequency, so the half-res
 // blur of the diffuse path is undesirable here.
 //
@@ -878,6 +1235,7 @@ fn lo_indirectSpecular(
   dims:   vec2u,
   pos:    vec3f,
   normal: vec3f,
+  geoNormal: vec3f,
   clearcoatNormal: vec3f,
   wo:     vec3f,
   albedo: vec3f,
@@ -893,43 +1251,63 @@ fn lo_indirectSpecular(
   sheenRoughness: f32,
   receiverMaterialKey: u32,
   envMapIntensity: f32,
-  isGlass: bool,
+  transmission: f32,
+  reflectionLayerTransmission: vec3f,
+  volumeScattering: vec4f,
+  bulkThickness: f32,
 ) -> vec3f {
-  if (isGlass) { return vec3f(0.0); }
   let specularDelta = max(
     max(abs(specular.r - 1.0), abs(specular.g - 1.0)),
     max(abs(specular.b - 1.0), abs(specular.a - 1.0)),
   );
-  if (metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 0.0 && abs(anisotropy.x) <= 0.0 && clearcoat.x <= 0.0 && sheen.a <= 0.0 && iridescence.x <= 0.0) { return vec3f(0.0); }
+  if (transmission <= 0.0 && metal <= 0.0 && rough >= SPEC_GI_ROUGH_MAX && specularDelta <= 0.0 && abs(anisotropy.x) <= 0.0 && clearcoat.x <= 0.0 && sheen.a <= 0.0 && iridescence.x <= 0.0) { return vec3f(0.0); }
   let halfDims = restirGiDimensions();
   let giCoord = restirGiCoordForFullPixel(gid);
   let hx = giCoord.x;
   let hy = giCoord.y;
   let giIdx = hy * halfDims.x + hx;
   let g = loadReservoirGI_rw(giIdx);
-  if (g.W <= 0.0 || g.M == 0u) { return vec3f(0.0); }
+  if (g.M == 0u || !restirShadeValidLog(g.logW)) { return vec3f(0.0); }
+  if (g.historyEpoch != bitcast<u32>(ubo.sunAngular.y)) {
+    return vec3f(0.0);
+  }
   if (g.prefixVertexCount != GI_PREFIX_RECONNECTABLE) { return vec3f(0.0); }
   if (!coarseGiDomainCompatible(g, pos, normal, receiverMaterialKey)) { return vec3f(0.0); }
-  var domainJacobian = 1.0;
-  var grisVisibility = giReservoirVisibility(g);
-  if (restirReservoirScaleValue() > 1u) {
-    domainJacobian = grisDomainToCanonicalJacobian(
+  let atNativeReceiver = giReservoirAtNativeReceiver(g, pos);
+  if (giReservoirRequiresNativeReceiver(g) && !atNativeReceiver) {
+    return vec3f(0.0);
+  }
+  if (g.sampleKind == GI_SAMPLE_SURFACE
+   && !grisSurfaceSuffixReceiverSupported(pos, g.xs, g.ns)) {
+    return vec3f(0.0);
+  }
+  var logDomainJacobian = 0.0;
+  var grisTint = vec3f(giReservoirVisibility(g));
+  let recastTint = !atNativeReceiver ||
+    (g.sampleFlags & GI_SAMPLE_FLAG_RECAST_TINT) != 0u;
+  if (!atNativeReceiver) {
+    logDomainJacobian = grisLogDomainToCanonicalJacobian(
       g.xv,
       pos,
       g.sampleKind,
       g.xs,
       g.ns,
     );
-    grisVisibility = grisProxyVisibilityAt(
+  }
+  if (recastTint) {
+    grisTint = grisProxyTintAt(
       pos,
       normal,
+      geoNormal,
       g.sampleKind,
       g.xs,
       g.wi_recon,
     );
   }
-  if (!(domainJacobian > 0.0)) { return vec3f(0.0); }
-  if (grisVisibility <= 0.0) { return vec3f(0.0); }
+  if (!restirShadeValidLog(logDomainJacobian)) { return vec3f(0.0); }
+  if (max(grisTint.r, max(grisTint.g, grisTint.b)) <= 0.0) {
+    return vec3f(0.0);
+  }
   let toS = giReservoirDirectionVector(g, pos);
   let distS = safe_length(toS);
   if (!(distS > 0.0)) { return vec3f(0.0); }
@@ -943,5 +1321,28 @@ fn lo_indirectSpecular(
   }
   // The specular-only evaluator already includes the NdotL cosine + conductor F0.
   let specBrdf = evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(albedo, rough, metal, specular.rgb, specular.a, anisotropy.x, anisotropy.y, iridescence, clearcoat.x, clearcoat.y, sheen.a, sheenRoughness, sheen.rgb, anisotropyTangent, anisotropyBitangent, normal, clearcoatNormal, wo, wi);
-  return receiverLo * specBrdf * g.W * domainJacobian * grisVisibility;
+  let contributionLogW = restirShadeAppendLogFactor(
+    g.logW,
+    logDomainJacobian,
+  );
+  var physicalSpecularLog = restirShadeLogProduct3(
+    contributionLogW,
+    receiverLo,
+    specBrdf,
+    grisTint,
+  );
+  physicalSpecularLog = restirShadeAppendPositiveFactor3(
+    physicalSpecularLog,
+    reflectionLayerTransmission,
+  );
+  physicalSpecularLog = restirShadeDirectionalVolumeLog(
+    physicalSpecularLog,
+    albedo,
+    volumeScattering,
+    bulkThickness,
+    normal,
+    wo,
+    wi,
+  );
+  return restirShadeExp2Clamped3(physicalSpecularLog);
 }`;

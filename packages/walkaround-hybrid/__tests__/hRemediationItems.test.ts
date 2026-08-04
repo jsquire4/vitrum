@@ -576,7 +576,7 @@ describe('H47/H29 — PPG cap threading', () => {
     } as never);
 
     const cfg = (engine as unknown as { _cfg: { ppgMixAlpha: number } })._cfg;
-    expect(cfg.ppgMixAlpha).toBe(0.35);
+    expect(cfg.ppgMixAlpha).toBe(Math.fround(Math.round(0.35 * 2 ** 24) / 2 ** 24));
   });
 
   it('rejects fractional nrcWarmupSteps instead of silently clamping it', async () => {

@@ -117,6 +117,161 @@ function makeTexturedFirstHitAlphaMaskWalkerWGSL(fnName: string, discardPredicat
 }`;
 }
 
+/**
+ * Fixed-origin first-hit wrapper for an accepted optical continuation. The
+ * first traversal suppresses only the exact crossed source feature; alpha
+ * holes encountered after that point retain the ordinary bounded walk.
+ */
+function makeTexturedFirstHitAlphaMaskOpticalSourceWalkerWGSL(
+  fnName: string,
+  discardPredicate: string,
+): string {
+  return /* wgsl */ `fn ${fnName}(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  ray: Ray,
+  sourceFeature: OpticalSourceFeature,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+  sampleSeed: u32,
+) -> OpticalSourceAwareFirstHit {
+  var result = traceSceneFirstHitWithOpticalSourceExclusion(
+    bvhMode, tlasNodeCount, ray, 0.0, sourceFeature,
+  );
+  if (result.valid == 0u || !result.hit.didHit) { return result; }
+
+  var hit = result.hit;
+  var word = textureLoad(
+    materialMask,
+    vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
+    0,
+  ).r;
+  if (!${discardPredicate}(hit, word, ray, 0u, sampleSeed)) {
+    return result;
+  }
+
+  let firstPoint = ray.origin + ray.direction * hit.dist;
+  let firstStep = materialTraversalStepAt(firstPoint, 0.0);
+  var traveled = hit.dist + firstStep;
+  var walkRay = Ray(
+    firstPoint + ray.direction * firstStep,
+    ray.direction,
+  );
+  for (var i = 1u; i < 32u; i = i + 1u) {
+    hit = traceSceneFirstHit(
+      bvhMode, tlasNodeCount, walkRay, 0.0,
+    );
+    if (!hit.didHit) {
+      result.hit = hit;
+      return result;
+    }
+    word = textureLoad(
+      materialMask,
+      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    if (!${discardPredicate}(hit, word, ray, i, sampleSeed)) {
+      hit.dist = hit.dist + traveled;
+      result.hit = hit;
+      return result;
+    }
+    let hitPoint = walkRay.origin + walkRay.direction * hit.dist;
+    let step = materialTraversalStepAt(hitPoint, 0.0);
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = hitPoint + walkRay.direction * step;
+  }
+  var exhausted = traceSceneFirstHit(
+    bvhMode, tlasNodeCount, walkRay, 0.0,
+  );
+  if (exhausted.didHit) {
+    exhausted.dist = exhausted.dist + traveled;
+  }
+  result.hit = exhausted;
+  return result;
+}`;
+}
+
+/**
+ * Metadata-preserving form used by estimators that must distinguish a purely
+ * geometric first-hit query from a stochastic alpha-blend realization.  The
+ * ordinary wrapper remains source-compatible with every existing caller.
+ */
+function makeTexturedFirstHitAlphaMaskWalkerWithMetadataWGSL(
+  fnName: string,
+  metadataFnName: string,
+  discardPredicate: string,
+): string {
+  return /* wgsl */ `struct TexturedFirstHitAlphaMaskResult {
+  hit: IntersectionResult,
+  requiresNativeEstimator: u32,
+};
+
+fn ${metadataFnName}(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  ray: Ray,
+  triEps: f32,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+  sampleSeed: u32,
+) -> TexturedFirstHitAlphaMaskResult {
+  var walkRay = ray;
+  var traveled = 0.0;
+  var requiresNativeEstimator = 0u;
+  for (var i = 0u; i < 32u; i = i + 1u) {
+    var hit = traceSceneFirstHit(
+      bvhMode, tlasNodeCount,
+      walkRay, triEps,
+    );
+    if (!hit.didHit) {
+      return TexturedFirstHitAlphaMaskResult(hit, requiresNativeEstimator);
+    }
+    let word = textureLoad(
+      materialMask,
+      vec2i(i32(hit.indices.w % materialMaskWidth), i32(hit.indices.w / materialMaskWidth)),
+      0,
+    ).r;
+    if (materialUsesStochasticAlphaDecisionForHit(hit, word)) {
+      requiresNativeEstimator = 1u;
+    }
+    if (!${discardPredicate}(hit, word, ray, i, sampleSeed)) {
+      hit.dist = hit.dist + traveled;
+      return TexturedFirstHitAlphaMaskResult(hit, requiresNativeEstimator);
+    }
+    let hitPoint = walkRay.origin + walkRay.direction * hit.dist;
+    let step = materialTraversalStepAt(hitPoint, triEps);
+    traveled = traveled + hit.dist + step;
+    walkRay.origin = hitPoint + walkRay.direction * step;
+  }
+  var exhausted = traceSceneFirstHit(
+    bvhMode, tlasNodeCount,
+    walkRay, triEps,
+  );
+  if (exhausted.didHit) {
+    exhausted.dist = exhausted.dist + traveled;
+  }
+  // The conservative 33rd blocker was not evaluated by the stochastic
+  // predicate. Its cross-receiver proposal support cannot be reconstructed
+  // from this payload even when the blocker itself is opaque.
+  return TexturedFirstHitAlphaMaskResult(exhausted, 1u);
+}
+
+fn ${fnName}(
+  bvhMode: u32,
+  tlasNodeCount: u32,
+  ray: Ray,
+  triEps: f32,
+  materialMask: texture_2d<u32>,
+  materialMaskWidth: u32,
+  sampleSeed: u32,
+) -> IntersectionResult {
+  return ${metadataFnName}(
+    bvhMode, tlasNodeCount, ray, triEps,
+    materialMask, materialMaskWidth, sampleSeed,
+  ).hit;
+}`;
+}
+
 export const MATERIAL_ATLAS_WGSL = /* wgsl */ `
 // Material maps enter through either CPU pixel payloads or nominal GPU
 // descriptors. Native-size rectangles and only authored logical mips are
@@ -175,6 +330,8 @@ fn baseColorMapMetaPhysicalTexel(triIndex: u32, metaOffset: u32) -> u32 {
   if (
     version != 3u ||
     materialRecordCount == 0u ||
+    materialRecordCount == 0xffffffffu ||
+    triangleCount == 0xffffffffu ||
     triIndex >= triangleCount ||
     recordStride != MATERIAL_MAP_META_TEXELS_PER_TRI
   ) {
@@ -184,6 +341,58 @@ fn baseColorMapMetaPhysicalTexel(triIndex: u32, metaOffset: u32) -> u32 {
   let triangleMaterialBase = materialMetaExactU32(addressHeader.y);
   let uvAffineBase = materialMetaExactU32(addressHeader.z);
   let activeUvLaneCount = materialMetaExactU32(addressHeader.w);
+  let payloadEnd = totalTexels - 4u;
+  if (
+    materialBase == 0xffffffffu ||
+    triangleMaterialBase == 0xffffffffu ||
+    uvAffineBase == 0xffffffffu ||
+    activeUvLaneCount == 0xffffffffu ||
+    materialBase > triangleMaterialBase ||
+    triangleMaterialBase > uvAffineBase ||
+    triangleMaterialBase > payloadEnd ||
+    uvAffineBase > payloadEnd ||
+    activeUvLaneCount > 14u
+  ) {
+    return totalTexels;
+  }
+  let directoryHeader = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaRawCoord(totalTexels - 2u),
+    0,
+  );
+  let atlasAddressBase = materialMetaExactU32(directoryHeader.x);
+  if (
+    atlasAddressBase == 0xffffffffu ||
+    uvAffineBase > atlasAddressBase ||
+    atlasAddressBase > payloadEnd
+  ) {
+    return totalTexels;
+  }
+  let materialRegionTexels = triangleMaterialBase - materialBase;
+  if (
+    materialRecordCount >
+      materialRegionTexels / MATERIAL_MAP_META_TEXELS_PER_TRI ||
+    materialRecordCount * MATERIAL_MAP_META_TEXELS_PER_TRI !=
+      materialRegionTexels
+  ) {
+    return totalTexels;
+  }
+  let triangleTableTexels = (triangleCount + 3u) / 4u;
+  if (
+    triangleTableTexels != uvAffineBase - triangleMaterialBase
+  ) {
+    return totalTexels;
+  }
+  let uvStride = activeUvLaneCount * 2u;
+  let uvRegionTexels = atlasAddressBase - uvAffineBase;
+  if (
+    (uvStride == 0u && uvRegionTexels != 0u) ||
+    (uvStride != 0u &&
+      (triangleCount > uvRegionTexels / uvStride ||
+        triangleCount * uvStride != uvRegionTexels))
+  ) {
+    return totalTexels;
+  }
   if (
     metaOffset >= MATERIAL_MAP_UV_AFFINE_BASE_TEXEL_OFFSET &&
     metaOffset < MATERIAL_MAP_SIDE_FLAGS_TEXEL_OFFSET
@@ -193,15 +402,27 @@ fn baseColorMapMetaPhysicalTexel(triIndex: u32, metaOffset: u32) -> u32 {
     if (lane >= activeUvLaneCount) {
       return totalTexels;
     }
-    let physicalTexel = uvAffineBase
-      + triIndex * activeUvLaneCount * 2u
-      + laneWord;
-    return select(totalTexels, physicalTexel, physicalTexel < totalTexels - 4u);
+    let availableUvTexels = atlasAddressBase - uvAffineBase;
+    if (
+      uvStride == 0u ||
+      triIndex > availableUvTexels / uvStride
+    ) {
+      return totalTexels;
+    }
+    let triangleUvOffset = triIndex * uvStride;
+    if (
+      triangleUvOffset > availableUvTexels ||
+      laneWord >= availableUvTexels - triangleUvOffset
+    ) {
+      return totalTexels;
+    }
+    return uvAffineBase + triangleUvOffset + laneWord;
   }
-  let idTableTexel = triangleMaterialBase + triIndex / 4u;
-  if (idTableTexel >= totalTexels - 4u) {
+  let idTableOffset = triIndex / 4u;
+  if (idTableOffset >= uvAffineBase - triangleMaterialBase) {
     return totalTexels;
   }
+  let idTableTexel = triangleMaterialBase + idTableOffset;
   let idTexel = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaRawCoord(idTableTexel),
@@ -211,10 +432,22 @@ fn baseColorMapMetaPhysicalTexel(triIndex: u32, metaOffset: u32) -> u32 {
   if (materialId >= materialRecordCount) {
     return totalTexels;
   }
-  let physicalTexel = materialBase
-    + materialId * MATERIAL_MAP_META_TEXELS_PER_TRI
-    + metaOffset;
-  return select(totalTexels, physicalTexel, physicalTexel < triangleMaterialBase);
+  if (
+    metaOffset >= MATERIAL_MAP_META_TEXELS_PER_TRI ||
+    materialId >
+      (triangleMaterialBase - materialBase) /
+        MATERIAL_MAP_META_TEXELS_PER_TRI
+  ) {
+    return totalTexels;
+  }
+  let materialOffset = materialId * MATERIAL_MAP_META_TEXELS_PER_TRI;
+  if (
+    materialOffset >= triangleMaterialBase - materialBase ||
+    metaOffset >= triangleMaterialBase - materialBase - materialOffset
+  ) {
+    return totalTexels;
+  }
+  return materialBase + materialOffset + metaOffset;
 }
 
 // Stable material-record identity for ownership-sensitive transport (for
@@ -243,11 +476,69 @@ fn baseColorMapMetaCoord(triIndex: u32, metaOffset: u32) -> vec2i {
   );
 }
 
+fn baseColorMapMetaAvailable(triIndex: u32, metaOffset: u32) -> bool {
+  let dims = textureDimensions(baseColorMapMeta);
+  let texel = baseColorMapMetaPhysicalTexel(triIndex, metaOffset);
+  return texel < dims.x * dims.y;
+}
+
 fn materialOpticalLoad(triIndex: u32, metaOffset: u32) -> vec4f {
+  if (!baseColorMapMetaAvailable(triIndex, metaOffset)) {
+    return vec4f(0.0);
+  }
   return textureLoad(baseColorMapMeta, baseColorMapMetaCoord(triIndex, metaOffset), 0);
 }
 
 ${MATERIAL_OPTICS_WGSL}
+
+fn materialAtlasFiniteF32(value: f32) -> bool {
+  return value == value && abs(value) <= VITRUM_OPTICAL_MAX_FINITE_F32;
+}
+
+fn materialAtlasFiniteVec2(value: vec2f) -> bool {
+  return all(value == value) &&
+    all(abs(value) <= vec2f(VITRUM_OPTICAL_MAX_FINITE_F32));
+}
+
+fn materialAtlasFiniteVec4(value: vec4f) -> bool {
+  return all(value == value) &&
+    all(abs(value) <= vec4f(VITRUM_OPTICAL_MAX_FINITE_F32));
+}
+
+fn materialAtlasFiniteVec3(value: vec3f) -> bool {
+  return all(value == value) &&
+    all(abs(value) <= vec3f(VITRUM_OPTICAL_MAX_FINITE_F32));
+}
+
+fn materialAtlasCanNormalize(value: vec3f) -> bool {
+  if (!materialAtlasFiniteVec3(value)) {
+    return false;
+  }
+  let magnitude = max(abs(value.x), max(abs(value.y), abs(value.z)));
+  if (!(magnitude > 0.0) || !materialAtlasFiniteF32(magnitude)) {
+    return false;
+  }
+  let scaled = value / magnitude;
+  let lengthSquared = dot(scaled, scaled);
+  return materialAtlasFiniteF32(lengthSquared) && lengthSquared > 0.0;
+}
+
+fn materialAtlasSafeNormalizeOr(value: vec3f, fallback: vec3f) -> vec3f {
+  if (materialAtlasCanNormalize(value)) {
+    let magnitude = max(abs(value.x), max(abs(value.y), abs(value.z)));
+    let scaled = value / magnitude;
+    return scaled * inverseSqrt(dot(scaled, scaled));
+  }
+  if (materialAtlasCanNormalize(fallback)) {
+    let magnitude = max(
+      abs(fallback.x),
+      max(abs(fallback.y), abs(fallback.z)),
+    );
+    let scaled = fallback / magnitude;
+    return scaled * inverseSqrt(dot(scaled, scaled));
+  }
+  return vec3f(0.0, 1.0, 0.0);
+}
 
 fn wrapMaterialUv1(v: f32, mode: u32) -> f32 {
   if (mode == 1u) {
@@ -329,10 +620,33 @@ fn materialAtlasLayerAddress(layer: i32) -> MaterialAtlasLayerAddress {
   );
   let addressBase = materialMetaExactU32(directoryHeader.x);
   let layerCount = materialMetaExactU32(directoryHeader.y);
+  let directoryEnd = totalTexels - 4u;
+  if (
+    addressBase == 0xffffffffu ||
+    layerCount == 0xffffffffu ||
+    addressBase > directoryEnd
+  ) {
+    return out;
+  }
   let logicalLayer = u32(layer);
   if (logicalLayer >= layerCount) { return out; }
-  let recordTexel = addressBase +
+  let availableDirectoryTexels = directoryEnd - addressBase;
+  if (
+    logicalLayer >
+      availableDirectoryTexels / MATERIAL_ATLAS_ADDRESS_TEXELS_PER_LAYER
+  ) {
+    return out;
+  }
+  let layerOffset =
     logicalLayer * MATERIAL_ATLAS_ADDRESS_TEXELS_PER_LAYER;
+  if (
+    layerOffset > availableDirectoryTexels ||
+    MATERIAL_ATLAS_ADDRESS_TEXELS_PER_LAYER >
+      availableDirectoryTexels - layerOffset
+  ) {
+    return out;
+  }
+  let recordTexel = addressBase + layerOffset;
   if (recordTexel + MATERIAL_ATLAS_ADDRESS_TEXELS_PER_LAYER > totalTexels - 4u) {
     return out;
   }
@@ -353,13 +667,30 @@ fn materialAtlasLayerAddress(layer: i32) -> MaterialAtlasLayerAddress {
   out.decodeSrgb = materialMetaExactU32(info1.x);
   out.planeCount = materialMetaExactU32(info1.y);
   out.recordTexel = recordTexel;
+  let atlasDimensions = textureDimensions(materialTextureAtlas);
+  let encodingPlanePairValid =
+    ((out.encoding == MATERIAL_ATLAS_ENCODING_RGBA8_UNORM ||
+      out.encoding == MATERIAL_ATLAS_ENCODING_RGBA8_SNORM) &&
+      out.planeCount == 1u) ||
+    ((out.encoding == MATERIAL_ATLAS_ENCODING_RGBA16_FLOAT ||
+      out.encoding == MATERIAL_ATLAS_ENCODING_RGBA16_UNORM ||
+      out.encoding == MATERIAL_ATLAS_ENCODING_RGBA16_SNORM) &&
+      out.planeCount == 2u) ||
+    (out.encoding == MATERIAL_ATLAS_ENCODING_RGBA32_FLOAT &&
+      out.planeCount == 4u);
   out.valid = select(
     0u,
     1u,
     out.width > 0u &&
     out.height > 0u &&
+    atlasDimensions.x <= 1073741823u &&
+    atlasDimensions.y <= 1073741823u &&
+    out.width <= atlasDimensions.x &&
+    out.height <= atlasDimensions.y &&
     out.mipLevelCount > 0u &&
-    (out.planeCount == 1u || out.planeCount == 2u || out.planeCount == 4u),
+    out.mipLevelCount <= 16u &&
+    out.decodeSrgb <= 1u &&
+    encodingPlanePairValid,
   );
   return out;
 }
@@ -374,6 +705,14 @@ fn materialAtlasMapAvailableAtOffset(triIndex: u32, metaOffset: u32) -> bool {
     baseColorMapMetaRawCoord(physicalTexel),
     0,
   );
+  if (
+    !materialAtlasFiniteF32(meta0.x) ||
+    meta0.x < 0.0 ||
+    meta0.x > 16777215.0 ||
+    floor(meta0.x) != meta0.x
+  ) {
+    return false;
+  }
   return materialAtlasLayerAddress(i32(meta0.x)).valid != 0u;
 }
 
@@ -395,34 +734,68 @@ fn materialAtlasSrgbChannelToLinear(value: f32) -> f32 {
   return select(c / 12.92, pow((c + 0.055) / 1.055, 2.4), c > 0.04045);
 }
 
+struct MaterialAtlasSampleResult {
+  value: vec4f,
+  valid: u32,
+  encoding: u32,
+};
+
+fn materialAtlasInvalidSample() -> MaterialAtlasSampleResult {
+  return MaterialAtlasSampleResult(vec4f(0.0), 0u, 0u);
+}
+
+fn materialAtlasValidSample(
+  value: vec4f,
+  encoding: u32,
+) -> MaterialAtlasSampleResult {
+  let finite = all(value == value) &&
+    all(abs(value) <= vec4f(VITRUM_OPTICAL_MAX_FINITE_F32));
+  return MaterialAtlasSampleResult(
+    select(vec4f(0.0), value, finite),
+    select(0u, 1u, finite),
+    encoding,
+  );
+}
+
 fn materialAtlasDecodeTexel(
   address: MaterialAtlasLayerAddress,
   logicalTexel: vec2i,
   level: u32,
-) -> vec4f {
+) -> MaterialAtlasSampleResult {
   if (address.valid == 0u || level >= address.mipLevelCount) {
-    return vec4f(-1.0);
+    return materialAtlasInvalidSample();
   }
   let mipRecord = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaRawCoord(address.recordTexel + 2u + level),
     0,
   );
-  let origin = vec2u(
-    materialMetaExactU32(mipRecord.x),
-    materialMetaExactU32(mipRecord.y),
-  );
+  let originX = materialMetaExactU32(mipRecord.x);
+  let originY = materialMetaExactU32(mipRecord.y);
   let baseLayer = materialMetaExactU32(mipRecord.z);
+  if (
+    originX == 0xffffffffu ||
+    originY == 0xffffffffu ||
+    baseLayer == 0xffffffffu ||
+    logicalTexel.x < 0 ||
+    logicalTexel.y < 0
+  ) {
+    return materialAtlasInvalidSample();
+  }
+  let origin = vec2u(originX, originY);
   let atlasDims = textureDimensions(materialTextureAtlas);
   let atlasLayers = textureNumLayers(materialTextureAtlas);
-  let coord = origin + vec2u(logicalTexel);
   if (
-    coord.x >= atlasDims.x ||
-    coord.y >= atlasDims.y ||
-    baseLayer + address.planeCount > atlasLayers
+    origin.x >= atlasDims.x ||
+    origin.y >= atlasDims.y ||
+    u32(logicalTexel.x) >= atlasDims.x - origin.x ||
+    u32(logicalTexel.y) >= atlasDims.y - origin.y ||
+    baseLayer >= atlasLayers ||
+    address.planeCount > atlasLayers - baseLayer
   ) {
-    return vec4f(-1.0);
+    return materialAtlasInvalidSample();
   }
+  let coord = origin + vec2u(logicalTexel);
   let p0 = textureLoad(materialTextureAtlas, vec2i(coord), i32(baseLayer), 0).r;
   var value = vec4f(0.0);
   if (address.encoding == MATERIAL_ATLAS_ENCODING_RGBA8_UNORM) {
@@ -463,9 +836,14 @@ fn materialAtlasDecodeTexel(
         bitcast<f32>(p3),
       );
     } else {
-      return vec4f(-1.0);
+      return materialAtlasInvalidSample();
     }
   }
+  let decoded = materialAtlasValidSample(value, address.encoding);
+  if (decoded.valid == 0u) {
+    return materialAtlasInvalidSample();
+  }
+  value = decoded.value;
   if (address.decodeSrgb != 0u) {
     value = vec4f(
       materialAtlasSrgbChannelToLinear(value.r),
@@ -474,16 +852,28 @@ fn materialAtlasDecodeTexel(
       value.a,
     );
   }
-  return value;
+  return materialAtlasValidSample(value, address.encoding);
 }
 
-fn sampleMaterialAtlasNearestLevel(wrapped: vec2f, layer: i32, level: u32) -> vec4f {
+fn sampleMaterialAtlasNearestLevel(wrapped: vec2f, layer: i32, level: u32) -> MaterialAtlasSampleResult {
   let address = materialAtlasLayerAddress(layer);
-  if (address.valid == 0u) { return vec4f(-1.0); }
+  if (
+    address.valid == 0u ||
+    level >= address.mipLevelCount ||
+    !materialAtlasFiniteVec2(wrapped) ||
+    !all(wrapped >= vec2f(0.0)) ||
+    !all(wrapped <= vec2f(1.0))
+  ) {
+    return materialAtlasInvalidSample();
+  }
   let dims = materialAtlasLevelDimensions(address, level);
+  let position = wrapped * vec2f(dims);
+  if (!materialAtlasFiniteVec2(position)) {
+    return materialAtlasInvalidSample();
+  }
   let texel = vec2i(
-    i32(min(u32(floor(wrapped.x * f32(dims.x))), dims.x - 1u)),
-    i32(min(u32(floor(wrapped.y * f32(dims.y))), dims.y - 1u)),
+    i32(min(u32(floor(position.x)), dims.x - 1u)),
+    i32(min(u32(floor(position.y)), dims.y - 1u)),
   );
   return materialAtlasDecodeTexel(address, texel, level);
 }
@@ -493,9 +883,17 @@ fn sampleMaterialAtlasLinearLevel(
   layer: i32,
   samplerPacked: u32,
   level: u32,
-) -> vec4f {
+) -> MaterialAtlasSampleResult {
   let address = materialAtlasLayerAddress(layer);
-  if (address.valid == 0u) { return vec4f(-1.0); }
+  if (
+    address.valid == 0u ||
+    level >= address.mipLevelCount ||
+    !materialAtlasFiniteVec2(wrapped) ||
+    !all(wrapped >= vec2f(0.0)) ||
+    !all(wrapped <= vec2f(1.0))
+  ) {
+    return materialAtlasInvalidSample();
+  }
   let dims = materialAtlasLevelDimensions(address, level);
   let size = vec2i(i32(dims.x), i32(dims.y));
   let coord = wrapped * vec2f(f32(dims.x), f32(dims.y)) - vec2f(0.5);
@@ -511,7 +909,17 @@ fn sampleMaterialAtlasLinearLevel(
   let c10 = materialAtlasDecodeTexel(address, vec2i(x1, y0), level);
   let c01 = materialAtlasDecodeTexel(address, vec2i(x0, y1), level);
   let c11 = materialAtlasDecodeTexel(address, vec2i(x1, y1), level);
-  return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+  if (c00.valid == 0u || c10.valid == 0u || c01.valid == 0u || c11.valid == 0u) {
+    return materialAtlasInvalidSample();
+  }
+  return materialAtlasValidSample(
+    mix(
+      mix(c00.value, c10.value, f.x),
+      mix(c01.value, c11.value, f.x),
+      f.y,
+    ),
+    address.encoding,
+  );
 }
 
 fn sampleMaterialAtlasLevel(
@@ -520,7 +928,7 @@ fn sampleMaterialAtlasLevel(
   samplerPacked: u32,
   level: u32,
   lod: f32,
-) -> vec4f {
+) -> MaterialAtlasSampleResult {
   if (materialAtlasFilterMode(samplerPacked, lod) == 0u) {
     return sampleMaterialAtlasNearestLevel(wrapped, layer, level);
   }
@@ -532,24 +940,39 @@ fn sampleMaterialAtlasAtLod(
   layer: i32,
   samplerPacked: u32,
   lod: f32,
-) -> vec4f {
+) -> MaterialAtlasSampleResult {
+  let finiteLod = select(0.0, lod, materialAtlasFiniteF32(lod));
   let mipFilter = (samplerPacked >> 8u) & 0x3u;
+  if (
+    samplerPacked > 4095u ||
+    (samplerPacked & 0x3u) == 3u ||
+    ((samplerPacked >> 2u) & 0x3u) == 3u ||
+    mipFilter == 3u
+  ) {
+    return materialAtlasInvalidSample();
+  }
   let address = materialAtlasLayerAddress(layer);
-  if (address.valid == 0u) { return vec4f(-1.0); }
+  if (address.valid == 0u) { return materialAtlasInvalidSample(); }
   let lastLevel = address.mipLevelCount - 1u;
   if (mipFilter == 0u || lastLevel == 0u) {
-    return sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, 0u, lod);
+    return sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, 0u, finiteLod);
   }
-  let clampedLod = clamp(lod, 0.0, f32(lastLevel));
+  let clampedLod = clamp(finiteLod, 0.0, f32(lastLevel));
   if (mipFilter == 1u) {
     let level = min(u32(floor(clampedLod + 0.5)), lastLevel);
-    return sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level, lod);
+    return sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level, finiteLod);
   }
   let level0 = min(u32(floor(clampedLod)), lastLevel);
   let level1 = min(level0 + 1u, lastLevel);
-  let c0 = sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level0, lod);
-  let c1 = sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level1, lod);
-  return mix(c0, c1, clampedLod - floor(clampedLod));
+  let c0 = sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level0, finiteLod);
+  let c1 = sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level1, finiteLod);
+  if (c0.valid == 0u || c1.valid == 0u) {
+    return materialAtlasInvalidSample();
+  }
+  return materialAtlasValidSample(
+    mix(c0.value, c1.value, clampedLod - floor(clampedLod)),
+    c0.encoding,
+  );
 }
 
 fn interpolateUv1FromNormalW(hit: IntersectionResult, n0: vec4f, n1: vec4f, n2: vec4f) -> vec2f {
@@ -572,12 +995,19 @@ fn materialAtlasPackedUvFromVec4(v: vec4f) -> vec2f {
 
 fn materialAtlasDefaultLod(layer: i32, meta1: vec4f) -> f32 {
   let address = materialAtlasLayerAddress(layer);
+  if (address.valid == 0u || !materialAtlasFiniteVec4(meta1)) {
+    return 0.0;
+  }
   let atlasSize = vec2f(
     max(vec2u(1u), vec2u(address.width, address.height)),
   );
   let screenSize = vec2f(max(ubo.screenSize, vec2u(1u)));
-  let footprint = abs(meta1.xy) * atlasSize / screenSize;
-  return log2(max(max(footprint.x, footprint.y), 1e-8));
+  let footprintCandidate = abs(meta1.xy) * atlasSize / screenSize;
+  if (!materialAtlasFiniteVec2(footprintCandidate)) {
+    return 0.0;
+  }
+  let lod = log2(max(max(footprintCandidate.x, footprintCandidate.y), 1e-8));
+  return select(0.0, lod, materialAtlasFiniteF32(lod));
 }
 
 fn materialAtlasTransformPointForHit(hit: IntersectionResult, p: vec3f) -> vec3f {
@@ -606,10 +1036,11 @@ fn materialAtlasProjectToPixels(p: vec3f) -> vec3f {
 
 fn materialAtlasTransformUvForLod(uv: vec2f, meta1: vec4f) -> vec2f {
   let scaled = uv * meta1.xy;
-  return vec2f(
+  let transformed = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
   );
+  return select(uv, transformed, materialAtlasFiniteVec2(transformed));
 }
 
 // Bounded realtime footprint model: project the hit triangle into the active
@@ -618,9 +1049,37 @@ fn materialAtlasTransformUvForLod(uv: vec2f, meta1: vec4f) -> vec2f {
 // propagated ray-differential model for indirect/specular paths.
 fn materialAtlasLodForHit(hit: IntersectionResult, metaOffset: u32) -> f32 {
   let triIndex = hit.indices.w;
+  if (
+    metaOffset >= MATERIAL_MAP_META_TEXELS_PER_TRI - 1u ||
+    !materialAtlasMapAvailableAtOffset(triIndex, metaOffset) ||
+    !baseColorMapMetaAvailable(triIndex, metaOffset + 1u)
+  ) {
+    return 0.0;
+  }
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(triIndex, metaOffset), 0);
   let meta1 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(triIndex, metaOffset + 1u), 0);
-  let flags = u32(max(meta0.y, 0.0) + 0.5);
+  if (
+    !materialAtlasFiniteF32(meta0.x) ||
+    meta0.x < 0.0 ||
+    meta0.x > 16777215.0 ||
+    floor(meta0.x) != meta0.x ||
+    !materialAtlasFiniteF32(meta0.y) ||
+    meta0.y < 0.0 ||
+    meta0.y > 4095.0 ||
+    floor(meta0.y) != meta0.y ||
+    !materialAtlasFiniteVec4(meta1)
+  ) {
+    return 0.0;
+  }
+  let flags = u32(meta0.y);
+  if (
+    (flags & 0x3u) == 3u ||
+    ((flags >> 2u) & 0x3u) == 3u ||
+    ((flags >> 8u) & 0x3u) == 3u
+  ) {
+    return 0.0;
+  }
+  let layer = i32(meta0.x);
   let texCoord = (flags >> 4u) & 0xFu;
 
   let p0Packed = bvhLoadPosition(hit.indices.x);
@@ -647,29 +1106,43 @@ fn materialAtlasLodForHit(hit: IntersectionResult, metaOffset: u32) -> f32 {
     materialAtlasPackedUvFromVec4(p2Packed),
     materialAtlasPackedUvFromVec4(n2Packed),
   );
+  if (
+    !materialAtlasFiniteVec2(uv0) ||
+    !materialAtlasFiniteVec2(uv1) ||
+    !materialAtlasFiniteVec2(uv2)
+  ) {
+    return materialAtlasDefaultLod(layer, meta1);
+  }
   let screen0 = materialAtlasProjectToPixels(materialAtlasTransformPointForHit(hit, p0Packed.xyz));
   let screen1 = materialAtlasProjectToPixels(materialAtlasTransformPointForHit(hit, p1Packed.xyz));
   let screen2 = materialAtlasProjectToPixels(materialAtlasTransformPointForHit(hit, p2Packed.xyz));
   if (screen0.z == 0.0 || screen1.z == 0.0 || screen2.z == 0.0) {
-    return materialAtlasDefaultLod(i32(meta0.x), meta1);
+    return materialAtlasDefaultLod(layer, meta1);
   }
 
   let screenEdge1 = screen1.xy - screen0.xy;
   let screenEdge2 = screen2.xy - screen0.xy;
   let det = screenEdge1.x * screenEdge2.y - screenEdge1.y * screenEdge2.x;
   if (abs(det) <= 1e-8) {
-    return materialAtlasDefaultLod(i32(meta0.x), meta1);
+    return materialAtlasDefaultLod(layer, meta1);
   }
   let uvEdge1 = materialAtlasTransformUvForLod(uv1, meta1) - materialAtlasTransformUvForLod(uv0, meta1);
   let uvEdge2 = materialAtlasTransformUvForLod(uv2, meta1) - materialAtlasTransformUvForLod(uv0, meta1);
   let duvDx = (uvEdge1 * screenEdge2.y - uvEdge2 * screenEdge1.y) / det;
   let duvDy = (-uvEdge1 * screenEdge2.x + uvEdge2 * screenEdge1.x) / det;
-  let address = materialAtlasLayerAddress(i32(meta0.x));
+  if (
+    !materialAtlasFiniteVec2(duvDx) ||
+    !materialAtlasFiniteVec2(duvDy)
+  ) {
+    return materialAtlasDefaultLod(layer, meta1);
+  }
+  let address = materialAtlasLayerAddress(layer);
   let atlasSize = vec2f(
     max(vec2u(1u), vec2u(address.width, address.height)),
   );
   let rho = max(length(duvDx * atlasSize), length(duvDy * atlasSize));
-  return log2(max(rho, 1e-8));
+  let lod = log2(max(rho, 1e-8));
+  return select(0.0, lod, materialAtlasFiniteF32(lod));
 }
 
 fn sampleMaterialAtlasRawAtOffsetDeltaLod(
@@ -680,22 +1153,69 @@ fn sampleMaterialAtlasRawAtOffsetDeltaLod(
   transformedDelta: vec2f,
   lod: f32,
   explicitLod: bool,
-) -> vec4f {
+) -> MaterialAtlasSampleResult {
+  if (
+    metaOffset >= MATERIAL_MAP_META_TEXELS_PER_TRI - 1u ||
+    !materialAtlasMapAvailableAtOffset(triIndex, metaOffset) ||
+    !baseColorMapMetaAvailable(triIndex, metaOffset + 1u)
+  ) {
+    return materialAtlasInvalidSample();
+  }
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(triIndex, metaOffset), 0);
+  if (
+    !materialAtlasFiniteF32(meta0.x) ||
+    meta0.x < 0.0 ||
+    meta0.x > 16777215.0 ||
+    floor(meta0.x) != meta0.x
+  ) {
+    return materialAtlasInvalidSample();
+  }
   let layer = i32(meta0.x);
   if (layer < 0) {
-    return vec4f(-1.0, -1.0, -1.0, -1.0);
+    return materialAtlasInvalidSample();
   }
-  let wrapPacked = u32(max(meta0.y, 0.0) + 0.5);
+  if (
+    !materialAtlasFiniteF32(meta0.y) ||
+    meta0.y < 0.0 ||
+    meta0.y > 4095.0 ||
+    floor(meta0.y) != meta0.y
+  ) {
+    return materialAtlasInvalidSample();
+  }
+  let wrapPacked = u32(meta0.y);
+  if (
+    (wrapPacked & 0x3u) == 3u ||
+    ((wrapPacked >> 2u) & 0x3u) == 3u ||
+    ((wrapPacked >> 8u) & 0x3u) == 3u
+  ) {
+    return materialAtlasInvalidSample();
+  }
   let texCoord = (wrapPacked >> 4u) & 0xFu;
   let uv = materialResolveUv(triIndex, texCoord, uv0, uv1);
+  if (!materialAtlasFiniteVec2(uv)) {
+    return materialAtlasInvalidSample();
+  }
   let meta1 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(triIndex, metaOffset + 1u), 0);
+  if (
+    !materialAtlasFiniteVec4(meta0) ||
+    !materialAtlasFiniteVec4(meta1) ||
+    !materialAtlasFiniteVec2(transformedDelta)
+  ) {
+    return materialAtlasInvalidSample();
+  }
   let scaled = uv * meta1.xy;
-  let transformed = vec2f(
+  let transformedCandidate = vec2f(
     scaled.x * meta1.z - scaled.y * meta1.w,
     scaled.x * meta1.w + scaled.y * meta1.z,
   ) + meta0.zw + transformedDelta;
+  if (!materialAtlasFiniteVec2(transformedCandidate)) {
+    return materialAtlasInvalidSample();
+  }
+  let transformed = transformedCandidate;
   let wrapped = wrapMaterialUv(transformed, wrapPacked);
+  if (!materialAtlasFiniteVec2(wrapped)) {
+    return materialAtlasInvalidSample();
+  }
   let resolvedLod = select(materialAtlasDefaultLod(layer, meta1), lod, explicitLod);
   return sampleMaterialAtlasAtLod(wrapped, layer, wrapPacked, resolvedLod);
 }
@@ -706,7 +1226,7 @@ fn sampleMaterialAtlasRawAtOffsetDelta(
   uv0: vec2f,
   uv1: vec2f,
   transformedDelta: vec2f,
-) -> vec4f {
+) -> MaterialAtlasSampleResult {
   return sampleMaterialAtlasRawAtOffsetDeltaLod(
     triIndex,
     metaOffset,
@@ -718,11 +1238,14 @@ fn sampleMaterialAtlasRawAtOffsetDelta(
   );
 }
 
-fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+fn sampleMaterialAtlasRawAtOffset(triIndex: u32, metaOffset: u32, uv0: vec2f, uv1: vec2f) -> MaterialAtlasSampleResult {
   return sampleMaterialAtlasRawAtOffsetDelta(triIndex, metaOffset, uv0, uv1, vec2f(0.0));
 }
 
-fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> vec4f {
+fn sampleMaterialAtlasRaw(triIndex: u32, slot: u32, uv0: vec2f, uv1: vec2f) -> MaterialAtlasSampleResult {
+  if (slot > (MATERIAL_MAP_META_TEXELS_PER_TRI - 2u) / 2u) {
+    return materialAtlasInvalidSample();
+  }
   return sampleMaterialAtlasRawAtOffset(triIndex, slot * 2u, uv0, uv1);
 }
 
@@ -730,7 +1253,7 @@ fn sampleMaterialAtlasRawAtOffsetDeltaForHit(
   hit: IntersectionResult,
   metaOffset: u32,
   transformedDelta: vec2f,
-) -> vec4f {
+) -> MaterialAtlasSampleResult {
   return sampleMaterialAtlasRawAtOffsetDeltaLod(
     hit.indices.w,
     metaOffset,
@@ -742,11 +1265,14 @@ fn sampleMaterialAtlasRawAtOffsetDeltaForHit(
   );
 }
 
-fn sampleMaterialAtlasRawAtOffsetForHit(hit: IntersectionResult, metaOffset: u32) -> vec4f {
+fn sampleMaterialAtlasRawAtOffsetForHit(hit: IntersectionResult, metaOffset: u32) -> MaterialAtlasSampleResult {
   return sampleMaterialAtlasRawAtOffsetDeltaForHit(hit, metaOffset, vec2f(0.0));
 }
 
-fn sampleMaterialAtlasRawForHit(hit: IntersectionResult, slot: u32) -> vec4f {
+fn sampleMaterialAtlasRawForHit(hit: IntersectionResult, slot: u32) -> MaterialAtlasSampleResult {
+  if (slot > (MATERIAL_MAP_META_TEXELS_PER_TRI - 2u) / 2u) {
+    return materialAtlasInvalidSample();
+  }
   return sampleMaterialAtlasRawAtOffsetForHit(hit, slot * 2u);
 }
 
@@ -768,21 +1294,18 @@ fn materialAtlasFiniteNonNegativeRadianceOrBlack(value: vec3f) -> vec3f {
 
 fn sampleBaseColorMap(hit: IntersectionResult, scalarBaseColor: vec3f) -> vec3f {
   let texelColor = sampleMaterialAtlasRawForHit(hit, MATERIAL_MAP_SLOT_BASE_COLOR);
-  if (!materialAtlasMapAvailableAtOffset(
-    hit.indices.w,
-    MATERIAL_MAP_SLOT_BASE_COLOR * 2u,
-  )) {
+  if (texelColor.valid == 0u) {
     return scalarBaseColor;
   }
-  return scalarBaseColor * texelColor.rgb;
+  return scalarBaseColor * texelColor.value.rgb;
 }
 
 fn sampleMaterialScalarMap(hit: IntersectionResult, slot: u32, channel: u32, fallback: f32) -> f32 {
   let texelColor = sampleMaterialAtlasRawForHit(hit, slot);
-  if (!materialAtlasMapAvailableAtOffset(hit.indices.w, slot * 2u)) {
+  if (texelColor.valid == 0u) {
     return fallback;
   }
-  return clamp(fallback * materialMapChannel(texelColor, channel), 0.0, 1.0);
+  return clamp(fallback * materialMapChannel(texelColor.value, channel), 0.0, 1.0);
 }
 
 fn sampleAoMapFactor(hit: IntersectionResult, materialWord: u32) -> f32 {
@@ -798,14 +1321,11 @@ fn sampleEmissiveMap(triIndex: u32, uv0: vec2f, uv1: vec2f, scalarEmissive: vec3
     uv0,
     uv1,
   );
-  if (!materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_EMISSIVE_TEXEL_OFFSET,
-  )) {
+  if (texelColor.valid == 0u) {
     return scalarEmissive;
   }
   return materialAtlasFiniteNonNegativeRadianceOrBlack(
-    scalarEmissive * texelColor.rgb,
+    scalarEmissive * texelColor.value.rgb,
   );
 }
 
@@ -814,13 +1334,10 @@ fn sampleTransmissionMapForHit(hit: IntersectionResult, scalarTransmission: f32)
     hit,
     MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET,
   );
-  if (!materialAtlasMapAvailableAtOffset(
-    hit.indices.w,
-    MATERIAL_MAP_TRANSMISSION_TEXEL_OFFSET,
-  )) {
+  if (texelColor.valid == 0u) {
     return scalarTransmission;
   }
-  return clamp(scalarTransmission * texelColor.r, 0.0, 1.0);
+  return clamp(scalarTransmission * texelColor.value.r, 0.0, 1.0);
 }
 
 fn sampleLightMap(hit: IntersectionResult) -> vec3f {
@@ -829,10 +1346,7 @@ fn sampleLightMap(hit: IntersectionResult) -> vec3f {
     hit,
     MATERIAL_MAP_LIGHT_TEXEL_OFFSET,
   );
-  if (!materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_LIGHT_TEXEL_OFFSET,
-  )) {
+  if (texelColor.valid == 0u) {
     return vec3f(0.0);
   }
   let intensityMeta = textureLoad(
@@ -841,7 +1355,7 @@ fn sampleLightMap(hit: IntersectionResult) -> vec3f {
     0,
   );
   return materialAtlasFiniteNonNegativeRadianceOrBlack(
-    texelColor.rgb * max(intensityMeta.x, 0.0),
+    texelColor.value.rgb * max(intensityMeta.x, 0.0),
   );
 }
 
@@ -911,7 +1425,11 @@ fn sampleVolumeScatteringControls(triIndex: u32) -> vec4f {
 }
 
 fn homogeneousBeerTransmittanceRgb(sigmaT: vec3f, distance: f32) -> vec3f {
-  return exp(-max(sigmaT, vec3f(0.0)) * max(distance, 0.0));
+  return vec3f(
+    materialBeerTransmittanceExact(sigmaT.r, distance),
+    materialBeerTransmittanceExact(sigmaT.g, distance),
+    materialBeerTransmittanceExact(sigmaT.b, distance),
+  );
 }
 
 // Normalized Henyey-Greenstein phase density in inverse steradians.
@@ -995,19 +1513,17 @@ fn sampleSpecularControls(hit: IntersectionResult) -> vec4f {
   var intensity = clamp(spec.a, 0.0, 1.0);
 
   let colorMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_SPECULAR_COLOR_TEXEL_OFFSET,
-  )) {
-    color = max(color * colorMap.rgb, vec3f(0.0));
+  if (colorMap.valid != 0u) {
+    let mappedColor =
+      color * clamp(colorMap.value.rgb, vec3f(0.0), vec3f(1.0));
+    if (materialAtlasFiniteVec3(mappedColor)) {
+      color = max(mappedColor, vec3f(0.0));
+    }
   }
 
   let intensityMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_SPECULAR_INTENSITY_TEXEL_OFFSET,
-  )) {
-    intensity = clamp(intensity * intensityMap.a, 0.0, 1.0);
+  if (intensityMap.valid != 0u) {
+    intensity = clamp(intensity * intensityMap.value.a, 0.0, 1.0);
   }
 
   return vec4f(color, intensity);
@@ -1024,19 +1540,13 @@ fn sampleClearcoatControls(hit: IntersectionResult) -> vec2f {
   var roughness = clamp(cc.y, 0.0, 1.0);
 
   let clearcoatMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_CLEARCOAT_FACTOR_TEXEL_OFFSET,
-  )) {
-    factor = clamp(factor * clearcoatMap.r, 0.0, 1.0);
+  if (clearcoatMap.valid != 0u) {
+    factor = clamp(factor * clearcoatMap.value.r, 0.0, 1.0);
   }
 
   let roughnessMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_CLEARCOAT_ROUGHNESS_TEXEL_OFFSET,
-  )) {
-    roughness = clamp(roughness * roughnessMap.g, 0.0, 1.0);
+  if (roughnessMap.valid != 0u) {
+    roughness = clamp(roughness * roughnessMap.value.g, 0.0, 1.0);
   }
 
   return vec2f(factor, roughness);
@@ -1058,11 +1568,8 @@ fn sampleSheenControls(hit: IntersectionResult) -> vec4f {
   var sheen = clamp(scalars.z, 0.0, 1.0);
 
   let colorMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_SHEEN_COLOR_MAP_TEXEL_OFFSET,
-  )) {
-    sheenColor = clamp(sheenColor * colorMap.rgb, vec3f(0.0), vec3f(1.0));
+  if (colorMap.valid != 0u) {
+    sheenColor = clamp(sheenColor * colorMap.value.rgb, vec3f(0.0), vec3f(1.0));
   }
 
   return vec4f(sheenColor, sheen);
@@ -1077,11 +1584,8 @@ fn sampleSheenRoughness(hit: IntersectionResult) -> f32 {
   );
   var roughness = clamp(scalars.w, 0.0, 1.0);
   let roughnessMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_SHEEN_ROUGHNESS_TEXEL_OFFSET,
-  )) {
-    roughness = clamp(roughness * roughnessMap.a, 0.0, 1.0);
+  if (roughnessMap.valid != 0u) {
+    roughness = clamp(roughness * roughnessMap.value.a, 0.0, 1.0);
   }
   return roughness;
 }
@@ -1097,12 +1601,16 @@ fn sampleAnisotropyControls(hit: IntersectionResult) -> vec2f {
   var rotation = scalars.y;
 
   let anisoMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_ANISOTROPY_TEXEL_OFFSET,
-  )) {
-    strength = clamp(strength * anisoMap.b, 0.0, 1.0);
-    let direction = anisoMap.rg * 2.0 - vec2f(1.0);
+  if (anisoMap.valid != 0u) {
+    strength = clamp(strength * anisoMap.value.b, 0.0, 1.0);
+    let isSnorm =
+      anisoMap.encoding == MATERIAL_ATLAS_ENCODING_RGBA8_SNORM ||
+      anisoMap.encoding == MATERIAL_ATLAS_ENCODING_RGBA16_SNORM;
+    let direction = select(
+      clamp(anisoMap.value.rg, vec2f(0.0), vec2f(1.0)) * 2.0 - vec2f(1.0),
+      clamp(anisoMap.value.rg, vec2f(-1.0), vec2f(1.0)),
+      isSnorm,
+    );
     if (dot(direction, direction) > 0.0) {
       rotation += atan2(direction.y, direction.x);
     }
@@ -1124,19 +1632,13 @@ fn sampleIridescenceControls(hit: IntersectionResult) -> vec4f {
   var thicknessMax = max(0.0, scalars.w);
 
   let iridescenceMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_IRIDESCENCE_TEXEL_OFFSET,
-  )) {
-    factor = clamp(factor * iridescenceMap.r, 0.0, 1.0);
+  if (iridescenceMap.valid != 0u) {
+    factor = clamp(factor * iridescenceMap.value.r, 0.0, 1.0);
   }
 
   let thicknessMap = sampleMaterialAtlasRawAtOffsetForHit(hit, MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET);
-  if (materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_IRIDESCENCE_THICKNESS_TEXEL_OFFSET,
-  )) {
-    let thickness = mix(thicknessMin, thicknessMax, clamp(thicknessMap.g, 0.0, 1.0));
+  if (thicknessMap.valid != 0u) {
+    let thickness = mix(thicknessMin, thicknessMax, clamp(thicknessMap.value.g, 0.0, 1.0));
     thicknessMin = thickness;
     thicknessMax = thickness;
     if (thickness <= 0.0) {
@@ -1148,18 +1650,18 @@ fn sampleIridescenceControls(hit: IntersectionResult) -> vec4f {
 }
 
 fn applyThicknessMapToBeerTint(triIndex: u32, uv0: vec2f, uv1: vec2f, beerAlbedo: vec3f) -> vec3f {
+  if (!materialOpticalHasAuthoredThickness(triIndex)) {
+    return beerAlbedo;
+  }
   let thicknessMap = sampleMaterialAtlasRawAtOffset(triIndex, MATERIAL_MAP_THICKNESS_TEXEL_OFFSET, uv0, uv1);
-  if (!materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_THICKNESS_TEXEL_OFFSET,
-  )) {
+  if (thicknessMap.valid == 0u) {
     return beerAlbedo;
   }
   // KHR_materials_volume.thicknessTexture stores thickness in G. The host's
   // bvh_beer lane already holds attenuationColor^(thicknessFactor / distance),
   // so exponentiating it by the sampled G channel applies the map without
   // adding another per-triangle attenuation-distance buffer.
-  let thicknessFactor = clamp(thicknessMap.g, 0.0, 1.0);
+  let thicknessFactor = clamp(thicknessMap.value.g, 0.0, 1.0);
   if (thicknessFactor <= 0.0) { return vec3f(1.0); }
   return pow(max(beerAlbedo, vec3f(0.0)), vec3f(thicknessFactor));
 }
@@ -1315,8 +1817,15 @@ fn materialTangentFrameForHit(
 ) -> MaterialTangentFrame {
   let triIndex = hit.indices.w;
   let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(triIndex, mapOffset), 0);
-  let flags = u32(max(meta0.y, 0.0) + 0.5);
-  let texCoord = (flags >> 4u) & 0xFu;
+  var texCoord = 0u;
+  if (
+    materialAtlasFiniteF32(meta0.y) &&
+    meta0.y >= 0.0 &&
+    meta0.y <= 4095.0 &&
+    floor(meta0.y) == meta0.y
+  ) {
+    texCoord = (u32(meta0.y) >> 4u) & 0xFu;
+  }
   let p0 = bvhLoadPosition(hit.indices.x);
   let p1 = bvhLoadPosition(hit.indices.y);
   let p2 = bvhLoadPosition(hit.indices.z);
@@ -1407,34 +1916,65 @@ fn applyNormalMapAtOffsetForHit(
   normalScaleOffset: u32,
 ) -> vec3f {
   let triIndex = hit.indices.w;
-  let meta0 = textureLoad(baseColorMapMeta, baseColorMapMetaCoord(triIndex, normalMapOffset), 0);
-  if (!materialAtlasMapAvailableAtOffset(triIndex, normalMapOffset)) {
-    return fallbackNormal;
-  }
-
   let texelColor = sampleMaterialAtlasRawAtOffsetForHit(
     hit,
     normalMapOffset,
   );
+  if (texelColor.valid == 0u) {
+    return fallbackNormal;
+  }
+  if (!baseColorMapMetaAvailable(triIndex, normalScaleOffset)) {
+    return fallbackNormal;
+  }
   let scaleMeta = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex, normalScaleOffset),
     0,
   );
+  if (!materialAtlasFiniteF32(scaleMeta.x)) {
+    return fallbackNormal;
+  }
   let normalScale = max(scaleMeta.x, 0.0);
-  let tangentSample = normalize(vec3f(
-    (texelColor.r * 2.0 - 1.0) * normalScale,
-    (texelColor.g * 2.0 - 1.0) * normalScale,
-    texelColor.b * 2.0 - 1.0,
-  ));
+  let isSnorm =
+    texelColor.encoding == MATERIAL_ATLAS_ENCODING_RGBA8_SNORM ||
+    texelColor.encoding == MATERIAL_ATLAS_ENCODING_RGBA16_SNORM;
+  let decodedNormal = select(
+    clamp(texelColor.value.rgb, vec3f(0.0), vec3f(1.0)) * 2.0 -
+      vec3f(1.0),
+    clamp(texelColor.value.rgb, vec3f(-1.0), vec3f(1.0)),
+    isSnorm,
+  );
+  let tangentSampleRaw = vec3f(
+    decodedNormal.x * normalScale,
+    decodedNormal.y * normalScale,
+    decodedNormal.z,
+  );
+  if (!materialAtlasCanNormalize(tangentSampleRaw)) {
+    return fallbackNormal;
+  }
+  let tangentSample = materialAtlasSafeNormalizeOr(
+    tangentSampleRaw,
+    vec3f(0.0, 0.0, 1.0),
+  );
 
   let frame = materialTangentFrameForHit(hit, frameNormal, normalMapOffset);
-  let perturbed = normalize(frame.tangent * tangentSample.x + frame.bitangent * tangentSample.y + frameNormal * tangentSample.z);
+  let perturbedRaw =
+    frame.tangent * tangentSample.x +
+    frame.bitangent * tangentSample.y +
+    frameNormal * tangentSample.z;
+  if (!materialAtlasCanNormalize(perturbedRaw)) {
+    return fallbackNormal;
+  }
+  let perturbed = materialAtlasSafeNormalizeOr(perturbedRaw, fallbackNormal);
   return select(-perturbed, perturbed, dot(perturbed, frameNormal) >= 0.0);
 }
 
-fn applyFaceLayerNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
-  let isFrontFace = hit.side >= 0.0;
+fn applyFaceLayerNormalMapForSideForHit(
+  hit: IntersectionResult,
+  frameNormal: vec3f,
+  fallbackNormal: vec3f,
+  isFrontFace: bool,
+) -> vec3f {
   let normalMapOffset = select(
     MATERIAL_MAP_BACK_LAYER_NORMAL_TEXEL_OFFSET,
     MATERIAL_MAP_FRONT_LAYER_NORMAL_TEXEL_OFFSET,
@@ -1448,15 +1988,64 @@ fn applyFaceLayerNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fa
   return applyNormalMapAtOffsetForHit(hit, frameNormal, fallbackNormal, normalMapOffset, normalScaleOffset);
 }
 
-fn applyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
-  let baseMapped = applyNormalMapAtOffsetForHit(
+fn applyFaceLayerNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
+  return applyFaceLayerNormalMapForSideForHit(
+    hit,
+    frameNormal,
+    fallbackNormal,
+    hit.side >= 0.0,
+  );
+}
+
+// Virtual reciprocal interfaces (for authored zero-thickness sheets) share the
+// geometric hit and base normal map but own the explicitly selected face-layer
+// normal map. This avoids both dropping the opposite-face map and incorrectly
+// composing it on top of the entry face's perturbation.
+fn materialNormalFrameForSideForHit(
+  hit: IntersectionResult,
+  physicalFaceNormal: vec3f,
+  isFrontFace: bool,
+) -> vec3f {
+  // smoothShadingNormal is face-forward for the physical hit. A virtual
+  // reciprocal face must use exactly the frame an actual hit from that side
+  // would have used. Flipping the frame normal here also reorients authored
+  // tangent handedness (including mirrored TLAS instances) through
+  // materialTangentFrameForHit, instead of asking every caller to improvise.
+  let requestedIsPhysicalFace = isFrontFace == (hit.side >= 0.0);
+  return select(-physicalFaceNormal, physicalFaceNormal, requestedIsPhysicalFace);
+}
+
+fn applyNormalMapForSideForHit(
+  hit: IntersectionResult,
+  baseNormal: vec3f,
+  isFrontFace: bool,
+) -> vec3f {
+  let sideNormal = materialNormalFrameForSideForHit(
     hit,
     baseNormal,
-    baseNormal,
+    isFrontFace,
+  );
+  let baseMapped = applyNormalMapAtOffsetForHit(
+    hit,
+    sideNormal,
+    sideNormal,
     MATERIAL_MAP_NORMAL_TEXEL_OFFSET,
     MATERIAL_MAP_NORMAL_SCALE_TEXEL_OFFSET,
   );
-  return applyFaceLayerNormalMapForHit(hit, baseNormal, baseMapped);
+  return applyFaceLayerNormalMapForSideForHit(
+    hit,
+    sideNormal,
+    baseMapped,
+    isFrontFace,
+  );
+}
+
+fn applyNormalMapForHit(hit: IntersectionResult, baseNormal: vec3f) -> vec3f {
+  return applyNormalMapForSideForHit(
+    hit,
+    baseNormal,
+    hit.side >= 0.0,
+  );
 }
 
 fn applyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fallbackNormal: vec3f) -> vec3f {
@@ -1471,25 +2060,37 @@ fn applyClearcoatNormalMapForHit(hit: IntersectionResult, frameNormal: vec3f, fa
 
 fn applyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
   let triIndex = hit.indices.w;
+  if (
+    !materialAtlasMapAvailableAtOffset(
+      triIndex,
+      MATERIAL_MAP_BUMP_TEXEL_OFFSET,
+    ) ||
+    !baseColorMapMetaAvailable(
+      triIndex,
+      MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET,
+    )
+  ) {
+    return shadingNormal;
+  }
   let meta0 = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex, MATERIAL_MAP_BUMP_TEXEL_OFFSET),
     0,
   );
-  if (!materialAtlasMapAvailableAtOffset(
-    triIndex,
-    MATERIAL_MAP_BUMP_TEXEL_OFFSET,
-  )) {
-    return shadingNormal;
-  }
-
   let scaleMeta = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex, MATERIAL_MAP_BUMP_SCALE_TEXEL_OFFSET),
     0,
   );
   let bumpScale = scaleMeta.x;
-  if (abs(bumpScale) < 1e-8) {
+  if (
+    !materialAtlasFiniteVec4(scaleMeta) ||
+    !materialAtlasFiniteF32(meta0.x) ||
+    meta0.x < 0.0 ||
+    meta0.x > 16777215.0 ||
+    floor(meta0.x) != meta0.x ||
+    abs(bumpScale) < 1e-8
+  ) {
     return shadingNormal;
   }
 
@@ -1497,7 +2098,13 @@ fn applyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
     hit,
     MATERIAL_MAP_BUMP_TEXEL_OFFSET,
   );
+  if (hC.valid == 0u) {
+    return shadingNormal;
+  }
   let bumpAddress = materialAtlasLayerAddress(i32(meta0.x));
+  if (bumpAddress.valid == 0u) {
+    return shadingNormal;
+  }
   let atlasDims = max(vec2u(1u), vec2u(bumpAddress.width, bumpAddress.height));
   let atlasTexelStep = vec2f(
     1.0 / f32(max(atlasDims.x, 1u)),
@@ -1507,23 +2114,64 @@ fn applyBumpMapForHit(hit: IntersectionResult, shadingNormal: vec3f) -> vec3f {
     1.0 / max(scaleMeta.y, 1.0),
     1.0 / max(scaleMeta.z, 1.0),
   );
-  let texelStep = select(atlasTexelStep, bumpTexelStep, scaleMeta.y > 0.0 && scaleMeta.z > 0.0);
-  let hU = sampleMaterialAtlasRawAtOffsetDeltaForHit(
+  let authoredDimensionsValid =
+    scaleMeta.y >= 1.0 &&
+    scaleMeta.z >= 1.0 &&
+    scaleMeta.y <= 16777216.0 &&
+    scaleMeta.z <= 16777216.0 &&
+    floor(scaleMeta.y) == scaleMeta.y &&
+    floor(scaleMeta.z) == scaleMeta.z;
+  let texelStep = select(
+    atlasTexelStep,
+    bumpTexelStep,
+    authoredDimensionsValid,
+  );
+  let hUSample = sampleMaterialAtlasRawAtOffsetDeltaForHit(
     hit,
     MATERIAL_MAP_BUMP_TEXEL_OFFSET,
     vec2f(texelStep.x, 0.0),
-  ).r;
-  let hV = sampleMaterialAtlasRawAtOffsetDeltaForHit(
+  );
+  let hVSample = sampleMaterialAtlasRawAtOffsetDeltaForHit(
     hit,
     MATERIAL_MAP_BUMP_TEXEL_OFFSET,
     vec2f(0.0, texelStep.y),
-  ).r;
-  let dhdu = (hU - hC.r) / texelStep.x;
-  let dhdv = (hV - hC.r) / texelStep.y;
+  );
+  if (hUSample.valid == 0u || hVSample.valid == 0u) {
+    return shadingNormal;
+  }
+  if (
+    !materialAtlasFiniteVec2(texelStep) ||
+    !all(texelStep > vec2f(0.0))
+  ) {
+    return shadingNormal;
+  }
+  let heightMagnitude = max(
+    1.0,
+    max(
+      abs(hC.value.r),
+      max(abs(hUSample.value.r), abs(hVSample.value.r)),
+    ),
+  );
+  let dhdu =
+    ((hUSample.value.r / heightMagnitude) -
+      (hC.value.r / heightMagnitude)) *
+    heightMagnitude / texelStep.x;
+  let dhdv =
+    ((hVSample.value.r / heightMagnitude) -
+      (hC.value.r / heightMagnitude)) *
+    heightMagnitude / texelStep.y;
+  if (
+    !materialAtlasFiniteF32(dhdu) ||
+    !materialAtlasFiniteF32(dhdv)
+  ) {
+    return shadingNormal;
+  }
   let frame = materialTangentFrameForHit(hit, shadingNormal, MATERIAL_MAP_BUMP_TEXEL_OFFSET);
   let perturbed = shadingNormal - bumpScale * (dhdu * frame.tangent + dhdv * frame.bitangent);
-  let plen = length(perturbed);
-  let n = select(shadingNormal, perturbed / plen, plen > 1e-6);
+  if (!materialAtlasCanNormalize(perturbed)) {
+    return shadingNormal;
+  }
+  let n = materialAtlasSafeNormalizeOr(perturbed, shadingNormal);
   return select(-n, n, dot(n, shadingNormal) >= 0.0);
 }
 
@@ -1541,10 +2189,33 @@ struct RestirDIMaterialPayload {
   clearcoat: vec2f,
   sheen: vec4f,
   sheenRoughness: f32,
+  // Face-layer transmission applies to every closure. Thin-film
+  // transmittance applies only to the base/source side: the reflected lobe
+  // already carries the film's absolute reflectance and must not pay T again.
+  reflectionLayerTransmission: vec3f,
   layerTransmission: vec3f,
   volumeScattering: vec4f,
   bulkThickness: f32,
 };
+
+// Split an authored reflection/base mixture without dividing by either layer
+// transfer. This stays well-defined for perfectly absorbing films (T=0): the
+// base closure vanishes while the absolute film-reflection closure survives.
+fn applyMaterialLayerTransmissionToBrdf(
+  mixedClosure: vec3f,
+  reflectionClosure: vec3f,
+  layerTransmission: vec3f,
+  reflectionLayerTransmission: vec3f,
+) -> vec3f {
+  // Preserve the pre-split arithmetic exactly for materials whose base and
+  // reflection share one transfer (the overwhelmingly common, no-film path).
+  if (all(layerTransmission == reflectionLayerTransmission)) {
+    return mixedClosure * layerTransmission;
+  }
+  let baseClosure = max(mixedClosure - reflectionClosure, vec3f(0.0));
+  return baseClosure * layerTransmission +
+    reflectionClosure * reflectionLayerTransmission;
+}
 
 fn sampleRestirDIMaterialPayloadForHit(
   hit: IntersectionResult,
@@ -1574,7 +2245,8 @@ fn sampleRestirDIMaterialPayloadForHit(
   payload.clearcoat = sampleClearcoatControls(hit);
   payload.sheen = sampleSheenControls(hit);
   payload.sheenRoughness = sampleSheenRoughness(hit);
-  payload.layerTransmission = faceLayerTransmission(layerControls);
+  payload.reflectionLayerTransmission = faceLayerTransmission(layerControls);
+  payload.layerTransmission = payload.reflectionLayerTransmission;
   payload.volumeScattering = sampleVolumeScatteringControls(hit.indices.w);
   payload.bulkThickness = materialOpticalThickness(hit.indices.w);
   let film = materialThinFilmResponse(
@@ -1607,12 +2279,23 @@ fn materialTraversalStepAt(point: vec3f, tMin: f32) -> f32 {
 const MATERIAL_SIDE_FLAG_DOUBLE_SIDED: u32 = 1u;
 
 fn materialSideFlagsForTri(triIndex: u32) -> u32 {
+  if (!baseColorMapMetaAvailable(triIndex, MATERIAL_MAP_SIDE_FLAGS_TEXEL_OFFSET)) {
+    return 0u;
+  }
   let sideMeta = textureLoad(
     baseColorMapMeta,
     baseColorMapMetaCoord(triIndex, MATERIAL_MAP_SIDE_FLAGS_TEXEL_OFFSET),
     0,
   );
-  return u32(max(sideMeta.x, 0.0) + 0.5);
+  if (
+    !materialAtlasFiniteF32(sideMeta.x) ||
+    sideMeta.x < 0.0 ||
+    sideMeta.x > 1.0 ||
+    floor(sideMeta.x) != sideMeta.x
+  ) {
+    return 0u;
+  }
+  return u32(sideMeta.x);
 }
 
 fn materialSideAdmittedForHit(hit: IntersectionResult) -> bool {
@@ -1671,7 +2354,19 @@ fn materialAlphaBlendCoverageHash(
     (sampleSeed * 0x85ebca6bu);
   seed = seed * 747796405u + 2891336453u;
   let word = ((seed >> ((seed >> 28u) + 4u)) ^ seed) * 277803737u;
-  return f32((word >> 22u) ^ word) / 4294967296.0;
+  let hash = (word >> 22u) ^ word;
+  return f32(hash >> 8u) / 16777216.0;
+}
+
+// The stochastic predicate has exactly 2^24 equiprobable hash buckets.  Its
+// represented covered probability is ceil(2^24*c)/2^24, not generally the
+// authored f32 c. Reuse/shadow marginalization must use this same finite-RNG
+// distribution or the two paths disagree by one bucket at most coverages.
+fn materialRepresentedAlphaBlendCoverage(coverage: f32) -> f32 {
+  let c = clamp(coverage, 0.0, 1.0);
+  if (c <= 0.0) { return 0.0; }
+  if (c >= 1.0) { return 1.0; }
+  return ceil(c * 16777216.0) / 16777216.0;
 }
 
 struct MaterialAlphaCoverage {
@@ -1699,7 +2394,15 @@ fn materialAlphaCoverageForHit(
     baseColorMapMetaCoord(hit.indices.w, MATERIAL_MAP_ALPHA_COVERAGE_TEXEL_OFFSET),
     0,
   );
-  out.mode = u32(max(coverageMeta.x, 0.0) + 0.5);
+  if (
+    !materialAtlasFiniteF32(coverageMeta.x) ||
+    coverageMeta.x < 0.0 ||
+    coverageMeta.x > 2.0 ||
+    floor(coverageMeta.x) != coverageMeta.x
+  ) {
+    return out;
+  }
+  out.mode = u32(coverageMeta.x);
   if (out.mode == 0u) {
     return out;
   }
@@ -1707,20 +2410,14 @@ fn materialAlphaCoverageForHit(
   let baseColorTexel = sampleMaterialAtlasRawForHit(hit, MATERIAL_MAP_SLOT_BASE_COLOR);
   let baseColorAlpha = select(
     1.0,
-    clamp(baseColorTexel.a, 0.0, 1.0),
-    materialAtlasMapAvailableAtOffset(
-      hit.indices.w,
-      MATERIAL_MAP_SLOT_BASE_COLOR * 2u,
-    ),
+    clamp(baseColorTexel.value.a, 0.0, 1.0),
+    baseColorTexel.valid != 0u,
   );
   let alphaTexel = sampleMaterialAtlasRawForHit(hit, MATERIAL_MAP_SLOT_ALPHA);
   let alphaMapCoverage = select(
     1.0,
-    clamp(alphaTexel.r, 0.0, 1.0),
-    materialAtlasMapAvailableAtOffset(
-      hit.indices.w,
-      MATERIAL_MAP_SLOT_ALPHA * 2u,
-    ),
+    clamp(alphaTexel.value.r, 0.0, 1.0),
+    alphaTexel.valid != 0u,
   );
   let vertexColorAlpha = sampleVertexColorForHit(hit).a;
   let opacity = clamp(coverageMeta.y, 0.0, 1.0);
@@ -1751,13 +2448,66 @@ fn materialAlphaDiscardedForHit(
     return alpha.coverage < alpha.cutoff;
   }
   if (alpha.mode == 2u) {
-    return alpha.coverage < 1.0 &&
-      materialAlphaBlendCoverageHash(hit, ray, layer, sampleSeed) >= alpha.coverage;
+    let representedCoverage = materialRepresentedAlphaBlendCoverage(alpha.coverage);
+    return representedCoverage < 1.0 &&
+      materialAlphaBlendCoverageHash(hit, ray, layer, sampleSeed) >= representedCoverage;
   }
   return alpha.coverage <= 0.0;
 }
 
-${makeTexturedFirstHitAlphaMaskWalkerWGSL('traceSceneFirstHitAlphaMaskTextured', 'materialAlphaDiscardedForHit')}
+fn materialUsesStochasticAlphaDecisionForHit(
+  hit: IntersectionResult,
+  materialWord: u32,
+) -> bool {
+  if (!materialSideAdmittedForHit(hit)) {
+    return false;
+  }
+  let alpha = materialAlphaCoverageForHit(hit, materialWord);
+  let representedCoverage = materialRepresentedAlphaBlendCoverage(alpha.coverage);
+  return alpha.scalarDiscarded == 0u &&
+    alpha.mode == 2u &&
+    representedCoverage > 0.0 &&
+    representedCoverage < 1.0;
+}
+
+// Direct-light path walkers must treat primitive castShadow:false as an absent
+// boundary while retaining the exact same sidedness and stochastic alpha
+// realization as ordinary secondary transport.
+fn materialAlphaOrCastShadowDisabledForHit(
+  hit: IntersectionResult,
+  materialWord: u32,
+  ray: Ray,
+  layer: u32,
+  sampleSeed: u32,
+) -> bool {
+  if ((materialWord & 1u) != 0u) {
+    return true;
+  }
+  return materialAlphaDiscardedForHit(
+    hit, materialWord, ray, layer, sampleSeed,
+  );
+}
+
+${makeTexturedFirstHitAlphaMaskWalkerWithMetadataWGSL(
+  'traceSceneFirstHitAlphaMaskTextured',
+  'traceSceneFirstHitAlphaMaskTexturedWithMetadata',
+  'materialAlphaDiscardedForHit',
+)}
+
+${makeTexturedFirstHitAlphaMaskOpticalSourceWalkerWGSL(
+  'traceSceneFirstHitAlphaMaskTexturedWithOpticalSource',
+  'materialAlphaDiscardedForHit',
+)}
+
+${makeTexturedFirstHitAlphaMaskWalkerWGSL(
+  'traceSceneFirstHitAlphaMaskTexturedCastShadow',
+  'materialAlphaOrCastShadowDisabledForHit',
+)}
+
+${makeTexturedFirstHitAlphaMaskOpticalSourceWalkerWGSL(
+  'traceSceneFirstHitAlphaMaskTexturedCastShadowWithOpticalSource',
+  'materialAlphaOrCastShadowDisabledForHit',
+)}
 
 fn materialAlphaDiscardedForOpaquePass(
   hit: IntersectionResult,
@@ -1820,7 +2570,7 @@ fn materialShadowTransmittanceForHit(
     return select(0.0, 1.0, alpha.coverage < alpha.cutoff);
   }
   if (alpha.mode == 2u) {
-    return clamp(1.0 - alpha.coverage, 0.0, 1.0);
+    return 1.0 - materialRepresentedAlphaBlendCoverage(alpha.coverage);
   }
   return select(0.0, 1.0, alpha.coverage <= 0.0);
 }

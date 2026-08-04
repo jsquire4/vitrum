@@ -193,6 +193,63 @@ describe('materialSpecEmissiveLe', () => {
     }))).toBeNull();
   });
 
+  it('falls back to scalar emission when the backend rejects the complete map payload', () => {
+    const handle = {
+      width: 1,
+      height: 1,
+      // The explicit RGB declaration makes the fourth word malformed rather
+      // than an authored alpha lane. Atlas ingestion rejects this whole map.
+      data: new Float32Array([0, 0, 0, 1]),
+      __vitrum_hint__: {
+        channels: 3,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+
+    expect(materialSpecEmissiveLe(material({
+      emissive: [2, 3, 4],
+      emissiveMap: { handle },
+    }))).toEqual([2, 3, 4]);
+  });
+
+  it('rejects a non-finite map atomically before classifying or visiting any texel', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 1, 1, 1,
+        Number.NaN, 1, 1, 1,
+      ]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const source = material({
+      emissive: [2, 3, 4],
+      emissiveMap: { handle, mipFilter: 'none' },
+    });
+
+    expect(materialSpecEmissiveLe(source)).toEqual([2, 3, 4]);
+
+    let visits = 0;
+    expect(forEachEmissiveMapTexelSubTriangle(
+      source,
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        visits += 1;
+      },
+    )).toBe(false);
+    expect(visits).toBe(0);
+  });
+
   it('samples readable emissiveMap texels at transformed and wrapped UVs', () => {
     const handle = {
       width: 2,
@@ -327,7 +384,7 @@ describe('materialSpecEmissiveLe', () => {
     const handled = forEachEmissiveMapTexelSubTriangle(
       material({
         emissive: [2, 2, 2],
-        emissiveMap: { handle },
+        emissiveMap: { handle, mipFilter: 'none' },
       }),
       [0, 0],
       [1, 0],
@@ -351,6 +408,32 @@ describe('materialSpecEmissiveLe', () => {
     expect(patches.some((p) => p.radiance[0] === 0 && p.radiance[1] === 2)).toBe(true);
   });
 
+  it('treats omitted mipFilter exactly like linear and reserves exact cells for explicit none', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([1, 0, 0, 1, 0, 1, 0, 1]),
+      __vitrum_hint__: { channels: 4, dataType: 'float32', colorSpace: 'linear' } as const,
+    };
+    const handled = (mipFilter?: 'linear' | 'none'): boolean =>
+      forEachEmissiveMapTexelSubTriangle(
+        material({
+          emissive: [1, 1, 1],
+          emissiveMap: {
+            handle,
+            ...(mipFilter !== undefined ? { mipFilter } : {}),
+          },
+        }),
+        [0, 0], [1, 0], [0, 1],
+        undefined, undefined, undefined,
+        () => undefined,
+      );
+
+    expect(handled()).toBe(false);
+    expect(handled('linear')).toBe(false);
+    expect(handled('none')).toBe(true);
+  });
+
   it('lets a backend inject exact decoded-texel storage and arithmetic', () => {
     const handle = {
       width: 1,
@@ -366,7 +449,7 @@ describe('materialSpecEmissiveLe', () => {
     let visited: readonly [number, number, number] | undefined;
     const mappedMaterial = material({
       emissive: [2, 2, 2],
-      emissiveMap: { handle },
+      emissiveMap: { handle, mipFilter: 'none' },
     });
 
     const handled = forEachEmissiveMapTexelSubTriangle(
@@ -395,6 +478,102 @@ describe('materialSpecEmissiveLe', () => {
     expect(visited).toEqual([1.25, 2.5, 4]);
   });
 
+  it('keeps a late backend texel rejection callback-atomic', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+      ]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const resolverCalls: Array<readonly [number, number]> = [];
+    let visits = 0;
+
+    const handled = forEachEmissiveMapTexelSubTriangle(
+      material({
+        emissive: [1, 1, 1],
+        emissiveMap: { handle, mipFilter: 'none' },
+      }),
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      () => {
+        visits += 1;
+      },
+      4096,
+      undefined,
+      (_resolvedMaterial, texelRgb, texelX, texelY) => {
+        resolverCalls.push([texelX, texelY]);
+        return texelX === 1 ? null : texelRgb;
+      },
+    );
+
+    expect(handled).toBe(false);
+    expect(resolverCalls).toEqual([[0, 0], [1, 0]]);
+    expect(visits).toBe(0);
+  });
+
+  it('preserves successful mapped-emitter callback order and payloads after staging', () => {
+    const handle = {
+      width: 2,
+      height: 1,
+      data: new Float32Array([
+        1, 0, 0, 1,
+        0, 1, 0, 1,
+      ]),
+      __vitrum_hint__: {
+        channels: 4,
+        dataType: 'float32',
+        colorSpace: 'linear',
+      } as const,
+    };
+    const callbacks: Array<{
+      readonly texelX: number;
+      readonly texelY: number;
+      readonly ordinal: number;
+      readonly radiance: readonly [number, number, number];
+    }> = [];
+
+    const handled = forEachEmissiveMapTexelSubTriangle(
+      material({
+        emissive: [1, 1, 1],
+        emissiveMap: { handle, mipFilter: 'none' },
+      }),
+      [0, 0],
+      [1, 0],
+      [0, 1],
+      undefined,
+      undefined,
+      undefined,
+      (_a, _b, _c, radiance, texelX, texelY, ordinal) => {
+        callbacks.push({ texelX, texelY, ordinal, radiance });
+      },
+      4096,
+      undefined,
+      (_resolvedMaterial, _texelRgb, texelX, texelY) => [
+        texelX + 1,
+        texelY + 2,
+        3,
+      ],
+    );
+
+    expect(handled).toBe(true);
+    expect(callbacks).toEqual([
+      { texelX: 0, texelY: 0, ordinal: 0, radiance: [1, 2, 3] },
+      { texelX: 0, texelY: 0, ordinal: 1, radiance: [1, 2, 3] },
+      { texelX: 1, texelY: 0, ordinal: 2, radiance: [2, 2, 3] },
+    ]);
+  });
+
   it('rejects default mapped-texel f32 overflow and complete positive collapse', () => {
     const invoke = (emissive: number, texel: number): void => {
       forEachEmissiveMapTexelSubTriangle(
@@ -411,6 +590,7 @@ describe('materialSpecEmissiveLe', () => {
                 colorSpace: 'linear',
               },
             },
+            mipFilter: 'none',
           },
         }),
         [0, 0],
@@ -444,7 +624,7 @@ describe('materialSpecEmissiveLe', () => {
     const handled = forEachEmissiveMapTexelSubTriangle(
       material({
         emissive: [2, 2, 2],
-        emissiveMap: { handle, texCoord: 2 },
+        emissiveMap: { handle, texCoord: 2, mipFilter: 'none' },
       }),
       [0, 0],
       [1, 0],
@@ -473,7 +653,7 @@ describe('materialSpecEmissiveLe', () => {
     const handled = forEachEmissiveMapTexelSubTriangle(
       material({
         emissive: [1, 1, 1],
-        emissiveMap: { handle, wrapS: 'repeat', wrapT: 'repeat' },
+        emissiveMap: { handle, wrapS: 'repeat', wrapT: 'repeat', mipFilter: 'none' },
       }),
       [0, 0],
       [1_000_000_000, 0],
@@ -538,7 +718,7 @@ describe('classifyTriangleEmitterCore', () => {
     const handled = forEachEmissiveMapTexelSubTriangle(
       material({
         emissive: [1, 1, 1],
-        emissiveMap: { handle },
+        emissiveMap: { handle, mipFilter: 'none' },
         extensions: { skipEmitter: true },
       }),
       [0, 0],

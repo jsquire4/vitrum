@@ -28,7 +28,13 @@ import { PROBE_RAY_CAST_WGSL } from '../src/wgsl/probeRayCast.wgsl.js';
  * unordered tint accumulation with an ordered material/instance-owned medium
  * walk, uses actual entry/exit distance for Beer attenuation, and treats
  * partial alpha as expected thin-interface coverage. Environment reads now
- * share one whole-RGB finite-binary32 fail-closed scaling stage.
+ * share one whole-RGB finite-binary32 fail-closed scaling stage. Unlit
+ * receivers are terminal emission closures at both the first hit and later
+ * dielectric-suffix hits. Direct layered lighting keeps absolute thin-film R
+ * separate from base-closure film T, including the R>0/T=0 endpoint.
+ * Explicit material-sample validity, checked atlas/metadata addressing, and
+ * scale-safe normal/bump evaluation are included in the 2026-08-03 source
+ * freeze; focused material and optical-transport tests accompany this digest.
  */
 describe('PROBE_RAY_CAST_WGSL byte identity', () => {
   it('retains the C71 specular, IOR, and layered-volume transport semantics', () => {
@@ -49,10 +55,19 @@ describe('PROBE_RAY_CAST_WGSL byte identity', () => {
       'out.specular = vec4f(vec3f(1.0) + film.reflectance, 1.0);',
     );
     expect(PROBE_RAY_CAST_WGSL).toContain(
-      ') * probeMat.layerTransmission;',
+      'reflectionResponse * mat.reflectionLayerTransmission;',
     );
     expect(PROBE_RAY_CAST_WGSL).toContain(
-      'radiance = rcApplyHomogeneousVolumeSingleScatter(',
+      'out.localSurface = rcApplyHomogeneousVolumeSingleScatter(',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'if (!suppressOpaqueSubstrate && !explicitBulkSegment)',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      '(mat.flags & MATERIAL_FLAG_SKIP_EMITTER) != 0u;',
+    );
+    expect(PROBE_RAY_CAST_WGSL).toContain(
+      'let segmentTransfer = rcMediumRadianceSegmentTransfer(',
     );
   });
 
@@ -60,8 +75,8 @@ describe('PROBE_RAY_CAST_WGSL byte identity', () => {
     const length = PROBE_RAY_CAST_WGSL.length;
     const sha256 = createHash('sha256').update(PROBE_RAY_CAST_WGSL, 'utf8').digest('hex');
     expect({ length, sha256 }).toEqual({
-      length: 153553,
-      sha256: '656bfd0fa3089c88515ab598a74daec0d0cedf970a313447fff2e628464c27d5',
+      length: 239658,
+      sha256: 'e734e4df172a7e535f1faacfa4fdbe286f7011b9b00f6a7850e593344ac66128',
     });
   });
 });

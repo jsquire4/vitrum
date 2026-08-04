@@ -73,13 +73,18 @@ import {
   assertThinFilmSceneSupported,
   assertVolumeSceneSupported,
 } from './spectralSceneValidation.js';
-import { assertMneeInterfaceDomainSupported } from './scene/mneeFacetCandidates.js';
+import { createMaterialInputSnapshotContext } from './scene/materialTextures.js';
 import {
   packLiteLightTexture,
   packLiteEnvTexture,
   packLiteEnvCdfTexture,
 } from './scene/litePackedTextures.js';
-import { type ScenePackResult, pickPrimitiveCpu, type PickCamera } from '@vitrum/shared-bvh';
+import {
+  assertOpticalMediumTopology,
+  type ScenePackResult,
+  pickPrimitiveCpu,
+  type PickCamera,
+} from '@vitrum/shared-bvh';
 import {
   FRAME_PARAMS_BUFFER_ALLOC_BYTES,
   packFrameParams,
@@ -610,6 +615,15 @@ class PTEngineWebGPU implements Engine {
       assertLive: (method) => this.#assertLive(method),
       getScene: () => this.#scene,
       validatePrimitiveCandidate: (scene, primitiveId) => {
+        assertOpticalMediumTopology(scene, {
+          backend: this.backendProfileId,
+          method: 'updatePrimitive',
+          maxNestedMedia: 8,
+          analyticGeometry: 'generated-triangle',
+          transformArithmetic: this.#traceTier === 'lite'
+            ? 'merged-world-f64-to-f32'
+            : 'tlas-shader-f32',
+        });
         const primitive = scene.primitives.find(
           (candidate) => candidate.id === primitiveId,
         );
@@ -630,9 +644,6 @@ class PTEngineWebGPU implements Engine {
         if (this.#spectralEnabled) assertSpectralSceneSupported(scopedScene);
         assertThinFilmSceneSupported(scopedScene);
         assertVolumeSceneSupported(scopedScene);
-        if (this.#causticStrategy === 'manifold-nee') {
-          assertMneeInterfaceDomainSupported(scopedScene);
-        }
       },
       validateEmitterCandidate: (scene, emitterId) => {
         if (this.#traceTier !== 'lite') return;
@@ -1170,6 +1181,20 @@ class PTEngineWebGPU implements Engine {
    */
   #repackScene(scene: Scene, opts: { readonly warnOnEmpty: boolean }): void {
     validateCoreScene(scene);
+    // The core contract requires immutable/fresh MaterialSpec and TextureRef
+    // objects. After that boundary, capture their downstream renderer view once
+    // so MNEE admission/table construction, texture descriptors, role metadata,
+    // and atlas staging cannot independently re-observe the host objects.
+    const materialInputSnapshotContext = createMaterialInputSnapshotContext();
+    assertOpticalMediumTopology(scene, {
+      backend: this.backendProfileId,
+      method: 'setScene',
+      maxNestedMedia: 8,
+      analyticGeometry: 'generated-triangle',
+      transformArithmetic: this.#traceTier === 'lite'
+        ? 'merged-world-f64-to-f32'
+        : 'tlas-shader-f32',
+    });
     if (this.#restirPtReuse) {
       assertOneEdgeReconnectionSceneSupported(scene);
     }
@@ -1178,9 +1203,6 @@ class PTEngineWebGPU implements Engine {
     assertThinFilmSceneSupported(scene);
     assertVolumeSceneSupported(scene);
     if (this.#spectralEnabled) assertSpectralSceneSupported(scene);
-    if (this.#causticStrategy === 'manifold-nee') {
-      assertMneeInterfaceDomainSupported(scene);
-    }
     // matrix). Once per setScene/repack.
     const unsupportedMaterialUses = collectUnsupportedMaterialFieldUses(scene, this.#traceTier);
     const unsupportedMaterialFields = collectFieldUnion(unsupportedMaterialUses);
@@ -1202,6 +1224,7 @@ class PTEngineWebGPU implements Engine {
         Number(this.#device.limits.maxBufferSize),
         Number(this.#device.limits.maxStorageBufferBindingSize),
       ),
+      materialInputSnapshotContext,
       warningPhase: 'setScene',
       warningMethod: 'setScene',
     });

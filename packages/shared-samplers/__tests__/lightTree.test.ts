@@ -17,7 +17,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildLightTree, packLightTreeForGPU } from '../src/lightTree.js';
+import {
+  buildLightTree,
+  nodeImportance,
+  packLightTreeForGPU,
+  packedLightTreeNodeImportanceCPU,
+  sampleLightTreeCPU,
+} from '../src/lightTree.js';
 import type { LightTreeBuildInput } from '../src/lightTree.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -189,6 +195,140 @@ describe('buildLightTree', () => {
       expect(inode.totalPower).toBeCloseTo(leftPow + rightPow);
     }
   });
+
+  it('merges antiparallel sharp cones conservatively to a full sphere', () => {
+    const input = makeInput([1, 1]);
+    const { nodes } = buildLightTree({
+      ...input,
+      cones: [
+        { axis: [1, 0, 0], thetaO: 0, thetaE: 0 },
+        { axis: [-1, 0, 0], thetaO: 0, thetaE: 0 },
+      ],
+    });
+    const root = nodes[0]!;
+    expect(root.cone.axis).toEqual([0, 0, 0]);
+    expect(root.cone.thetaO).toBe(Math.PI);
+    expect(root.cone.thetaE).toBe(0);
+  });
+
+  it('does not cull a supported near-antiparallel descendant after f32 packing', () => {
+    const delta = 5e-9;
+    const nearAntiparallel = [0, Math.sin(delta), -Math.cos(delta)] as const;
+    const point = nearAntiparallel.map((component) => component * 10) as [number, number, number];
+    const originBox = { min: [0, 0, 0] as const, max: [0, 0, 0] as const };
+    const { nodes } = buildLightTree({
+      powers: [1, 1, 1],
+      centroids: [[0, 0, 0], [0, 0, 0], [0, 0, 0]],
+      aabbs: [originBox, originBox, originBox],
+      cones: [
+        { axis: [1, 0, 0], thetaO: 0, thetaE: 0 },
+        { axis: [0, 0, 1], thetaO: 0, thetaE: 0 },
+        { axis: nearAntiparallel, thetaO: 0, thetaE: 0 },
+      ],
+    });
+    const internalChildIndex = nodes[0]!.rightChild;
+    const internalChild = nodes[internalChildIndex]!;
+    expect(internalChild.cone.axis).toEqual([0, 0, 0]);
+    expect(internalChild.cone.thetaO).toBe(Math.PI);
+    expect(nodeImportance(internalChild, ...point, 1e-6)).toBeGreaterThan(0);
+
+    const packed = packLightTreeForGPU(nodes);
+    expect(
+      packedLightTreeNodeImportanceCPU(packed, internalChildIndex, point, 1e-6),
+    ).toBeGreaterThan(0);
+  });
+
+  it('outward-rounds a packed zero-width leaf cone around its authored axis', () => {
+    const axis = [
+      -0.00800981174,
+      -0.9997021562,
+      -0.02305302034,
+    ] as const;
+    const originBox = { min: [0, 0, 0] as const, max: [0, 0, 0] as const };
+    const { nodes } = buildLightTree({
+      powers: [1],
+      centroids: [[0, 0, 0]],
+      aabbs: [originBox],
+      cones: [{ axis, thetaO: 0, thetaE: 0 }],
+    });
+    const point = axis.map((component) => component * 10) as [number, number, number];
+    const packed = packLightTreeForGPU(nodes);
+    expect(packedLightTreeNodeImportanceCPU(packed, 0, point, 1e-6))
+      .toBeGreaterThan(0);
+  });
+
+  it('keeps an ordinary merged child-lobe boundary inside the packed parent cone', () => {
+    const separation = 0.00041182297;
+    const thetaE = 0.1;
+    const childAxis = [0, Math.sin(separation), Math.cos(separation)] as const;
+    const supportedDirection = [
+      0,
+      Math.sin(separation + thetaE),
+      Math.cos(separation + thetaE),
+    ] as const;
+    const point = supportedDirection.map((component) => component * 10) as [number, number, number];
+    const originBox = { min: [0, 0, 0] as const, max: [0, 0, 0] as const };
+    const { nodes } = buildLightTree({
+      powers: [1, 1],
+      centroids: [[0, 0, 0], [0, 0, 0]],
+      aabbs: [originBox, originBox],
+      cones: [
+        { axis: [0, 0, 1], thetaO: 0, thetaE },
+        { axis: childAxis, thetaO: 0, thetaE },
+      ],
+    });
+    const packed = packLightTreeForGPU(nodes);
+    const childIndex = nodes.findIndex((node) => node.emitterIndex === 1);
+    expect(packedLightTreeNodeImportanceCPU(packed, childIndex, point, 1e-6))
+      .toBeGreaterThan(0);
+    expect(packedLightTreeNodeImportanceCPU(packed, 0, point, 1e-6))
+      .toBeGreaterThan(0);
+  });
+
+  it('keeps every direction inside a wider-than-hemisphere cone represented', () => {
+    const thetaE = 0.75 * Math.PI;
+    const insideTheta = 0.7 * Math.PI;
+    const supportedDirection = [
+      Math.sin(insideTheta),
+      0,
+      Math.cos(insideTheta),
+    ] as const;
+    const point = supportedDirection.map((component) => component * 10) as [number, number, number];
+    const originBox = { min: [0, 0, 0] as const, max: [0, 0, 0] as const };
+    const { nodes } = buildLightTree({
+      powers: [1],
+      centroids: [[0, 0, 0]],
+      aabbs: [originBox],
+      cones: [{ axis: [0, 0, 1], thetaO: 0, thetaE }],
+    });
+    expect(nodeImportance(nodes[0]!, ...point, 1e-6)).toBeGreaterThan(0);
+    const packed = packLightTreeForGPU(nodes);
+    expect(packedLightTreeNodeImportanceCPU(packed, 0, point, 1e-6))
+      .toBeGreaterThan(0);
+
+    const outsideTheta = 0.8 * Math.PI;
+    const outside = [
+      Math.sin(outsideTheta) * 10,
+      0,
+      Math.cos(outsideTheta) * 10,
+    ] as const;
+    expect(nodeImportance(nodes[0]!, ...outside, 1e-6)).toBe(0);
+    expect(packedLightTreeNodeImportanceCPU(packed, 0, outside, 1e-6)).toBe(0);
+  });
+
+  it('re-packs mutable public node arrays instead of returning a stale cached sample', () => {
+    const { nodes } = buildLightTree(makeInput([1, 1]));
+    const leftChildIndex = nodes[0]!.leftChild;
+    expect(sampleLightTreeCPU(nodes, [0, 0, 10], 1e-6, () => 0).emitterIndex)
+      .toBe(nodes[leftChildIndex]!.emitterIndex);
+
+    nodes[leftChildIndex] = {
+      ...nodes[leftChildIndex]!,
+      emitterIndex: 99,
+    };
+    expect(sampleLightTreeCPU(nodes, [0, 0, 10], 1e-6, () => 0).emitterIndex)
+      .toBe(99);
+  });
 });
 
 // ── 33-F: Light-tree leaf PDF sums to 1 ──────────────────────────────────────
@@ -326,15 +466,16 @@ describe('packLightTreeForGPU', () => {
     expect(packed).toHaveLength(nodes.length * 16);
   });
 
-  it('leaf node has emitterIndex in slot 0, totalPower in slot 1, children -1 in slots 2+3', () => {
+  it('leaf node stores represented power in slot 1 and leafCount in slot 15', () => {
     const { nodes } = buildLightTree(makeInput([9.0]));
     const packed = packLightTreeForGPU(nodes);
 
     // Node 0 is the single leaf
     expect(packed[0]).toBeCloseTo(0); // emitterIndex = 0
-    expect(packed[1]).toBeCloseTo(9.0); // totalPower
+    expect(packed[1]).toBe(1); // proposal power normalized by common maximum
     expect(packed[2]).toBeCloseTo(-1); // leftChild
     expect(packed[3]).toBeCloseTo(-1); // rightChild
+    expect(packed[15]).toBe(1); // exact subtree leafCount
   });
 
   it('unoriented (default) nodes pack a full-sphere cone: axis 0, both cosines -1', () => {
@@ -351,7 +492,34 @@ describe('packLightTreeForGPU', () => {
       expect(packed[b + 12]).toBe(0); // cone.axis.z
       expect(packed[b + 13]).toBeCloseTo(-1, 6); // cos(thetaO) = cos(π)
       expect(packed[b + 14]).toBeCloseTo(-1, 6); // cos(thetaO+thetaE) = cos(π)
-      expect(packed[b + 15]).toBe(0); // padding
+      expect(packed[b + 15]).toBe(i === 0 ? 2 : 1); // subtree leafCount
+    }
+  });
+
+  it('normalises a binary64-minimum nonzero public cone axis without reciprocal overflow', () => {
+    const { nodes } = buildLightTree(makeInput([1]));
+    const packed = packLightTreeForGPU([{
+      ...nodes[0]!,
+      cone: {
+        axis: [Number.MIN_VALUE, 0, 0],
+        thetaO: 0,
+        thetaE: Math.PI / 2,
+      },
+    }]);
+    expect(Array.from(packed.slice(10, 13))).toEqual([1, 0, 0]);
+    expect(packedLightTreeNodeImportanceCPU(packed, 0, [10, 0, 0], 1e-6))
+      .toBeGreaterThan(0);
+  });
+
+  it('never publishes a positive raw node power as zero', () => {
+    const { nodes } = buildLightTree(makeInput([Number.MIN_VALUE, Number.MAX_VALUE]));
+    const packed = packLightTreeForGPU(nodes);
+    for (let i = 0; i < nodes.length; i++) {
+      const represented = packed[i * 16 + 1]!;
+      if (nodes[i]!.totalPower > 0) {
+        expect(represented).toBeGreaterThanOrEqual(1.1754943508222875e-38);
+        expect(Number.isFinite(represented)).toBe(true);
+      }
     }
   });
 });

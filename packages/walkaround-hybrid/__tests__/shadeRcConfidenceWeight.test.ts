@@ -21,7 +21,8 @@
  *   (b) the two weights always sum to exactly 1.
  *   (c) high-confidence-RC / low-confidence-ReSTIR pixel weights toward RC,
  *       and the reverse weights toward ReSTIR.
- *   (d) degenerate pixel (no valid reservoir AND rcWeight 0) stays 0.
+ *   (d) degenerate confidence (no valid reservoir AND rcWeight 0) preserves
+ *       the receiver-local DDGI fallback carried by the ReSTIR lane.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -131,7 +132,8 @@ describe('shade lo_indirect — confidence-ratio RC/ReSTIR composition', () => {
   });
 
   // (d) No ReSTIR estimate at all (Meff = 0) but RC active: RC takes the pixel.
-  // The convex-blend stays unbiased and the disabled-corner stays 0.
+  // The convex blend preserves whichever processed fallback occupies the
+  // ReSTIR lane when RC is disabled.
   it('(d1) Meff=0 with rcWeight>0 hands the full weight to RC', () => {
     const r = composeIndirect([0, 0, 0], [0.4, 0.5, 0.6], /* Meff */ 0, 50, /* rcWeight */ 0.8);
     // m = 0 ⇒ c_restir = 0, c_rc = 0.8 ⇒ w_rc = 1.
@@ -140,13 +142,14 @@ describe('shade lo_indirect — confidence-ratio RC/ReSTIR composition', () => {
     expect(r.lo).toEqual([0.4, 0.5, 0.6]);
   });
 
-  it('(d2) degenerate corner (Meff=0, rcWeight=0) returns 0 with no NaN', () => {
-    const r = composeIndirect([0, 0, 0], [0, 0, 0], /* Meff */ 0, 50, /* rcWeight */ 0);
+  it('(d2) degenerate confidence preserves the receiver-local fallback', () => {
+    const fallback: [number, number, number] = [0.2, 0.3, 0.4];
+    const r = composeIndirect(fallback, [0, 0, 0], /* Meff */ 0, 50, /* rcWeight */ 0);
     // c_rc + c_restir == 0 ⇒ guard forces w_rc = 0, w_restir = 1.
     expect(r.wRc).toBe(0);
     expect(r.wRestir).toBe(1);
     expect(Number.isNaN(r.lo[0])).toBe(false);
-    expect(r.lo).toEqual([0, 0, 0]);
+    expect(r.lo).toEqual(fallback);
   });
 
   // (e) RC-has-energy gate: the failure mode that motivated the gate. RC is
@@ -197,12 +200,24 @@ describe('shade lo_indirect — WGSL structural pins', () => {
     expect(SHADING_TERMS_WGSL).toContain('let wRestirGi = 1.0 - wRc;');
   });
 
-  it('composes a convex estimator blend and preserves the dielectric diffuse share', () => {
+  it('composes processed diffuse lanes without a second outer material factor', () => {
     expect(SHADING_TERMS_WGSL).toContain(
-      'let diffuseWeight = 1.0 - clamp(metal, 0.0, 1.0);',
+      'let diffuseWeight = (1.0 - clamp(metal, 0.0, 1.0)) *',
     );
     expect(SHADING_TERMS_WGSL).toContain(
-      'return diffuseWeight * (wRestirGi * Lo_indirect + wRc * Lo_rc);',
+      '(1.0 - clamp(transmission, 0.0, 1.0));',
+    );
+    expect(SHADING_TERMS_WGSL).toMatch(
+      /restirShadeAppendPositiveFactor\(\s*contributionLogW,\s*diffuseWeight,\s*\)/,
+    );
+    expect(SHADING_TERMS_WGSL.match(
+      /restirShadeAggregateDiffuseDemodulated\(/g,
+    )).toHaveLength(3);
+    expect(SHADING_TERMS_WGSL).toContain(
+      'return wRestirGi * Lo_indirect + wRc * Lo_rcDemodulated;',
+    );
+    expect(SHADING_TERMS_WGSL).not.toContain(
+      'return diffuseWeight * (wRestirGi',
     );
   });
 

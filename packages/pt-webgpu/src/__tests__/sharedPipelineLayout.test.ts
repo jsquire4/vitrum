@@ -160,8 +160,10 @@ describe('pt-webgpu explicit pipeline layout', () => {
 
     // Group 2 — TLAS table only. BDPT path state is invocation-private.
     const g2m = byBinding(g2!.entries);
-    expect(g2!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4]);
-    for (const b of [0, 1, 2, 3, 4]) expect(g2m.get(b)!.buffer?.type).toBe('read-only-storage');
+    expect(g2!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5]);
+    for (const b of [0, 1, 2, 3, 4, 5]) {
+      expect(g2m.get(b)!.buffer?.type).toBe('read-only-storage');
+    }
 
     // Group 3 — WS2 light-tree buffer (0) + P2 material textures: meshUvs (1),
     // descriptors (2), sRGB texture_2d_array (3), sampler (4), LINEAR

@@ -153,8 +153,6 @@ export function sppmSceneBoundsFromPackedPositions(
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
   if (!Number.isFinite(minX)) return null;
-  const min = [minX, minY, minZ] as const;
-  const max = [maxX, maxY, maxZ] as const;
   const center = [
     (minX + maxX) * 0.5,
     (minY + maxY) * 0.5,

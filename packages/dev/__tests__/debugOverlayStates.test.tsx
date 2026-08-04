@@ -57,6 +57,30 @@ describe('debug overlay unavailable and resource-identity states', () => {
     expect(startGpuTextureBlit).not.toHaveBeenCalled();
   });
 
+  it('selects the matching block-float codec for each DDGI atlas', () => {
+    const device = {} as GPUDevice;
+    const irradiance = { label: 'irradiance' } as unknown as GPUTexture;
+    const visibility = { label: 'visibility' } as unknown as GPUTexture;
+    mount(<DDGIAtlasViewer engine={engineWithDebug({
+      device: () => device,
+      atlasTexture: () => irradiance,
+      visibilityAtlasTexture: () => visibility,
+    })} />);
+
+    expect(startGpuTextureBlit).toHaveBeenCalledWith(
+      expect.anything(),
+      device,
+      irradiance,
+      expect.objectContaining({ decodeMode: 'ddgi-irradiance' }),
+    );
+    expect(startGpuTextureBlit).toHaveBeenCalledWith(
+      expect.anything(),
+      device,
+      visibility,
+      expect.objectContaining({ decodeMode: 'ddgi-visibility' }),
+    );
+  });
+
   it('distinguishes unavailable and malformed BVH debug tables', () => {
     const host = mount(<BVHVisualizer
       engine={engineWithDebug({ bvhNodes: () => null })}

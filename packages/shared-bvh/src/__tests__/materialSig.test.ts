@@ -299,6 +299,24 @@ describe('materialSig — Beer-Lambert fields (H33)', () => {
     expect(materialSig(a)).not.toBe(materialSig(b));
   });
 
+  it('canonicalizes omitted mip filtering to the public linear default', () => {
+    const handle = { name: 'default-mip' };
+    const implicit: MaterialSpec = {
+      ...BASE,
+      emissiveMap: { handle },
+    };
+    const explicitLinear: MaterialSpec = {
+      ...BASE,
+      emissiveMap: { handle, mipFilter: 'linear' },
+    };
+    const explicitNone: MaterialSpec = {
+      ...BASE,
+      emissiveMap: { handle, mipFilter: 'none' },
+    };
+    expect(materialSig(implicit)).toBe(materialSig(explicitLinear));
+    expect(materialSig(implicit)).not.toBe(materialSig(explicitNone));
+  });
+
   it('does not round away Float32-visible texture transform differences', () => {
     const handle = { name: 'normal' };
     const a: MaterialSpec = {
@@ -358,6 +376,14 @@ describe('mergeWorldSpaceFromCore material slots', () => {
     1, 0, 0,
     0, 1, 0,
   ]);
+  // Keep the two transmissive thin ranges spatially disjoint. Coincident
+  // ranges are deliberately rejected by SceneBvh's exact first-hit preflight,
+  // while these tests are about material-slot splitting rather than topology.
+  const TRI_POS_OFFSET = new Float32Array([
+    0, 0, 2,
+    1, 0, 2,
+    0, 1, 2,
+  ]);
   const TRI_NORM = new Float32Array([
     0, 0, 1,
     0, 0, 1,
@@ -378,7 +404,7 @@ describe('mergeWorldSpaceFromCore material slots', () => {
         {
           kind: 'mesh',
           id: 'non-caster',
-          positions: TRI_POS,
+          positions: TRI_POS_OFFSET,
           normals: TRI_NORM,
           material: BASE,
           castShadow: false,

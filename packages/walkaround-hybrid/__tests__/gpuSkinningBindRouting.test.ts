@@ -116,6 +116,7 @@ function makeHost(meshIds: string[]): {
     updatePrimitive,
     applySkinningBatch,
     applyGpuSkinnedRefit,
+    preflightOpticalMediumTopology: vi.fn(),
   };
   return {
     host,

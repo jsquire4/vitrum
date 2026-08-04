@@ -38,7 +38,10 @@ export function assertVolumeSceneSupported(scene: Scene): void {
     finiteNonnegative(material.scatteringCoefficient, "scatteringCoefficient");
     finiteNonnegative(material.thickness, "thickness");
     if (material.attenuationDistance != null &&
-        (!Number.isFinite(material.attenuationDistance) || material.attenuationDistance <= 0)) {
+        ((
+          !Number.isFinite(material.attenuationDistance) &&
+          material.attenuationDistance !== Number.POSITIVE_INFINITY
+        ) || material.attenuationDistance <= 0)) {
       fail("attenuationDistance");
     }
     if (material.scatteringAnisotropy != null &&
@@ -80,7 +83,7 @@ export function assertThinFilmSceneSupported(scene: Scene): void {
       fail(`has more than ${THIN_FILM_LAYER_LIMIT} coherent layers`);
     }
     const substrateIor = material.ior ?? 1.5;
-    if (!Number.isFinite(substrateIor) || substrateIor < 1) {
+    if (!Number.isFinite(substrateIor) || (substrateIor !== 0 && substrateIor < 1)) {
       fail('has a non-finite or sub-unity substrate IOR');
     }
     const incidentIor = stack.incidentIor ?? 1;

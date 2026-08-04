@@ -45,7 +45,7 @@
 //   s1 = (radiance.rgb = color*intensity, 0)
 //   s2 = (v1.xyz, 0)
 //   s3 = (v2.xyz, triArea)          — geometric area |(v1-v0)×(v2-v0)|/2
-//   s4 = (selectionPower, 0, 0, 0)  — luminance(radiance) * triArea
+//   s4 = (diagnosticPower, localProposalPmf, globalProposalPmf, 0)
 //   s5 = (faceIdLo16, castShadowDisabled, twoSided, faceIdHi16)
 //        — exact BVH/index-texture target identity plus shadow/material-sidedness.
 //          The two 16-bit words are individually exact in RGBA32F; combining the
@@ -60,7 +60,7 @@ import {
   type BarycentricWeights,
   type WorldSpaceMergeResult,
 } from '@vitrum/shared-bvh';
-import { luminance } from '@vitrum/shared-samplers';
+import { buildRepresentedPmfF32, luminance } from '@vitrum/shared-samplers';
 import { classifyTriangleAreaF32 } from './areaEmitterGeometry.js';
 import { quantizeFiniteFloat16 } from './halfFloat.js';
 import { buildUvAttributeLayout } from './uvAttributeLayout.js';
@@ -86,22 +86,19 @@ export interface MeshAreaLightsData {
   readonly totalEmissiveArea: number;
   /** Σ luminance(radiance)·area — energy-weighted selection mass for mesh NEE. */
   readonly totalEmissivePower: number;
+  /** CPU-only f64 physical weights used to build represented local/global PMFs. */
+  readonly proposalWeights?: Float64Array;
 }
 
-function addMeshSelectionPowerF32(
+function addMeshSelectionPower(
   sum: number,
   power: number,
   context: string,
 ): number {
-  const next = Math.fround(sum + power);
+  const next = sum + power;
   if (!Number.isFinite(next)) {
     throw new RangeError(
-      '@vitrum/pt-webgl2: mesh-emitter selection-power sum overflows float32.',
-    );
-  }
-  if (power > 0 && next === sum) {
-    throw new RangeError(
-      `${context} loses proposal support in the cumulative float32 distribution.`,
+      `${context} selection-power sum overflows finite CPU arithmetic.`,
     );
   }
   return next;
@@ -389,8 +386,14 @@ function collectMeshAreaSources(
     twoSided: number;
     implicitMaterial?: MaterialSpec;
   }>();
+  const explicitMeshIds = new Set<SceneNodeId>();
   for (const e of scene.emitters) {
     if (e.kind !== 'mesh-area') continue;
+    // Explicit ownership is authoritative even when the authored emitter is
+    // black. Otherwise a zero-intensity update falls through to the primitive's
+    // stale implicit emissive material and silently resurrects an NEE source
+    // that no longer matches the folded forward-hit radiance.
+    explicitMeshIds.add(e.meshId);
     const primitive = scene.primitives.find((p) => String(p.id) === String(e.meshId));
     const material = primitive != null && isMeshLikePrimitive(primitive)
       ? materialWithExplicitMeshEmitterAuthority(primitive.material)
@@ -421,7 +424,7 @@ function collectMeshAreaSources(
 
   for (const primitive of scene.primitives) {
     if (!isMeshLikePrimitive(primitive)) continue;
-    if (emitterByMesh.has(primitive.id)) continue;
+    if (explicitMeshIds.has(primitive.id)) continue;
     if (materialEmissionExcludedFromMeshNee(primitive.material)) continue;
     const radiance = emissiveRadianceForMaterial(primitive.material, String(primitive.id));
     if (!(luminanceRgb(radiance) > 0)) continue;
@@ -574,12 +577,14 @@ export function packMeshAreaLights(
         if (!(emittedLuminance > 0)) return;
         assertPositiveValueSurvivesF32(triArea, `emissive triangle ${range.name}:${t} area`);
         const exactPower = emittedLuminance * triArea;
-        assertPositiveValueSurvivesF32(
-          exactPower,
-          `emissive triangle ${range.name}:${t} selection power`,
-        );
-        const power = Math.fround(exactPower);
-        const nextTotalEmissivePower = addMeshSelectionPowerF32(
+        if (!Number.isFinite(exactPower) || !(exactPower > 0)) {
+          throw new RangeError(
+            `@vitrum/pt-webgl2: emissive triangle ${range.name}:${t} ` +
+              'selection power must be finite and positive in CPU arithmetic.',
+          );
+        }
+        const power = exactPower;
+        const nextTotalEmissivePower = addMeshSelectionPower(
           totalEmissivePower,
           power,
           `@vitrum/pt-webgl2: emissive triangle ${range.name}:${t}`,
@@ -636,14 +641,8 @@ export function packMeshAreaLights(
   if (tris.length === 0) {
     return { data: null, dim: 1, triLightCount: 0, totalEmissiveArea: 0, totalEmissivePower: 0 };
   }
-  for (const tri of tris) {
-    if (!(Math.fround(tri.power / totalEmissivePower) > 0)) {
-      throw new RangeError(
-        '@vitrum/pt-webgl2: a positive mesh-emitter selection probability ' +
-          'collapses to zero in float32.',
-      );
-    }
-  }
+  const proposalWeights = new Float64Array(tris.map((tri) => tri.power));
+  const proposalPmf = buildRepresentedPmfF32(proposalWeights);
 
   const pixelCount = tris.length * TRI_LIGHT_PIXELS;
   const dim = Math.ceil(Math.sqrt(pixelCount));
@@ -681,8 +680,11 @@ export function packMeshAreaLights(
     data[base + 13] = v2[1];
     data[base + 14] = v2[2];
     data[base + 15] = area;
-    // s4.r: selection power (luminance(radiance) * area) for energy-weighted NEE.
-    data[base + 16] = power;
+    // s4.r: finite diagnostic proxy only. Sampling consumes the represented
+    // PMFs in .g/.b; proposalWeights retains the exact f64 physical heuristic.
+    data[base + 16] = Math.fround(Math.min(power, 3.402823466e38));
+    // s4.g: exact represented local mesh-family PMF sampled by GLSL.
+    data[base + 17] = proposalPmf[i] ?? 0;
     // s5.r/a: exact uint32 BVH face id as individually exact 16-bit words.
     data[base + 20] = targetFaceIndex % UINT16_BASE;
     data[base + 21] = castShadowDisabled;
@@ -690,5 +692,12 @@ export function packMeshAreaLights(
     data[base + 23] = Math.floor(targetFaceIndex / UINT16_BASE);
   }
 
-  return { data, dim, triLightCount: tris.length, totalEmissiveArea, totalEmissivePower };
+  return {
+    data,
+    dim,
+    triLightCount: tris.length,
+    totalEmissiveArea,
+    totalEmissivePower,
+    proposalWeights,
+  };
 }

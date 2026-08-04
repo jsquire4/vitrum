@@ -16,7 +16,12 @@
 // native extent plus the packed tile offset, so mixed resolutions do not change
 // filtering footprints or bleed between neighboring sources.
 
-import type { MaterialSpec } from '@vitrum/core';
+import type {
+  MaterialSpec,
+  SurfaceAbsorptionLayer,
+  TextureRef,
+  UvTransform,
+} from '@vitrum/core';
 import {
   packNonNegativeRadianceScalarF32,
   packRadianceRgbProductF32,
@@ -63,6 +68,300 @@ const SAMPLED_MAP_KEYS = [
   // KHR_materials_volume: G = scalar multiplier for thicknessFactor.
   'thicknessMap',
 ] as const satisfies ReadonlyArray<keyof MaterialSpec>;
+
+const MATERIAL_TEXTURE_SNAPSHOT_KEYS = [
+  ...SAMPLED_MAP_KEYS,
+  // Displacement is consumed while the shared merge builds geometry rather
+  // than by this atlas, but it is still a TextureRef validated by the material
+  // packer and therefore belongs to the same immutable input boundary.
+  'displacementMap',
+] as const satisfies ReadonlyArray<keyof MaterialSpec>;
+
+const TEXTURE_REF_SNAPSHOT_KEYS = [
+  'handle',
+  'texCoord',
+  'transform',
+  'wrapS',
+  'wrapT',
+  'magFilter',
+  'minFilter',
+  'mipFilter',
+] as const satisfies ReadonlyArray<keyof TextureRef>;
+
+const UV_TRANSFORM_SNAPSHOT_KEYS = [
+  'offset',
+  'scale',
+  'rotation',
+] as const satisfies ReadonlyArray<keyof UvTransform>;
+
+const SURFACE_LAYER_SNAPSHOT_KEYS = [
+  'transmission',
+  'roughness',
+  'normalMap',
+  'normalScale',
+] as const satisfies ReadonlyArray<keyof SurfaceAbsorptionLayer>;
+
+const MATERIAL_TEXTURE_INPUT_SNAPSHOT = Symbol('vitrum.pt-webgl2.material-texture-input-snapshot');
+
+type MaterialTextureInputSnapshot = readonly MaterialSpec[] & {
+  readonly [MATERIAL_TEXTURE_INPUT_SNAPSHOT]: true;
+};
+
+interface MaterialTextureSnapshotContext {
+  readonly materials: WeakMap<object, MaterialSpec>;
+  readonly textureRefs: WeakMap<object, TextureRef>;
+  readonly transforms: WeakMap<object, UvTransform>;
+  readonly vectorPairs: WeakMap<object, unknown>;
+  readonly surfaceLayers: WeakMap<object, SurfaceAbsorptionLayer>;
+}
+
+function isRecord(value: unknown): value is Record<PropertyKey, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function defineSnapshotValue(
+  target: Record<PropertyKey, unknown>,
+  key: PropertyKey,
+  value: unknown,
+  enumerable = true,
+): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable,
+    configurable: true,
+    writable: true,
+  });
+}
+
+function snapshotVectorPair(
+  value: unknown,
+  context: MaterialTextureSnapshotContext,
+): unknown {
+  if (
+    value == null ||
+    typeof value !== 'object' ||
+    (!Array.isArray(value) && !ArrayBuffer.isView(value))
+  ) {
+    return value;
+  }
+  const object = value as object;
+  const cached = context.vectorPairs.get(object);
+  if (cached !== undefined) return cached;
+
+  const length = (value as { readonly length?: unknown }).length;
+  // A UV transform pair has exactly two entries. Preserve valid input by
+  // reading each authored element once. Malformed lengths become an empty
+  // ordinary array so the canonical core validator rejects them without ever
+  // revisiting a hostile source container.
+  const snapshot: unknown[] = [];
+  context.vectorPairs.set(object, snapshot);
+  if (length === 2) {
+    snapshot.push(
+      (value as ArrayLike<unknown>)[0],
+      (value as ArrayLike<unknown>)[1],
+    );
+  }
+  return Object.freeze(snapshot);
+}
+
+function snapshotUvTransform(
+  value: unknown,
+  context: MaterialTextureSnapshotContext,
+): unknown {
+  if (!isRecord(value)) return value;
+  const cached = context.transforms.get(value);
+  if (cached !== undefined) return cached;
+
+  const snapshot: Record<PropertyKey, unknown> = {};
+  context.transforms.set(value, snapshot as unknown as UvTransform);
+  const ownKeys = Reflect.ownKeys(value);
+  const ownKeySet = new Set<PropertyKey>(ownKeys);
+  for (const key of ownKeys) {
+    defineSnapshotValue(
+      snapshot,
+      key,
+      value[key],
+      Object.prototype.propertyIsEnumerable.call(value, key),
+    );
+  }
+  // Preserve inherited known fields while still reading each getter once.
+  for (const key of UV_TRANSFORM_SNAPSHOT_KEYS) {
+    if (ownKeySet.has(key)) continue;
+    const field = value[key];
+    if (field !== undefined) defineSnapshotValue(snapshot, key, field);
+  }
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'offset')) {
+    snapshot.offset = snapshotVectorPair(snapshot.offset, context);
+  }
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'scale')) {
+    snapshot.scale = snapshotVectorPair(snapshot.scale, context);
+  }
+  return Object.freeze(snapshot);
+}
+
+function snapshotTextureRef(
+  value: unknown,
+  context: MaterialTextureSnapshotContext,
+): unknown {
+  if (!isRecord(value)) return value;
+  const cached = context.textureRefs.get(value);
+  if (cached !== undefined) return cached;
+
+  const snapshot: Record<PropertyKey, unknown> = {};
+  context.textureRefs.set(value, snapshot as unknown as TextureRef);
+  const ownKeys = Reflect.ownKeys(value);
+  const ownKeySet = new Set<PropertyKey>(ownKeys);
+  for (const key of ownKeys) {
+    defineSnapshotValue(
+      snapshot,
+      key,
+      value[key],
+      Object.prototype.propertyIsEnumerable.call(value, key),
+    );
+  }
+  for (const key of TEXTURE_REF_SNAPSHOT_KEYS) {
+    if (ownKeySet.has(key)) continue;
+    const field = value[key];
+    if (field !== undefined || key === 'handle') {
+      defineSnapshotValue(snapshot, key, field);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'transform')) {
+    snapshot.transform = snapshotUvTransform(snapshot.transform, context);
+  }
+  return Object.freeze(snapshot);
+}
+
+function snapshotSurfaceLayer(
+  value: unknown,
+  context: MaterialTextureSnapshotContext,
+): unknown {
+  if (!isRecord(value)) return value;
+  const cached = context.surfaceLayers.get(value);
+  if (cached !== undefined) return cached;
+
+  const snapshot: Record<PropertyKey, unknown> = {};
+  context.surfaceLayers.set(
+    value,
+    snapshot as unknown as SurfaceAbsorptionLayer,
+  );
+  const ownKeys = Reflect.ownKeys(value);
+  const ownKeySet = new Set<PropertyKey>(ownKeys);
+  for (const key of ownKeys) {
+    defineSnapshotValue(
+      snapshot,
+      key,
+      value[key],
+      Object.prototype.propertyIsEnumerable.call(value, key),
+    );
+  }
+  for (const key of SURFACE_LAYER_SNAPSHOT_KEYS) {
+    if (ownKeySet.has(key)) continue;
+    const field = value[key];
+    if (field !== undefined) defineSnapshotValue(snapshot, key, field);
+  }
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'normalMap')) {
+    snapshot.normalMap = snapshotTextureRef(snapshot.normalMap, context);
+  }
+  return Object.freeze(snapshot);
+}
+
+function snapshotMaterial(
+  source: MaterialSpec,
+  materialIndex: number,
+  context: MaterialTextureSnapshotContext,
+): MaterialSpec {
+  if (!isRecord(source)) {
+    throw new TypeError(`pt-webgl2 material ${materialIndex} must be a material record.`);
+  }
+  const cached = context.materials.get(source);
+  if (cached !== undefined) return cached;
+
+  const snapshot: Record<PropertyKey, unknown> = {};
+  context.materials.set(source, snapshot as unknown as MaterialSpec);
+  // This is the sole read of every authored top-level material property. The
+  // rest of the WebGL2 layout/atlas/material transaction consumes plain data.
+  const ownKeys = Reflect.ownKeys(source);
+  const ownKeySet = new Set<PropertyKey>(ownKeys);
+  for (const key of ownKeys) {
+    defineSnapshotValue(
+      snapshot,
+      key,
+      source[key as keyof MaterialSpec],
+      Object.prototype.propertyIsEnumerable.call(source, key),
+    );
+  }
+  for (const key of MATERIAL_TEXTURE_SNAPSHOT_KEYS) {
+    if (!ownKeySet.has(key)) {
+      const field = source[key];
+      if (field !== undefined) defineSnapshotValue(snapshot, key, field);
+    }
+    if (Object.prototype.hasOwnProperty.call(snapshot, key)) {
+      snapshot[key] = snapshotTextureRef(snapshot[key], context);
+    }
+  }
+  for (const key of ['frontLayer', 'backLayer'] as const) {
+    if (ownKeySet.has(key)) continue;
+    const field = source[key];
+    if (field !== undefined) defineSnapshotValue(snapshot, key, field);
+  }
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'frontLayer')) {
+    snapshot.frontLayer = snapshotSurfaceLayer(snapshot.frontLayer, context);
+  }
+  if (Object.prototype.hasOwnProperty.call(snapshot, 'backLayer')) {
+    snapshot.backLayer = snapshotSurfaceLayer(snapshot.backLayer, context);
+  }
+  return Object.freeze(snapshot) as unknown as MaterialSpec;
+}
+
+/**
+ * Capture one immutable-by-value WebGL2 material-input transaction.
+ *
+ * Authored list indices, material properties, TextureRef properties, UV
+ * transforms, and transform vector elements are each evaluated once. Reused
+ * material/TextureRef/transform identities are memoized within the transaction,
+ * so alternating getters cannot make UV layout, atlas membership, descriptor
+ * packing, and shader material records disagree.
+ *
+ * @internal Exported for the scene-build orchestrator and hostile-input tests.
+ */
+export function snapshotMaterialTextureInputs(
+  materials: readonly MaterialSpec[],
+): readonly MaterialSpec[] {
+  if (
+    Object.getOwnPropertyDescriptor(materials, MATERIAL_TEXTURE_INPUT_SNAPSHOT)
+      ?.value === true
+  ) {
+    return materials;
+  }
+  const materialCount = materials.length;
+  if (!Number.isSafeInteger(materialCount) || materialCount < 0) {
+    throw new RangeError('pt-webgl2: material count must be a non-negative safe integer.');
+  }
+  const context: MaterialTextureSnapshotContext = {
+    materials: new WeakMap(),
+    textureRefs: new WeakMap(),
+    transforms: new WeakMap(),
+    vectorPairs: new WeakMap(),
+    surfaceLayers: new WeakMap(),
+  };
+  const snapshot = new Array<MaterialSpec>(materialCount);
+  for (let materialIndex = 0; materialIndex < materialCount; materialIndex += 1) {
+    // Read each authored list slot exactly once before any packing phase.
+    snapshot[materialIndex] = snapshotMaterial(
+      materials[materialIndex]!,
+      materialIndex,
+      context,
+    );
+  }
+  Object.defineProperty(snapshot, MATERIAL_TEXTURE_INPUT_SNAPSHOT, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return Object.freeze(snapshot) as MaterialTextureInputSnapshot;
+}
 
 // ── D10.12: TextureHandleHint ─────────────────────────────────────────────────
 // Optional hints that a TextureRef handle can expose to make readHandlePixels
@@ -360,14 +659,57 @@ export function textureStorageClassForMapKey(
 interface CollectedTextureHandle {
   readonly handle: unknown;
   readonly colorSpace: TextureSampleColorSpace;
+  /** Bit n accepts an authored n-channel payload. Shared handles intersect
+   *  every consuming role so one permissive use cannot hide a stricter one. */
+  allowedChannelsMask: number;
+  readonly roleLabels: string[];
   usesMipFiltering: boolean;
 }
+
+const CHANNEL_1 = 1 << 1;
+const CHANNEL_2 = 1 << 2;
+const CHANNEL_3 = 1 << 3;
+const CHANNEL_4 = 1 << 4;
+const ANY_CHANNELS = CHANNEL_1 | CHANNEL_2 | CHANNEL_3 | CHANNEL_4;
+
+interface TextureChannelRole {
+  readonly label: string;
+  readonly allowedChannelsMask: number;
+}
+
+function textureChannelRoleForMapKey(key: keyof MaterialSpec): TextureChannelRole {
+  if (key === 'normalMap' || key === 'clearcoatNormalMap') {
+    return { label: key, allowedChannelsMask: CHANNEL_3 | CHANNEL_4 };
+  }
+  if (key === 'anisotropyMap') {
+    return { label: key, allowedChannelsMask: CHANNEL_3 | CHANNEL_4 };
+  }
+  if (key === 'sheenRoughnessMap' || key === 'specularIntensityMap') {
+    return { label: key, allowedChannelsMask: CHANNEL_4 };
+  }
+  if (key === 'metallicMap') {
+    // Public raw expansion is R -> RRR1 and RG -> RG01. Metallic consumes B:
+    // a luminance source is meaningful, while an exact RG source would silently
+    // force every metallic sample to zero. RGB/RGBA author B directly.
+    return {
+      label: key,
+      allowedChannelsMask: CHANNEL_1 | CHANNEL_3 | CHANNEL_4,
+    };
+  }
+  return { label: key, allowedChannelsMask: ANY_CHANNELS };
+}
+
+const LAYER_NORMAL_CHANNEL_ROLE: TextureChannelRole = {
+  label: 'surface-layer normalMap',
+  allowedChannelsMask: CHANNEL_3 | CHANNEL_4,
+};
 
 function collectHandle(
   handles: CollectedTextureHandle[],
   seen: Map<unknown, Map<TextureSampleColorSpace, number>>,
   ref: { readonly handle?: unknown; readonly mipFilter?: string } | undefined,
   colorSpace: TextureSampleColorSpace,
+  role: TextureChannelRole,
 ): void {
   const handle = ref?.handle;
   if (handle == null) return;
@@ -377,13 +719,32 @@ function collectHandle(
     seen.set(handle, seenByColorSpace);
   }
   const existingIndex = seenByColorSpace.get(colorSpace);
-  const usesMipFiltering = ref?.mipFilter != null && ref.mipFilter !== 'none';
+  // Omitted mipFilter follows the public TextureRef default (`linear`), so the
+  // generated mip chain is reachable unless the author explicitly selects
+  // `none`.
+  const usesMipFiltering = ref?.mipFilter !== 'none';
   if (existingIndex == null) {
     seenByColorSpace.set(colorSpace, handles.length);
-    handles.push({ handle, colorSpace, usesMipFiltering });
-  } else if (usesMipFiltering) {
+    handles.push({
+      handle,
+      colorSpace,
+      allowedChannelsMask: role.allowedChannelsMask,
+      roleLabels: [role.label],
+      usesMipFiltering,
+    });
+  } else {
     const existing = handles[existingIndex];
-    if (existing != null) existing.usesMipFiltering = true;
+    if (existing != null) {
+      existing.allowedChannelsMask &= role.allowedChannelsMask;
+      if (!existing.roleLabels.includes(role.label)) existing.roleLabels.push(role.label);
+      if (existing.allowedChannelsMask === 0) {
+        throw new Error(
+          `[pt-webgl2] one material texture handle has incompatible channel roles: ` +
+            existing.roleLabels.join(', '),
+        );
+      }
+      if (usesMipFiltering) existing.usesMipFiltering = true;
+    }
   }
 }
 
@@ -437,6 +798,13 @@ interface TexturePixelPayload {
   readonly colorSpace?: string;
 }
 
+function hasSharedArrayBufferBacking(data: ArrayLike<number>): boolean {
+  if (!ArrayBuffer.isView(data)) return false;
+  const inputBuffer = data.buffer;
+  return typeof SharedArrayBuffer !== 'undefined' &&
+    inputBuffer instanceof SharedArrayBuffer;
+}
+
 type ResolvedTextureDataType = NonNullable<TextureHandleHint['dataType']>;
 
 interface InspectedTexturePixels {
@@ -447,6 +815,64 @@ interface InspectedTexturePixels {
   readonly stride: number;
   readonly dataType: ResolvedTextureDataType;
   readonly sourceColorSpace?: TextureSampleColorSpace;
+  /** Bytes held by the immutable raw snapshot; absent before staging. */
+  readonly stagingByteLength?: number;
+}
+
+interface TextureAtlasCpuBudget {
+  usedBytes: bigint;
+  readonly limitBytes: bigint;
+}
+
+/**
+ * One packing transaction owns one inspection token and one immutable raw
+ * snapshot per opaque handle. Atlas entries remain role/color-space specific,
+ * but they never re-observe user-controlled metadata or texels.
+ */
+interface TextureAtlasSourceTransaction {
+  readonly inspectedByHandle: Map<unknown, InspectedTexturePixels>;
+  readonly stagedByHandle: Map<unknown, InspectedTexturePixels>;
+}
+
+function createTextureAtlasSourceTransaction(): TextureAtlasSourceTransaction {
+  return {
+    inspectedByHandle: new Map<unknown, InspectedTexturePixels>(),
+    stagedByHandle: new Map<unknown, InspectedTexturePixels>(),
+  };
+}
+
+function textureSourceElementBytes(dataType: ResolvedTextureDataType): number {
+  if (dataType === 'uint8') return 1;
+  return dataType === 'float32' ? 4 : 2;
+}
+
+function reserveTextureAtlasCpuBytes(
+  budget: TextureAtlasCpuBudget,
+  byteCount: bigint,
+  label: string,
+): void {
+  if (byteCount < 0n || byteCount > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RangeError(`[pt-webgl2] ${label} byte length exceeds JavaScript's safe range.`);
+  }
+  const aggregate = budget.usedBytes + byteCount;
+  if (aggregate > budget.limitBytes) {
+    throw new RangeError(
+      `[pt-webgl2] ${label} requires ${byteCount.toString()} CPU bytes ` +
+        `(aggregate ${aggregate.toString()}), exceeding the ` +
+        `${budget.limitBytes.toString()}-byte material texture staging budget.`,
+    );
+  }
+  budget.usedBytes = aggregate;
+}
+
+function releaseTextureAtlasCpuBytes(
+  budget: TextureAtlasCpuBudget,
+  byteCount: bigint,
+): void {
+  if (byteCount < 0n || byteCount > budget.usedBytes) {
+    throw new Error('[pt-webgl2] internal material texture staging-budget underflow.');
+  }
+  budget.usedBytes -= byteCount;
 }
 
 function decodeTextureChannel(dataType: ResolvedTextureDataType, value: number): number {
@@ -489,11 +915,60 @@ function inspectHandlePixels(
   }
   // Select one coherent payload. In particular, a partial cpuMirror must not be
   // completed with dimensions or data from a separate mutable image object.
-  const source: TexturePixelPayload | undefined = h.cpuMirror ?? (h.data != null ? h : h.image);
-  const src = source?.data;
-  const rawWidth = source?.width;
-  const rawHeight = source?.height;
-  if (src == null || typeof src.length !== 'number') {
+  const cpuMirror = h.cpuMirror;
+  let src: ArrayLike<number> | undefined;
+  let rawWidth: number | undefined;
+  let rawHeight: number | undefined;
+  let sourceChannels: number | undefined;
+  let sourceDataType: string | undefined;
+  let selectedColorSpace: string | undefined;
+  let selectedHandlePayload = false;
+  if (cpuMirror != null) {
+    src = cpuMirror.data;
+    rawWidth = cpuMirror.width;
+    rawHeight = cpuMirror.height;
+    sourceChannels = cpuMirror.channels;
+    sourceDataType = cpuMirror.dataType;
+    selectedColorSpace = cpuMirror.colorSpace;
+  } else {
+    const handleData = h.data;
+    if (handleData != null) {
+      selectedHandlePayload = true;
+      src = handleData;
+      rawWidth = h.width;
+      rawHeight = h.height;
+      sourceChannels = h.channels;
+      sourceDataType = h.dataType;
+      selectedColorSpace = h.colorSpace;
+    } else {
+      const image = h.image;
+      if (image != null) {
+        src = image.data;
+        rawWidth = image.width;
+        rawHeight = image.height;
+        sourceChannels = image.channels;
+        sourceDataType = image.dataType;
+        selectedColorSpace = image.colorSpace;
+      }
+    }
+  }
+  if (src == null) {
+    throw texturePayloadError(
+      handle,
+      options,
+      'no cpuMirror, raw data, or DataTexture-shaped image data was supplied',
+    );
+  }
+  if (hasSharedArrayBufferBacking(src)) {
+    throw texturePayloadError(
+      handle,
+      options,
+      'SharedArrayBuffer-backed material texels are not accepted because a concurrently ' +
+        'mutable buffer cannot provide an exact scene-upload snapshot',
+    );
+  }
+  const rawValueCount = src.length;
+  if (typeof rawValueCount !== 'number') {
     throw texturePayloadError(
       handle,
       options,
@@ -524,7 +999,7 @@ function inspectHandlePixels(
       `the ${width}×${height} decoded RGBA element count exceeds JavaScript's safe integer range`,
     );
   }
-  const valueCount = src.length;
+  const valueCount = rawValueCount;
   if (!Number.isSafeInteger(valueCount) || valueCount < 0) {
     throw texturePayloadError(
       handle,
@@ -536,27 +1011,16 @@ function inspectHandlePixels(
   // D10.12: resolve hint from __vitrum_hint__ property, or direct channels/dataType on handle.
   // Use type assertions at the object-literal level to satisfy exactOptionalPropertyTypes:
   // only include a property in the literal when the source value is non-null.
-  const inlineChannels = source?.channels ?? h.channels;
-  const inlineDataType = source?.dataType ?? h.dataType;
-  const inlineColorSpace = source?.colorSpace ?? h.colorSpace;
-  const hint: TextureHandleHint | undefined =
-    h.__vitrum_hint__ ??
-    (inlineChannels != null || inlineDataType != null || inlineColorSpace != null
-      ? Object.assign(
-          {} as TextureHandleHint,
-          inlineChannels != null
-            ? { channels: inlineChannels as TextureHandleHint['channels'] }
-            : {},
-          inlineDataType != null
-            ? { dataType: inlineDataType as TextureHandleHint['dataType'] }
-            : {},
-          inlineColorSpace != null
-            ? { colorSpace: inlineColorSpace as TextureHandleHint['colorSpace'] }
-            : {},
-        )
-      : undefined);
-
-  const hintedChannels = hint?.channels;
+  const fallbackChannels = sourceChannels ?? (selectedHandlePayload ? undefined : h.channels);
+  const fallbackDataType = sourceDataType ?? (selectedHandlePayload ? undefined : h.dataType);
+  const fallbackColorSpace = selectedColorSpace ?? (selectedHandlePayload ? undefined : h.colorSpace);
+  const outerHint = h.__vitrum_hint__;
+  const outerHintChannels = outerHint?.channels;
+  const outerHintDataType = outerHint?.dataType;
+  const outerHintColorSpace = outerHint?.colorSpace;
+  const hintedChannels = outerHintChannels ?? fallbackChannels;
+  const hintedDataType = outerHintDataType ?? fallbackDataType;
+  const hintedColorSpace = outerHintColorSpace ?? fallbackColorSpace;
   if (hintedChannels != null && !VALID_CHANNEL_COUNTS.has(hintedChannels)) {
     throw texturePayloadError(
       handle,
@@ -564,18 +1028,18 @@ function inspectHandlePixels(
       `channels must be one of 1, 2, 3, or 4 (received ${String(hintedChannels)})`,
     );
   }
-  if (hint?.dataType != null && !VALID_DATA_TYPES.has(hint.dataType)) {
+  if (hintedDataType != null && !VALID_DATA_TYPES.has(hintedDataType)) {
     throw texturePayloadError(
       handle,
       options,
-      `dataType "${String(hint.dataType)}" is unsupported`,
+      `dataType "${String(hintedDataType)}" is unsupported`,
     );
   }
-  if (hint?.colorSpace != null && hint.colorSpace !== 'srgb' && hint.colorSpace !== 'linear') {
+  if (hintedColorSpace != null && hintedColorSpace !== 'srgb' && hintedColorSpace !== 'linear') {
     throw texturePayloadError(
       handle,
       options,
-      `colorSpace "${String(hint.colorSpace)}" is unsupported`,
+      `colorSpace "${String(hintedColorSpace)}" is unsupported`,
     );
   }
 
@@ -610,7 +1074,7 @@ function inspectHandlePixels(
   }
 
   const backingType = Object.prototype.toString.call(src);
-  let dataType = hint?.dataType;
+  let dataType = hintedDataType as TextureHandleHint['dataType'] | undefined;
   if (dataType == null) {
     if (backingType === '[object Uint8Array]' || backingType === '[object Uint8ClampedArray]') {
       dataType = 'uint8';
@@ -631,7 +1095,12 @@ function inspectHandlePixels(
       (backingType === '[object Uint8Array]' || backingType === '[object Uint8ClampedArray]')) ||
     ((dataType === 'uint16' || dataType === 'float16' || dataType === 'half-float') &&
       backingType === '[object Uint16Array]') ||
-    (dataType === 'float32' && backingType === '[object Float32Array]');
+    (dataType === 'float32' && backingType === '[object Float32Array]') ||
+    // Immutable public texture-source mirrors intentionally expose a frozen
+    // getter-safe ArrayLike view instead of the mutable typed-array object.
+    // An explicit dataType makes any generic ArrayLike unambiguous; every lane
+    // is still range-checked and copied exactly once before decode.
+    (hintedDataType != null && backingType === '[object Object]');
   if (!compatibleBacking) {
     const expected =
       dataType === 'uint8'
@@ -649,13 +1118,15 @@ function inspectHandlePixels(
   // explicitly labels it sRGB. This matches the shared decoder and prevents an
   // unhinted HDR emissive payload from being clamped to [0, 1] and decoded a
   // second time merely because emissiveMap is a color-role map.
-  const sourceColorSpace =
-    hint?.colorSpace === 'srgb' || hint?.colorSpace === 'linear'
-      ? hint.colorSpace
-      : dataType === 'float32'
+  const sourceColorSpace: TextureSampleColorSpace | undefined =
+    hintedColorSpace === 'srgb'
+      ? 'srgb'
+      : hintedColorSpace === 'linear'
         ? 'linear'
-        : undefined;
-  return {
+        : dataType === 'float32'
+          ? 'linear'
+          : undefined;
+  return Object.freeze({
     width,
     height,
     pixelCount,
@@ -663,7 +1134,130 @@ function inspectHandlePixels(
     stride,
     dataType,
     ...(sourceColorSpace ? { sourceColorSpace } : {}),
-  };
+  });
+}
+
+/** Validate one collected role entry against cached per-handle metadata. */
+function validateCollectedTextureChannels(
+  collected: CollectedTextureHandle,
+  inspected: InspectedTexturePixels,
+  options?: TextureAtlasBuildOptions,
+): void {
+  // Role/channel compatibility is metadata-only and must fail before staging
+  // allocation or the first indexed read from a hostile ArrayLike payload.
+  if ((collected.allowedChannelsMask & (1 << inspected.stride)) !== 0) return;
+
+  const allowed: number[] = [];
+  for (let channels = 1; channels <= 4; channels += 1) {
+    if ((collected.allowedChannelsMask & (1 << channels)) !== 0) allowed.push(channels);
+  }
+  throw texturePayloadError(
+    collected.handle,
+    options,
+    `${collected.roleLabels.join(' + ')} requires source channels ` +
+      `${allowed.join(', ')} (received ${inspected.stride})`,
+  );
+}
+
+function inspectCollectedHandlePixels(
+  collected: CollectedTextureHandle,
+  transaction: TextureAtlasSourceTransaction,
+  options?: TextureAtlasBuildOptions,
+): InspectedTexturePixels {
+  let inspected = transaction.inspectedByHandle.get(collected.handle);
+  if (inspected == null) {
+    inspected = inspectHandlePixels(collected.handle, options);
+    transaction.inspectedByHandle.set(collected.handle, inspected);
+  }
+  validateCollectedTextureChannels(collected, inspected, options);
+  return inspected;
+}
+
+/**
+ * Snapshot one user-controlled payload into the exact raw staging array later
+ * decoded into level zero. `data.length` was captured by inspection; each
+ * indexed element is read once here, validated, canonicalized, and never read
+ * from the host object again.
+ */
+function stageInspectedPixels(
+  inspected: InspectedTexturePixels,
+  handle: unknown,
+  budget: TextureAtlasCpuBudget,
+  options?: TextureAtlasBuildOptions,
+): InspectedTexturePixels {
+  const valueCount = inspected.pixelCount * inspected.stride;
+  const byteLength = BigInt(valueCount) * BigInt(textureSourceElementBytes(inspected.dataType));
+  reserveTextureAtlasCpuBytes(budget, byteLength, 'material texture raw snapshot');
+  let snapshot: Uint8Array | Uint16Array | Float32Array;
+  try {
+    snapshot = inspected.dataType === 'uint8'
+      ? new Uint8Array(valueCount)
+      : inspected.dataType === 'float32'
+        ? new Float32Array(valueCount)
+        : new Uint16Array(valueCount);
+  } catch (error) {
+    releaseTextureAtlasCpuBytes(budget, byteLength);
+    throw error;
+  }
+
+  try {
+    const integerMax = inspected.dataType === 'uint8'
+      ? 255
+      : inspected.dataType === 'float32'
+        ? null
+        : 65535;
+    for (let index = 0; index < valueCount; index += 1) {
+      const value = Number(inspected.data[index]);
+      if (!Number.isFinite(value)) {
+        throw texturePayloadError(
+          handle,
+          options,
+          `decoded pixel data must be finite at the raw-input boundary ` +
+            `(value ${index} is ${String(value)})`,
+        );
+      }
+      if (
+        integerMax != null &&
+        (!Number.isInteger(value) || value < 0 || value > integerMax)
+      ) {
+        throw texturePayloadError(
+          handle,
+          options,
+          `raw pixel value ${index} must be an integer in [0, ${integerMax}] ` +
+            `for ${inspected.dataType}`,
+        );
+      }
+      if (inspected.dataType === 'float32') {
+        const stored = Math.fround(value);
+        if (!Number.isFinite(stored)) {
+          throw texturePayloadError(
+            handle,
+            options,
+            `raw pixel value ${index} overflows float32 storage`,
+          );
+        }
+        if (value !== 0 && stored === 0) {
+          throw texturePayloadError(
+            handle,
+            options,
+            `raw pixel value ${index} is nonzero but underflows to zero in float32`,
+          );
+        }
+        snapshot[index] = stored;
+      } else {
+        snapshot[index] = value;
+      }
+    }
+  } catch (error) {
+    releaseTextureAtlasCpuBytes(budget, byteLength);
+    throw error;
+  }
+
+  return Object.freeze({
+    ...inspected,
+    data: snapshot,
+    stagingByteLength: Number(byteLength),
+  });
 }
 
 function decodedChannel(
@@ -892,13 +1486,38 @@ interface AtlasPackingLayer {
 }
 
 function nextPowerOfTwo(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(
+      `[pt-webgl2] material texture tile extent must be a positive safe integer ` +
+        `(received ${String(value)}).`,
+    );
+  }
   let result = 1;
-  while (result < value) result *= 2;
+  while (result < value) {
+    if (result > Number.MAX_SAFE_INTEGER / 2) {
+      throw new RangeError(
+        `[pt-webgl2] material texture tile extent ${value} has no safe power-of-two container.`,
+      );
+    }
+    result *= 2;
+  }
   return result;
 }
 
 function previousPowerOfTwo(value: number): number {
-  return 2 ** Math.floor(Math.log2(value));
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(
+      `[pt-webgl2] material texture atlas extent must be a positive safe integer ` +
+        `(received ${String(value)}).`,
+    );
+  }
+  const result = 2 ** Math.floor(Math.log2(value));
+  if (!Number.isSafeInteger(result) || result <= 0) {
+    throw new RangeError(
+      `[pt-webgl2] material texture atlas extent ${value} has no safe power-of-two floor.`,
+    );
+  }
+  return result;
 }
 
 function allocateAtlasTile(
@@ -1160,6 +1779,7 @@ interface TextureAtlasPlan {
  */
 function planTextureAtlas(
   materials: readonly MaterialSpec[],
+  transaction: TextureAtlasSourceTransaction,
   options?: TextureAtlasBuildOptions,
 ): TextureAtlasPlan | null {
   const storageClass = options?.storageClass ?? 'ldr';
@@ -1170,11 +1790,29 @@ function planTextureAtlas(
     for (const key of SAMPLED_MAP_KEYS) {
       if (textureStorageClassForMapKey(key) !== storageClass) continue;
       const ref = m[key] as { readonly handle?: unknown } | undefined;
-      collectHandle(handles, seen, ref, textureColorSpaceForMapKey(key));
+      collectHandle(
+        handles,
+        seen,
+        ref,
+        textureColorSpaceForMapKey(key),
+        textureChannelRoleForMapKey(key),
+      );
     }
     if (storageClass === 'ldr') {
-      collectHandle(handles, seen, m.frontLayer?.normalMap, 'linear');
-      collectHandle(handles, seen, m.backLayer?.normalMap, 'linear');
+      collectHandle(
+        handles,
+        seen,
+        m.frontLayer?.normalMap,
+        'linear',
+        LAYER_NORMAL_CHANNEL_ROLE,
+      );
+      collectHandle(
+        handles,
+        seen,
+        m.backLayer?.normalMap,
+        'linear',
+        LAYER_NORMAL_CHANNEL_ROLE,
+      );
     }
   }
   if (handles.length === 0) return null;
@@ -1188,8 +1826,9 @@ function planTextureAtlas(
     usesMipFiltering: boolean;
   }[] = [];
   let dim = 0;
-  for (const { handle, colorSpace, usesMipFiltering } of handles) {
-    const source = inspectHandlePixels(handle, options);
+  for (const collected of handles) {
+    const { handle, colorSpace, usesMipFiltering } = collected;
+    const source = inspectCollectedHandlePixels(collected, transaction, options);
     inspected.push({ handle, colorSpace, pixels: source, usesMipFiltering });
     dim = Math.max(dim, source.width, source.height);
   }
@@ -1218,14 +1857,47 @@ function planTextureAtlas(
   };
 }
 
+function stageTextureAtlasPlan(
+  plan: TextureAtlasPlan,
+  budget: TextureAtlasCpuBudget,
+  transaction: TextureAtlasSourceTransaction,
+  options?: TextureAtlasBuildOptions,
+): TextureAtlasPlan {
+  const startingBytes = budget.usedBytes;
+  const addedHandles: unknown[] = [];
+  try {
+    return {
+      ...plan,
+      inspected: plan.inspected.map((entry) => {
+        let pixels = transaction.stagedByHandle.get(entry.handle);
+        if (pixels == null) {
+          pixels = stageInspectedPixels(entry.pixels, entry.handle, budget, options);
+          transaction.stagedByHandle.set(entry.handle, pixels);
+          addedHandles.push(entry.handle);
+        }
+        return { ...entry, pixels };
+      }),
+    };
+  } catch (error) {
+    // Every successfully-created snapshot in this plan becomes unreachable on
+    // failure. Roll the aggregate reservation back as one transaction so a
+    // caller that catches and continues never inherits phantom staging bytes.
+    for (const handle of addedHandles) transaction.stagedByHandle.delete(handle);
+    budget.usedBytes = startingBytes;
+    throw error;
+  }
+}
+
 function validateTextureAtlasPlan(
   plan: TextureAtlasPlan,
   options?: TextureAtlasBuildOptions,
 ): void {
-  // Validate every source before allocating level zero. Materialization re-reads
-  // through the checked decoder so a mutable payload still fails closed.
+  // Validate the immutable raw snapshots before allocating level zero.
   const { inspected, storageClass } = plan;
   for (const { handle, colorSpace, pixels: source } of inspected) {
+    if (source.stagingByteLength == null) {
+      throw new Error('[pt-webgl2] internal material texture plan was not staged.');
+    }
     validateInspectedPixels(source, handle, colorSpace, storageClass, options);
   }
 }
@@ -1308,9 +1980,7 @@ function materializeTextureAtlasPlan(
   return atlas;
 }
 
-type RadianceTextureRef =
-  | NonNullable<MaterialSpec['emissiveMap']>
-  | NonNullable<MaterialSpec['lightMap']>;
+type RadianceTextureRef = NonNullable<MaterialSpec['emissiveMap']>;
 
 /**
  * Validate the exact binary16 texels that WebGL samples against the exact
@@ -1333,7 +2003,7 @@ function validateRadianceMapUse(
     );
   }
   const maxReachableLod =
-    ref.mipFilter != null && ref.mipFilter !== 'none'
+    ref.mipFilter !== 'none'
       ? Math.floor(Math.log2(Math.max(placement.width, placement.height)))
       : 0;
   for (let lod = 0; lod <= maxReachableLod; lod += 1) {
@@ -1413,10 +2083,22 @@ export function packTextureAtlas(
   materials: readonly MaterialSpec[],
   options?: TextureAtlasBuildOptions,
 ): TextureAtlas | null {
-  const plan = planTextureAtlas(materials, options);
-  if (plan == null) return null;
+  const materialSnapshot = snapshotMaterialTextureInputs(materials);
+  const sourceTransaction = createTextureAtlasSourceTransaction();
+  const planned = planTextureAtlas(materialSnapshot, sourceTransaction, options);
+  if (planned == null) return null;
+  const atlasBytes = textureAtlasStorageByteLengthBigInt(
+    planned.dim,
+    planned.layerCount,
+    planned.storageClass,
+  );
+  const budget: TextureAtlasCpuBudget = {
+    usedBytes: atlasBytes,
+    limitBytes: BigInt(MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES),
+  };
+  const plan = stageTextureAtlasPlan(planned, budget, sourceTransaction, options);
   validateTextureAtlasPlan(plan, options);
-  return materializeTextureAtlasPlan(plan, materials, options);
+  return materializeTextureAtlasPlan(plan, materialSnapshot, options);
 }
 
 export interface MaterialTextureAtlases {
@@ -1430,6 +2112,7 @@ export interface MaterialTextureAtlasPlanSummary {
 }
 
 interface PreparedMaterialTextureAtlases {
+  readonly materials: readonly MaterialSpec[];
   readonly ldrPlan: TextureAtlasPlan | null;
   readonly hdrPlan: TextureAtlasPlan | null;
   readonly ldrOptions: TextureAtlasBuildOptions;
@@ -1445,6 +2128,7 @@ function prepareMaterialTextureAtlases(
   materials: readonly MaterialSpec[],
   options?: Omit<TextureAtlasBuildOptions, 'storageClass'>,
 ): PreparedMaterialTextureAtlases {
+  const materialSnapshot = snapshotMaterialTextureInputs(materials);
   const ldrOptions: TextureAtlasBuildOptions = {
     ...options,
     storageClass: 'ldr',
@@ -1453,22 +2137,23 @@ function prepareMaterialTextureAtlases(
     ...options,
     storageClass: 'hdr',
   };
-  const ldrPlan = planTextureAtlas(materials, ldrOptions);
-  const hdrPlan = planTextureAtlas(materials, hdrOptions);
+  const sourceTransaction = createTextureAtlasSourceTransaction();
+  const plannedLdr = planTextureAtlas(materialSnapshot, sourceTransaction, ldrOptions);
+  const plannedHdr = planTextureAtlas(materialSnapshot, sourceTransaction, hdrOptions);
   const ldrBytes =
-    ldrPlan == null
+    plannedLdr == null
       ? 0n
       : textureAtlasStorageByteLengthBigInt(
-          ldrPlan.dim,
-          ldrPlan.layerCount,
+          plannedLdr.dim,
+          plannedLdr.layerCount,
           'ldr',
         );
   const hdrBytes =
-    hdrPlan == null
+    plannedHdr == null
       ? 0n
       : textureAtlasStorageByteLengthBigInt(
-          hdrPlan.dim,
-          hdrPlan.layerCount,
+          plannedHdr.dim,
+          plannedHdr.layerCount,
           'hdr',
         );
   const combinedBytes = ldrBytes + hdrBytes;
@@ -1477,13 +2162,32 @@ function prepareMaterialTextureAtlases(
       `[pt-webgl2] combined material texture atlas CPU mip chains require ` +
         `${combinedBytes.toString()} bytes (${ldrBytes.toString()} RGBA8 + ` +
         `${hdrBytes.toString()} RGBA16F), exceeding the shared ` +
-        `${MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES}-byte staging budget before allocation.`,
+      `${MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES}-byte staging budget before allocation.`,
     );
   }
 
+  // Reserve the complete retained mip pair before adding immutable raw
+  // snapshots. The resulting aggregate is the actual peak transaction memory:
+  // source snapshots remain live while level zero and its mip chain are built.
+  const budget: TextureAtlasCpuBudget = {
+    usedBytes: combinedBytes,
+    limitBytes: BigInt(MATERIAL_TEXTURE_ATLAS_STORAGE_BUDGET_BYTES),
+  };
+  const ldrPlan = plannedLdr == null
+    ? null
+    : stageTextureAtlasPlan(plannedLdr, budget, sourceTransaction, ldrOptions);
+  const hdrPlan = plannedHdr == null
+    ? null
+    : stageTextureAtlasPlan(plannedHdr, budget, sourceTransaction, hdrOptions);
   if (ldrPlan != null) validateTextureAtlasPlan(ldrPlan, ldrOptions);
   if (hdrPlan != null) validateTextureAtlasPlan(hdrPlan, hdrOptions);
-  return { ldrPlan, hdrPlan, ldrOptions, hdrOptions };
+  return {
+    materials: materialSnapshot,
+    ldrPlan,
+    hdrPlan,
+    ldrOptions,
+    hdrOptions,
+  };
 }
 
 /**
@@ -1518,7 +2222,7 @@ export function packMaterialTextureAtlases(
         ? null
         : materializeTextureAtlasPlan(
             prepared.ldrPlan,
-            materials,
+            prepared.materials,
             prepared.ldrOptions,
           ),
     hdr:
@@ -1526,7 +2230,7 @@ export function packMaterialTextureAtlases(
         ? null
         : materializeTextureAtlasPlan(
             prepared.hdrPlan,
-            materials,
+            prepared.materials,
             prepared.hdrOptions,
           ),
   };

@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
-  finalizeGeneralizedDiReservoirWeight,
+  finalizeGeneralizedDiReservoirLogWeight,
   generalizedDiReuseCandidateLogWeight,
   generalizedDiReuseCandidateWeight,
   generalizedTalbotMisWeight,
-  scaleGeneralizedDiCandidateLogWeights,
 } from './support/diGeneralizedReuse.js';
 import { RESERVOIR_DI_WGSL } from '../../shaders/reservoirDi.wgsl.js';
 
@@ -123,7 +122,9 @@ function monteCarloReuseMean(
         densitiesAtDomains: targets.map(
           (target) => target[reservoir.selected]!,
         ),
-        sourceReservoirWeight: reservoir.weight,
+        sourceLogEstimatorNumerator: Math.log2(
+          reservoir.weight * targets[sourceIndex]![reservoir.selected]!,
+        ),
       });
     }
     estimateSum += outputContribution;
@@ -199,19 +200,29 @@ describe('ReSTIR-DI generalized Talbot / GRIS CPU oracle', () => {
         sourceReservoirWeight: 3e28,
       }),
     ];
-    const scaled = scaleGeneralizedDiCandidateLogWeights(logWeights);
-    expect(scaled.scaledWeights[0]).toBeCloseTo(1, 12);
-    expect(scaled.scaledWeights[1]).toBeCloseTo(1e-10, 18);
-    expect(
-      scaled.scaledWeights[0]! / scaled.scaledWeights[1]!,
-    ).toBeCloseTo(1e10, -2);
-    expect(
-      finalizeGeneralizedDiReservoirWeight(
-        scaled.scaledWeightSum,
-        1,
-        scaled.maxLogWeight,
-      ),
-    ).toBe(3.402823466e38);
+    expect(logWeights[0]! - logWeights[1]!).toBeCloseTo(
+      Math.log2(1e10),
+      12,
+    );
+    const finalized = finalizeGeneralizedDiReservoirLogWeight(
+      logWeights[0]!,
+      3e38,
+    );
+    expect(finalized.H).toBe(logWeights[0]);
+    expect(finalized.logW).toBeGreaterThan(0);
+    expect(Number.isFinite(finalized.logW)).toBe(true);
+  });
+
+  it('reconstructs source logW from H when a linear f32 W would be zero', () => {
+    const sourceDensity = 2 ** -100;
+    const logWeight = generalizedDiReuseCandidateLogWeight({
+      sourceIndex: 0,
+      attempts: [1, 1],
+      densitiesAtDomains: [sourceDensity, sourceDensity],
+      sourceLogEstimatorNumerator: -300,
+    });
+    expect(logWeight).toBeCloseTo(-301, 12);
+    expect(Number.isFinite(logWeight)).toBe(true);
   });
 
   it('is unbiased for current plus previous reservoirs with unequal support', () => {
@@ -298,7 +309,9 @@ describe('ReSTIR-DI generalized Talbot / GRIS CPU oracle', () => {
           densitiesAtDomains: targets.map(
             (target) => target[reservoir.selected]!,
           ),
-          sourceReservoirWeight: reservoir.weight,
+          sourceLogEstimatorNumerator: Math.log2(
+            reservoir.weight * targets[sourceIndex]![reservoir.selected]!,
+          ),
         });
       }
       estimateSum += contribution;
@@ -309,10 +322,22 @@ describe('ReSTIR-DI generalized Talbot / GRIS CPU oracle', () => {
     );
   });
 
-  it('finalizes the UCW without dividing by represented attempts twice', () => {
-    expect(finalizeGeneralizedDiReservoirWeight(12, 3)).toBe(4);
-    expect(finalizeGeneralizedDiReservoirWeight(12, 0)).toBe(0);
-    expect(finalizeGeneralizedDiReservoirWeight(Number.NaN, 3)).toBe(0);
+  it('finalizes H/logW without dividing by represented attempts twice', () => {
+    const finalized = finalizeGeneralizedDiReservoirLogWeight(
+      Math.log2(12),
+      3,
+    );
+    expect(finalized.H).toBeCloseTo(Math.log2(12), 15);
+    expect(finalized.logW).toBeCloseTo(2, 15);
+
+    const highLog = finalizeGeneralizedDiReservoirLogWeight(200, 2 ** -100);
+    expect(highLog.logW).toBe(300);
+    expect(highLog.logW).toBeGreaterThan(Math.log2(3.402823466e38));
+
+    expect(finalizeGeneralizedDiReservoirLogWeight(12, 0).logW)
+      .toBe(Number.NEGATIVE_INFINITY);
+    expect(finalizeGeneralizedDiReservoirLogWeight(Number.NaN, 3).logW)
+      .toBe(Number.NEGATIVE_INFINITY);
   });
 
   it('pins the production WGSL equation and identity area-measure Jacobian', () => {
@@ -323,8 +348,21 @@ describe('ReSTIR-DI generalized Talbot / GRIS CPU oracle', () => {
       'RESERVOIR_DI_EMITTER_AREA_SHIFT_JACOBIAN: f32 = 1.0',
     );
     expect(RESERVOIR_DI_WGSL).toContain(
-      'maxLogWeight +',
+      'sourceLogEstimatorNumerator - log2(sourceDensity)',
     );
+    expect(RESERVOIR_DI_WGSL).toContain(
+      'representedWrsSelectedLogCorrectionParts(wrs)',
+    );
+    expect(RESERVOIR_DI_WGSL).toContain(
+      'logW:    f32',
+    );
+    expect(RESERVOIR_DI_WGSL).toContain(
+      '(*r).logW = min(result, RESERVOIR_DI_MAX_FINITE_F32)',
+    );
+    expect(RESERVOIR_DI_WGSL).not.toContain(
+      'min(result, log2(RESERVOIR_DI_MAX_FINITE_F32))',
+    );
+    expect(RESERVOIR_DI_WGSL).not.toContain('let rawW = exp2(logW)');
     expect(RESERVOIR_DI_WGSL).toContain(
       'log2(f32(attempts)) + log2(density)',
     );
@@ -333,6 +371,9 @@ describe('ReSTIR-DI generalized Talbot / GRIS CPU oracle', () => {
     );
     expect(RESERVOIR_DI_WGSL).toContain(
       'fn reservoirDiGeneralizedReuseLogWeight(',
+    );
+    expect(RESERVOIR_DI_WGSL).toContain(
+      'logTechniqueDenominator +',
     );
     expect(RESERVOIR_DI_WGSL).not.toContain(
       'RESERVOIR_DI_MAX_REUSE_WEIGHT',

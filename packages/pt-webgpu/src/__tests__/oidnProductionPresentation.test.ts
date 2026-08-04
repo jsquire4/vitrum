@@ -107,6 +107,8 @@ function makeProductionDevice(): {
     limits: {
       maxStorageBuffersPerShaderStage: 64,
       maxStorageTexturesPerShaderStage: 8,
+      maxTextureDimension2D: 8192,
+      maxTextureArrayLayers: 256,
     },
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),

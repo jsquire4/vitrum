@@ -351,12 +351,11 @@ assert.ok(bdptProof);
 const restirPtProof = RADIOMETRIC_AB_PROOFS.find((proof) => proof.id === 'restir-pt');
 assert.ok(restirPtProof);
 
-test('walkaround result validation accepts complete evidence for every recognized verdict', () => {
+test('walkaround result validation accepts complete evidence for every non-failure verdict', () => {
   const fixtures = [
     ['a8', validA8WalkaroundFixture(0.001), false],
     ['a8', validA8WalkaroundFixture(0.01), true],
     ['a8', validA8WalkaroundFixture(0.04), true],
-    ['a8', validA8WalkaroundFixture(0.07), true],
     ['sun', validSunWalkaroundFixture(1), false],
     ['sun', validSunWalkaroundFixture(2), true],
     [

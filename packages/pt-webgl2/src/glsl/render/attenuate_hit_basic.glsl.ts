@@ -18,7 +18,14 @@ export const ATTENUATE_HIT_BASIC_GLSL = /* glsl */ `
     for ( int step = 0; step < 32; step ++ ) {
       if ( step >= state.traversals ) break;
       sobolBounceIndex ++;
-      int hitType = traceScene( ray, state.fogMaterial, surfaceHit );
+      int hitType = traceScene(
+        ray, state.mediumStack,
+        state.fogMaterial, state.wavelength, surfaceHit
+      );
+      if ( hitType == INVALID_HIT ) {
+        result = true;
+        break;
+      }
       if ( hitType != SURFACE_HIT ) {
         result = false;
         break;
@@ -49,15 +56,17 @@ export const ATTENUATE_HIT_BASIC_GLSL = /* glsl */ `
         traveledDistance += max( surfaceHit.dist, 0.0 );
       }
       if ( ! material.castShadow && state.isShadowRay ) {
-        ray.origin = stepRayOrigin(
-          ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
-        );
+        if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+          result = true;
+          break;
+        }
         continue;
       }
-      if ( material.side != 0.0 && surfaceHit.side == material.side ) {
-        ray.origin = stepRayOrigin(
-          ray.origin, ray.direction, - surfaceHit.faceNormal, surfaceHit.dist
-        );
+      if ( material.side != 0.0 && surfaceHit.side != material.side ) {
+        if ( ! setExactRayRangeFromSurfaceHit( ray, surfaceHit ) ) {
+          result = true;
+          break;
+        }
         continue;
       }
       result = true;

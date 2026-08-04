@@ -1288,7 +1288,7 @@ export class BvhBufferHost {
     device: GPUDevice,
     bvhBuffers: Pick<
       SceneBVHBuffers,
-      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhColors' | 'bvhPositions' | 'bvhMode' | 'tlas'
+      'bvhNodes' | 'bvhIndex' | 'bvhBeerColors' | 'bvhEmissiveLe' | 'materialTextureAtlas' | 'bvhRoughMetal' | 'bvhNormals' | 'bvhTangents' | 'bvhColors' | 'bvhPositions' | 'opticalTriangleIdentity' | 'opticalInstanceBoundaryIdBasePlusOne' | 'bvhMode' | 'tlas'
     >,
     retainedAtlasBytes = 0,
   ): void {

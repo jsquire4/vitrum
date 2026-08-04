@@ -359,7 +359,7 @@ describe('pt-webgl2 transactional scene texture upload', () => {
     } as never;
 
     expect(() => buildSceneTextures(gl, rejected, capabilities)).toThrow(
-      /emissiveMap without complete CPU-readable texels/,
+      /authored material texture during setScene is not CPU-readable/,
     );
     expect(createTexture).not.toHaveBeenCalled();
   });
@@ -448,7 +448,7 @@ describe('pt-webgl2 transactional scene texture upload', () => {
           },
         },
       },
-      /emissive\[0\] underflows material RGBA32F storage/,
+      /emissive\[0\] must not underflow to zero as float32/,
     ],
     [
       'negative mapped outgoing radiance',

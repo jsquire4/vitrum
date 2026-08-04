@@ -99,7 +99,7 @@ describe('pipeline compiler diagnostics', () => {
         createCompositePipeline(
           device,
           bglCache,
-          'depth24plus' as GPUTextureFormat,
+          'depth24plus',
         ),
       ).toThrow(/swapChainFormat is unsupported/);
       expect(createPipelineLayout).toHaveBeenCalledTimes(
@@ -129,7 +129,7 @@ describe('pipeline compiler diagnostics', () => {
       compilePipelines(
         device,
         {},
-        'depth24plus' as GPUTextureFormat,
+        'depth24plus',
       ),
     ).rejects.toThrow(/swapChainFormat is unsupported/);
     expect(createShaderModule).not.toHaveBeenCalled();

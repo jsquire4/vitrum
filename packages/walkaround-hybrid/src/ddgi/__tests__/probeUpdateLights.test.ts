@@ -239,6 +239,50 @@ describe('probeUpdateRays soft-sun shader plumbing', () => {
   });
 });
 
+describe('probeUpdateRays runtime-light header validation', () => {
+  it('requires the exact record/alias partition after proving count arithmetic safe', () => {
+    const shader = makeProbeUpdateRaysWGSL(4);
+    const runtimeCount = functionBody(shader, 'ddgiRuntimeLightCount');
+
+    expect(runtimeCount).toContain('dataOffset != 4u');
+    expect(runtimeCount).toContain(
+      'let expectedAliasOffset = dataOffset + count * 16u;',
+    );
+    expect(runtimeCount).toContain('aliasOffset != expectedAliasOffset');
+    expect(runtimeCount.indexOf('count > (words - dataOffset) / 16u'))
+      .toBeLessThan(runtimeCount.indexOf('dataOffset + count * 16u'));
+  });
+});
+
+describe('probeUpdateRays material transport ownership', () => {
+  it('passes split surface-source ownership into dielectric transport and preserves unlit output', () => {
+    const shader = makeProbeUpdateRaysWGSL(4);
+    const surface = shader.indexOf(
+      'let surfaceSource = ddgiEvaluateProbeSurfaceRadiance(',
+    );
+    const suffix = shader.indexOf('radiance = vec3f(', surface);
+    expect(surface).toBeGreaterThanOrEqual(0);
+    expect(suffix).toBeGreaterThan(surface);
+    expect(shader.slice(suffix, suffix + 800)).toContain(
+      'surfaceSource, accepted.sourceFeature, containingMedia,',
+    );
+    expect(shader).toContain('1.0 - mappedTransmission,');
+    expect(shader).toContain(
+      'currentSurfaceSource.opaqueLo * opaqueWeight +',
+    );
+    expect(shader).toContain(
+      'currentSurfaceSource.persistentReflectionLo,',
+    );
+    expect(shader).toContain(
+      'if ((mat.flags & MATERIAL_FLAG_UNLIT) != 0u)',
+    );
+    expect(shader).toContain(
+      'out.emissionLo = probeMat.albedo * probeMat.layerTransmission;',
+    );
+    expect(shader).toContain('out.terminalLo = out.emissionLo;');
+  });
+});
+
 // ── point fixture ─────────────────────────────────────────────────────────────
 
 describe('packDDGIProbeLights — point fixture', () => {
@@ -603,6 +647,19 @@ describe('packDDGIProbeLights — Float32 publication envelope', () => {
     }], 1));
     const alias = packed.u32[2]!;
     expect(packed.f32[lightBase(0) + 7]).toBe(f32Max);
+    expect(packed.f32[alias]).toBe(1);
+    expect(packed.f32[alias + 2]).toBe(1);
+  });
+
+  it('does not reject a positive proposal whose luminance is below f32 range', () => {
+    const packed = decode(packDDGIProbeLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: f32MinSubnormal,
+      color: { r: 1, g: 0, b: 0 },
+    }], 1));
+    const alias = packed.u32[2]!;
+    expect(packed.f32[lightBase(0) + 7]).toBe(f32MinSubnormal);
     expect(packed.f32[alias]).toBe(1);
     expect(packed.f32[alias + 2]).toBe(1);
   });

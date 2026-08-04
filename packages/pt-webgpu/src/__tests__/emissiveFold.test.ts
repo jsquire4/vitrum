@@ -185,6 +185,7 @@ describe('packFoldedMaterialEntry (H10 helper)', () => {
     if (primitive.kind === 'analytic') throw new Error('test fixture must be a mesh');
     const authored = {
       ...primitive,
+      uvs: new Float32Array([0, 0, 1, 0, 0, 1]),
       material: {
         ...primitive.material,
         emissive: [9, 8, 7] as [number, number, number],
@@ -221,7 +222,7 @@ describe('packFoldedMaterialEntry (H10 helper)', () => {
     };
     expect(() => packFoldedMaterialEntry(prim, duplicateScene, true)).toThrow(/multiple mesh-area emitters/);
     expect(() => buildPackedScene(duplicateScene, { cameraVisibleEmitters: false })).toThrow(
-      /multiple mesh-area emitters/,
+      /duplicates mesh-area ownership/,
     );
   });
 

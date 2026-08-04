@@ -861,6 +861,7 @@ export class GpuResources {
       { binding: 2, resource: { buffer: sb.tlasBlasRootsBuffer } },
       { binding: 3, resource: { buffer: sb.tlasInstanceWorldToLocalBuffer } },
       { binding: 4, resource: { buffer: sb.tlasInstanceLocalToWorldBuffer } },
+      { binding: 5, resource: { buffer: sb.opticalInstanceBoundaryIdBasePlusOneBuffer } },
     ];
   }
 
@@ -917,6 +918,7 @@ export class GpuResources {
           _buf(2, _ro), // tlasBlasRoots
           _buf(3, _ro), // tlasInstanceWorldToLocal
           _buf(4, _ro), // tlasInstanceLocalToWorld
+          _buf(5, _ro), // opticalInstanceBoundaryIdBasePlusOne
         ],
       });
       // Group 3 — WS2 light-tree node buffer + P2 material textures (per-vertex

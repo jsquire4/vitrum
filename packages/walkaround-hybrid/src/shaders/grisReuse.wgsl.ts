@@ -22,7 +22,7 @@ export const GRIS_REUSE_WGSL = /* wgsl */ `// ==================================
 // ============================================================
 
 const GRIS_MAX_FINITE_F32: f32 = 3.402823466e38;
-const GRIS_LOG_ZERO: f32 = -3.402823466e38;
+const GRIS_LOG_ZERO: f32 = RESERVOIR_GI_LOG_ZERO;
 
 fn grisFiniteVec3(value: vec3f) -> bool {
   return reservoirGiFinite(value.x)
@@ -40,24 +40,63 @@ fn grisSafeDirection(value: vec3f) -> vec3f {
   return scaled / length(scaled);
 }
 
+fn grisSafeDirectionBetween(fromPoint: vec3f, toPoint: vec3f) -> vec3f {
+  if (!grisFiniteVec3(fromPoint) || !grisFiniteVec3(toPoint)) {
+    return vec3f(0.0);
+  }
+  let coordinateScale = max(
+    max(abs(fromPoint.x), max(abs(fromPoint.y), abs(fromPoint.z))),
+    max(abs(toPoint.x), max(abs(toPoint.y), abs(toPoint.z))),
+  );
+  if (!(coordinateScale > 0.0)) { return vec3f(0.0); }
+  return grisSafeDirection(
+    toPoint / coordinateScale - fromPoint / coordinateScale,
+  );
+}
+
+// ns is face-forwarded toward the source receiver when the suffix hit is
+// created. Reconnection may move the receiver within that hemisphere, but a
+// move across the surface would change front/back layers, one-sided emission,
+// and the oriented mapped normal. Those alternate suffix states are not stored.
+fn grisSurfaceSuffixReceiverSupported(
+  receiverXv: vec3f,
+  xs: vec3f,
+  ns: vec3f,
+) -> bool {
+  let towardReceiver = grisSafeDirectionBetween(xs, receiverXv);
+  let suffixNormal = grisSafeDirection(ns);
+  return
+    dot(towardReceiver, towardReceiver) > 0.0 &&
+    dot(suffixNormal, suffixNormal) > 0.0 &&
+    dot(suffixNormal, towardReceiver) > 0.0;
+}
+
 fn grisHistoryEpoch() -> u32 {
   return bitcast<u32>(ubo.sunAngular.y);
 }
 
-fn grisSampleKindValid(sampleKind: u32) -> bool {
-  return sampleKind == GI_SAMPLE_SURFACE
-    || sampleKind == GI_SAMPLE_ENVIRONMENT;
+fn grisReconnectionGeometryTerm(x1: vec3f, x2: vec3f, n2: vec3f) -> f32 {
+  let logResult = grisLogReconnectionGeometryTerm(x1, x2, n2);
+  return reservoirGiRepresentPositiveLog(logResult);
 }
 
-fn grisReconnectionGeometryTerm(x1: vec3f, x2: vec3f, n2: vec3f) -> f32 {
+fn grisLogReconnectionGeometryTerm(x1: vec3f, x2: vec3f, n2: vec3f) -> f32 {
   if (!grisFiniteVec3(x1) || !grisFiniteVec3(x2) || !grisFiniteVec3(n2)) {
-    return 0.0;
+    return GRIS_LOG_ZERO;
   }
-  let d = x2 - x1;
-  let distanceScale = max(abs(d.x), max(abs(d.y), abs(d.z)));
+  let coordinateScale = max(
+    max(abs(x1.x), max(abs(x1.y), abs(x1.z))),
+    max(abs(x2.x), max(abs(x2.y), abs(x2.z))),
+  );
   let normalScale = max(abs(n2.x), max(abs(n2.y), abs(n2.z)));
-  if (!(distanceScale > 0.0) || !(normalScale > 0.0)) { return 0.0; }
-  let scaledDistance = d / distanceScale;
+  if (!(coordinateScale > 0.0) || !(normalScale > 0.0)) { return GRIS_LOG_ZERO; }
+  let coordinateDelta = x2 / coordinateScale - x1 / coordinateScale;
+  let deltaScale = max(
+    abs(coordinateDelta.x),
+    max(abs(coordinateDelta.y), abs(coordinateDelta.z)),
+  );
+  if (!(deltaScale > 0.0)) { return GRIS_LOG_ZERO; }
+  let scaledDistance = coordinateDelta / deltaScale;
   let scaledNormal = n2 / normalScale;
   let distanceLength = length(scaledDistance);
   let normalLength = length(scaledNormal);
@@ -65,20 +104,19 @@ fn grisReconnectionGeometryTerm(x1: vec3f, x2: vec3f, n2: vec3f) -> f32 {
     scaledNormal / normalLength,
     scaledDistance / distanceLength,
   ));
-  if (!(cosine > 0.0) || !reservoirGiFinite(cosine)) { return 0.0; }
-  let inverseDistanceScale = 1.0 / distanceScale;
+  if (!(cosine > 0.0) || !reservoirGiFinite(cosine)) { return GRIS_LOG_ZERO; }
   let result =
-    cosine * inverseDistanceScale * inverseDistanceScale /
-    (distanceLength * distanceLength);
-  if (!reservoirGiFinite(result)) { return GRIS_MAX_FINITE_F32; }
-  return max(result, 0.0);
+    log2(cosine)
+    - 2.0 * (log2(coordinateScale) + log2(deltaScale))
+    - 2.0 * log2(distanceLength);
+  return select(GRIS_LOG_ZERO, result, reservoirGiFinite(result));
 }
 
 fn grisDirection(sampleKind: u32, xv: vec3f, xs: vec3f, storedDirection: vec3f) -> vec3f {
   if (sampleKind == GI_SAMPLE_ENVIRONMENT) {
     return grisSafeDirection(storedDirection);
   }
-  return grisSafeDirection(xs - xv);
+  return grisSafeDirectionBetween(xv, xs);
 }
 
 fn grisMappedXs(sampleKind: u32, xv: vec3f, xs: vec3f, storedDirection: vec3f) -> vec3f {
@@ -106,6 +144,26 @@ fn grisMaterialTargetAt(
   storedDirection: vec3f,
   storedLo: vec3f,
 ) -> f32 {
+  return luminance(grisMaterialContributionAt(
+    receiverSurface,
+    xv,
+    nv,
+    sampleKind,
+    xs,
+    storedDirection,
+    storedLo,
+  ));
+}
+
+fn grisMaterialContributionAt(
+  receiverSurface: PrimarySurface,
+  xv: vec3f,
+  nv: vec3f,
+  sampleKind: u32,
+  xs: vec3f,
+  storedDirection: vec3f,
+  storedLo: vec3f,
+) -> vec3f {
   let wi = grisDirection(sampleKind, xv, xs, storedDirection);
   var Lo = grisMappedLo(sampleKind, storedDirection, storedLo);
   if (
@@ -119,44 +177,67 @@ fn grisMaterialTargetAt(
     );
   }
   if (!grisFiniteVec3(nv) || !grisFiniteVec3(Lo)
-   || !(dot(wi, wi) > 0.0)) { return 0.0; }
+   || !(dot(wi, wi) > 0.0)) { return vec3f(0.0); }
   let mappedXs = grisMappedXs(sampleKind, xv, xs, storedDirection);
-  let result = restir_gi_receiver_phat_from_surface_or_geometry(
+  let result = restir_gi_receiver_contribution_from_surface_or_geometry(
     receiverSurface,
     xv,
     nv,
     mappedXs,
     Lo,
   );
-  return select(0.0, result, reservoirGiFinite(result) && result > 0.0);
+  return select(
+    vec3f(0.0),
+    result,
+    grisFiniteVec3(result) && any(result > vec3f(0.0)),
+  );
+}
+
+fn grisProxyTintAt(
+  xv: vec3f,
+  nv: vec3f,
+  geoNormal: vec3f,
+  sampleKind: u32,
+  xs: vec3f,
+  storedDirection: vec3f,
+) -> vec3f {
+  let wi = grisDirection(sampleKind, xv, xs, storedDirection);
+  if (!grisFiniteVec3(xv) || !grisFiniteVec3(nv)
+   || !grisFiniteVec3(geoNormal)
+   || !(dot(wi, wi) > 0.0)) { return vec3f(0.0); }
+  var tMax = INFINITY;
+  if (sampleKind == GI_SAMPLE_SURFACE) {
+    let d = safe_length(xs - xv);
+    if (d <= walkaroundRayEndMargin()) { return vec3f(0.0); }
+    tMax = d - walkaroundRayEndMargin();
+  }
+  if (max(0.0, dot(nv, wi)) <= 0.0) { return vec3f(0.0); }
+  let tint = traceSceneAlphaTintTransmittanceTextured(
+    ubo.bvhMode, ubo.tlasNodeCount,
+
+    xv + geoNormal * walkaroundRayOriginBias(), wi, tMax, ubo.triIntersectEpsilon,
+    bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
+  );
+  if (!grisFiniteVec3(tint)) { return vec3f(0.0); }
+  return clamp(tint, vec3f(0.0), vec3f(1.0));
 }
 
 fn grisProxyVisibilityAt(
   xv: vec3f,
   nv: vec3f,
+  geoNormal: vec3f,
   sampleKind: u32,
   xs: vec3f,
   storedDirection: vec3f,
 ) -> f32 {
-  let wi = grisDirection(sampleKind, xv, xs, storedDirection);
-  if (!grisFiniteVec3(xv) || !grisFiniteVec3(nv)
-   || !(dot(wi, wi) > 0.0)) { return 0.0; }
-  var tMax = INFINITY;
-  if (sampleKind == GI_SAMPLE_SURFACE) {
-    let d = safe_length(xs - xv);
-    if (d <= walkaroundRayEndMargin()) { return 0.0; }
-    tMax = d - walkaroundRayEndMargin();
-  }
-  if (max(0.0, dot(nv, wi)) <= 0.0) { return 0.0; }
-  let tint = traceSceneAlphaTintTransmittanceTextured(
-    ubo.bvhMode, ubo.tlasNodeCount,
-
-    xv + nv * walkaroundRayOriginBias(), wi, tMax, ubo.triIntersectEpsilon,
-    bvh_material, BVH_MATERIAL_TEX_WIDTH, bvh_beer,
-  );
-  let visibility = luminance(tint);
-  if (!reservoirGiFinite(visibility)) { return 0.0; }
-  return clamp(visibility, 0.0, 1.0);
+  return luminance(grisProxyTintAt(
+    xv,
+    nv,
+    geoNormal,
+    sampleKind,
+    xs,
+    storedDirection,
+  ));
 }
 
 fn grisMaterialPHatAt(
@@ -168,8 +249,7 @@ fn grisMaterialPHatAt(
   storedDirection: vec3f,
   storedLo: vec3f,
 ) -> f32 {
-  let visibility = grisProxyVisibilityAt(xv, nv, sampleKind, xs, storedDirection);
-  return grisMaterialTargetAt(
+  return reservoirGiRepresentPositiveLog(grisLogMaterialPHatAt(
     receiverSurface,
     xv,
     nv,
@@ -177,7 +257,40 @@ fn grisMaterialPHatAt(
     xs,
     storedDirection,
     storedLo,
-  ) * visibility;
+  ));
+}
+
+fn grisLogMaterialPHatAt(
+  receiverSurface: PrimarySurface,
+  xv: vec3f,
+  nv: vec3f,
+  sampleKind: u32,
+  xs: vec3f,
+  storedDirection: vec3f,
+  storedLo: vec3f,
+) -> f32 {
+  var receiverGeoNormal = nv;
+  if (receiverSurface.hit && length(receiverSurface.pos - xv) <= 5e-2) {
+    receiverGeoNormal = receiverSurface.geoNormal;
+  }
+  let tint = grisProxyTintAt(
+    xv,
+    nv,
+    receiverGeoNormal,
+    sampleKind,
+    xs,
+    storedDirection,
+  );
+  let materialContribution = grisMaterialContributionAt(
+    receiverSurface,
+    xv,
+    nv,
+    sampleKind,
+    xs,
+    storedDirection,
+    storedLo,
+  );
+  return reservoirGiLogPositive(luminance(materialContribution * tint));
 }
 
 // |dT_domain_to_canonical|. Environment directions use the identity shift.
@@ -188,12 +301,34 @@ fn grisDomainToCanonicalJacobian(
   xs: vec3f,
   ns: vec3f,
 ) -> f32 {
-  if (sampleKind == GI_SAMPLE_ENVIRONMENT) { return 1.0; }
-  let gDomain = grisReconnectionGeometryTerm(domainXv, xs, ns);
-  let gCanonical = grisReconnectionGeometryTerm(canonicalXv, xs, ns);
-  if (gDomain <= 0.0 || gCanonical <= 0.0) { return 0.0; }
-  let result = gCanonical / gDomain;
-  return select(0.0, result, reservoirGiFinite(result) && result > 0.0);
+  return reservoirGiRepresentPositiveLog(grisLogDomainToCanonicalJacobian(
+    domainXv,
+    canonicalXv,
+    sampleKind,
+    xs,
+    ns,
+  ));
+}
+
+fn grisLogDomainToCanonicalJacobian(
+  domainXv: vec3f,
+  canonicalXv: vec3f,
+  sampleKind: u32,
+  xs: vec3f,
+  ns: vec3f,
+) -> f32 {
+  if (sampleKind == GI_SAMPLE_ENVIRONMENT) { return 0.0; }
+  if (!grisSurfaceSuffixReceiverSupported(domainXv, xs, ns)
+   || !grisSurfaceSuffixReceiverSupported(canonicalXv, xs, ns)) {
+    return GRIS_LOG_ZERO;
+  }
+  let logGDomain = grisLogReconnectionGeometryTerm(domainXv, xs, ns);
+  let logGCanonical = grisLogReconnectionGeometryTerm(canonicalXv, xs, ns);
+  if (!reservoirGiValidLog(logGDomain) || !reservoirGiValidLog(logGCanonical)) {
+    return GRIS_LOG_ZERO;
+  }
+  let result = logGCanonical - logGDomain;
+  return select(GRIS_LOG_ZERO, result, reservoirGiFinite(result));
 }
 
 // pHat_{<-domain}(y) = pHat_domain(T^-1(y)) * |dT^-1|
@@ -205,20 +340,19 @@ fn grisDomainToCanonicalJacobian(
 // saturating to the same cap.
 fn grisLogWeightedTransformedDensity(
   attempts: u32,
-  pHatDomain: f32,
-  domainToCanonicalJacobian: f32,
+  logPHatDomain: f32,
+  logDomainToCanonicalJacobian: f32,
   inverseValid: bool,
 ) -> f32 {
   if (attempts == 0u || !inverseValid
-   || !reservoirGiFinite(pHatDomain) || !(pHatDomain > 0.0)
-   || !reservoirGiFinite(domainToCanonicalJacobian)
-   || !(domainToCanonicalJacobian > 0.0)) {
+   || !reservoirGiValidLog(logPHatDomain)
+   || !reservoirGiValidLog(logDomainToCanonicalJacobian)) {
     return GRIS_LOG_ZERO;
   }
   let result =
     log2(f32(attempts))
-    + log2(pHatDomain)
-    - log2(domainToCanonicalJacobian);
+    + logPHatDomain
+    - logDomainToCanonicalJacobian;
   return select(
     GRIS_LOG_ZERO,
     result,
@@ -227,31 +361,43 @@ fn grisLogWeightedTransformedDensity(
 }
 
 fn grisScaledMass(logMass: f32, maxLogMass: f32) -> f32 {
-  if (logMass == GRIS_LOG_ZERO || maxLogMass == GRIS_LOG_ZERO) {
+  if (!reservoirGiValidLog(logMass) || !reservoirGiValidLog(maxLogMass)) {
     return 0.0;
   }
   let result = exp2(logMass - maxLogMass);
   return select(0.0, result, reservoirGiFinite(result) && result > 0.0);
 }
 
-fn grisLogCanonicalResamplingWeight(
-  misWeight: f32,
-  canonicalPHat: f32,
-  sourceReservoirW: f32,
-  sourceToCanonicalJacobian: f32,
-) -> f32 {
-  if (!reservoirGiFinite(misWeight) || !(misWeight > 0.0)
-   || !reservoirGiFinite(canonicalPHat) || !(canonicalPHat > 0.0)
-   || !reservoirGiFinite(sourceReservoirW) || !(sourceReservoirW > 0.0)
-   || !reservoirGiFinite(sourceToCanonicalJacobian)
-   || !(sourceToCanonicalJacobian > 0.0)) {
+fn grisLogTechniqueDenominator(maxLogMass: f32, scaledDenominator: f32) -> f32 {
+  if (!reservoirGiValidLog(maxLogMass)
+   || !reservoirGiFinite(scaledDenominator) || !(scaledDenominator > 0.0)) {
     return GRIS_LOG_ZERO;
   }
+  let result = maxLogMass + log2(scaledDenominator);
+  return select(GRIS_LOG_ZERO, result, reservoirGiFinite(result));
+}
+
+fn grisLogCanonicalResamplingWeight(
+  logMisWeight: f32,
+  logCanonicalPHat: f32,
+  sourceH: f32,
+  sourceNativeLogPHat: f32,
+  logSourceToCanonicalJacobian: f32,
+) -> f32 {
+  if (!reservoirGiValidLog(logMisWeight)
+   || !reservoirGiValidLog(logCanonicalPHat)
+   || !reservoirGiValidLog(sourceH)
+   || !reservoirGiValidLog(sourceNativeLogPHat)
+   || !reservoirGiValidLog(logSourceToCanonicalJacobian)) {
+    return GRIS_LOG_ZERO;
+  }
+  let sourceLogW = sourceH - sourceNativeLogPHat;
+  if (!reservoirGiFinite(sourceLogW)) { return GRIS_LOG_ZERO; }
   let result =
-    log2(misWeight)
-    + log2(canonicalPHat)
-    + log2(sourceReservoirW)
-    + log2(sourceToCanonicalJacobian);
+    logMisWeight
+    + logCanonicalPHat
+    + sourceLogW
+    + logSourceToCanonicalJacobian;
   return select(
     GRIS_LOG_ZERO,
     result,
@@ -259,38 +405,27 @@ fn grisLogCanonicalResamplingWeight(
   );
 }
 
-// The WRS selection sum is stored in a common max-log-scaled measure. Recover
-// the estimator's unscaled W directly in log space, then apply the configured
-// production cap. This keeps selection ratios exact without overflowing w_sum.
-fn grisFinaliseLogScaledReservoir(
+// Each generalized candidate already carries its all-technique MIS denominator,
+// including every source reservoir's attempt multiplicity.  Therefore this
+// finalizer persists the WRS selection correction directly, with no second M
+// division: H = selectedLogWeight - log2(selectionProbability).
+fn grisFinaliseRepresentedReservoir(
   r: ptr<function, ReservoirPT>,
-  maxLogWeight: f32,
-  scaledWeightSum: f32,
+  wrs: RepresentedWrsState,
   wCap: f32,
 ) {
-  (*r).W = 0.0;
-  (*r).w_sum = scaledWeightSum;
+  (*r).H = RESERVOIR_GI_LOG_ZERO;
+  (*r).logW = RESERVOIR_GI_LOG_ZERO;
   if ((*r).M == 0u
-   || maxLogWeight == GRIS_LOG_ZERO
-   || !reservoirGiFinite(scaledWeightSum) || !(scaledWeightSum > 0.0)
-   || !reservoirGiFinite((*r).nativePHat) || !((*r).nativePHat > 0.0)
-   || !reservoirGiFinite(wCap) || !(wCap > 0.0)) {
+   || !wrs.hasSelection
+   || !reservoirGiValidLog((*r).nativeLogPHat)
+   || !reservoirGiFinite(wCap) || wCap < 0.0) {
     return;
   }
-  let logW =
-    maxLogWeight
-    + log2(scaledWeightSum)
-    - log2((*r).nativePHat);
-  if (!reservoirGiFinite(logW)) { return; }
-  let logCap = log2(wCap);
-  if (logW >= logCap) {
-    (*r).W = wCap;
-    return;
-  }
-  let value = exp2(logW);
-  if (reservoirGiFinite(value) && value > 0.0) {
-    (*r).W = value;
-  }
+  (*r).H = reservoirGiCollapseLogParts(
+    representedWrsSelectedLogCorrectionParts(wrs),
+  );
+  reservoirGiFinaliseLogWFromH(r, wCap);
 }
 
 `;

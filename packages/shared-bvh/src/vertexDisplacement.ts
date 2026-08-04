@@ -317,11 +317,11 @@ function displacementFilter(ref: TextureRef, primitiveId: string): 'nearest' | '
       'CPU displacement requires matching magFilter/minFilter because no screen-space LOD exists.',
     );
   }
-  if (ref.mipFilter != null && ref.mipFilter !== 'none') {
+  if (ref.mipFilter !== 'none') {
     throw displacementError(
       primitiveId,
       ref,
-      `mipFilter "${String(ref.mipFilter)}" cannot be honored by the base-level CPU displacement sampler.`,
+      `mipFilter "${String(ref.mipFilter ?? 'linear')}" cannot be honored by the base-level CPU displacement sampler.`,
     );
   }
   return ref.magFilter ?? ref.minFilter ?? 'linear';

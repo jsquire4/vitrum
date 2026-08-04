@@ -13,12 +13,19 @@
  */
 
 import type { WgslModule } from '../pipeline/wgslComposer.js';
-import { BSDF_PRIMITIVES_WGSL, LUMINANCE_WGSL, PCG_HASH_TO_F32_WGSL, PCG_WGSL } from '@vitrum/shared-samplers';
+import {
+  BSDF_PRIMITIVES_WGSL,
+  LUMINANCE_WGSL,
+  PCG_HASH_TO_F32_WGSL,
+  PCG_WGSL,
+  REPRESENTED_WRS_WGSL,
+} from '@vitrum/shared-samplers';
 
 export const SHARED_PRIMITIVES_WGSL = /* wgsl */ `// ============================================================
 // Shared WGSL primitives
 // ============================================================
 ${PCG_WGSL}
+${REPRESENTED_WRS_WGSL}
 ${PCG_HASH_TO_F32_WGSL}
 ${BSDF_PRIMITIVES_WGSL}
 

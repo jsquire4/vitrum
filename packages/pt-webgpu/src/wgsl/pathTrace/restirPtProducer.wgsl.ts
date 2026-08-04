@@ -162,8 +162,9 @@ struct RptSuffixMaterial {
 // kernel and visible-vertex producer do. The returned origin is the post-skip ray
 // origin, so callers reconstruct hit positions against the ray that actually hit.
 fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, PtRngState>) -> RptAlphaTraceHit {
-  var ray = rayIn;
-  var hit = traceClosest(ray, ptRayTMin(), INFINITY);
+  let ray = rayIn;
+  var cursor = ptRayTMin();
+  var hit = traceClosest(ray, cursor, INFINITY);
   var valid = true;
   let surfaceHitLimit = sceneSurfaceHitLimit();
   var surfaceHitCount = 0u;
@@ -180,9 +181,13 @@ fn rptTraceClosestAfterAlpha(rayIn: Ray, rng: ptr<function, PtRngState>) -> RptA
       hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, rng,
     );
     if (!passesThrough) { break; }
-    ray.origin =
-      ray.origin + ray.direction * (hit.dist + ptRayTMin());
-    hit = traceClosest(ray, ptRayTMin(), INFINITY);
+    let nextCursor = hit.dist;
+    if (!(nextCursor > cursor)) {
+      valid = false;
+      break;
+    }
+    cursor = nextCursor;
+    hit = traceClosest(ray, cursor, INFINITY);
   }
   var out: RptAlphaTraceHit;
   out.hit = hit;
@@ -235,10 +240,13 @@ fn rptSuffixMaterialAtHit(hit: SceneHit, incomingDir: vec3f, wo: vec3f, heroLamb
     heroLambda,
     out.transmission,
   );
-  out.normal = select(-hit.normal, hit.normal, isFrontFace);
+  let interfaceBaseNormal = select(-hit.normal, hit.normal, isFrontFace);
+  out.normal = interfaceBaseNormal;
   out.normal = applyNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex, isFrontFace);
   out.normal = applyBumpMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
-  out.clearcoatNormal = applyClearcoatNormalMap(matId, hit.triIndex, hit.baryVW, out.normal, hit.instanceIndex);
+  out.clearcoatNormal = applyClearcoatNormalMap(
+    matId, hit.triIndex, hit.baryVW, interfaceBaseNormal, hit.instanceIndex,
+  );
 
   out.clearcoat = clamp(mat.clearcoat * sampleClearcoatTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
   out.clearcoatRoughness = clamp(mat.clearcoatRoughness * sampleClearcoatRoughnessTexture(matId, hit.triIndex, hit.baryVW, hit.instanceIndex), 0.0, 1.0);
@@ -788,8 +796,10 @@ fn rptComputeLoAtReconnection(
 
     // Russian roulette on the suffix throughput.
     if (b >= 1u) {
-      let surv = clamp(max(suffixThroughput.r, max(suffixThroughput.g, suffixThroughput.b)), 0.05, 0.95);
-      if (rand_f32(rng) > surv) { break; }
+      let surv = represented_bernoulli_probability_f32(
+        clamp(max(suffixThroughput.r, max(suffixThroughput.g, suffixThroughput.b)), 0.05, 0.95),
+      );
+      if (!(rand_f32(rng) < surv)) { break; }
       suffixThroughput = suffixThroughput / surv;
     }
   }
@@ -797,10 +807,6 @@ fn rptComputeLoAtReconnection(
   out.Lo = Lo;
   out.valid = rptFiniteVec3(Lo);
   return out;
-}
-
-fn rptSourceLobeWeightSum(clearcoat: f32, sheen: f32) -> f32 {
-  return max(1.0 + max(clearcoat, 0.0) + max(sheen, 0.0), 1e-4);
 }
 
 fn rptSampleSourceReconnectionDirection(
@@ -819,13 +825,13 @@ fn rptSampleSourceReconnectionDirection(
   sheenRoughness: f32,
   anisotropy: f32,
 ) -> vec3f {
-  let lobeWeightSum = rptSourceLobeWeightSum(clearcoat, sheen);
-  let xiSource = rand_f32(rng) * lobeWeightSum;
-  if (xiSource < 1.0) {
-    let baseSpecProb = clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96);
-    let baseDiffProb = max(0.0, 1.0 - baseSpecProb);
-    let sumProb = max(baseSpecProb + baseDiffProb, 1e-4);
-    let specProb = baseSpecProb / sumProb;
+  let extensionProbabilities = brdfRepresentedExtensionLobeProbabilities(
+    clearcoat, sheen,
+  );
+  if (rand_f32(rng) < extensionProbabilities.x) {
+    let specProb = represented_bernoulli_probability_f32(
+      clamp(mix(0.04, 0.96, max(luminance(fresnel), metallic)), 0.04, 0.96),
+    );
     if (rand_f32(rng) < specProb) {
       var bs: BsdfSample;
       if (anisotropy > 0.0) {
@@ -838,7 +844,7 @@ fn rptSampleSourceReconnectionDirection(
     let bs = cosineHemisphereSample(rng, normal);
     return bs.wi;
   }
-  if (xiSource < 1.0 + max(clearcoat, 0.0)) {
+  if (rand_f32(rng) < extensionProbabilities.w) {
     var ccTanT: vec3f;
     var ccTanB: vec3f;
     buildOnb(clearcoatNormal, &ccTanT, &ccTanB);
@@ -916,12 +922,15 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
   primaryRay.origin = vTrace.rayOrigin;
   let vMatId = hitMaterialId(vHit);
   let vMat = decodeMaterial(vMatId);
-  let xv = primaryRay.origin + primaryRay.direction * vHit.dist;
+  let xv = vHit.position;
   let vIsFront = vHit.frontFace;
-  var nv = select(-vHit.normal, vHit.normal, vIsFront);
+  let interfaceBaseNormalV = select(-vHit.normal, vHit.normal, vIsFront);
+  var nv = interfaceBaseNormalV;
   nv = applyNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex, vIsFront);
   nv = applyBumpMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
-  let clearcoatNormalV = applyClearcoatNormalMap(vMatId, vHit.triIndex, vHit.baryVW, nv, vHit.instanceIndex);
+  let clearcoatNormalV = applyClearcoatNormalMap(
+    vMatId, vHit.triIndex, vHit.baryVW, interfaceBaseNormalV, vHit.instanceIndex,
+  );
   let woV = -primaryRay.direction; // eye-side direction at xv
   var baseColorV = vMat.baseColor * sampleVertexColor(vHit.triIndex, vHit.baryVW).rgb * sampleBaseColorTexture(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex).rgb;
   baseColorV = baseColorV * sampleAoFactor(vMatId, vHit.triIndex, vHit.baryVW, vHit.instanceIndex);
@@ -1110,7 +1119,7 @@ fn restirPtProduce(@builtin(global_invocation_id) gid: vec3u) {
     storeReservoirPTHero_rw(&rpt_reservoirOut, pixelIdx, emptyReservoirPTHero());
     return;
   } else {
-    xs = sTrace.rayOrigin + reconRay.direction * sHit.dist;
+    xs = sHit.position;
 
     // ── 3. Suffix radiance Lo leaving xs toward xv ──
     let reconDirToXv = safe_normalize(xv - xs); // wo at xs (Lo is measured here)

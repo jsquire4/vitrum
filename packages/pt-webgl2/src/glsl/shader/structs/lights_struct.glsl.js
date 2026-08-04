@@ -28,6 +28,9 @@ export const lights_struct = /* glsl */`
 		vec3 v;
 		float area;
 		float power;
+		float proposalPmf;
+		float directionalProposalPmf;
+		float bdptProposalPmf;
 
 		// spot light fields
 		float decay;
@@ -53,6 +56,8 @@ export const lights_struct = /* glsl */`
 		vec4 s1 = texelFetch1D( tex, i + 1u );
 		vec4 s2 = texelFetch1D( tex, i + 2u );
 		vec4 s3 = texelFetch1D( tex, i + 3u );
+		vec4 s4 = texelFetch1D( tex, i + 4u );
+		vec4 s5 = texelFetch1D( tex, i + 5u );
 
 		Light l;
 		l.position = s0.rgb;
@@ -65,17 +70,18 @@ export const lights_struct = /* glsl */`
 		l.power = s2.a;
 		l.v = s3.rgb;
 		l.area = s3.a;
+		l.proposalPmf = max( s4.r, 0.0 );
+		l.directionalProposalPmf = l.type == DIR_LIGHT_TYPE ? max( s4.a, 0.0 ) : 0.0;
+		l.bdptProposalPmf = max( s5.a, 0.0 );
 
 		// SHADOW-01 — s5.g carries castShadowDisabled for EVERY light kind, so s5
 		// is fetched unconditionally (one extra texel fetch; the grid always has
 		// 6 texels per light).
-			vec4 s5 = texelFetch1D( tex, i + 5u );
 			l.castShadowDisabled = s5.g;
 			l.angularDiameter = l.type == DIR_LIGHT_TYPE ? max( s5.b, 0.0 ) : 0.0;
 
 		if ( l.type == SPOT_LIGHT_TYPE || l.type == POINT_LIGHT_TYPE ) {
 
-			vec4 s4 = texelFetch1D( tex, i + 4u );
 			l.decay = s4.g;
 			l.distance = s4.b;
 			l.coneCos = s4.a;

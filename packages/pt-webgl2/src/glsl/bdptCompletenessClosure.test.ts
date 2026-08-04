@@ -103,7 +103,7 @@ describe('pt-webgl2 final BDPT numerical and identity closure', () => {
     );
   });
 
-  it('fails only the reverse alternate density closed when raw length-squared would overflow', () => {
+  it('uses the exact sampled reverse density and fails only that alternate strategy closed', () => {
     const f32 = Math.fround;
     const edge: Vec3 = [f32(2e20), f32(1e20), 0];
     const rawLengthSquared = f32(
@@ -121,19 +121,19 @@ describe('pt-webgl2 final BDPT numerical and identity closure', () => {
 
     const compactMain = RENDER_MAIN.replace(/\s+/g, ' ');
     expect(compactMain).toContain(
-      'vec3 bdptToPrevEdge = bdptPrevPos - geometricHitPoint;',
+      'float candidateReverseDensity = scatterRec.pdfRev * bdptEyeSegmentReverseDensity;',
     );
     expect(compactMain).toContain(
-      '! any( isnan( bdptToPrevEdge ) ) && ! any( isinf( bdptToPrevEdge ) ) && vitrumFiniteNonZeroVec3( bdptToPrevEdge )',
+      'scatterRec.pdfRev >= 0.0 && ! isnan( scatterRec.pdfRev ) && ! isinf( scatterRec.pdfRev )',
     );
     expect(compactMain).toContain(
-      'vec3 bdptToPrev = vitrumNormalizeVec3( bdptToPrevEdge, vec3( 0.0 ) );',
+      'candidateReverseDensity >= 0.0 && ! isnan( candidateReverseDensity ) && ! isinf( candidateReverseDensity )',
     );
     expect(compactMain).toContain(
       'float bdptPatchedReverseDensity = 0.0;',
     );
     expect(compactMain).not.toContain(
-      'normalize( bdptPrevPos - hitPoint )',
+      'float bdptSwappedRev = bsdfPdfResult(',
     );
   });
 

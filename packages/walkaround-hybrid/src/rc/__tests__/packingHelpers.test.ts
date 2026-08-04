@@ -84,6 +84,24 @@ describe('packRCLights runtime alias ABI', () => {
     expect(floats[alias + 2]).toBe(1);
   });
 
+  it('does not reject a positive proposal whose luminance is below f32 range', () => {
+    const f32MinSubnormal = 2 ** -149;
+    const packed = packRCLights([{
+      kind: 'fixture',
+      on: true,
+      intensity: f32MinSubnormal,
+      position: { x: 0, y: 0, z: 0 },
+      color: { r: 1, g: 0, b: 0 },
+    }]);
+    const words = new Uint32Array(packed);
+    const floats = new Float32Array(packed);
+    const entry = words[RCLightBufferHeaderOffset.entriesWordOffset / 4]!;
+    const alias = words[RCLightBufferHeaderOffset.aliasWordOffset / 4]!;
+    expect(floats[entry + RCLightEntryOffset.intensity / 4]).toBe(f32MinSubnormal);
+    expect(floats[alias]).toBe(1);
+    expect(floats[alias + 2]).toBe(1);
+  });
+
   it('rejects invalid, overflowing, and completely collapsing radiance', () => {
     expect(() => packRCLights([{
       kind: 'fixture',

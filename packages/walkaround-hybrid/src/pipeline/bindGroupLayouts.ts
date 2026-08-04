@@ -177,9 +177,8 @@ export function getAccumBindGroupLayout(device: GPUDevice, cache: BGLCache): GPU
  * rejected. maxBindingsPerBindGroup is 1000 so 6 bindings is fine.
  * Layout:
  *   DDGI section
- *     0 — irradiance atlas (texture_2d<f32>, filterable)
- *     1 — visibility atlas (texture_2d<f32>, filterable)
- *     2 — dedicated linear filtering sampler
+ *     0 — irradiance atlas (texture_2d<f32>, exact textureLoad)
+ *     1 — visibility atlas (texture_2d<f32>, manual exact-load bilinear)
  *     3 — DDGI grid uniform (64 bytes)
  *   RC section (W8 Phase 3, 2026-05-18)
  *     4 — cascade-0 storage buffer (read-only) — `array<vec4f>` packed
@@ -213,7 +212,6 @@ export function getHybridLayersBindGroupLayout(device: GPUDevice, cache: BGLCach
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
@@ -231,7 +229,6 @@ export function getShadeHybridLayersBindGroupLayout(device: GPUDevice, cache: BG
     entries: [
       { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
       { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'float' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
       { binding: 4, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
       { binding: 5, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },

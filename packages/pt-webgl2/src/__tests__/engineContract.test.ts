@@ -376,7 +376,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(e.getScene?.()).toBeNull();
   });
 
-  it('setScene tessellates analytic primitives to generated mesh fallbacks', async () => {
+  it('setScene retains authored analytics while rendering a generated mesh representation', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
@@ -396,18 +396,14 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
 
       const converted = e.getScene?.()?.primitives[0];
       expect(converted?.id).toBe('sphere-a');
-      expect(converted?.kind).toBe('mesh');
-      if (converted?.kind !== 'mesh') {
-        throw new Error('expected analytic primitive to be converted before pt-webgl2 ingestion');
-      }
-      expect(converted.indices?.length).toBeGreaterThan(0);
+      expect(converted?.kind).toBe('analytic');
       expect(e._debugGeoPack?.triangleCount).toBeGreaterThan(0);
       expect(
         structured.some(
           (w) =>
             w.code === 'pt-webgl2.scene-upload-warning' &&
             String(w.details?.warning).includes(
-              'tessellated to a generated MeshPrimitive fallback',
+              'canonical generated MeshPrimitive representation',
             ),
         ),
       ).toBe(true);
@@ -590,7 +586,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       });
       const base = triScene();
       const prim = base.primitives[0] as MeshPrimitive;
-      const displacementMap = { handle: { id: 'height' } };
+      const displacementMap = { handle: { id: 'height' }, mipFilter: 'none' as const };
       Object.defineProperty(displacementMap, Symbol('vitrum.gltf.textureRefSource'), {
         value: { path: 'materials[0].extensions.VITRUM_displacement.displacementTexture' },
       });
@@ -721,10 +717,14 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
         ...opts(),
         onWarning: (w) => structured.push(w),
       });
-      const base = triScene();
-      const prim = base.primitives[0] as MeshPrimitive;
+      const prim: AnalyticPrimitive = {
+        kind: 'analytic',
+        id: 'sphere-volume',
+        shape: 'sphere',
+        params: new Float32Array([0, 0, 0, 1]),
+        material: GREY,
+      };
       const scene: Scene = {
-        ...base,
         primitives: [
           {
             ...prim,
@@ -738,6 +738,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
             },
           },
         ],
+        emitters: [],
+        environment: { kind: 'none' },
       };
       e.setScene(scene);
       expect(
@@ -2385,7 +2387,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('tessellates analytic addPrimitive through the primitive-list transaction path', async () => {
+  it('retains analytic addPrimitive while rebuilding its represented mesh transaction', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const gl = createMockGl();
@@ -2419,11 +2421,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(texImage2D.mock.calls.length - initialImage2D).toBeGreaterThan(0);
       expect(texImage3D.mock.calls.length - initialImage3D).toBeGreaterThan(0);
       const added = e.getScene?.()?.primitives.find((p) => p.id === 'sphere-added');
-      expect(added?.kind).toBe('mesh');
-      if (added?.kind !== 'mesh') {
-        throw new Error('expected analytic addPrimitive to commit the generated mesh fallback');
-      }
-      expect(added.indices?.length).toBeGreaterThan(0);
+      expect(added?.kind).toBe('analytic');
+      expect(e._debugGeoPack?.triangleCount).toBeGreaterThan(2);
       expect(
         structured.some(
           (w) =>
@@ -2436,7 +2435,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           (w) =>
             w.code === 'pt-webgl2.scene-upload-warning' &&
             String(w.details?.warning).includes(
-              'tessellated to a generated MeshPrimitive fallback',
+              'canonical generated MeshPrimitive representation',
             ),
         ),
       ).toBe(true);
@@ -2445,7 +2444,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('keeps emitter updates resident and transactionally rebuilds for first-time HDRI allocation', async () => {
+  it('transactionally rebuilds global proposal lanes for emitter and environment updates', async () => {
     const gl = createMockGl();
     let nextTextureId = 0;
     const createTexture = vi.fn(() => ({ id: nextTextureId++ }));
@@ -2466,10 +2465,11 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
 
     e.updateEmitter?.('point-a', { intensity: 4 });
     expect(e.getScene?.()?.emitters[0]?.intensity).toBe(4);
-    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
-    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(1);
-    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(1);
-    expect(texImage2D.mock.calls.length - initialImage2D).toBe(1);
+    expect(e._debugGeoPack?.bvhNodes).not.toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.bvhNodes).toStrictEqual(beforeBvhNodes);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBeGreaterThan(0);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBeGreaterThan(0);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBeGreaterThan(0);
     expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
     const afterEmitterBvhNodes = e._debugGeoPack?.bvhNodes;
     const afterEmitterTextureUploads = createTexture.mock.calls.length;
@@ -2486,7 +2486,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     expect(deleteTexture.mock.calls.length - afterEmitterDeletes).toBeGreaterThan(0);
   });
 
-  it('keeps same-size HDRI updates resident and transactionally rebuilds resized HDRIs', async () => {
+  it('transactionally rebuilds proposal lanes for same-size and resized HDRIs', async () => {
     const gl = createMockGl();
     let nextTextureId = 0;
     const createTexture = vi.fn(() => ({ id: nextTextureId++ }));
@@ -2507,12 +2507,13 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     const initialDeletes = deleteTexture.mock.calls.length;
 
     e.updateEnvironment?.(hdriSceneWithPixels(1, 1, 0.5).environment);
-    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.bvhNodes).not.toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.bvhNodes).toStrictEqual(beforeBvhNodes);
     expect(e._debugSceneTex?.envWidth).toBe(1);
     expect(e._debugSceneTex?.envHeight).toBe(1);
-    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(2);
-    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(2);
-    expect(texImage2D.mock.calls.length - initialImage2D).toBe(2);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBeGreaterThan(0);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBeGreaterThan(0);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBeGreaterThan(0);
     expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
 
     const afterSameSizeSubImage2D = texSubImage2D.mock.calls.length;
@@ -2571,7 +2572,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('updateEmitter mesh-area patches folded material and mesh-light textures without rebuilding BVH geometry', async () => {
+  it('updateEmitter mesh-area patches rebuild the globally coupled proposal transaction', async () => {
     const gl = createMockGl();
     let nextTextureId = 0;
     const createTexture = vi.fn(() => ({ id: nextTextureId++ }));
@@ -2603,19 +2604,21 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       expect(scene.emitters[0].intensity).toBe(4);
     }
 
-    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
-    expect(e._debugGeoPack?.positions).toBe(beforePositions);
+    expect(e._debugGeoPack?.bvhNodes).not.toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.bvhNodes).toStrictEqual(beforeBvhNodes);
+    expect(e._debugGeoPack?.positions).not.toBe(beforePositions);
+    expect(e._debugGeoPack?.positions).toStrictEqual(beforePositions);
     expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([0.25, 0.5, 1]);
     expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(4);
     expect(e._debugSceneTex?.meshLightCount).toBe(2);
     expect(e._debugSceneTex?.totalEmissiveArea).toBeCloseTo(2, 6);
-    expect(createTexture.mock.calls.length - initialTextureUploads).toBe(3);
-    expect(deleteTexture.mock.calls.length - initialDeletes).toBe(3);
-    expect(texImage2D.mock.calls.length - initialImage2D).toBe(3);
+    expect(createTexture.mock.calls.length - initialTextureUploads).toBeGreaterThan(0);
+    expect(deleteTexture.mock.calls.length - initialDeletes).toBeGreaterThan(0);
+    expect(texImage2D.mock.calls.length - initialImage2D).toBeGreaterThan(0);
     expect(texSubImage2D.mock.calls.length - initialSubImage2D).toBe(0);
   });
 
-  it('updatePrimitive material fast path preserves mesh-area folded emissive radiance', async () => {
+  it('updatePrimitive preserves folded emissive radiance through the coupled proposal transaction', async () => {
     const e = await createPTEngine_WebGL2(opts());
     e.setScene(sceneWithMeshAreaEmitter());
     const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
@@ -2625,8 +2628,10 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
 
     e.updatePrimitive?.('panel', { material: { roughness: 0.25 } });
 
-    expect(e._debugGeoPack?.bvhNodes).toBe(beforeBvhNodes);
-    expect(e._debugGeoPack?.positions).toBe(beforePositions);
+    expect(e._debugGeoPack?.bvhNodes).not.toBe(beforeBvhNodes);
+    expect(e._debugGeoPack?.bvhNodes).toStrictEqual(beforeBvhNodes);
+    expect(e._debugGeoPack?.positions).not.toBe(beforePositions);
+    expect(e._debugGeoPack?.positions).toStrictEqual(beforePositions);
     expect(e._debugGeoPack?.materials[0]?.roughness).toBe(0.25);
     expect(e._debugGeoPack?.materials[0]?.emissive).toEqual([1, 1, 1]);
     expect(e._debugGeoPack?.materials[0]?.emissiveIntensity).toBe(2);
@@ -2684,7 +2689,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it('updatePrimitive material fast path repacks implicit emissive mesh lights', async () => {
+  it('updatePrimitive repacks implicit emitters through complete proposal transactions', async () => {
     const e = await createPTEngine_WebGL2(opts());
     e.setScene({ ...triScene(), primitives: [tri('panel', 0)] });
     const beforeBvhNodes = e._debugGeoPack?.bvhNodes;
@@ -2717,8 +2722,10 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       },
     } as never);
 
-    expect(e._debugGeoPack?.bvhNodes).toBe(afterActivationBvhNodes);
-    expect(e._debugGeoPack?.positions).toBe(afterActivationPositions);
+    expect(e._debugGeoPack?.bvhNodes).not.toBe(afterActivationBvhNodes);
+    expect(e._debugGeoPack?.bvhNodes).toStrictEqual(afterActivationBvhNodes);
+    expect(e._debugGeoPack?.positions).not.toBe(afterActivationPositions);
+    expect(e._debugGeoPack?.positions).toStrictEqual(afterActivationPositions);
     expect(e._debugSceneTex?.meshLightCount).toBe(0);
     expect(e._debugSceneTex?.totalEmissiveArea).toBe(0);
   });

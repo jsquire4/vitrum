@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { buildSTree } from '../src/ppg/sTree.js';
 import { resetAccumulators } from '../src/ppg/sTree.js';
 import { dTreeSample, buildEmptyDTree } from '../src/ppg/dTree.js';
+import {
+  REPRESENTED_PROPOSAL_BUCKET_COUNT,
+  buildRepresentedDistributionF32,
+} from '@vitrum/shared-samplers';
 
 describe('PPG training utilities', () => {
   const aabb = { min: [0, 0, 0] as [number, number, number], max: [1, 1, 1] as [number, number, number] };
@@ -37,9 +41,16 @@ describe('PPG training utilities', () => {
     NE.flux = 6;
     dTree.totalFlux = 10;
 
-    // Two distinct u0 values that both descend into NE (u0 > 0.4).
-    const a = dTreeSample(dTree, 0.5, 0.3);
-    const b = dTreeSample(dTree, 0.9, 0.3);
+    // Two distinct represented root buckets that both descend into NE. The
+    // fractional binary64 remainder below the 24-bit selection lattice is the
+    // CPU oracle's independent v-jitter dimension.
+    const represented = buildRepresentedDistributionF32([4, 6, 0, 0]);
+    const firstNeBucket = represented.bucketCounts[0]!;
+    const lastNeBucket = firstNeBucket + represented.bucketCounts[1]! - 1;
+    const u0a = (firstNeBucket + 0.25) / REPRESENTED_PROPOSAL_BUCKET_COUNT;
+    const u0b = (lastNeBucket + 0.75) / REPRESENTED_PROPOSAL_BUCKET_COUNT;
+    const a = dTreeSample(dTree, u0a, 0.3);
+    const b = dTreeSample(dTree, u0b, 0.3);
 
     // Both land in NE's rectangle [0.5,1] × [0,0.5].
     for (const s of [a, b]) {
@@ -52,27 +63,23 @@ describe('PPG training utilities', () => {
     // DECORRELATION: with the OLD bug, vSample = v0 + u0·(v1−v0) — a FIXED
     // linear function of the raw u0 (slope = v1−v0 = 0.5). Assert the v-coords
     // are NOT that linear function of u0 anymore.
-    const oldVa = NE.v0 + 0.5 * (NE.v1 - NE.v0); // 0.25 — old correlated value
-    const oldVb = NE.v0 + 0.9 * (NE.v1 - NE.v0); // 0.45 — old correlated value
+    const oldVa = NE.v0 + u0a * (NE.v1 - NE.v0);
+    const oldVb = NE.v0 + u0b * (NE.v1 - NE.v0);
     expect(a.octUV[1]).not.toBeCloseTo(oldVa, 6);
     expect(b.octUV[1]).not.toBeCloseTo(oldVb, 6);
 
-    // The NEW v-coords come from the rescaled descent residual:
-    //   residual = u0·total − (cumFluxBeforeNE) = u0·10 − 4;  uLeaf = residual/6
-    //   vSample  = v0 + uLeaf·(v1−v0)
-    const uLeafA = (0.5 * 10 - 4) / 6; // 1/6
-    const uLeafB = (0.9 * 10 - 4) / 6; // 5/6
-    expect(a.octUV[1]).toBeCloseTo(NE.v0 + uLeafA * (NE.v1 - NE.v0), 6);
-    expect(b.octUV[1]).toBeCloseTo(NE.v0 + uLeafB * (NE.v1 - NE.v0), 6);
+    expect(a.octUV[1]).toBeCloseTo(NE.v0 + 0.25 * (NE.v1 - NE.v0), 6);
+    expect(b.octUV[1]).toBeCloseTo(NE.v0 + 0.75 * (NE.v1 - NE.v0), 6);
 
     // uSample still uses the independent u1 (unchanged, was already correct).
     expect(a.octUV[0]).toBeCloseTo(NE.u0 + 0.3 * (NE.u1 - NE.u0), 6);
     expect(b.octUV[0]).toBeCloseTo(NE.u0 + 0.3 * (NE.u1 - NE.u0), 6);
 
-    // PDF math is untouched: pdf = (leafFlux/total)/solidAngle.
-    const expectedPdf = (NE.flux / dTree.totalFlux) / NE.solidAngle;
-    expect(a.pdf).toBeCloseTo(expectedPdf, 9);
-    expect(b.pdf).toBeCloseTo(expectedPdf, 9);
+    const expectedPdf = Math.fround(
+      represented.pmf[1]! / Math.fround(NE.solidAngle),
+    );
+    expect(a.pdf).toBe(expectedPdf);
+    expect(b.pdf).toBe(expectedPdf);
   });
 
   it('dTreeSample is deterministic for a fixed (u0,u1) pair', () => {

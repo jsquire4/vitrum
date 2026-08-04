@@ -115,18 +115,38 @@ export const NEE_RESOLVE_MAIN = /* glsl */ `
 		Ray incomingRay;
 		incomingRay.origin = candidate0.xyz;
 		incomingRay.direction = normalize( candidate1.xyz );
+		setOrdinaryRayRange( incomingRay );
 		FogMaterial noFog;
-		noFog.fogVolume = false;
+		initFogMaterial( noFog );
+		MediumStack noMediumStack;
+		initMediumStack( noMediumStack );
+		#if ADVANCED_OPTICAL_TRANSPORT
+		MediumStack incidentStack;
+		FogMaterial incidentMedium;
+		bool incidentStackValid = bvhBuildMediumStack(
+			incomingRay.origin,
+			incomingRay.direction,
+			materialIndexAttribute,
+			materials,
+			attributesArray,
+			incidentStack,
+			incidentMedium
+		);
+		if ( ! incidentStackValid ) return;
+		#endif
 		SurfaceHit surfaceHit;
-		int hitType = traceScene( incomingRay, noFog, surfaceHit );
+		int hitType = traceScene(
+			incomingRay, noMediumStack, noFog, candidate1.w, surfaceHit
+		);
 		// A failed/mismatched re-hit is a zero-valued proposal. Never resample or
 		// condition on it: doing so would change the original proposal density.
 		if ( hitType != SURFACE_HIT ) return;
 
-		uint materialIndex = uTexelFetch1D(
+		uvec4 materialIdentity = uTexelFetch1D(
 			materialIndexAttribute,
 			surfaceHit.faceIndices.w
-		).r;
+		);
+		uint materialIndex = materialIdentity.r;
 		SurfaceRecord surf;
 		if (
 			getSurfaceRecord(
@@ -140,6 +160,16 @@ export const NEE_RESOLVE_MAIN = /* glsl */ `
 				surf
 			) != HIT_SURFACE
 		) return;
+		#if ADVANCED_OPTICAL_TRANSPORT
+		MaterialControl materialControl;
+		readMaterialControl( materials, materialIndex, materialControl );
+		if (
+			! configureSurfaceOpticalInterface(
+				incidentStack, materialIdentity.g, materialControl,
+				candidate1.w, surf
+			)
+		) return;
+		#endif
 
 		vec3 sampleColor;
 		float bsdfPdf = bsdfResult(

@@ -26,32 +26,33 @@ export const pcg_functions = /* glsl */`
 
 	}
 
-	// returns [ 0, 1 ]
+	// Returns one of 2^24 exactly represented values in [ 0, 1 ). Keeping the
+	// high 24 bits avoids the u32-to-f32 rounding that can otherwise produce 1.
 	float pcgRand() {
 
 		pcg4d( WHITE_NOISE_SEED );
-		return float( WHITE_NOISE_SEED.x ) / float( 0xffffffffu );
+		return float( WHITE_NOISE_SEED.x >> 8u ) * ( 1.0 / 16777216.0 );
 
 	}
 
 	vec2 pcgRand2() {
 
 		pcg4d( WHITE_NOISE_SEED );
-		return vec2( WHITE_NOISE_SEED.xy ) / float(0xffffffffu);
+		return vec2( WHITE_NOISE_SEED.xy >> 8u ) * ( 1.0 / 16777216.0 );
 
 	}
 
 	vec3 pcgRand3() {
 
 		pcg4d( WHITE_NOISE_SEED );
-		return vec3( WHITE_NOISE_SEED.xyz ) / float( 0xffffffffu );
+		return vec3( WHITE_NOISE_SEED.xyz >> 8u ) * ( 1.0 / 16777216.0 );
 
 	}
 
 	vec4 pcgRand4() {
 
 		pcg4d( WHITE_NOISE_SEED );
-		return vec4( WHITE_NOISE_SEED ) / float( 0xffffffffu );
+		return vec4( WHITE_NOISE_SEED >> 8u ) * ( 1.0 / 16777216.0 );
 
 	}
 `;

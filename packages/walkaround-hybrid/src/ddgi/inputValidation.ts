@@ -1,4 +1,16 @@
 import type { DDGILight } from './types.js';
+import {
+  DDGI_NORMAL_BIAS_FACTOR_F32,
+  DDGI_F32_MAX,
+  DDGI_PROBE_SPACING_MAX,
+  DDGI_PROBE_SPACING_MIN,
+  DDGI_U32_MAX,
+} from './ddgiNumericLimits.js';
+export {
+  DDGI_F32_MAX,
+  DDGI_F32_MIN_POSITIVE,
+  DDGI_U32_MAX,
+} from './ddgiNumericLimits.js';
 
 const COMMON_DDGI_LIGHT_KEYS = [
   'kind',
@@ -52,11 +64,91 @@ export function assertFiniteDdgiNumber(value: number, label: string): void {
   }
 }
 
+/** Canonicalize a JS number to a finite value that the DDGI f32 ABI can publish. */
+export function packFiniteDdgiFloat32(value: number, label: string): number {
+  assertFiniteDdgiNumber(value, label);
+  if (Math.abs(value) > DDGI_F32_MAX) {
+    throw new RangeError(`${label} must be within the finite float32 range.`);
+  }
+  const packed = Math.fround(value);
+  if (!Number.isFinite(packed)) {
+    throw new RangeError(`${label} must remain finite when published as float32.`);
+  }
+  return packed;
+}
+
+/** Positive values must remain strictly positive after f32 publication. */
+export function packPositiveDdgiFloat32(value: number, label: string): number {
+  if (!(value > 0)) throw new RangeError(`${label} must be > 0.`);
+  const packed = packFiniteDdgiFloat32(value, label);
+  if (!(packed > 0)) {
+    throw new RangeError(`${label} must remain > 0 when published as float32.`);
+  }
+  return packed;
+}
+
+/** Canonical spacing envelope for every positive product used by DDGI WGSL. */
+export function packDdgiProbeSpacingFloat32(value: number, label: string): number {
+  const packed = packPositiveDdgiFloat32(value, label);
+  if (packed < DDGI_PROBE_SPACING_MIN || packed > DDGI_PROBE_SPACING_MAX) {
+    throw new RangeError(
+      `${label} must be within [${DDGI_PROBE_SPACING_MIN}, ${DDGI_PROBE_SPACING_MAX}] for finite derived float32 arithmetic.`,
+    );
+  }
+  const normalBias = Math.fround(packed * DDGI_NORMAL_BIAS_FACTOR_F32);
+  if (!(normalBias > 0) || !(Math.fround(normalBias * normalBias) > 0)) {
+    throw new RangeError(`${label} must preserve a positive float32 normal-bias square.`);
+  }
+  for (const [factor, derivedLabel] of [
+    [1e-6, 'minimum ray offset'],
+    [1e-5, 'minimum hit distance'],
+    [0.05, 'classification distance'],
+    [0.2, 'relocation distance'],
+    [0.25, 'receiver bias'],
+    [0.45, 'maximum relocation'],
+    [16, 'visibility open distance'],
+  ] as const) {
+    const derived = Math.fround(packed * Math.fround(factor));
+    if (!(derived > 0) || !Number.isFinite(derived)) {
+      throw new RangeError(`${label} must preserve a positive finite float32 ${derivedLabel}.`);
+    }
+  }
+  return packed;
+}
+
+/** Validate an integer carried by a DDGI u32 lane. */
+export function assertDdgiU32(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0 || value > DDGI_U32_MAX) {
+    throw new RangeError(`${label} must be an unsigned 32-bit integer.`);
+  }
+}
+
 /** A probe cadence is a count, not a continuously-valued tuning parameter. */
 export function assertPositiveDdgiInteger(value: number, label: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError(`${label} must be a positive safe integer.`);
   }
+}
+
+/**
+ * The full-blend retry state currently stores one Set entry per cadence
+ * stratum. Keep that explicitly bounded so a hostile-but-integer tuning value
+ * cannot request an OOM-sized allocation before it reaches the u32 shader ABI.
+ */
+export const DDGI_MAX_PROBE_UPDATE_DIVISOR = 65_536;
+
+export function validateDdgiProbeUpdateDivisor(
+  value: number,
+  label = 'DDGI probe update divisor',
+): number {
+  assertPositiveDdgiInteger(value, label);
+  assertDdgiU32(value, label);
+  if (value > DDGI_MAX_PROBE_UPDATE_DIVISOR) {
+    throw new RangeError(
+      `${label} must be <= ${DDGI_MAX_PROBE_UPDATE_DIVISOR}.`,
+    );
+  }
+  return value;
 }
 
 /** Offsets may be outside the stride (they are reduced modulo it), but integer. */

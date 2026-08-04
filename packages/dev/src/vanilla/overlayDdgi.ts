@@ -93,7 +93,11 @@ export function addDdgiDiagnostics(
           irradiancePreview.canvas,
           device,
           irradiance,
-          { throttleMs: 100, label: 'vanilla-ddgi-irr-atlas' },
+          {
+            throttleMs: 100,
+            label: 'vanilla-ddgi-irr-atlas',
+            decodeMode: 'ddgi-irradiance',
+          },
         );
       }
     }
@@ -106,7 +110,11 @@ export function addDdgiDiagnostics(
           visibilityPreview.canvas,
           device,
           visibility,
-          { throttleMs: 100, label: 'vanilla-ddgi-vis-atlas' },
+          {
+            throttleMs: 100,
+            label: 'vanilla-ddgi-vis-atlas',
+            decodeMode: 'ddgi-visibility',
+          },
         );
       }
     }

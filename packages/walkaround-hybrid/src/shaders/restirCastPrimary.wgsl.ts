@@ -62,6 +62,7 @@ fn primarySurfaceFromRay(ray: Ray) -> PrimarySurface {
   }
   s.pos    = ray.origin + ray.direction * hit.dist;
   let geoNormal = hit.normal;
+  s.geoNormal = geoNormal;
   let n_isTlas = ubo.bvhMode == 1u;
   let n_base = hit.instanceIndex * 4u;
   let n_ok = n_isTlas && n_base + 2u < tlasWorldToLocalColumnCount();
@@ -90,6 +91,7 @@ fn primarySurfaceFromRay(ray: Ray) -> PrimarySurface {
   s.albedo = payload.albedo;
   s.rough  = payload.rough;
   s.metal  = payload.metal;
+  s.transmission = matColor.a;
   s.isGlass = materialHasTransmission(matColor.a);
   s.specular = payload.specular;
   s.anisotropy = payload.anisotropy;
@@ -99,6 +101,7 @@ fn primarySurfaceFromRay(ray: Ray) -> PrimarySurface {
   s.clearcoat = payload.clearcoat;
   s.sheen = payload.sheen;
   s.sheenRoughness = payload.sheenRoughness;
+  s.reflectionLayerTransmission = payload.reflectionLayerTransmission;
   s.layerTransmission = payload.layerTransmission;
   s.volumeScattering = payload.volumeScattering;
   s.bulkThickness = payload.bulkThickness;
@@ -112,6 +115,7 @@ fn primarySurfaceFromRay(ray: Ray) -> PrimarySurface {
     hit.indices.w,
     s.instanceId,
     payload,
+    matColor.a,
   );
   return s;
 }

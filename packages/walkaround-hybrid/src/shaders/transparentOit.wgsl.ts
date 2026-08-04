@@ -33,7 +33,6 @@ export const TRANSPARENT_OIT_WGSL = /* wgsl */ `
 
 @group(3) @binding(0) var ddgiIrradiance: texture_2d<f32>;
 @group(3) @binding(1) var ddgiVisibility: texture_2d<f32>;
-@group(3) @binding(2) var ddgiSampler: sampler;
 @group(3) @binding(6) var oit_background: texture_2d<f32>;
 @group(3) @binding(7) var oit_transparentOut: texture_storage_2d<rgba16float, write>;
 
@@ -183,13 +182,15 @@ fn oitCosineHemisphereDir(n: vec3f, xi: vec2f) -> vec3f {
   return safe_normalize(tangent * local.x + bitangent * local.y + n * local.z);
 }
 
-fn oitLayerEnvSampleRadiance(
+fn oitLayerSurfaceBrdf(
   payload: RestirDIMaterialPayload,
   normal: vec3f,
+  clearcoatNormal: vec3f,
   wo: vec3f,
   wi: vec3f,
+  transmission: f32,
 ) -> vec3f {
-  let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
+  let mixedClosure = evalGGXReflectionWithTransmissionMix(
     payload.albedo,
     payload.rough,
     payload.metal,
@@ -206,14 +207,80 @@ fn oitLayerEnvSampleRadiance(
     payload.anisotropyTangent,
     payload.anisotropyBitangent,
     normal,
-    payload.clearcoatNormal,
+    clearcoatNormal,
+    wo,
+    wi,
+    transmission,
+  );
+  let reflectionClosure =
+    evalGGXSpecularOnlyWithSpecularClearcoatSheenWithAnisotropyFrame(
+      payload.albedo,
+      payload.rough,
+      payload.metal,
+      payload.specular.rgb,
+      payload.specular.a,
+      payload.anisotropy.x,
+      payload.anisotropy.y,
+      payload.iridescence,
+      payload.clearcoat.x,
+      payload.clearcoat.y,
+      payload.sheen.a,
+      payload.sheenRoughness,
+      payload.sheen.rgb,
+      payload.anisotropyTangent,
+      payload.anisotropyBitangent,
+      normal,
+      clearcoatNormal,
+      wo,
+      wi,
+    );
+  let layeredClosure = applyMaterialLayerTransmissionToBrdf(
+    mixedClosure,
+    reflectionClosure,
+    payload.layerTransmission,
+    payload.reflectionLayerTransmission,
+  );
+  return layeredClosure;
+}
+
+fn oitLayerDirectionalResponse(
+  payload: RestirDIMaterialPayload,
+  normal: vec3f,
+  clearcoatNormal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  transmission: f32,
+  incidentRadiance: vec3f,
+) -> vec3f {
+  let layeredClosure = oitLayerSurfaceBrdf(
+    payload, normal, clearcoatNormal, wo, wi, transmission,
+  );
+  return applyHomogeneousVolumeSingleScatterDirectional(
+    incidentRadiance * layeredClosure,
+    payload.albedo,
+    payload.volumeScattering,
+    payload.bulkThickness,
+    normal,
     wo,
     wi,
   );
-  return walkaroundScaleEnvironmentRadiance(
+}
+
+fn oitLayerEnvSampleRadiance(
+  payload: RestirDIMaterialPayload,
+  normal: vec3f,
+  wo: vec3f,
+  wi: vec3f,
+  transmission: f32,
+) -> vec3f {
+  let incidentRadiance = walkaroundScaleEnvironmentRadiance(
     envRadiance(wi),
     payload.envMapIntensity,
-  ) * brdf;
+  );
+  return oitLayerDirectionalResponse(
+    payload, normal, payload.clearcoatNormal, wo, wi, transmission,
+    incidentRadiance,
+  );
 }
 
 fn oitFiniteVec3(value: vec3f) -> bool {
@@ -247,6 +314,7 @@ fn oitLayerSkyRadiance(
   payload: RestirDIMaterialPayload,
   normal: vec3f,
   wo: vec3f,
+  transmission: f32,
   seed: u32,
 ) -> vec3f {
   // One cosine-density sample per temporal sample.  The frame seed rotates the
@@ -259,7 +327,7 @@ fn oitLayerSkyRadiance(
   let wi = oitCosineHemisphereDir(normal, xi);
   let pdf = max(dot(normal, wi), 0.0) * INV_PI;
   return oitBoundedCosineImportanceDivide(
-    oitLayerEnvSampleRadiance(payload, normal, wo, wi),
+    oitLayerEnvSampleRadiance(payload, normal, wo, wi, transmission),
     pdf,
   );
 }
@@ -271,6 +339,7 @@ fn oitLayerAnalyticNEE(
   geoNormal: vec3f,
   payload: RestirDIMaterialPayload,
   wo: vec3f,
+  transmission: f32,
   seed0: u32,
 ) -> vec3f {
   let analyticDims = textureDimensions(analytic_lights);
@@ -337,29 +406,13 @@ fn oitLayerAnalyticNEE(
     }
 
     let attenuation = oitPointSpotAttenuation(dist, cutoffDistance, decay, ubo.emitterDist2Floor);
-    let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
-      payload.albedo,
-      payload.rough,
-      payload.metal,
-      payload.specular.rgb,
-      payload.specular.a,
-      payload.anisotropy.x,
-      payload.anisotropy.y,
-      payload.iridescence,
-      payload.clearcoat.x,
-      payload.clearcoat.y,
-      payload.sheen.a,
-      payload.sheenRoughness,
-      payload.sheen.rgb,
-      payload.anisotropyTangent,
-      payload.anisotropyBitangent,
-      normal,
-      clearcoatNormal,
-      wo,
-      wi,
-    );
+    let incidentRadiance = lightLe * shadowT * cone * attenuation *
+      estimatorWeight;
     // evalGGX* already includes the receiver cosine; nDotL is only a gate here.
-    Lo += lightLe * shadowT * brdf * cone * attenuation * estimatorWeight;
+    Lo += oitLayerDirectionalResponse(
+      payload, normal, clearcoatNormal, wo, wi, transmission,
+      incidentRadiance,
+    );
   }
   return Lo;
 }
@@ -380,6 +433,7 @@ fn oitLayerAreaEmitterNEE(
   geoNormal: vec3f,
   payload: RestirDIMaterialPayload,
   wo: vec3f,
+  transmission: f32,
   seed0: u32,
 ) -> vec3f {
   let count = min(ubo.emitterCount, sceneEmitterCount());
@@ -426,31 +480,14 @@ fn oitLayerAreaEmitterNEE(
       }
 
       let G = emitterGeometry(nlDotL, dist2, ubo.emitterDist2Floor);
-      let brdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
-        payload.albedo,
-        payload.rough,
-        payload.metal,
-        payload.specular.rgb,
-        payload.specular.a,
-        payload.anisotropy.x,
-        payload.anisotropy.y,
-        payload.iridescence,
-        payload.clearcoat.x,
-        payload.clearcoat.y,
-        payload.sheen.a,
-        payload.sheenRoughness,
-        payload.sheen.rgb,
-        payload.anisotropyTangent,
-        payload.anisotropyBitangent,
-        normal,
-        clearcoatNormal,
-        wo,
-        wi,
-      );
       let Le = sampleEmitterLeAtXi(e, xi);
       let estimatorWeight = 1.0 /
         (f32(OIT_AREA_EMITTER_SAMPLE_COUNT) * emitterPmf);
-      Lo += Le * shadowT * brdf * G * ls.area * estimatorWeight;
+      let incidentRadiance = Le * shadowT * G * ls.area * estimatorWeight;
+      Lo += oitLayerDirectionalResponse(
+        payload, normal, clearcoatNormal, wo, wi, transmission,
+        incidentRadiance,
+      );
   }
   return Lo;
 }
@@ -462,7 +499,9 @@ fn oitLayerRadiance(
   materialWord: u32,
   seed0: u32,
 ) -> vec3f {
-  let scalarBase = decodeMaterialColor(hit.matColorPacked).rgb;
+  let scalarMaterial = decodeMaterialColor(hit.matColorPacked);
+  let scalarBase = scalarMaterial.rgb;
+  let transmission = sampleTransmissionMapForHit(hit, scalarMaterial.a);
   let uv1 = materialAtlasUv1ForHit(hit);
   let normals = oitLayerNormals(hit);
   let normal = normals.shadingNormal;
@@ -470,6 +509,12 @@ fn oitLayerRadiance(
   let payload = sampleRestirDIMaterialPayloadForHit(
     hit, normals.smoothNormal, normal, scalarBase, materialWord, wo,
   );
+  if (decodeIsUnlitMaterial(materialWord)) {
+    // Coverage compositing happens in transparentOitMain. The covered layer's
+    // own radiance follows the same lighting-independent contract as opaque
+    // primary unlit shading.
+    return payload.albedo * payload.layerTransmission;
+  }
 
   let emitCoord = vec2u(hit.indices.w % BVH_MATERIAL_TEX_WIDTH, hit.indices.w / BVH_MATERIAL_TEX_WIDTH);
   let emissive = select(
@@ -492,13 +537,15 @@ fn oitLayerRadiance(
   let rcIndirect = payload.albedo * sampleCascadeC0(hitPos, normal);
   let indirect = mix(ddgiIndirect, rcIndirect, clamp(rcParams.rcWeight, 0.0, 1.0));
 
-  let skyAmbient = oitLayerSkyRadiance(payload, normal, wo, seed0 ^ 0xd1b54a35u);
+  let skyAmbient = oitLayerSkyRadiance(
+    payload, normal, wo, transmission, seed0 ^ 0xd1b54a35u,
+  );
   let analyticDirect = oitLayerAnalyticNEE(
-    hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo,
+    hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo, transmission,
     seed0 ^ 0xa511e9b3u,
   );
   let areaDirect = oitLayerAreaEmitterNEE(
-    hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo,
+    hitPos, normal, payload.clearcoatNormal, hit.normal, payload, wo, transmission,
     seed0 ^ 0x63d83595u,
   );
   let sunBase = safe_normalize(ubo.sunDirection);
@@ -512,27 +559,6 @@ fn oitLayerRadiance(
   let sunR = sunAngularRadius * sqrt(sunXi.x);
   let sunPhi = 6.2831853 * sunXi.y;
   let toSun = safe_normalize(sunBase + sunTan * (sunR * cos(sunPhi)) + sunBit * (sunR * sin(sunPhi)));
-  let sunBrdf = evalGGXWithSpecularClearcoatSheenWithAnisotropyFrame(
-    payload.albedo,
-    payload.rough,
-    payload.metal,
-    payload.specular.rgb,
-    payload.specular.a,
-    payload.anisotropy.x,
-    payload.anisotropy.y,
-    payload.iridescence,
-    payload.clearcoat.x,
-    payload.clearcoat.y,
-    payload.sheen.a,
-    payload.sheenRoughness,
-    payload.sheen.rgb,
-    payload.anisotropyTangent,
-    payload.anisotropyBitangent,
-    normal,
-    payload.clearcoatNormal,
-    wo,
-    toSun,
-  );
   var sunVisibility = vec3f(1.0);
   if ((ubo.stainedGlassFlags & SHADE_FLAG_DIRECT_SUN_SHADOW_DISABLED) == 0u) {
     sunVisibility = oitShadowTransmittance(
@@ -542,9 +568,13 @@ fn oitLayerRadiance(
       ubo.triIntersectEpsilon,
     );
   }
-  let sunDirect = vec3f(ubo.sunIntensity) * sunBrdf * sunVisibility;
-  return applyHomogeneousVolumeSingleScatter(
-    (skyAmbient + sunDirect + analyticDirect + areaDirect + indirect + emissive + baked) *
+  let sunDirect = oitLayerDirectionalResponse(
+    payload, normal, payload.clearcoatNormal, wo, toSun, transmission,
+    vec3f(ubo.sunIntensity) * sunVisibility,
+  );
+  let diffuseWeight = 1.0 - clamp(transmission, 0.0, 1.0);
+  let localSurfaceRadiance = applyHomogeneousVolumeSingleScatter(
+    (emissive + (indirect + baked) * diffuseWeight) *
       payload.layerTransmission,
     payload.albedo,
     payload.volumeScattering,
@@ -552,6 +582,8 @@ fn oitLayerRadiance(
     normal,
     wo,
   );
+  return skyAmbient + sunDirect + analyticDirect + areaDirect +
+    localSurfaceRadiance;
 }
 
 @compute @workgroup_size(8, 8, 1)

@@ -4,6 +4,27 @@
 import type { AtlasTextureSlot } from './probeGrid.js';
 import type { ProbeUpdateGpuState } from './probeUpdateGpuState.js';
 
+function assertAtlasDimensionsSupported(
+  device: GPUDevice,
+  width: number,
+  height: number,
+  label: string,
+): void {
+  if (
+    !Number.isSafeInteger(width) || width < 1 ||
+    !Number.isSafeInteger(height) || height < 1
+  ) {
+    throw new RangeError(`${label} dimensions must be positive safe integers.`);
+  }
+  const limit = device.limits?.maxTextureDimension2D;
+  if (typeof limit === 'number' && (width > limit || height > limit)) {
+    throw new RangeError(
+      `${label} ${width}x${height} exceeds ` +
+      `device.limits.maxTextureDimension2D=${limit}.`,
+    );
+  }
+}
+
 export interface AtlasCohortReplacementTransaction {
   commit(): void;
   rollback(): void;
@@ -20,6 +41,12 @@ export class ProbeUpdateAtlasTextureCache {
     slot: AtlasTextureSlot,
     format: GPUTextureFormat,
   ): GPUTexture {
+    assertAtlasDimensionsSupported(
+      device,
+      slot.width,
+      slot.height,
+      'DDGI atlas',
+    );
     const cached = this._textureCache.get(slot);
     if (cached) return cached;
 
@@ -50,6 +77,12 @@ export class ProbeUpdateAtlasTextureCache {
     gpu: ProbeUpdateGpuState,
     atlas: GPUTexture,
   ): GPUTexture {
+    assertAtlasDimensionsSupported(
+      device,
+      atlas.width,
+      atlas.height,
+      'DDGI visibility scratch atlas',
+    );
     const sizeTag = `${atlas.width}|${atlas.height}`;
     if (gpu.visScratchTex && this._visScratchSize === sizeTag) return gpu.visScratchTex;
     const previous = gpu.visScratchTex;
@@ -81,15 +114,40 @@ export class ProbeUpdateAtlasTextureCache {
    * explicitly close that ownership edge.
    */
   retireAtlasSlots(slots: readonly AtlasTextureSlot[]): void {
-    const retired = new Set<GPUTexture>();
-    for (const slot of slots) {
-      const texture = this._textureCache.get(slot);
-      this._textureCache.delete(slot);
-      if (texture == null || retired.has(texture)) continue;
-      retired.add(texture);
-      this._trackedCacheTextures.delete(texture);
-      try { texture.destroy(); } catch { /* continue retiring the old cohort */ }
+    this.prepareAtlasSlotRetirement(slots)();
+  }
+
+  /**
+   * Complete all fallible snapshot/dedup allocation before a grid publication.
+   * The returned retirement step only deletes known identities and performs
+   * best-effort destruction, so it can safely follow an irreversible slot swap.
+   */
+  prepareAtlasSlotRetirement(
+    slots: readonly AtlasTextureSlot[],
+  ): () => void {
+    const textures: GPUTexture[] = [];
+    for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+      const texture = this._textureCache.get(slots[slotIndex]!);
+      if (texture == null) continue;
+      let duplicate = false;
+      for (let index = 0; index < textures.length; index += 1) {
+        if (textures[index] === texture) {
+          duplicate = true;
+          break;
+        }
+      }
+      if (!duplicate) textures.push(texture);
     }
+    return () => {
+      for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+        this._textureCache.delete(slots[slotIndex]!);
+      }
+      for (let index = 0; index < textures.length; index += 1) {
+        const texture = textures[index]!;
+        this._trackedCacheTextures.delete(texture);
+        try { texture.destroy(); } catch { /* continue retiring the old cohort */ }
+      }
+    };
   }
 
   /** Publish a prepared atlas cohort as one recoverable cache transaction. */

@@ -26,7 +26,12 @@ import type { SceneBVHBuffers } from '../../restir/bvhTypes.js';
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function makeConfig(enabled = true): ReGIRConfig {
-  return resolveReGIRConfig({ enabled, cellsPerAxis: 4, survivorsPerCell: 2, candidatesPerCell: 8 });
+  return resolveReGIRConfig({
+    enabled,
+    cellsPerAxis: 4,
+    survivorsPerCell: 2,
+    candidatesPerCell: 8,
+  });
 }
 
 /** Minimal SceneBVHBuffers enough for ReGIRCoordinator.initialize(). */
@@ -34,8 +39,7 @@ function makeBvh(): SceneBVHBuffers {
   const buf16 = new ArrayBuffer(16);
   const float32 = new Float32Array([
     // Two vertices at (0,0,0) and (1,1,1) — gives a non-zero AABB span.
-    0, 0, 0, 0,
-    1, 1, 1, 0,
+    0, 0, 0, 0, 1, 1, 1, 0,
   ]);
   const vertBuf = { cpuData: float32.buffer, byteLength: float32.byteLength, count: 2 };
   const zeroBuf = { cpuData: buf16, byteLength: 16, count: 1 };
@@ -70,18 +74,18 @@ describe('ReGIRCoordinator.dispose', () => {
   );
 
   it('uses only coordinate-relative thickness for a degenerate AABB', () => {
-    expect(resolveReGIRMaxSpan([2e-20, -2e-20, 0], [2e-20, -2e-20, 0]))
-      .toBeCloseTo(2e-20 * 2 ** -20, 35);
-    expect(resolveReGIRMaxSpan([0, 0, 0], [0, 0, 0]))
-      .toBe(1.1754943508222875e-38);
+    expect(resolveReGIRMaxSpan([2e-20, -2e-20, 0], [2e-20, -2e-20, 0])).toBeCloseTo(
+      2e-20 * 2 ** -20,
+      35,
+    );
+    expect(resolveReGIRMaxSpan([0, 0, 0], [0, 0, 0])).toBe(1.1754943508222875e-38);
   });
 
   it('rejects non-finite or reversed scene bounds', () => {
-    expect(() => resolveReGIRMaxSpan([1, 0, 0], [0, 0, 0])).toThrow(
+    expect(() => resolveReGIRMaxSpan([1, 0, 0], [0, 0, 0])).toThrow(/finite ordered bounds/);
+    expect(() => resolveReGIRMaxSpan([0, 0, 0], [Number.POSITIVE_INFINITY, 0, 0])).toThrow(
       /finite ordered bounds/,
     );
-    expect(() => resolveReGIRMaxSpan([0, 0, 0], [Number.POSITIVE_INFINITY, 0, 0]))
-      .toThrow(/finite ordered bounds/);
   });
 
   it('dispose() on a never-initialized coordinator is a safe no-op', () => {
@@ -137,47 +141,65 @@ describe('ReGIRCoordinator.dispose', () => {
   });
 
   it('computes grid bytes exactly beyond the signed-32-bit range', () => {
-    const coord = new ReGIRCoordinator(resolveReGIRConfig({
-      enabled: true,
-      cellsPerAxis: 512,
-      survivorsPerCell: 2,
-    }));
+    const coord = new ReGIRCoordinator(
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 512,
+        survivorsPerCell: 2,
+      }),
+    );
     expect(coord.gridRegionBytes()).toBe(2_147_483_648);
   });
 
   it('rejects an enormous grid at the narrower WGSL addressability boundary', () => {
-    expect(() => resolveReGIRConfig({
-      enabled: true,
-      cellsPerAxis: 131_072,
-      survivorsPerCell: 1,
-    })).toThrow(/WGSL u32/);
+    expect(() =>
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 131_072,
+        survivorsPerCell: 1,
+      }),
+    ).toThrow(/WGSL u32/);
   });
 
   it.each([
     ['cellsPerAxis', 0x1_0000_0000],
-    ['candidatesPerCell', 0x1_0000_0000],
     ['survivorsPerCell', 0x1_0000_0000],
   ] as const)('rejects %s values that cannot be uploaded as WGSL u32', (key, value) => {
-    expect(() => resolveReGIRConfig({
-      enabled: true,
-      [key]: value,
-    })).toThrow(/representable by WGSL u32/);
+    expect(() =>
+      resolveReGIRConfig({
+        enabled: true,
+        [key]: value,
+      }),
+    ).toThrow(/representable by WGSL u32/);
+  });
+
+  it('rejects a candidate loop large enough to monopolize a build invocation', () => {
+    expect(() =>
+      resolveReGIRConfig({
+        enabled: true,
+        candidatesPerCell: 4097,
+      }),
+    ).toThrow(/candidatesPerCell must be <= 4096.*executes this loop serially/);
   });
 
   it('rejects a grid whose flattened invocation arithmetic would overflow WGSL u32', () => {
-    expect(() => resolveReGIRConfig({
-      enabled: true,
-      cellsPerAxis: 1_024,
-      survivorsPerCell: 4,
-    })).toThrow(/invocation domain/);
+    expect(() =>
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 1_024,
+        survivorsPerCell: 4,
+      }),
+    ).toThrow(/invocation domain/);
   });
 
   it('rejects a grid whose survivor storage cannot be addressed by WGSL u32', () => {
-    expect(() => resolveReGIRConfig({
-      enabled: true,
-      cellsPerAxis: 1_291,
-      survivorsPerCell: 1,
-    })).toThrow(/element-index domain/);
+    expect(() =>
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 1_291,
+        survivorsPerCell: 1,
+      }),
+    ).toThrow(/element-index domain/);
   });
 
   it.each([
@@ -187,22 +209,26 @@ describe('ReGIRCoordinator.dispose', () => {
   ])('rejects insufficient ReGIR device limits before allocation: %o', (limits, error) => {
     const createBuffer = vi.fn();
     const device = { limits, createBuffer } as unknown as GPUDevice;
-    const coord = new ReGIRCoordinator(resolveReGIRConfig({
-      enabled: true,
-      cellsPerAxis: 16,
-      survivorsPerCell: 8,
-    }));
+    const coord = new ReGIRCoordinator(
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 16,
+        survivorsPerCell: 8,
+      }),
+    );
 
     expect(() => coord.assertDeviceLimits(device)).toThrow(error);
     expect(createBuffer).not.toHaveBeenCalled();
   });
 
   it('derives an exact checked dispatch count from the initialized grid', () => {
-    const coord = new ReGIRCoordinator(resolveReGIRConfig({
-      enabled: true,
-      cellsPerAxis: 4,
-      survivorsPerCell: 3,
-    }));
+    const coord = new ReGIRCoordinator(
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 4,
+        survivorsPerCell: 3,
+      }),
+    );
     coord.assertDeviceLimits({
       limits: {
         maxComputeInvocationsPerWorkgroup: 256,
@@ -211,9 +237,7 @@ describe('ReGIRCoordinator.dispose', () => {
       },
     } as unknown as GPUDevice);
     coord.initialize(makeBvh(), true);
-    expect(coord.buildDispatchWorkgroups).toBe(
-      Math.ceil((coord.cellCount * 3) / 64),
-    );
+    expect(coord.buildDispatchWorkgroups).toBe(Math.ceil((coord.cellCount * 3) / 64));
   });
 
   it('rejects a light-tree offset that cannot be uploaded as WGSL u32', () => {
@@ -221,6 +245,19 @@ describe('ReGIRCoordinator.dispose', () => {
     const bvh = makeBvh();
     bvh.lightTreeNodeCount = Math.floor(0xffff_ffff / 16) + 1;
     expect(() => coord.initialize(bvh, true)).toThrow(/grid offset.*u32/);
+  });
+
+  it('rejects a valid grid region whose tree prefix would wrap combined indexing', () => {
+    const coord = new ReGIRCoordinator(
+      resolveReGIRConfig({
+        enabled: true,
+        cellsPerAxis: 512,
+        survivorsPerCell: 16,
+      }),
+    );
+    expect(() => coord.initialize(makeBvh(), true)).toThrow(
+      /combined light-tree \+ grid storage.*element-index domain/,
+    );
   });
 });
 

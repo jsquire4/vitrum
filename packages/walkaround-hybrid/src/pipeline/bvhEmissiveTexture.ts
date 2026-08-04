@@ -9,7 +9,8 @@
  * carries each triangle's emissive Le so `shade.wgsl lo_emitterGlow` can add it
  * on a primary hit, making emitters camera-visible.
  *
- * Format: `rgba32float` (rgb = Le, a = 0). Emissive is HDR (emissiveIntensity
+ * Format: `rgba32float` (rgb = Le, a = mesh-NEE ownership, exactly 0 or 1).
+ * Emissive is HDR (emissiveIntensity
  * may exceed 1), so unlike the LDR `bvh_beer` u32 texture this needs float
  * storage. `rgba32float` is chosen over `rgba16float` so `writeTexture` can take
  * the packed `Float32Array` directly with no host-side f16 encode. The texture
@@ -47,7 +48,7 @@ function emissiveTextureSize(triCount: number): { width: number; height: number 
 
 /**
  * Create + upload the emissive texture from the packed per-triangle Le data
- * (`packBVHEmissiveLe` output: 4 floats per triangle, rgb + 0 pad). `triCount`
+ * (`packBVHEmissiveLe` output: 4 floats per triangle, rgb + ownership). `triCount`
  * is the number of valid triangles; the last texture row is zero-padded.
  */
 export function uploadEmissiveTexture(

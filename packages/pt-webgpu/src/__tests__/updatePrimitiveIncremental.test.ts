@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { EngineWarning, Scene } from '@vitrum/core';
-import { asMat4 } from '@vitrum/core';
+import { asMat4, asTextureRef } from '@vitrum/core';
 import { createPTEngine_WebGPU } from '../index.js';
 import {
   buildPackedScene,
@@ -583,26 +583,45 @@ describe('pt-webgpu incremental primitive updates', () => {
     }
   });
 
-  it('lite tier material patches preserve the live material buffer', async () => {
+  it('lite tier material patches repack deduplicated merged-material slots', async () => {
     installWebGpuConstStubs();
     const { device, writeBuffer, createBuffer } = makeLiteStubDevice();
-    const engine = await createPTEngine_WebGPU({ device, traceTier: 'lite' });
-    expect(engine.capabilities.incrementalPatchSupport?.material).toBe(true);
-    engine.setScene(makeScene());
+    const structured: EngineWarning[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const engine = await createPTEngine_WebGPU({
+        device,
+        traceTier: 'lite',
+        onWarning: (warning) => structured.push(warning),
+      });
+      expect(engine.capabilities.incrementalPatchSupport?.material).toBe(true);
+      expect(engine.capabilities.supportDetails?.mutations.material).toBe('fallback-rebuild');
+      const scene = makeScene();
+      const sharedMaterial = scene.primitives[0]!.material;
+      engine.setScene({
+        ...scene,
+        primitives: scene.primitives.map((primitive, index) =>
+          index === 1 ? { ...primitive, material: sharedMaterial } : primitive,
+        ),
+      });
 
-    const writesBefore = writeBuffer.mock.calls.length;
-    const buffersBefore = createBuffer.mock.calls.length;
+      const writesBefore = writeBuffer.mock.calls.length;
+      const buffersBefore = createBuffer.mock.calls.length;
 
-    engine.updatePrimitive?.('mesh-b', {
-      material: { baseColor: [0.2, 0.7, 0.9], roughness: 0.05, metallic: 0.4 },
-    });
+      engine.updatePrimitive?.('mesh-b', {
+        material: { baseColor: [0.2, 0.7, 0.9], roughness: 0.05, metallic: 0.4 },
+      });
 
-    expect(createBuffer.mock.calls.length).toBe(buffersBefore + 1);
-    expect(writeBuffer.mock.calls.length).toBe(writesBefore + 1);
-
-    const lastWrite = writeBuffer.mock.calls[writeBuffer.mock.calls.length - 1];
-    const writeByteOffset = lastWrite?.[1];
-    expect(writeByteOffset).toBe(0);
+      expect(createBuffer.mock.calls.length).toBeGreaterThan(buffersBefore + 1);
+      expect(writeBuffer.mock.calls.length).toBeGreaterThan(writesBefore + 1);
+      expect(engine.getScene?.()?.primitives[1]?.material.baseColor).toEqual([0.2, 0.7, 0.9]);
+      expect(structured.some((warning) =>
+        warning.code === 'pt-webgpu.lite-update-primitive-fallback-rebuild' &&
+        warning.details?.fallbackReason === 'lite-merged-material-rebuild'
+      )).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('copies only dirty material and descriptor scalar words in place', async () => {
@@ -675,7 +694,16 @@ describe('pt-webgpu incremental primitive updates', () => {
         traceTier: 'lite',
         onWarning: (w) => structured.push(w),
       });
-      engine.setScene(makeScene());
+      const scene = makeScene();
+      const meshB = scene.primitives[1]!;
+      if (meshB.kind === 'analytic') throw new Error('test fixture');
+      engine.setScene({
+        ...scene,
+        primitives: [
+          scene.primitives[0]!,
+          { ...meshB, uvs: new Float32Array([0, 0, 1, 0, 0, 1]) },
+        ],
+      });
       structured.length = 0;
 
       const writesBefore = writeBuffer.mock.calls.length;
@@ -691,8 +719,12 @@ describe('pt-webgpu incremental primitive updates', () => {
           normalScale: 0.6,
           envMapIntensity: 0.25,
           anisotropy: 0.4,
+          thickness: 0.6,
+          thicknessMap: asTextureRef({ id: 'mapped-cap' }),
         },
-      })).toThrow(/selected lite tier: alphaMode, anisotropy, envMapIntensity, normalScale, opacity/);
+      })).toThrow(
+        /selected lite tier: alphaMode, anisotropy, envMapIntensity, normalScale, opacity, thicknessMap/,
+      );
 
       expect(createBuffer.mock.calls.length).toBe(buffersBefore);
       expect(writeBuffer.mock.calls.length).toBe(writesBefore);
