@@ -14,13 +14,14 @@
 // loop. This is what lets a host show live convergence, pause, or cancel.
 //
 // Two gradient strategies are exposed, mirroring the research literature:
-//   • 'finite-difference' (Phase 0) — perturb each parameter by +ε, re-render,
-//     forward-difference the loss. Backend-agnostic, no adjoint shader, O(P)
-//     renders per step. The honest baseline that validates the session UX.
-//   • 'path-replay' (Phase 1) — re-trace the forward path with the SAME frozen
-//     RNG seed and differentiate only the continuous shading (the sampled
-//     direction is held constant, sidestepping the visibility / sampling
-//     discontinuities). One adjoint render per step.
+//   • 'finite-difference' — perturb each parameter by +ε, re-render,
+//     forward-difference the loss. This is the only inverse method on
+//     pt-webgl2. Backend-agnostic, no adjoint shader, O(P) renders per step.
+//   • 'path-replay' — re-trace the forward path with the SAME frozen
+//     RNG seed and differentiate only the continuous shading. Certified on
+//     full-tier pt-webgpu only, and only for one-bounce RGB `MaterialSpec.emissive`.
+//     Out-of-domain requests throw. pt-webgl2 rejects path-replay at session
+//     construction instead of silently switching methods.
 //     Ref: Vicini, Speierer, Jakob, "Path Replay Backpropagation," ACM TOG
 //          40(4) (SIGGRAPH 2021); Nimier-David, Vicini, Zeltner, Jakob,
 //          "Radiative Backpropagation," ACM TOG 39(4) (SIGGRAPH 2020).

@@ -482,6 +482,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
         advanced,
         advancedBackend: 'pt-webgl2',
         advancedByBackend,
+        experimentalPreset: 'spectral-bdpt',
         debug: true,
         gltfPlayback: { loop: false },
         onGltfLoaded,
@@ -508,6 +509,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
           advanced,
           advancedBackend: 'pt-webgl2',
           advancedByBackend,
+          experimentalPreset: 'spectral-bdpt',
           debug: true,
         }),
       }),
@@ -554,6 +556,7 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     expect(opts.advanced).toBe(advanced);
     expect(opts.advancedBackend).toBe('pt-webgl2');
     expect(opts.advancedByBackend).toBe(advancedByBackend);
+    expect(opts.experimentalPreset).toBe('spectral-bdpt');
     expect(opts.debug).toBe(true);
     expect(() => opts.onWarning?.(warning)).not.toThrow();
     expect(() => opts.onAdapterProfile?.(profile as never)).not.toThrow();

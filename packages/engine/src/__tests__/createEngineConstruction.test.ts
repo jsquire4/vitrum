@@ -322,6 +322,42 @@ describe('createEngine backend construction safety', () => {
     },
   );
 
+  it('rejects an unknown experimentalPreset before constructing a backend', async () => {
+    await expect(createEngine({
+      canvas: makeCanvas(),
+      scene,
+      experimentalPreset: 'lite-bdpt' as never,
+    })).rejects.toThrow(/named experimental niches/);
+    expect(ptFactory).not.toHaveBeenCalled();
+    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(webglFactory).not.toHaveBeenCalled();
+  });
+
+  it('expands experimentalPreset one-edge-gris into the pt-webgpu advanced bag', async () => {
+    const device = makeDevice();
+    const adapter = makeAdapter(device);
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter: vi.fn(async () => adapter),
+          getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
+        },
+      },
+      configurable: true,
+    });
+    ptFactory.mockResolvedValue(makeEngine());
+
+    await createEngine({
+      canvas: makeCanvas(),
+      scene,
+      experimentalPreset: 'one-edge-gris',
+    });
+
+    expect(ptAdvancedValidator).toHaveBeenCalledWith({ oneEdgeReconnectionReuse: true });
+    expect(ptFactory.mock.calls[0]?.[0]?.oneEdgeReconnectionReuse).toBe(true);
+    expect(ptFactory.mock.calls[0]?.[0]?.denoiser).toBe('auto');
+  });
+
   it('defaults auto to the progressive viewer when the adapter satisfies the limit union', async () => {
     const device = makeDevice();
     const adapter = makeAdapter(device);

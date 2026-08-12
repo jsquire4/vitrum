@@ -154,6 +154,8 @@ export interface VitrumCanvasProps {
   advancedBackend?: CreateEngineOptions['advancedBackend'];
   /** Backend-keyed createEngine overrides for deterministic auto/fallback paths. */
   advancedByBackend?: CreateEngineOptions['advancedByBackend'];
+  /** Named research niche. Forwarded to createEngine / attachVitrum. */
+  experimentalPreset?: CreateEngineOptions['experimentalPreset'];
   /** Enable backend debug surfaces. */
   debug?: boolean;
   /** Called for nonfatal create/attach/backend capability warnings. */
@@ -304,6 +306,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
                 ...(props.advancedByBackend != null
                   ? { advancedByBackend: props.advancedByBackend }
                   : {}),
+                ...(props.experimentalPreset != null
+                  ? { experimentalPreset: props.experimentalPreset }
+                  : {}),
                 ...(props.debug != null ? { debug: props.debug } : {}),
                 onWarning: (warning) => {
                   try {
@@ -411,6 +416,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
           ...(props.advancedBackend != null ? { advancedBackend: props.advancedBackend } : {}),
           ...(props.advancedByBackend != null
             ? { advancedByBackend: props.advancedByBackend }
+            : {}),
+          ...(props.experimentalPreset != null
+            ? { experimentalPreset: props.experimentalPreset }
             : {}),
           ...(props.debug != null ? { debug: props.debug } : {}),
           ...(props.autoRecreateOnDeviceLoss != null
@@ -528,6 +536,7 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
       props.advanced,
       props.advancedBackend,
       props.advancedByBackend,
+      props.experimentalPreset,
       props.debug,
       props.autoRecreateOnDeviceLoss,
     ]);

@@ -51,6 +51,7 @@ the output tier.
 | Caustic strategy `'bdpt'` | Supported alias for the same bounded general estimator as `bdpt: true`; tune with `bdptOptions.maxLightBounces`. |
 | MNEE / SPPM (`'manifold-nee'`, `'photon-map'`) | Unsupported and rejected by the strict option validator; use the pt-webgpu full tier for these estimators. |
 | Denoiser `auto` / `oidn-final` | `auto` always resolves to `oidn-final`. Omitted `oidn.modelUrl` uses the pinned Intel RT HDR alb+nrm ONNX; hosts may override. Requires optional `onnxruntime-web` at the first denoise cycle. Full tier supplies HDR + albedo + normal aux, lite tier supplies HDR color. Retrieve with `getLatestDenoised()` and observe state via `FrameStats.denoiserState`. |
+| Inverse (`createInverseSession`) | Finite-difference only. `method:'path-replay'` throws. Certified path-replay is a pt-webgpu full-tier niche (emissive RGB, one bounce). |
 
 ## Deliberate backend boundaries
 

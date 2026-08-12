@@ -62,6 +62,14 @@ export function buildCapabilities(
     supportedEnvironmentKinds: new Set(PT_WEBGL2_SUPPORT.supportedEnvironmentKinds),
     presentationMode: 'offscreen-texture',
     causticStrategy: selected?.bdpt === true ? 'bdpt' : 'none',
+    // Inverse is a finite-difference niche on this backend. Path replay is
+    // not implemented; requesting it throws at session construction.
+    inverseRendering: {
+      methods: {
+        'finite-difference': 'native',
+        'path-replay': 'unsupported',
+      },
+    },
     // T3.G #30 — exposed only for an explicitly debug-enabled engine.
     debugSurface: selected?.debug === true,
     activeFeatures,

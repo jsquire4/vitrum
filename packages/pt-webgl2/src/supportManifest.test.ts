@@ -82,6 +82,12 @@ describe('pt-webgl2 executable support manifest', () => {
     );
     expect(caps.supportsAuxBuffers)
       .toBe(PT_WEBGL2_SUPPORT_MANIFEST.motionVectors != null);
+    expect(caps.inverseRendering).toEqual({
+      methods: {
+        'finite-difference': 'native',
+        'path-replay': 'unsupported',
+      },
+    });
   });
 
   it('does not read the static promise ledger in runtime backend modules', () => {

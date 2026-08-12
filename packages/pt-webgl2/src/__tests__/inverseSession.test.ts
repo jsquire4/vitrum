@@ -97,58 +97,18 @@ describe('pt-webgl2 finite-difference inverse session', () => {
     expect(patches.length).toBeGreaterThan(1);
   });
 
-  it('downgrades requested path replay with a structured diagnostic', () => {
+  it('rejects path-replay instead of silently switching to finite-difference', () => {
     const scene = makeScene();
-    const diagnostics: string[] = [];
-    const session = new WebGl2FiniteDifferenceInverseSession({
+    expect(() => new WebGl2FiniteDifferenceInverseSession({
       getScene: () => scene,
       renderAndReadback: async () => ({ rgba: new Float32Array([0, 0, 0, 1]), channels: 4 }),
-      patchMaterial: (primitiveId, patch) => {
-        patchTriMaterial(scene, patch);
-        expect(primitiveId).toBe('tri');
-      },
-      patchEmitter: (_emitterId: string, _patch: Partial<SceneEmitter>) => {},
+      patchMaterial: () => {},
+      patchEmitter: () => {},
     }, {
       target: { width: 1, height: 1, data: new Float32Array([0, 0, 0]) },
       parameters: [{ path: 'materials.tri.roughness', kind: 'scalar' }],
       method: 'path-replay',
-      onDiagnostic: (diagnostic) => diagnostics.push(diagnostic.code),
-    });
-
-    expect(session.method).toBe('finite-difference');
-    expect(session.parameterMethods).toEqual(['finite-difference']);
-    expect(session.diagnostics).toEqual([
-      expect.objectContaining({ code: 'path-replay-hook-missing' }),
-    ]);
-    expect(diagnostics).toEqual(['path-replay-hook-missing']);
-  });
-
-  it('guards throwing diagnostic callbacks while preserving session diagnostics', () => {
-    const scene = makeScene();
-    let diagnosticCount = 0;
-    const session = new WebGl2FiniteDifferenceInverseSession({
-      getScene: () => scene,
-      renderAndReadback: async () => ({ rgba: new Float32Array([0, 0, 0, 1]), channels: 4 }),
-      patchMaterial: (primitiveId, patch) => {
-        patchTriMaterial(scene, patch);
-        expect(primitiveId).toBe('tri');
-      },
-      patchEmitter: (_emitterId: string, _patch: Partial<SceneEmitter>) => {},
-    }, {
-      target: { width: 1, height: 1, data: new Float32Array([0, 0, 0]) },
-      parameters: [{ path: 'materials.tri.roughness', kind: 'scalar' }],
-      method: 'path-replay',
-      onDiagnostic: () => {
-        diagnosticCount += 1;
-        throw new Error('host diagnostic callback failed');
-      },
-    });
-
-    expect(diagnosticCount).toBe(1);
-    expect(session.method).toBe('finite-difference');
-    expect(session.diagnostics).toEqual([
-      expect.objectContaining({ code: 'path-replay-hook-missing' }),
-    ]);
+    })).toThrow(/finite-difference only/);
   });
 
   it('rejects attenuationDistance fitting when the scene has no finite absorbing medium seed', () => {

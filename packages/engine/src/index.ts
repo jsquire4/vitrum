@@ -20,6 +20,12 @@ export {
   type RuntimeEngineWithBackendId,
   type ScaleDefaults,
 } from './createEngine.js';
+export {
+  experimentalPreset,
+  EXPERIMENTAL_PRESET_IDS,
+  isExperimentalPresetId,
+  type ExperimentalPresetId,
+} from './experimentalPresets.js';
 export { auditSceneNeedsTlas, type SceneTlasAudit } from '@vitrum/core';
 export { computeSceneAABB, type SceneAABB } from './sceneAABB.js';
 export {

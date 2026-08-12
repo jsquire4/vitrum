@@ -57,7 +57,18 @@ keeping `prefer="auto"` so the default path is the progressive viewer.
 
 Use **`realtime`**, **`quality`**, or **`quality-webgpu`** to force a single engine.
 
-Backend-specific tuning goes through `CreateEngineOptions.advanced` (typed as partial backend options) — see each backend's options interface.
+Named research niches expand to legal `prefer` + `advancedByBackend` bags. They are not the default viewer. Lite adapters still refuse BDPT, ReSTIR-PT, and MNEE at construction.
+
+```ts
+import { createEngine, experimentalPreset } from '@vitrum/engine';
+
+await createEngine({ canvas, scene, experimentalPreset: 'spectral-bdpt' });
+await createEngine({ canvas, scene, ...experimentalPreset('one-edge-gris') });
+```
+
+Inverse rendering is a named niche: pt-webgpu path-replay is certified for one-bounce RGB `emissive` only; pt-webgl2 is finite-difference only. The progressive viewer omits inverse from composite capabilities and delegates `createInverseSession` to the settled path tracer.
+
+Backend-specific tuning goes through `CreateEngineOptions.advanced` / `advancedByBackend` — see each backend's options interface.
 
 ## Status
 

@@ -457,6 +457,11 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
     return this.#scene;
   }
 
+  /**
+   * Finite-difference inverse session. Path replay is not implemented on
+   * this backend and throws at construction. Certified path-replay lives on
+   * full-tier pt-webgpu (emissive RGB, one bounce).
+   */
   createInverseSession(opts: InverseSessionOptions): InverseSession {
     this.#guardLive('createInverseSession');
     if (this.#scene == null) {

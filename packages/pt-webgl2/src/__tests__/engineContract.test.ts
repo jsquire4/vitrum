@@ -292,6 +292,12 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
       }),
     );
     expect(c.activeFeatures).toEqual(new Set());
+    expect(c.inverseRendering).toEqual({
+      methods: {
+        'finite-difference': 'native',
+        'path-replay': 'unsupported',
+      },
+    });
   });
 
   it('reports only the resolved selected path-tracing features', async () => {

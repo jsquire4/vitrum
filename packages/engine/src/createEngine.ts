@@ -68,6 +68,7 @@ import {
   attachBackendId,
   wrapWithIdempotentDispose,
 } from './createEngineInternals.js';
+import { applyExperimentalPreset } from './experimentalPresets.js';
 
 // Backend constructors (extracted bodies)
 import { constructWalkaround, constructWalkaroundForDispatch } from './backends/walkaround.js';
@@ -133,6 +134,7 @@ async function validateCreateEngineBackendAdvancedOptions(
 
 export async function createEngine(opts: CreateEngineOptions): Promise<EngineWithBackendId> {
   validateCreateEngineOptionsShape(opts);
+  opts = applyExperimentalPreset(opts);
   validateScene(opts.scene);
   await validateCreateEngineBackendAdvancedOptions(opts);
 

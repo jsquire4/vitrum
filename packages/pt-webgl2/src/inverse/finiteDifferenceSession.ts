@@ -60,26 +60,17 @@ export class WebGl2FiniteDifferenceInverseSession implements InverseSession {
   constructor(hooks: WebGl2InverseEngineHooks, opts: InverseSessionOptions) {
     const config = validateInverseSessionOptions(opts, 'pt-webgl2');
     const loss = config.loss;
-    const diagnostics: InverseSessionDiagnostic[] = [];
     if (config.method === 'path-replay') {
-      diagnostics.push({
-        severity: 'info',
-        code: 'path-replay-hook-missing',
-        message:
-          '[vitrum/pt-webgl2] InverseSession requested path-replay, but pt-webgl2 ' +
-          'only exposes finite-difference gradients; using finite-difference.',
-      });
-      try {
-        config.onDiagnostic?.(diagnostics[0]!);
-      } catch {
-        // Host diagnostic callbacks must not abort inverse-session creation.
-      }
+      throw new Error(
+        'createInverseSession: pt-webgl2 inverse is finite-difference only; ' +
+          'path-replay is not implemented. Omit method or pass method:\'finite-difference\'.',
+      );
     }
 
     this.#hooks = hooks;
     this.#target = config.target;
     this.#lossKind = loss;
-    this.#diagnostics = diagnostics;
+    this.#diagnostics = [];
     this.#samplesPerStep = config.samplesPerStep;
     this.#fdEpsilon = config.optimizer.fdEpsilon;
 

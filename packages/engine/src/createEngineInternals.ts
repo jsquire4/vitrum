@@ -14,6 +14,7 @@
 // @internal — not part of the public @vitrum/engine API surface.
 
 import type { Engine, AdapterProfile, EngineWarning, Scene } from '@vitrum/core';
+import { isExperimentalPresetId } from './experimentalPresets.js';
 import type { HybridEngineOptions } from '@vitrum/walkaround-hybrid';
 import type { SceneAABB } from './sceneAABB.js';
 import { wrapWithIdempotentDispose } from './idempotentDispose.js';
@@ -217,6 +218,15 @@ export interface CreateEngineOptions {
    *  When present, the selected backend consumes only its own entry. */
   readonly advancedByBackend?: CreateEngineAdvancedByBackend;
 
+  /**
+   * Named research niche. Expands to a legal `prefer` + `advancedByBackend`
+   * bag (spectral BDPT, MNEE/SPPM, one-edge GRIS, walkaround NRC/PPG/RC).
+   * Host `prefer` and per-backend advanced keys win. Default createEngine
+   * without this option stays the viewer. Lite adapters still refuse
+   * BDPT / ReSTIR-PT / MNEE at construction.
+   */
+  readonly experimentalPreset?: import('./experimentalPresets.js').ExperimentalPresetId;
+
   /** Debug overlay opt-in. Forwarded to backend as `debug: true`. */
   readonly debug?: boolean;
 
@@ -246,6 +256,7 @@ const CREATE_ENGINE_OPTION_KEYS = {
   advanced: true,
   advancedBackend: true,
   advancedByBackend: true,
+  experimentalPreset: true,
   debug: true,
   onAdapterProfile: true,
   onError: true,
@@ -316,6 +327,12 @@ export function validateCreateEngineOptionsShape(
       `createEngine: opts.prefer must be one of ` +
         `${Array.from(CREATE_ENGINE_PREFERENCES, (entry) => JSON.stringify(entry)).join(', ')} ` +
         `(got ${describeValidationValue(preference)})`,
+    );
+  }
+  if (value.experimentalPreset !== undefined && !isExperimentalPresetId(value.experimentalPreset)) {
+    throw new RangeError(
+      `createEngine: opts.experimentalPreset must be one of ` +
+        `the named experimental niches (got ${describeValidationValue(value.experimentalPreset)})`,
     );
   }
   if (value.debug !== undefined && typeof value.debug !== 'boolean') {

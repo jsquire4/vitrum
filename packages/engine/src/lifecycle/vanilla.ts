@@ -478,6 +478,7 @@ function buildEngineFromOpts(
     ...(opts.advanced != null ? { advanced: opts.advanced } : {}),
     ...(opts.advancedBackend != null ? { advancedBackend: opts.advancedBackend } : {}),
     ...(opts.advancedByBackend != null ? { advancedByBackend: opts.advancedByBackend } : {}),
+    ...(opts.experimentalPreset != null ? { experimentalPreset: opts.experimentalPreset } : {}),
     ...(opts.debug != null ? { debug: opts.debug } : {}),
     ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
     ...(opts.onError != null ? { onError: opts.onError } : {}),
