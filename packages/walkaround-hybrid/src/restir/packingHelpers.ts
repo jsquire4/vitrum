@@ -251,7 +251,9 @@ function scalarProductionEmissiveLe(m: MaterialSpec): [number, number, number] |
  *  - RGB ← `materialSpecTriColor(mat, /*applyBeer*\/ false)` × 255 & 0xFF
  *    (the RAW attenuation color for a transmissive surface, else baseColor).
  *  - trans4 ← canonical nonzero-preserving 4-bit transmission quantization.
- *  - isMetal ← `metallic > 0 ? 1 : 0`.
+ *  - isMetal ← `metallic >= 0.5` (came / solder / conductor class). Tiny
+ *    authored metalness stays a dielectric in this 1-bit lane; the continuous
+ *    metalness byte in `bvh_material` still drives the BRDF.
  *  - texType ← the canonical validated `extensions.surfaceTextureId`.
  *  - low byte ← `(trans4 << 4) | (isMetal << 3) | texType`.
  * Defined invalid ids throw instead of aliasing through a low-three-bit mask.
@@ -284,7 +286,7 @@ export function packBVHIndexWFromCore(
       b = Math.round(color[2] * 255) & 0xFF;
       texTypeId = materialSurfaceTextureId(mat, triMaterialId[t]!);
       const metalness = mat.metallic ?? 0;
-      isMetal = metalness > 0 ? 1 : 0;
+      isMetal = metalness >= 0.5 ? 1 : 0;
     }
     const trans4 = quantizePackedMaterialTransmission(transmission);
     const lowByte = (trans4 << 4) | (isMetal << 3) | texTypeId;

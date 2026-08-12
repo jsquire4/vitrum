@@ -269,7 +269,6 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     sampleTransmissionMapForHit(primaryHit, scalarMatColor.a),
   );
   let isGlass  = materialHasTransmission(matColor.a);
-  let isMetal  = decodeIsMetal(primaryHit.matColorPacked);  // came / solder
 
   // Write the G-buffer.  Normal encoded as (n*0.5+0.5) so the atrous shader
   // can decode with n = raw*2 - 1.  Depth = primary-hit distance along ray,
@@ -300,6 +299,11 @@ fn shadeMain(@builtin(global_invocation_id) gid: vec3u) {
     layerControls,
   );
   let metal    = sampleMaterialScalarMap(primaryHit, MATERIAL_MAP_SLOT_METALLIC, 2u, rm.y);
+  // Conductor-class gate for stained-glass aperture / refractive caustics.
+  // Continuous metalness (including metallic maps) at 0.5, not the packed
+  // metallic>0 bit that used to classify every slightly-metal dielectric
+  // as came/solder.
+  let isMetal  = metal >= 0.5;
   var specular = sampleSpecularControls(primaryHit);
   let clearcoat = sampleClearcoatControls(primaryHit);
   let sheen = sampleSheenControls(primaryHit);

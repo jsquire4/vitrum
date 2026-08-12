@@ -1292,12 +1292,35 @@ fn materialAtlasFiniteNonNegativeRadianceOrBlack(value: vec3f) -> vec3f {
   return select(vec3f(0.0), value, valid);
 }
 
+fn sampleUnmappedBaseColorRgb(hit: IntersectionResult, packedRgb: vec3f) -> vec3f {
+  let meta0 = textureLoad(
+    baseColorMapMeta,
+    baseColorMapMetaCoord(hit.indices.w, MATERIAL_MAP_SLOT_BASE_COLOR * 2u),
+    0,
+  );
+  // Disabled maps store -1 in .x and authored linear RGB in .yzw.
+  let usable =
+    materialAtlasFiniteF32(meta0.x) &&
+    meta0.x < 0.0 &&
+    all(meta0.yzw == meta0.yzw) &&
+    all(meta0.yzw >= vec3f(0.0));
+  let rgb = materialAtlasFiniteNonNegativeRadianceOrBlack(meta0.yzw);
+  return select(packedRgb, rgb, usable);
+}
+
 fn sampleBaseColorMap(hit: IntersectionResult, scalarBaseColor: vec3f) -> vec3f {
   let texelColor = sampleMaterialAtlasRawForHit(hit, MATERIAL_MAP_SLOT_BASE_COLOR);
+  let packedRgb = decodeMaterialColor(hit.matColorPacked).rgb;
+  let factor = sampleUnmappedBaseColorRgb(hit, packedRgb);
+  let vertex = select(
+    vec3f(1.0),
+    scalarBaseColor / max(packedRgb, vec3f(1e-8)),
+    packedRgb > vec3f(0.0),
+  );
   if (texelColor.valid == 0u) {
-    return scalarBaseColor;
+    return factor * vertex;
   }
-  return scalarBaseColor * texelColor.value.rgb;
+  return factor * vertex * texelColor.value.rgb;
 }
 
 fn sampleMaterialScalarMap(hit: IntersectionResult, slot: u32, channel: u32, fallback: f32) -> f32 {

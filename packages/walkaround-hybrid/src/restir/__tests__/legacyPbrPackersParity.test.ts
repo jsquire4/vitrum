@@ -14,7 +14,7 @@ const TRI_INDICES = new Uint32Array([0, 1, 2]);
 const TRI_MATERIAL_IDS = new Uint32Array([0]);
 
 describe('legacy structural PBR packers remain byte-identical test oracles', () => {
-  it('classifies every positive metallic value identically to the core packer', () => {
+  it('packs tiny metallic identically to the core packer (dielectric in the 1-bit lane)', () => {
     const metallic = 1e-8;
     const core: MaterialSpec = {
       baseColor: [0.25, 0.5, 0.75],

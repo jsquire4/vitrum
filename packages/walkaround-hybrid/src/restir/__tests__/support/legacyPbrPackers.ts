@@ -135,7 +135,7 @@ function packBVHIndexWTri(
         `materials[${matId}].userData.surfaceTextureId`,
       );
     const metalness = (mat.metalness ?? 0);
-    isMetal = metalness > 0 ? 1 : 0;
+    isMetal = metalness >= 0.5 ? 1 : 0;
   }
   const trans4 = quantizePackedMaterialTransmission(transmission);
   const lowByte = (trans4 << 4) | (isMetal << 3) | texTypeId;

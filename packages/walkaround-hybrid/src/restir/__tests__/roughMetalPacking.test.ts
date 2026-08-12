@@ -451,3 +451,25 @@ describe('AO map strength — material flag bits 3-7 in packBVHRoughMetalFromCor
     expect(decodeAoMapIntensity(buf[0]!)).toBeCloseTo(0.5, 1);
   });
 });
+
+describe('packBVHIndexWFromCore — isMetal conductor-class bit', () => {
+  function packedIsMetal(metallic: number): number {
+    const packed = packBVHIndexWFromCore(
+      new Uint32Array([0, 1, 2]),
+      new Uint32Array([0]),
+      [{ baseColor: [1, 1, 1], roughness: 0.5, metallic } as MaterialSpec],
+      1,
+    );
+    return (packed[3]! >>> 3) & 1;
+  }
+
+  it('keeps tiny authored metalness as a dielectric in the 1-bit lane', () => {
+    expect(packedIsMetal(1e-8)).toBe(0);
+    expect(packedIsMetal(0.49)).toBe(0);
+  });
+
+  it('sets the conductor-class bit at metallic >= 0.5', () => {
+    expect(packedIsMetal(0.5)).toBe(1);
+    expect(packedIsMetal(1)).toBe(1);
+  });
+});

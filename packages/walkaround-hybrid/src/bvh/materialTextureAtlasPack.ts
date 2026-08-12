@@ -6,7 +6,10 @@ import type {
   TextureWrapMode,
 } from '@vitrum/core';
 import {
+  MATERIAL_DEFAULT_TRI_COLOR,
   materialSpecScalarEmissiveLe,
+  materialSpecTriColor,
+  packNonNegativeRadianceRgbF32,
   packNonNegativeRadianceScalarF32,
   packRadianceRgbProductF32,
   srgbToLinear,
@@ -1588,6 +1591,51 @@ function writeDisabledMeta(meta: Float32Array, texel: number): void {
   meta[b + 7] = 0;
 }
 
+/**
+ * Unmapped base color keeps the disabled-layer sentinel in `.x` (`-1`) and
+ * publishes authored linear RGB in `.yzw`. Shade reads that float instead of
+ * the 8-bit RGB888 packed into `bvhIndex.w`.
+ */
+function writeDisabledBaseColorMeta(
+  meta: Float32Array,
+  texel: number,
+  mat: MaterialSpec | undefined,
+): void {
+  const authored = mat
+    ? materialSpecTriColor(mat, /* applyBeer */ false)
+    : MATERIAL_DEFAULT_TRI_COLOR;
+  const rgb = packNonNegativeRadianceRgbF32(
+    [
+      clampedNonNegative(authored[0], MATERIAL_DEFAULT_TRI_COLOR[0]),
+      clampedNonNegative(authored[1], MATERIAL_DEFAULT_TRI_COLOR[1]),
+      clampedNonNegative(authored[2], MATERIAL_DEFAULT_TRI_COLOR[2]),
+    ],
+    'unmapped baseColor',
+  );
+  const b = texel * 4;
+  meta[b] = -1;
+  meta[b + 1] = rgb[0];
+  meta[b + 2] = rgb[1];
+  meta[b + 3] = rgb[2];
+  meta[b + 4] = 1;
+  meta[b + 5] = 1;
+  meta[b + 6] = 1;
+  meta[b + 7] = 0;
+}
+
+function writeDisabledMapMeta(
+  meta: Float32Array,
+  texel: number,
+  field: AtlasMapField,
+  mat: MaterialSpec | undefined,
+): void {
+  if (field === 'baseColorMap') {
+    writeDisabledBaseColorMeta(meta, texel, mat);
+    return;
+  }
+  writeDisabledMeta(meta, texel);
+}
+
 function alphaModeIndex(mode: MaterialSpec['alphaMode'] | undefined): number {
   switch (mode ?? 'opaque') {
     case 'mask':
@@ -2336,14 +2384,14 @@ export function packMaterialTextureAtlas(
   ): void => {
     const ref = materialTextureRefForField(mat, field);
     if (ref?.handle == null) {
-      writeDisabledMeta(baseColorMetaData, texel);
+      writeDisabledMapMeta(baseColorMetaData, texel, field, mat);
       return;
     }
     const texCoord = ref.texCoord ?? 0;
     const texCoordCode = compactTexCoordCode.get(texCoord);
     const layer = texCoordCode == null ? undefined : readable.get(ref.handle)?.[colorSpace]?.layer;
     if (texCoordCode == null || layer == null) {
-      writeDisabledMeta(baseColorMetaData, texel);
+      writeDisabledMapMeta(baseColorMetaData, texel, field, mat);
       return;
     }
     const t = ref.transform;

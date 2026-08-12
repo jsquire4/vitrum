@@ -12,13 +12,16 @@ import type { MaterialSpec } from '@vitrum/core';
  *  Field                  Site
  *  ---------------------  -----------------------------------------------------
  *  baseColor              packingHelpers.ts – packBVHIndexWFromCore via
- *                           materialSpecTriColor (also fallback in
+ *                           materialSpecTriColor (8-bit index.w fallback);
+ *                           unmapped shade reads atlas disabled-meta `.yzw`
+ *                           float RGB. Also fallback in
  *                           classifyTriangleCoreEmitter for the transmissive
- *                           secondary-emitter branch)
+ *                           secondary-emitter branch.
  *  roughness              packingHelpers.ts – packBVHRoughMetalFromCore via
  *                           resolveRoughMetal
  *  metallic               packingHelpers.ts – packBVHIndexWFromCore (isMetal
- *                           flag) + packBVHRoughMetalFromCore
+ *                           flag at metallic >= 0.5) + packBVHRoughMetalFromCore
+ *                           continuous byte; shade uses sampled metal >= 0.5
  *  shadingModel           packingHelpers.ts – packBVHRoughMetalFromCore
  *                           encodes unlit as a material flag; shade.wgsl
  *                           emits base color directly for unlit surfaces
@@ -176,9 +179,9 @@ import type { MaterialSpec } from '@vitrum/core';
  * asserts key parity with the Set — D6-5).
  */
 export const CONSUMED_MATERIAL_FIELD_DOCS = {
-  baseColor: 'packingHelpers packBVHIndexWFromCore via materialSpecTriColor',
+  baseColor: 'packBVHIndexWFromCore 8-bit fallback; unmapped shade uses atlas disabled-meta float RGB',
   roughness: 'packingHelpers packBVHRoughMetalFromCore via resolveRoughMetal',
-  metallic: 'packBVHIndexWFromCore isMetal flag + packBVHRoughMetalFromCore',
+  metallic: 'packBVHIndexWFromCore isMetal at metallic>=0.5 + packBVHRoughMetalFromCore; shade uses sampled metal>=0.5',
   shadingModel: 'packBVHRoughMetalFromCore encodes unlit as a material flag',
   emissive: 'packingHelpers packBVHEmissiveLeFromCore via materialSpecEmissiveLe',
   emissiveIntensity: 'same as emissive',

@@ -47,11 +47,9 @@ fn decodeSurfaceTextureId(packed: u32) -> u32 {
   return packed & 0x7u;
 }
 
-// Decode the isMetal flag — true for came / solder / metallic surfaces
-// (metalness > 0.5 in the source material). Used to skip the noisy
-// Lo_direct ReSTIR DI sampling on thin metallic geometry where the
-// single-sample variance produces visible firefly speckle that atrous
-// can't smooth across the thin came strips.
+// Decode the isMetal flag — true for came / solder / conductor-class surfaces
+// (authored metalness >= 0.5). Shade prefers the continuous metalness channel
+// after metallic-map sampling; this bit remains for packed-word-only paths.
 fn decodeIsMetal(packed: u32) -> bool {
   return ((packed >> 3u) & 0x1u) != 0u;
 }
