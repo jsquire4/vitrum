@@ -41,8 +41,9 @@
 // Primitive modes: TRIANGLES (4) is converted directly; TRIANGLE_STRIP (5) and
 // TRIANGLE_FAN (6) are triangulated into indexed triangle lists (winding per
 // glTF §3.7.2.1, degenerates dropped). POINTS/LINES/LINE_LOOP/LINE_STRIP are
-// imported as deterministic fallback-generated meshes (tiny cubes / thin line
-// prisms) and reported as approximate topology fidelity.
+// imported as analytic spheres/capsules (one sphere per point, one capsule per
+// non-degenerate segment). Engines without native analytic intersect tessellate
+// those shapes later.
 //
 // References:
 //   - glTF 2.0 specification (Khronos Group)
@@ -133,9 +134,10 @@ import {
 } from './triangulation.js';
 import { GltfParseFailed } from './errors.js';
 import {
-  buildPointLineFallbackGeometry,
+  buildPointLineAnalytics,
   isPointLineMode,
   pointLineModeName,
+  resolvePointLineRadius,
 } from './primitiveModeFallback.js';
 import {
   collectGltfSceneReachability,
@@ -354,10 +356,11 @@ export interface GltfToSceneOptions {
   readonly compressionDecoderPolicy?: GltfCompressionDecoderPolicy;
 
   /**
-   * Half-width, in asset units, for generated mesh fallback geometry used when
-   * importing glTF POINTS/LINES/LINE_LOOP/LINE_STRIP primitive modes. When
-   * omitted, the adapter derives a small deterministic size from the primitive
-   * bounding-box diagonal.
+   * Radius, in asset units, for analytic sphere/capsule geometry used when
+   * importing glTF POINTS/LINES/LINE_LOOP/LINE_STRIP primitive modes. Authored
+   * `extras.vitrum.radius` on the primitive, mesh, or node wins when present.
+   * When both extras and this override are omitted, the adapter derives a small
+   * deterministic size from the primitive bounding-box diagonal.
    */
   readonly pointLineFallbackRadius?: number;
 }
@@ -1103,8 +1106,8 @@ function buildPrimitiveFromMeshPrimitive(
     instanceTransforms,
   } = nodeCtx;
   const primitivePath = `meshes[${node.mesh}].primitives[${primitiveIndex}]`;
-  // Mode check — native triangle modes plus deterministic generated-mesh
-  // fallback for point/line modes. Unknown modes are still skipped.
+  // Mode check — native triangle modes plus analytic sphere/capsule import
+  // for point/line modes. Unknown modes are still skipped.
   const mode = prim.mode ?? GLTF_PRIMITIVE_MODE_TRIANGLES;
   if (
     mode !== GLTF_PRIMITIVE_MODE_TRIANGLES &&
@@ -1251,7 +1254,7 @@ function buildPrimitiveFromMeshPrimitive(
   const usesPointLineFallback = isPointLineMode(mode);
 
   // Normals — generate flat normals if absent or unreadable.
-  // Point/line fallback generates its own mesh normals below, so reporting
+  // Point/line analytics do not consume vertex normals, so reporting
   // normal generation for the discarded source topology would be misleading.
   const normIdx = prim.attributes['NORMAL'];
   const normalAccessor = normIdx === undefined ? undefined : gltf.accessors?.[normIdx];
@@ -1713,6 +1716,75 @@ function buildPrimitiveFromMeshPrimitive(
   uv1 = uvResolvedMaterial.uv1;
   uvSets = cloneSparseArray(uvResolvedMaterial.uvSets ?? []);
 
+  if (usesPointLineFallback) {
+    const radius = resolvePointLineRadius(
+      positions,
+      [prim.extras, mesh.extras, node.extras],
+      opts.pointLineFallbackRadius,
+    );
+    const analytics = buildPointLineAnalytics(
+      positions,
+      indices,
+      mode,
+      radius,
+      resourceLedger,
+      `${primitivePath} point/line analytics`,
+    );
+    if (analytics == null) {
+      emitImportDiagnostic(warnings, diagnostics, {
+        severity: 'warning',
+        code: 'empty-triangulated-primitive',
+        path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
+        message:
+          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
+          `${pointLineModeName(mode)} primitive could not produce non-degenerate analytic geometry. ` +
+          'Primitive SKIPPED.',
+      });
+      return;
+    }
+    const instanceWorlds = instanceTransforms?.worldInstanceTransforms ?? [worldMat];
+    const extraNotes: string[] = [];
+    if (instanceWorlds.length > 1) {
+      extraNotes.push('GPU instances were expanded into individual analytics.');
+    }
+    if (skinData || (prim.targets?.length ?? 0) > 0) {
+      extraNotes.push('Rest-pose positions are used; skin and morph streams are not applied.');
+    }
+    emitImportDiagnostic(warnings, diagnostics, {
+      severity: 'warning',
+      code: 'fallback-generated-primitive-mode',
+      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
+      message:
+        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive mode ${mode} ` +
+        `(${pointLineModeName(mode)}) was imported as analytic sphere/capsule geometry ` +
+        `(radius ${analytics.radius}).` +
+        (extraNotes.length > 0 ? ` ${extraNotes.join(' ')}` : ''),
+    });
+    for (const analytic of analytics.analytics) {
+      for (const transform of instanceWorlds) {
+        const analyticId = `gltf-prim-${ctx.primId.value++}`;
+        (animationTargets[animationNodeId(nodeIdx)] ??= []).push(analyticId);
+        if (
+          materialIndex !== undefined &&
+          Number.isInteger(materialIndex) &&
+          materialIndex >= 0 &&
+          materialIndex < coreMaterials.length
+        ) {
+          materialBindings.push({ primitiveId: analyticId, materialIndex });
+        }
+        primitives.push({
+          kind: 'analytic',
+          id: analyticId,
+          shape: analytic.shape,
+          params: analytic.params,
+          material: uvResolvedMaterial.material,
+          transform,
+        });
+      }
+    }
+    return;
+  }
+
   // Morph targets (GLTF-04) — POSITION/NORMAL/TANGENT plus every represented
   // glTF TEXCOORD_n and COLOR_n semantic + node/mesh weights.
   let morph = _extractMorphTargets(
@@ -1730,107 +1802,6 @@ function buildPrimitiveFromMeshPrimitive(
     onAccessorDiagnostic,
     resourceLedger,
   );
-  if (usesPointLineFallback) {
-    const originalVertexCount = Math.floor(positions.length / 3);
-    const fallback = buildPointLineFallbackGeometry(
-      positions,
-      indices,
-      mode,
-      opts.pointLineFallbackRadius,
-      resourceLedger,
-      `${primitivePath} point/line fallback`,
-    );
-    if (fallback == null) {
-      emitImportDiagnostic(warnings, diagnostics, {
-        severity: 'warning',
-        code: 'empty-triangulated-primitive',
-        path: `meshes[${node.mesh}].primitives[${primitiveIndex}]`,
-        message:
-          `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" ` +
-          `${pointLineModeName(mode)} primitive could not produce non-degenerate fallback mesh geometry. ` +
-          'Primitive SKIPPED.',
-      });
-      return;
-    }
-    emitImportDiagnostic(warnings, diagnostics, {
-      severity: 'warning',
-      code: 'fallback-generated-primitive-mode',
-      path: `meshes[${node.mesh}].primitives[${primitiveIndex}].mode`,
-      message:
-        `[vitrum/gltf-adapter] Mesh "${mesh.name ?? node.mesh}" primitive mode ${mode} ` +
-        `(${pointLineModeName(mode)}) was imported as fallback-generated mesh geometry ` +
-        `(radius ${fallback.radius}). Topology fidelity is approximate, but the primitive is renderable.`,
-    });
-    const remapPath = `${primitivePath} point/line remap`;
-    uvs = remapVec2Attribute(uvs, fallback.sourceVertices, resourceLedger, `${remapPath}.uvs`);
-    uv1 = remapVec2Attribute(uv1, fallback.sourceVertices, resourceLedger, `${remapPath}.uv1`);
-    uvSets = mapSparseArray(uvSets, (stream, texCoord) =>
-      remapVec2Attribute(
-        stream,
-        fallback.sourceVertices,
-        resourceLedger,
-        `${remapPath}.uvSets[${texCoord}]`,
-      ),
-    );
-    primitiveUvs = remapVec2Attribute(
-      primitiveUvs,
-      fallback.sourceVertices,
-      resourceLedger,
-      `${remapPath}.primitiveUvs`,
-    );
-    primitiveUv1 = remapVec2Attribute(
-      primitiveUv1,
-      fallback.sourceVertices,
-      resourceLedger,
-      `${remapPath}.primitiveUv1`,
-    );
-    primitiveUvSets = mapSparseArray(primitiveUvSets, (stream, texCoord) =>
-      remapVec2Attribute(
-        stream,
-        fallback.sourceVertices,
-        resourceLedger,
-        `${remapPath}.primitiveUvSets[${texCoord}]`,
-      ),
-    );
-    colors = remapVertexColors(
-      colors,
-      originalVertexCount,
-      fallback.sourceVertices,
-      resourceLedger,
-      `${remapPath}.colors`,
-    );
-    colorSets = mapSparseArray(colorSets, (stream, colorSet) =>
-      remapVertexColors(
-        stream,
-        originalVertexCount,
-        fallback.sourceVertices,
-        resourceLedger,
-        `${remapPath}.colorSets[${colorSet}]`,
-      ),
-    );
-    tangents = undefined;
-    if (skinIndices && skinWeights) {
-      const influenceCount = skinInfluencesPerVertex ?? 4;
-      skinIndices = remapPackedUintAttribute(
-        skinIndices,
-        influenceCount,
-        fallback.sourceVertices,
-        resourceLedger,
-        `${remapPath}.skinIndices`,
-      );
-      skinWeights = remapPackedFloatAttribute(
-        skinWeights,
-        influenceCount,
-        fallback.sourceVertices,
-        resourceLedger,
-        `${remapPath}.skinWeights`,
-      );
-    }
-    morph = remapMorphData(morph, fallback.sourceVertices, resourceLedger, `${remapPath}.morph`);
-    positions = fallback.positions;
-    normals = fallback.normals;
-    indices = fallback.indices;
-  }
   const finalTangents =
     tangents ??
     _maybeGenerateTangents(
@@ -3719,238 +3690,6 @@ function allocateGeometryFloat32(
   );
   resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
   return new Float32Array(allocation.elementCount);
-}
-
-function remapVec2Attribute(
-  attr: Float32Array | undefined,
-  sourceVertices: Uint32Array,
-  resourceLedger: ImportResourceLedger,
-  allocationPath: string,
-): Float32Array | undefined {
-  if (attr == null) return undefined;
-  const allocation = geometryArrayAllocation(
-    [sourceVertices.length, 2],
-    Float32Array.BYTES_PER_ELEMENT,
-    allocationPath,
-  );
-  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
-  const out = new Float32Array(allocation.elementCount);
-  for (let i = 0; i < sourceVertices.length; i += 1) {
-    const src = sourceVertices[i]! * 2;
-    out[i * 2 + 0] = attr[src + 0] ?? 0;
-    out[i * 2 + 1] = attr[src + 1] ?? 0;
-  }
-  return out;
-}
-
-function remapVertexColors(
-  colors: Float32Array | undefined,
-  sourceVertexCount: number,
-  sourceVertices: Uint32Array,
-  resourceLedger: ImportResourceLedger,
-  allocationPath: string,
-): Float32Array | undefined {
-  if (colors == null || sourceVertexCount <= 0) return undefined;
-  const components = Math.max(1, Math.floor(colors.length / sourceVertexCount));
-  const allocation = geometryArrayAllocation(
-    [sourceVertices.length, components],
-    Float32Array.BYTES_PER_ELEMENT,
-    allocationPath,
-  );
-  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
-  const out = new Float32Array(allocation.elementCount);
-  for (let i = 0; i < sourceVertices.length; i += 1) {
-    const src = sourceVertices[i]! * components;
-    const dst = i * components;
-    for (let c = 0; c < components; c += 1) out[dst + c] = colors[src + c] ?? (c === 3 ? 1 : 0);
-  }
-  return out;
-}
-
-function remapPackedUintAttribute(
-  values: Uint32Array,
-  components: number,
-  sourceVertices: Uint32Array,
-  resourceLedger: ImportResourceLedger,
-  allocationPath: string,
-): Uint32Array {
-  const allocation = geometryArrayAllocation(
-    [sourceVertices.length, components],
-    Uint32Array.BYTES_PER_ELEMENT,
-    allocationPath,
-  );
-  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
-  const out = new Uint32Array(allocation.elementCount);
-  for (let i = 0; i < sourceVertices.length; i += 1) {
-    const src = sourceVertices[i]! * components;
-    out.set(values.subarray(src, src + components), i * components);
-  }
-  return out;
-}
-
-function remapPackedFloatAttribute(
-  values: Float32Array,
-  components: number,
-  sourceVertices: Uint32Array,
-  resourceLedger: ImportResourceLedger,
-  allocationPath: string,
-): Float32Array {
-  const allocation = geometryArrayAllocation(
-    [sourceVertices.length, components],
-    Float32Array.BYTES_PER_ELEMENT,
-    allocationPath,
-  );
-  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
-  const out = new Float32Array(allocation.elementCount);
-  for (let i = 0; i < sourceVertices.length; i += 1) {
-    const src = sourceVertices[i]! * components;
-    out.set(values.subarray(src, src + components), i * components);
-  }
-  return out;
-}
-
-function remapMorphData(
-  morph: MorphData | undefined,
-  sourceVertices: Uint32Array,
-  resourceLedger: ImportResourceLedger,
-  allocationPath: string,
-): MorphData | undefined {
-  if (morph == null) return undefined;
-  const sourceVertexCount = (morph.morphTargets[0]?.length ?? 0) / 3;
-  resourceLedger.chargeDecodedGeometryBytes(
-    morph.morphWeights.byteLength,
-    `${allocationPath}.morphWeights`,
-  );
-  return {
-    morphTargets: morph.morphTargets.map((target, index) =>
-      remapVec3Attribute(
-        target,
-        sourceVertices,
-        resourceLedger,
-        `${allocationPath}.morphTargets[${index}]`,
-      ),
-    ),
-    ...(morph.morphTargetNormals != null
-      ? {
-          morphTargetNormals: morph.morphTargetNormals.map((target, index) =>
-            remapVec3Attribute(
-              target,
-              sourceVertices,
-              resourceLedger,
-              `${allocationPath}.morphTargetNormals[${index}]`,
-            ),
-          ),
-        }
-      : {}),
-    ...(morph.morphTargetTangents != null
-      ? {
-          morphTargetTangents: morph.morphTargetTangents.map((target, index) =>
-            remapVec3Attribute(
-              target,
-              sourceVertices,
-              resourceLedger,
-              `${allocationPath}.morphTargetTangents[${index}]`,
-            ),
-          ),
-        }
-      : {}),
-    ...(morph.morphTargetUvs != null
-      ? {
-          morphTargetUvs: morph.morphTargetUvs.map(
-            (target, index) =>
-              remapVec2Attribute(
-                target,
-                sourceVertices,
-                resourceLedger,
-                `${allocationPath}.morphTargetUvs[${index}]`,
-              )!,
-          ),
-        }
-      : {}),
-    ...(morph.morphTargetUv1s != null
-      ? {
-          morphTargetUv1s: morph.morphTargetUv1s.map(
-            (target, index) =>
-              remapVec2Attribute(
-                target,
-                sourceVertices,
-                resourceLedger,
-                `${allocationPath}.morphTargetUv1s[${index}]`,
-              )!,
-          ),
-        }
-      : {}),
-    ...(morph.morphTargetUvSets != null
-      ? {
-          morphTargetUvSets: mapSparseArray(
-            morph.morphTargetUvSets,
-            (targets, texCoord) => targets?.map(
-              (target, index) =>
-                remapVec2Attribute(
-                  target,
-                  sourceVertices,
-                  resourceLedger,
-                  `${allocationPath}.morphTargetUvSets[${texCoord}][${index}]`,
-                )!,
-            ),
-          ),
-        }
-      : {}),
-    ...(morph.morphTargetColors != null
-      ? {
-          morphTargetColors: morph.morphTargetColors.map(
-            (target, index) =>
-              remapVertexColors(
-                target,
-                sourceVertexCount,
-                sourceVertices,
-                resourceLedger,
-                `${allocationPath}.morphTargetColors[${index}]`,
-              )!,
-          ),
-        }
-      : {}),
-    ...(morph.morphTargetColorSets != null
-      ? {
-          morphTargetColorSets: mapSparseArray(
-            morph.morphTargetColorSets,
-            (targets, colorSet) => targets?.map(
-              (target, index) =>
-                remapVertexColors(
-                  target,
-                  sourceVertexCount,
-                  sourceVertices,
-                  resourceLedger,
-                  `${allocationPath}.morphTargetColorSets[${colorSet}][${index}]`,
-                )!,
-            ),
-          ),
-        }
-      : {}),
-    morphWeights: new Float32Array(morph.morphWeights),
-  };
-}
-
-function remapVec3Attribute(
-  values: Float32Array,
-  sourceVertices: Uint32Array,
-  resourceLedger: ImportResourceLedger,
-  allocationPath: string,
-): Float32Array {
-  const allocation = geometryArrayAllocation(
-    [sourceVertices.length, 3],
-    Float32Array.BYTES_PER_ELEMENT,
-    allocationPath,
-  );
-  resourceLedger.chargeDecodedGeometryBytes(allocation.byteLength, allocationPath);
-  const out = new Float32Array(allocation.elementCount);
-  for (let i = 0; i < sourceVertices.length; i += 1) {
-    const src = sourceVertices[i]! * 3;
-    out[i * 3 + 0] = values[src + 0] ?? 0;
-    out[i * 3 + 1] = values[src + 1] ?? 0;
-    out[i * 3 + 2] = values[src + 2] ?? 0;
-  }
-  return out;
 }
 
 function skinPrimitiveUvSet(

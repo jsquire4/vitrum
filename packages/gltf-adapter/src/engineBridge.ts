@@ -496,7 +496,6 @@ const DEGRADED_IMPORT_DIAGNOSTICS: ReadonlySet<GltfImportDiagnosticCode> = new S
   'ignored-camera',
   'ignored-gpu-instancing',
   'ignored-gpu-instancing-attribute',
-  'fallback-generated-primitive-mode',
   'generated-flat-normals',
   'unreadable-normal',
   'unreadable-optional-attribute',

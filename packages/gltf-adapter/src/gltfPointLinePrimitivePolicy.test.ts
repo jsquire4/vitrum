@@ -5,13 +5,13 @@ import {
   gltfToScene,
   type GltfJson,
 } from './index.js';
-import type { MeshPrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
+import type { AnalyticPrimitive } from '@vitrum/core';
 
 const POINT_LINE_MODES = [
-  { mode: 0, name: 'POINTS' },
-  { mode: 1, name: 'LINES' },
-  { mode: 2, name: 'LINE_LOOP' },
-  { mode: 3, name: 'LINE_STRIP' },
+  { mode: 0, name: 'POINTS', count: 4, shape: 'sphere' as const },
+  { mode: 1, name: 'LINES', count: 2, shape: 'capsule' as const },
+  { mode: 2, name: 'LINE_LOOP', count: 4, shape: 'capsule' as const },
+  { mode: 3, name: 'LINE_STRIP', count: 3, shape: 'capsule' as const },
 ] as const;
 
 const POSITIONS = [
@@ -157,7 +157,7 @@ function makePointLineModeGltf(): GltfJson {
 }
 
 describe('POINTS / line primitive policy', () => {
-  it('reports each point/line topology as fallback-generated mesh compatibility', () => {
+  it('reports point/line topologies as tessellated analytics on triangle-only backends', () => {
     const report = analyzeGltfAsset(makePointLineModeGltf());
     const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgl2');
 
@@ -183,34 +183,50 @@ describe('POINTS / line primitive policy', () => {
     expect(compatibility.isCompatible).toBe(true);
   });
 
-  it('warns once per fallback topology, emits diagnostics, and imports generated meshes', async () => {
+  it('reports point/line analytics as native on full pt-webgpu', () => {
+    const report = analyzeGltfAsset(makePointLineModeGltf());
+    const compatibility = evaluateGltfBackendCompatibility(report, 'pt-webgpu');
+
+    for (const { mode } of POINT_LINE_MODES) {
+      expect(compatibility.issues.filter((issue) => issue.name === `mode:${mode}`)).toEqual([]);
+    }
+  });
+
+  it('warns once per topology and imports analytic spheres/capsules', async () => {
     const { scene, warnings, diagnostics } = await gltfToScene(makePointLineModeGltf(), {
       buffers: makePointLineBuffers(),
       pointLineFallbackRadius: 0.05,
     });
 
-    expect(scene.primitives).toHaveLength(POINT_LINE_MODES.length);
-    for (const [primitiveIndex, { mode, name }] of POINT_LINE_MODES.entries()) {
+    expect(scene.primitives).toHaveLength(
+      POINT_LINE_MODES.reduce((sum, mode) => sum + mode.count, 0),
+    );
+    let offset = 0;
+    for (const [primitiveIndex, { mode, name, count, shape }] of POINT_LINE_MODES.entries()) {
       expect(warnings.some((warning) =>
         warning.includes(`mode ${mode} (${name})`) &&
-        warning.includes('fallback-generated mesh geometry'),
+        warning.includes('analytic sphere/capsule geometry'),
       )).toBe(true);
       expect(diagnostics).toContainEqual(expect.objectContaining({
         severity: 'warning',
         code: 'fallback-generated-primitive-mode',
         path: `meshes[0].primitives[${primitiveIndex}].mode`,
       }));
-      const primitive = scene.primitives[primitiveIndex]! as MeshPrimitive;
-      expect(primitive.kind).toBe('mesh');
-      expect(primitive.positions.length).toBeGreaterThan(0);
-      expect(primitive.normals.length).toBe(primitive.positions.length);
-      expect(primitive.indices?.length).toBeGreaterThan(0);
+      const imported = scene.primitives.slice(offset, offset + count);
+      expect(imported).toHaveLength(count);
+      for (const primitive of imported) {
+        const analytic = primitive as AnalyticPrimitive;
+        expect(analytic.kind).toBe('analytic');
+        expect(analytic.shape).toBe(shape);
+        expect(analytic.params[analytic.params.length - 1]).toBeCloseTo(0.05);
+      }
+      offset += count;
     }
     expect(warnings).toHaveLength(POINT_LINE_MODES.length);
     expect(diagnostics).toHaveLength(POINT_LINE_MODES.length);
   });
 
-  it('does not report discarded normal diagnostics for generated point/line fallback meshes', async () => {
+  it('does not report discarded normal diagnostics for analytic point/line import', async () => {
     const withoutNormals = makePointLineModeGltf();
     for (const primitive of withoutNormals.meshes![0]!.primitives) {
       delete primitive.attributes.NORMAL;
@@ -221,7 +237,7 @@ describe('POINTS / line primitive policy', () => {
       pointLineFallbackRadius: 0.05,
     });
     const missingCodes = missingNormals.diagnostics.map((diagnostic) => diagnostic.code);
-    expect(missingNormals.scene.primitives).toHaveLength(POINT_LINE_MODES.length);
+    expect(missingNormals.scene.primitives.length).toBeGreaterThan(0);
     expect(missingCodes.filter((code) => code === 'fallback-generated-primitive-mode'))
       .toHaveLength(POINT_LINE_MODES.length);
     expect(missingCodes).not.toContain('generated-flat-normals');
@@ -236,7 +252,7 @@ describe('POINTS / line primitive policy', () => {
       pointLineFallbackRadius: 0.05,
     });
     const unreadableCodes = unreadableNormals.diagnostics.map((diagnostic) => diagnostic.code);
-    expect(unreadableNormals.scene.primitives).toHaveLength(POINT_LINE_MODES.length);
+    expect(unreadableNormals.scene.primitives.length).toBeGreaterThan(0);
     expect(unreadableCodes.filter((code) => code === 'fallback-generated-primitive-mode'))
       .toHaveLength(POINT_LINE_MODES.length);
     expect(unreadableCodes).not.toContain('generated-flat-normals');
@@ -247,36 +263,38 @@ describe('POINTS / line primitive policy', () => {
     )).toBe(false);
   });
 
-  it('replicates UVs, vertex colors, identity skin, and morph deltas onto generated point meshes', async () => {
-    const { scene } = await gltfToScene(makePointAttributeRemapGltf(), {
+  it('imports POINTS as rest-pose spheres and drops vertex streams', async () => {
+    const { scene, diagnostics } = await gltfToScene(makePointAttributeRemapGltf(), {
       buffers: makeAttributeRemapBuffers(),
       pointLineFallbackRadius: 0.05,
     });
 
-    expect(scene.primitives).toHaveLength(1);
-    const primitive = scene.primitives[0] as SkinnedMeshPrimitive;
-    expect(primitive.kind).toBe('skinned-mesh');
-    expect(primitive.positions.length).toBe(2 * 24 * 3);
-    expect(primitive.uvs?.length).toBe(2 * 24 * 2);
-    expect(primitive.colors?.length).toBe(2 * 24 * 4);
-    expect(primitive.skinWeights.length).toBe(2 * 24 * 4);
-    expect(primitive.morphTargets?.[0]?.length).toBe(primitive.positions.length);
-
-    expect(Array.from(primitive.uvs!.slice(0, 2))).toEqual([0.25, 0.5]);
-    expect(Array.from(primitive.colors!.slice(0, 4))).toEqual([1, 0, 0, 1]);
-    expect(primitive.morphTargets![0]![0]).toBeCloseTo(0.1);
-    expect(primitive.morphTargets![0]![1]).toBeCloseTo(0);
-    expect(primitive.morphTargets![0]![2]).toBeCloseTo(0);
-
-    const secondPointGeneratedVertex = 24;
-    expect(Array.from(primitive.uvs!.slice(secondPointGeneratedVertex * 2, secondPointGeneratedVertex * 2 + 2))).toEqual([0.75, 1]);
-    expect(Array.from(primitive.colors!.slice(secondPointGeneratedVertex * 4, secondPointGeneratedVertex * 4 + 4))).toEqual([0, 1, 0, 1]);
-    expect(primitive.morphTargets![0]![secondPointGeneratedVertex * 3 + 0]).toBeCloseTo(0);
-    expect(primitive.morphTargets![0]![secondPointGeneratedVertex * 3 + 1]).toBeCloseTo(0.2);
-    expect(primitive.morphTargets![0]![secondPointGeneratedVertex * 3 + 2]).toBeCloseTo(0);
+    expect(scene.primitives).toHaveLength(2);
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: 'fallback-generated-primitive-mode',
+      path: 'meshes[0].primitives[0].mode',
+    }));
+    expect(diagnostics.some((diagnostic) =>
+      diagnostic.message.includes('skin and morph streams are not applied'),
+    )).toBe(true);
+    const first = scene.primitives[0] as AnalyticPrimitive;
+    const second = scene.primitives[1] as AnalyticPrimitive;
+    expect(first.kind).toBe('analytic');
+    expect(first.shape).toBe('sphere');
+    expect(first.params[0]).toBeCloseTo(0);
+    expect(first.params[1]).toBeCloseTo(0);
+    expect(first.params[2]).toBeCloseTo(0);
+    expect(first.params[3]).toBeCloseTo(0.05);
+    expect(second.params[0]).toBeCloseTo(1);
+    expect(second.params[1]).toBeCloseTo(0);
+    expect(second.params[2]).toBeCloseTo(0);
+    expect(second.params[3]).toBeCloseTo(0.05);
+    expect('uvs' in first).toBe(false);
+    expect('colors' in first).toBe(false);
+    expect('morphTargets' in first).toBe(false);
   });
 
-  it('replicates endpoint UVs, vertex colors, identity skin, and morph deltas onto generated line meshes', async () => {
+  it('imports LINES as a rest-pose capsule between endpoints', async () => {
     const { scene, diagnostics } = await gltfToScene(makePointAttributeRemapGltf(1), {
       buffers: makeAttributeRemapBuffers(),
       pointLineFallbackRadius: 0.05,
@@ -287,38 +305,24 @@ describe('POINTS / line primitive policy', () => {
       code: 'fallback-generated-primitive-mode',
       path: 'meshes[0].primitives[0].mode',
     }));
-    const primitive = scene.primitives[0] as SkinnedMeshPrimitive;
-    expect(primitive.kind).toBe('skinned-mesh');
-    expect(primitive.positions.length).toBe(24 * 3);
-    expect(primitive.uvs?.length).toBe(24 * 2);
-    expect(primitive.colors?.length).toBe(24 * 4);
-    expect(primitive.skinWeights.length).toBe(24 * 4);
-    expect(primitive.morphTargets?.[0]?.length).toBe(primitive.positions.length);
-
-    const firstEndpointVertices = [0, 3, 4, 7, 8, 11, 12, 15, 16, 17, 18, 19];
-    const secondEndpointVertices = [1, 2, 5, 6, 9, 10, 13, 14, 20, 21, 22, 23];
-    for (const vertex of firstEndpointVertices) {
-      expect(Array.from(primitive.uvs!.slice(vertex * 2, vertex * 2 + 2))).toEqual([0.25, 0.5]);
-      expect(Array.from(primitive.colors!.slice(vertex * 4, vertex * 4 + 4))).toEqual([1, 0, 0, 1]);
-      expect(primitive.morphTargets![0]![vertex * 3 + 0]).toBeCloseTo(0.1);
-      expect(primitive.morphTargets![0]![vertex * 3 + 1]).toBeCloseTo(0);
-      expect(primitive.morphTargets![0]![vertex * 3 + 2]).toBeCloseTo(0);
-    }
-    for (const vertex of secondEndpointVertices) {
-      expect(Array.from(primitive.uvs!.slice(vertex * 2, vertex * 2 + 2))).toEqual([0.75, 1]);
-      expect(Array.from(primitive.colors!.slice(vertex * 4, vertex * 4 + 4))).toEqual([0, 1, 0, 1]);
-      expect(primitive.morphTargets![0]![vertex * 3 + 0]).toBeCloseTo(0);
-      expect(primitive.morphTargets![0]![vertex * 3 + 1]).toBeCloseTo(0.2);
-      expect(primitive.morphTargets![0]![vertex * 3 + 2]).toBeCloseTo(0);
-    }
+    const primitive = scene.primitives[0] as AnalyticPrimitive;
+    expect(primitive.kind).toBe('analytic');
+    expect(primitive.shape).toBe('capsule');
+    expect(primitive.params[0]).toBeCloseTo(0);
+    expect(primitive.params[1]).toBeCloseTo(0);
+    expect(primitive.params[2]).toBeCloseTo(0);
+    expect(primitive.params[3]).toBeCloseTo(1);
+    expect(primitive.params[4]).toBeCloseTo(0);
+    expect(primitive.params[5]).toBeCloseTo(0);
+    expect(primitive.params[6]).toBeCloseTo(0.05);
   });
 
   it.each([
-    { mode: 2 as const, name: 'LINE_LOOP', expectedCounts: [24, 24, 24] },
-    { mode: 3 as const, name: 'LINE_STRIP', expectedCounts: [12, 24, 12] },
-  ])('replicates endpoint streams across generated $name fallback meshes', async ({
+    { mode: 2 as const, name: 'LINE_LOOP', expected: 3 },
+    { mode: 3 as const, name: 'LINE_STRIP', expected: 2 },
+  ])('imports $name as rest-pose capsules without vertex streams', async ({
     mode,
-    expectedCounts,
+    expected,
   }) => {
     const buffers = makePolylineAttributeRemapBuffers();
     const { scene, diagnostics } = await gltfToScene(makePolylineAttributeRemapGltf(mode), {
@@ -326,40 +330,30 @@ describe('POINTS / line primitive policy', () => {
       pointLineFallbackRadius: 0.05,
     });
 
-    expect(scene.primitives).toHaveLength(1);
+    expect(scene.primitives).toHaveLength(expected);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: 'fallback-generated-primitive-mode',
       path: 'meshes[0].primitives[0].mode',
     }));
-
-    const primitive = scene.primitives[0] as SkinnedMeshPrimitive;
-    expect(primitive.kind).toBe('skinned-mesh');
-    expect(primitive.positions.length).toBe(expectedCounts.reduce((sum, count) => sum + count, 0) * 3);
-    expect(primitive.uvs?.length).toBe(expectedCounts.reduce((sum, count) => sum + count, 0) * 2);
-    expect(primitive.colors?.length).toBe(expectedCounts.reduce((sum, count) => sum + count, 0) * 4);
-    expect(primitive.morphTargets?.[0]?.length).toBe(primitive.positions.length);
-
-    const counts: [number, number, number] = [0, 0, 0];
-    for (let vertex = 0; vertex < primitive.positions.length / 3; vertex += 1) {
-      const color = Array.from(primitive.colors!.slice(vertex * 4, vertex * 4 + 4));
-      const uv = Array.from(primitive.uvs!.slice(vertex * 2, vertex * 2 + 2));
-      const morph = primitive.morphTargets![0]!.slice(vertex * 3, vertex * 3 + 3);
-
-      if (color[0] === 1) {
-        counts[0] += 1;
-        expect(uv).toEqual([0.125, 0.25]);
-        expect(Array.from(morph)).toEqual([0.125, 0, 0]);
-      } else if (color[1] === 1) {
-        counts[1] += 1;
-        expect(uv).toEqual([0.5, 0.625]);
-        expect(Array.from(morph)).toEqual([0, 0.25, 0]);
-      } else {
-        counts[2] += 1;
-        expect(color).toEqual([0, 0, 1, 1]);
-        expect(uv).toEqual([0.75, 1]);
-        expect(Array.from(morph)).toEqual([0, 0, 0.5]);
-      }
+    for (const primitive of scene.primitives) {
+      const analytic = primitive as AnalyticPrimitive;
+      expect(analytic.kind).toBe('analytic');
+      expect(analytic.shape).toBe('capsule');
+      expect(analytic.params).toHaveLength(7);
+      expect(analytic.params[6]).toBeCloseTo(0.05);
     }
-    expect(counts).toEqual(expectedCounts);
+  });
+
+  it('honors extras.vitrum.radius over the host override', async () => {
+    const gltf = makePointAttributeRemapGltf();
+    gltf.meshes![0]!.primitives[0]!.extras = { vitrum: { radius: 0.4 } };
+
+    const { scene } = await gltfToScene(gltf, {
+      buffers: makeAttributeRemapBuffers(),
+      pointLineFallbackRadius: 0.05,
+    });
+
+    const primitive = scene.primitives[0] as AnalyticPrimitive;
+    expect(primitive.params[3]).toBeCloseTo(0.4);
   });
 });

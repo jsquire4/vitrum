@@ -1,10 +1,12 @@
-// primitiveModeFallback.ts — deterministic mesh fallback for glTF point/line topologies.
+// primitiveModeFallback.ts — analytic sphere/capsule import for glTF point/line
+// topologies.
 //
 // glTF modes POINTS/LINES/LINE_LOOP/LINE_STRIP have no first-class @vitrum/core
-// primitive kind.  Rather than dropping those assets, the adapter expands them
-// into small triangle meshes: points become tiny cubes and line segments become
-// thin rectangular prisms.  This is intentionally reported as
-// fallback-generated-mesh, not native topology support.
+// primitive kind. The adapter maps them onto existing analytic shapes: each
+// point becomes a sphere and each non-degenerate line segment becomes a
+// capsule. Engines with native analytic intersect keep those shapes; engines
+// that only pack triangles tessellate them later. Compatibility reports that
+// backend grade instead of claiming a missing point/line contract.
 
 import type { ImportResourceLedger } from './importResourceBudget.js';
 
@@ -19,23 +21,14 @@ export type GltfPointLineMode =
   | typeof GLTF_MODE_LINE_LOOP
   | typeof GLTF_MODE_LINE_STRIP;
 
-export interface PointLineFallbackGeometry {
-  readonly positions: Float32Array;
-  readonly normals: Float32Array;
-  readonly indices: Uint32Array;
-  /** Original source-vertex index for each generated vertex. */
-  readonly sourceVertices: Uint32Array;
-  /** Half-width used for generated cubes/prisms, in source asset units. */
-  readonly radius: number;
+export interface PointLineAnalytic {
+  readonly shape: 'sphere' | 'capsule';
+  readonly params: Float32Array;
 }
 
-interface Builder {
-  readonly positions: Float32Array;
-  readonly normals: Float32Array;
-  readonly indices: Uint32Array;
-  readonly sourceVertices: Uint32Array;
-  vertexOffset: number;
-  indexOffset: number;
+export interface PointLineAnalytics {
+  readonly analytics: readonly PointLineAnalytic[];
+  readonly radius: number;
 }
 
 type V3 = readonly [number, number, number];
@@ -43,6 +36,9 @@ type V3 = readonly [number, number, number];
 const FALLBACK_RADIUS_FRACTION = 0.0025;
 const MIN_FALLBACK_RADIUS = 1e-4;
 const DEFAULT_DEGENERATE_RADIUS = 0.01;
+const SPHERE_PARAM_COUNT = 4;
+const CAPSULE_PARAM_COUNT = 7;
+const FLOAT32_BYTES = Float32Array.BYTES_PER_ELEMENT;
 
 export function isPointLineMode(mode: number): mode is GltfPointLineMode {
   return (
@@ -63,106 +59,92 @@ export function pointLineModeName(mode: number): string {
   }
 }
 
-export function buildPointLineFallbackGeometry(
+/**
+ * Authored radius from `extras.vitrum.radius`. Returns undefined when the
+ * extras bag is missing or the value is not a finite positive number.
+ */
+export function readVitrumPointLineRadius(extras: unknown): number | undefined {
+  if (!isRecord(extras)) return undefined;
+  const vitrum = extras.vitrum;
+  if (!isRecord(vitrum)) return undefined;
+  const radius = vitrum.radius;
+  if (typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0) {
+    return undefined;
+  }
+  return radius;
+}
+
+/**
+ * Radius resolution: primitive/mesh/node `extras.vitrum.radius`, then the host
+ * `pointLineFallbackRadius` override, then a deterministic AABB-diagonal
+ * default.
+ */
+export function resolvePointLineRadius(
+  positions: Float32Array,
+  extrasSources: readonly unknown[],
+  hostOverride?: number,
+): number {
+  for (const extras of extrasSources) {
+    const radius = readVitrumPointLineRadius(extras);
+    if (radius != null) return radius;
+  }
+  return sanitizeRadius(hostOverride, estimateRadius(positions));
+}
+
+export function buildPointLineAnalytics(
   positions: Float32Array,
   indices: Uint32Array | undefined,
   mode: GltfPointLineMode,
-  radiusOverride?: number,
+  radius: number,
   resourceLedger?: ImportResourceLedger,
-  allocationPath = 'point/line fallback geometry',
-): PointLineFallbackGeometry | null {
+  allocationPath = 'point/line analytics',
+): PointLineAnalytics | null {
   const vertexCount = Math.floor(positions.length / 3);
   if (vertexCount <= 0) return null;
-  const radius = sanitizeRadius(radiusOverride, estimateRadius(positions));
-  let generatedElementCount = 0;
+  const sanitizedRadius = sanitizeRadius(radius, estimateRadius(positions));
 
-  if (mode === GLTF_MODE_POINTS) {
-    for (const index of sourceIndices(indices, vertexCount)) {
-      if (index < vertexCount) generatedElementCount += 1;
-    }
-  } else {
-    for (const [a, b] of lineSegments(indices, vertexCount, mode)) {
-      if (a >= vertexCount || b >= vertexCount || a === b) continue;
-      if (linePrismFrame(readPoint(positions, a), readPoint(positions, b)) !== null) {
-        generatedElementCount += 1;
-      }
-    }
-  }
-
-  if (generatedElementCount === 0) return null;
-  const generatedVertexCount = checkedProduct(
-    generatedElementCount,
-    24,
-    `${allocationPath} vertex count`,
-  );
-  const generatedIndexCount = checkedProduct(
-    generatedElementCount,
-    36,
-    `${allocationPath} index count`,
-  );
-  const positionElementCount = checkedProduct(
-    generatedVertexCount,
-    3,
-    `${allocationPath} position component count`,
-  );
-  const outputByteLength =
-    checkedProduct(
-      positionElementCount,
-      Float32Array.BYTES_PER_ELEMENT * 2,
-      `${allocationPath} position/normal bytes`,
-    ) +
-    checkedProduct(
-      generatedIndexCount,
-      Uint32Array.BYTES_PER_ELEMENT,
-      `${allocationPath} index bytes`,
-    ) +
-    checkedProduct(
-      generatedVertexCount,
-      Uint32Array.BYTES_PER_ELEMENT,
-      `${allocationPath} source-vertex bytes`,
-    );
-  if (!Number.isSafeInteger(outputByteLength)) {
-    throw new RangeError(
-      `[vitrum/gltf-adapter] ${allocationPath} byte length exceeds the safe integer range.`,
-    );
-  }
-  resourceLedger?.chargeDecodedGeometryBytes(outputByteLength, allocationPath);
-  const builder: Builder = {
-    positions: new Float32Array(positionElementCount),
-    normals: new Float32Array(positionElementCount),
-    indices: new Uint32Array(generatedIndexCount),
-    sourceVertices: new Uint32Array(generatedVertexCount),
-    vertexOffset: 0,
-    indexOffset: 0,
-  };
-
+  const pending: Array<{ shape: 'sphere' | 'capsule'; values: number[] }> = [];
   if (mode === GLTF_MODE_POINTS) {
     for (const index of sourceIndices(indices, vertexCount)) {
       if (index >= vertexCount) continue;
-      pushPointCube(builder, readPoint(positions, index), radius, index);
+      const [x, y, z] = readPoint(positions, index);
+      pending.push({ shape: 'sphere', values: [x, y, z, sanitizedRadius] });
     }
   } else {
     for (const [a, b] of lineSegments(indices, vertexCount, mode)) {
       if (a >= vertexCount || b >= vertexCount || a === b) continue;
-      pushLinePrism(builder, readPoint(positions, a), readPoint(positions, b), radius, a, b);
+      const start = readPoint(positions, a);
+      const end = readPoint(positions, b);
+      if (!isFinitePoint(start) || !isFinitePoint(end) || pointsEqual(start, end)) continue;
+      pending.push({
+        shape: 'capsule',
+        values: [start[0], start[1], start[2], end[0], end[1], end[2], sanitizedRadius],
+      });
     }
   }
 
-  if (
-    builder.vertexOffset !== generatedVertexCount ||
-    builder.indexOffset !== generatedIndexCount
-  ) {
-    throw new Error(
-      '[vitrum/gltf-adapter] Internal point/line fallback allocation count mismatch.',
+  if (pending.length === 0) return null;
+
+  let paramFloats = 0;
+  for (const item of pending) {
+    paramFloats = checkedSum(
+      paramFloats,
+      item.shape === 'sphere' ? SPHERE_PARAM_COUNT : CAPSULE_PARAM_COUNT,
+      `${allocationPath} param count`,
     );
   }
-  return {
-    positions: builder.positions,
-    normals: builder.normals,
-    indices: builder.indices,
-    sourceVertices: builder.sourceVertices,
-    radius,
-  };
+  const outputByteLength = checkedProduct(
+    paramFloats,
+    FLOAT32_BYTES,
+    `${allocationPath} param bytes`,
+  );
+  resourceLedger?.chargeDecodedGeometryBytes(outputByteLength, allocationPath);
+
+  const analytics: PointLineAnalytic[] = pending.map((item) => ({
+    shape: item.shape,
+    params: Float32Array.from(item.values),
+  }));
+  return { analytics, radius: sanitizedRadius };
 }
 
 function checkedProduct(left: number, right: number, path: string): number {
@@ -176,6 +158,19 @@ function checkedProduct(left: number, right: number, path: string): number {
     throw new RangeError(`[vitrum/gltf-adapter] ${path} exceeds the safe integer range.`);
   }
   return left * right;
+}
+
+function checkedSum(left: number, right: number, path: string): number {
+  if (
+    !Number.isSafeInteger(left) ||
+    left < 0 ||
+    !Number.isSafeInteger(right) ||
+    right < 0 ||
+    left > Number.MAX_SAFE_INTEGER - right
+  ) {
+    throw new RangeError(`[vitrum/gltf-adapter] ${path} exceeds the safe integer range.`);
+  }
+  return left + right;
 }
 
 function sanitizeRadius(value: number | undefined, fallback: number): number {
@@ -219,6 +214,14 @@ function readPoint(positions: Float32Array, index: number): V3 {
   return [positions[i] ?? 0, positions[i + 1] ?? 0, positions[i + 2] ?? 0];
 }
 
+function isFinitePoint(point: V3): boolean {
+  return Number.isFinite(point[0]) && Number.isFinite(point[1]) && Number.isFinite(point[2]);
+}
+
+function pointsEqual(a: V3, b: V3): boolean {
+  return a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+}
+
 function* lineSegments(
   indices: Uint32Array | undefined,
   vertexCount: number,
@@ -236,133 +239,6 @@ function* lineSegments(
   }
 }
 
-function pushPointCube(builder: Builder, center: V3, radius: number, sourceIndex: number): void {
-  const [x, y, z] = center;
-  const r = radius;
-  const p000: V3 = [x - r, y - r, z - r];
-  const p100: V3 = [x + r, y - r, z - r];
-  const p110: V3 = [x + r, y + r, z - r];
-  const p010: V3 = [x - r, y + r, z - r];
-  const p001: V3 = [x - r, y - r, z + r];
-  const p101: V3 = [x + r, y - r, z + r];
-  const p111: V3 = [x + r, y + r, z + r];
-  const p011: V3 = [x - r, y + r, z + r];
-
-  pushQuad(builder, p100, p101, p111, p110, [1, 0, 0], [sourceIndex, sourceIndex, sourceIndex, sourceIndex]);
-  pushQuad(builder, p001, p000, p010, p011, [-1, 0, 0], [sourceIndex, sourceIndex, sourceIndex, sourceIndex]);
-  pushQuad(builder, p010, p110, p111, p011, [0, 1, 0], [sourceIndex, sourceIndex, sourceIndex, sourceIndex]);
-  pushQuad(builder, p000, p001, p101, p100, [0, -1, 0], [sourceIndex, sourceIndex, sourceIndex, sourceIndex]);
-  pushQuad(builder, p001, p011, p111, p101, [0, 0, 1], [sourceIndex, sourceIndex, sourceIndex, sourceIndex]);
-  pushQuad(builder, p000, p100, p110, p010, [0, 0, -1], [sourceIndex, sourceIndex, sourceIndex, sourceIndex]);
-}
-
-function pushLinePrism(
-  builder: Builder,
-  a: V3,
-  b: V3,
-  radius: number,
-  sourceA: number,
-  sourceB: number,
-): void {
-  const frame = linePrismFrame(a, b);
-  if (frame == null) return;
-  const { dir, u, v } = frame;
-  const ru = scale(u, radius);
-  const rv = scale(v, radius);
-
-  const a00 = sub(sub(a, ru), rv);
-  const a10 = sub(add(a, ru), rv);
-  const a11 = add(add(a, ru), rv);
-  const a01 = add(sub(a, ru), rv);
-  const b00 = sub(sub(b, ru), rv);
-  const b10 = sub(add(b, ru), rv);
-  const b11 = add(add(b, ru), rv);
-  const b01 = add(sub(b, ru), rv);
-
-  pushQuad(builder, a00, b00, b10, a10, scale(v, -1), [sourceA, sourceB, sourceB, sourceA]);
-  pushQuad(builder, a10, b10, b11, a11, u, [sourceA, sourceB, sourceB, sourceA]);
-  pushQuad(builder, a11, b11, b01, a01, v, [sourceA, sourceB, sourceB, sourceA]);
-  pushQuad(builder, a01, b01, b00, a00, scale(u, -1), [sourceA, sourceB, sourceB, sourceA]);
-  pushQuad(builder, a01, a00, a10, a11, scale(dir, -1), [sourceA, sourceA, sourceA, sourceA]);
-  pushQuad(builder, b00, b01, b11, b10, dir, [sourceB, sourceB, sourceB, sourceB]);
-}
-
-interface LinePrismFrame {
-  readonly dir: V3;
-  readonly u: V3;
-  readonly v: V3;
-}
-
-function linePrismFrame(a: V3, b: V3): LinePrismFrame | null {
-  const dir = normalize(sub(b, a));
-  if (dir == null) return null;
-  const helper: V3 = Math.abs(dir[2]) < 0.9 ? [0, 0, 1] : [0, 1, 0];
-  const u = normalize(cross(dir, helper));
-  if (u == null) return null;
-  const v = normalize(cross(u, dir));
-  if (v == null) return null;
-  return { dir, u, v };
-}
-
-function pushQuad(
-  builder: Builder,
-  p0: V3,
-  p1: V3,
-  p2: V3,
-  p3: V3,
-  normal: V3,
-  source: readonly [number, number, number, number],
-): void {
-  const base = builder.vertexOffset;
-  pushVertex(builder, p0, normal, source[0]);
-  pushVertex(builder, p1, normal, source[1]);
-  pushVertex(builder, p2, normal, source[2]);
-  pushVertex(builder, p3, normal, source[3]);
-  const indexOffset = builder.indexOffset;
-  builder.indices[indexOffset] = base;
-  builder.indices[indexOffset + 1] = base + 1;
-  builder.indices[indexOffset + 2] = base + 2;
-  builder.indices[indexOffset + 3] = base;
-  builder.indices[indexOffset + 4] = base + 2;
-  builder.indices[indexOffset + 5] = base + 3;
-  builder.indexOffset += 6;
-}
-
-function pushVertex(builder: Builder, position: V3, normal: V3, sourceIndex: number): void {
-  const vertex = builder.vertexOffset;
-  const offset = vertex * 3;
-  builder.positions[offset] = position[0];
-  builder.positions[offset + 1] = position[1];
-  builder.positions[offset + 2] = position[2];
-  builder.normals[offset] = normal[0];
-  builder.normals[offset + 1] = normal[1];
-  builder.normals[offset + 2] = normal[2];
-  builder.sourceVertices[vertex] = sourceIndex;
-  builder.vertexOffset += 1;
-}
-
-function sub(a: V3, b: V3): V3 {
-  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-}
-
-function add(a: V3, b: V3): V3 {
-  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
-}
-
-function scale(a: V3, s: number): V3 {
-  return [a[0] * s, a[1] * s, a[2] * s];
-}
-
-function cross(a: V3, b: V3): V3 {
-  return [
-    a[1] * b[2] - a[2] * b[1],
-    a[2] * b[0] - a[0] * b[2],
-    a[0] * b[1] - a[1] * b[0],
-  ];
-}
-
-function normalize(a: V3): V3 | null {
-  const len = Math.hypot(a[0], a[1], a[2]);
-  if (!Number.isFinite(len) || len <= 1e-12) return null;
-  return [a[0] / len, a[1] / len, a[2] / len];
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
 }

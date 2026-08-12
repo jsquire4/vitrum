@@ -17,7 +17,7 @@ import { animationNodeId } from './animations.js';
 import { sequentialIndices, triangulateTopology } from './triangulation.js';
 import type { GltfJson } from './gltfTypes.js';
 import { sampleAnimationClip, solveSkin } from '@vitrum/core';
-import type { MeshPrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
+import type { AnalyticPrimitive, MeshPrimitive, SkinnedMeshPrimitive } from '@vitrum/core';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Fixture helpers (mirrors gltfAdapter.test.ts)
@@ -197,14 +197,17 @@ describe('TRIANGLE_STRIP / TRIANGLE_FAN import (GLTF-05)', () => {
     expect(warnings.some(w => w.includes('no non-degenerate triangles'))).toBe(true);
   });
 
-  it('LINES (1) imports as fallback-generated mesh with a warning', async () => {
+  it('LINES (1) imports as analytic capsules with a warning', async () => {
     const { gltf, buffers } = makeModeGltf(1, STRIP_POSITIONS);
     const { scene, warnings } = await gltfToScene(gltf, { buffers });
-    expect(scene.primitives).toHaveLength(1);
-    const prim = scene.primitives[0] as MeshPrimitive;
-    expect(prim.positions.length).toBeGreaterThan(STRIP_POSITIONS.length);
-    expect(prim.indices?.length).toBeGreaterThan(0);
-    expect(warnings.some(w => w.includes('LINES') && w.includes('fallback-generated mesh'))).toBe(true);
+    expect(scene.primitives).toHaveLength(2);
+    for (const primitive of scene.primitives) {
+      const prim = primitive as AnalyticPrimitive;
+      expect(prim.kind).toBe('analytic');
+      expect(prim.shape).toBe('capsule');
+      expect(prim.params).toHaveLength(7);
+    }
+    expect(warnings.some(w => w.includes('LINES') && w.includes('analytic sphere/capsule'))).toBe(true);
   });
 });
 

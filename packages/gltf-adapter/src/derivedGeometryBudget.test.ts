@@ -3,7 +3,7 @@ import { ImportResourceLedger } from './importResourceBudget.js';
 import { generateVertexNormals } from './normals.js';
 import { generateTangents } from './tangents.js';
 import {
-  buildPointLineFallbackGeometry,
+  buildPointLineAnalytics,
   GLTF_MODE_POINTS,
 } from './primitiveModeFallback.js';
 import {
@@ -75,39 +75,37 @@ describe('derived geometry resource accounting', () => {
     expect(ledger.decodedGeometryBytes).toBe(40);
   });
 
-  it('preallocates point fallback outputs exactly before construction', () => {
+  it('preallocates point analytic outputs exactly before construction', () => {
     const positions = new Float32Array([0, 0, 0]);
-    // One generated cube: 24 xyz positions + normals, 36 indices, and
-    // 24 source-vertex entries = 816 bytes.
+    // One sphere: 4 float params = 16 bytes.
     const failingLedger = new ImportResourceLedger({
-      maxDecodedGeometryBytes: 815,
+      maxDecodedGeometryBytes: 15,
     });
-    expect(() => buildPointLineFallbackGeometry(
+    expect(() => buildPointLineAnalytics(
       positions,
       undefined,
       GLTF_MODE_POINTS,
-      undefined,
+      0.01,
       failingLedger,
-      'point fallback',
+      'point analytics',
     )).toThrow(/decoded-geometry-bytes/);
     expect(failingLedger.decodedGeometryBytes).toBe(0);
 
     const ledger = new ImportResourceLedger({
-      maxDecodedGeometryBytes: 816,
+      maxDecodedGeometryBytes: 16,
     });
-    const fallback = buildPointLineFallbackGeometry(
+    const analytics = buildPointLineAnalytics(
       positions,
       undefined,
       GLTF_MODE_POINTS,
-      undefined,
+      0.01,
       ledger,
-      'point fallback',
+      'point analytics',
     );
-    expect(fallback?.positions).toHaveLength(72);
-    expect(fallback?.normals).toHaveLength(72);
-    expect(fallback?.indices).toHaveLength(36);
-    expect(fallback?.sourceVertices).toHaveLength(24);
-    expect(ledger.decodedGeometryBytes).toBe(816);
+    expect(analytics?.analytics).toHaveLength(1);
+    expect(analytics?.analytics[0]?.shape).toBe('sphere');
+    expect(analytics?.analytics[0]?.params).toHaveLength(4);
+    expect(ledger.decodedGeometryBytes).toBe(16);
   });
 });
 

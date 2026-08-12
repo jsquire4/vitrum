@@ -97,6 +97,7 @@ export interface GltfNode {
   scale?: [number, number, number];
   /** Instance morph-target weights; overrides the mesh-level `weights`. */
   weights?: number[];
+  extras?: unknown;
   extensions?: {
     EXT_mesh_gpu_instancing?: GltfMeshGpuInstancingExtension;
     KHR_node_visibility?: {
@@ -122,6 +123,7 @@ export interface GltfMesh {
   primitives: GltfPrimitive[];
   /** Default morph-target weights (overridden by node-level `weights`). */
   weights?: number[];
+  extras?: unknown;
 }
 
 /** @public — glTF schema lattice — contract; consumed by gltfAdapter callers via typed parse results. */
@@ -143,6 +145,7 @@ export interface GltfPrimitive {
    *  5=TRIANGLE_STRIP, 6=TRIANGLE_FAN */
   mode?: number;
   targets?: Array<Record<string, number>>;
+  extras?: unknown;
   extensions?: {
     KHR_draco_mesh_compression?: unknown;
     KHR_materials_variants?: {

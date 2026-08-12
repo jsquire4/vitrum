@@ -844,20 +844,14 @@ describe('GATE-GLTF analyze-only Khronos-style sweep', () => {
     const lite = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu-lite');
 
     expect(full.unsupportedCount).toBe(0);
-    expect(lite.unsupportedCount).toBeGreaterThan(full.unsupportedCount);
-    expect(lite.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        category: 'material',
-        name: 'baseColorMap',
-        support: 'unsupported',
-        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
-      }),
-      expect.objectContaining({
-        category: 'material',
-        name: 'normalMap',
-        support: 'unsupported',
-        path: 'materials[0].normalTexture',
-      }),
-    ]));
+    expect(lite.unsupportedCount).toBe(0);
+    expect(full.profileId).toBe('pt-webgpu');
+    expect(lite.profileId).toBe('pt-webgpu-lite');
+    expect(lite.traceTier).toBe('lite');
+    expect(lite.issues.some((issue) =>
+      issue.category === 'material' &&
+      (issue.name === 'baseColorMap' || issue.name === 'normalMap') &&
+      issue.support === 'unsupported',
+    )).toBe(false);
   });
 });

@@ -30,7 +30,7 @@ import type {
   GltfAssetFetchResponse,
   GltfJson,
 } from './index.js';
-import type { InstancedMeshPrimitive, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
+import type { AnalyticPrimitive, InstancedMeshPrimitive, MeshPrimitive, Scene, TextureRef } from '@vitrum/core';
 
 async function expectGltfImportFailure(
   promise: Promise<unknown>,
@@ -1171,7 +1171,7 @@ describe('loadGltfAsset', () => {
     });
   });
 
-  it('forwards pointLineFallbackRadius into generated point/line meshes', async () => {
+  it('forwards pointLineFallbackRadius into analytic point/line spheres', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {
       ...gltf.meshes![0]!.primitives[0]!,
@@ -1183,9 +1183,10 @@ describe('loadGltfAsset', () => {
       pointLineFallbackRadius: 0.25,
     });
 
-    const primitive = asset.scene.primitives[0] as MeshPrimitive;
-    expect(primitive.positions.length).toBeGreaterThan(9);
-    expect(Array.from(primitive.positions.slice(0, 3))).toEqual([0.25, -0.25, -0.25]);
+    const primitive = asset.scene.primitives[0] as AnalyticPrimitive;
+    expect(primitive.kind).toBe('analytic');
+    expect(primitive.shape).toBe('sphere');
+    expect(Array.from(primitive.params)).toEqual([0, 0, 0, 0.25]);
   });
 
   it('imports morphed EXT_mesh_gpu_instancing as one native instanced primitive', async () => {
@@ -4459,8 +4460,8 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     expect(ranked.map((entry) => entry.profileId)).toEqual([
       'pt-webgl2',
       'pt-webgpu',
-      'walkaround-hybrid',
       'pt-webgpu-lite',
+      'walkaround-hybrid',
     ]);
     expect(walkaround.issues.some((issue) =>
       issue.category === 'material' &&
@@ -4506,13 +4507,13 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
     }));
 
     const lite = evaluateGltfBackendProfileCompatibility(report, 'pt-webgpu-lite');
-    expect(lite.issues.some((issue) => issue.name === 'emissiveMap.texelPdf')).toBe(false);
     expect(lite.issues).toContainEqual(expect.objectContaining({
       category: 'material',
-      name: 'emissiveMap',
-      support: 'unsupported',
+      name: 'emissiveMap.texelPdf',
+      support: 'approximate',
       path: 'materials[0].emissiveTexture',
     }));
+    expect(lite.issues.some((issue) => issue.name === 'emissiveMap' && issue.support === 'unsupported')).toBe(false);
   });
 
   it('clears emissiveTexture texel-PDF degradation for PT backends after CPU texture decode', async () => {
@@ -4739,6 +4740,9 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       ...gltf.materials![0]!,
       alphaMode: 'BLEND',
       normalTexture: { index: 0, scale: 0.5 },
+      extensions: {
+        KHR_materials_anisotropy: { anisotropyStrength: 1 },
+      },
     };
     const report = analyzeGltfAsset(gltf);
     const full = evaluateGltfBackendCompatibility(report, 'pt-webgpu');
@@ -4754,26 +4758,19 @@ describe('analyzeGltfAsset and compatibility ranking', () => {
       issue.name === 'baseColorMap' &&
       issue.support === 'unsupported',
     )).toBe(false);
+    expect(lite.issues.some((issue) =>
+      issue.category === 'material' &&
+      (issue.name === 'baseColorMap' || issue.name === 'normalMap' || issue.name === 'alphaMode') &&
+      issue.support === 'unsupported',
+    )).toBe(false);
     expect(lite.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({
         category: 'material',
-        name: 'baseColorMap',
+        name: 'anisotropy',
         support: 'unsupported',
-        path: 'materials[0].pbrMetallicRoughness.baseColorTexture',
-      }),
-      expect.objectContaining({
-        category: 'material',
-        name: 'normalMap',
-        support: 'unsupported',
-        path: 'materials[0].normalTexture',
-      }),
-      expect.objectContaining({
-        category: 'material',
-        name: 'alphaMode',
-        support: 'unsupported',
-        path: 'materials[0].alphaMode',
       }),
     ]));
+    expect(full.issues.some((issue) => issue.name === 'anisotropy' && issue.support === 'unsupported')).toBe(false);
     expect(lite.unsupportedCount).toBeGreaterThan(full.unsupportedCount);
   });
 
@@ -7866,7 +7863,7 @@ describe('loadGltfForEngine', () => {
     ]);
   });
 
-  it('allows point/line fallback meshes in reject-unsupported mode before constructing an engine', async () => {
+  it('allows point/line analytics in reject-unsupported mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {
       ...gltf.meshes![0]!.primitives[0]!,
@@ -7883,11 +7880,12 @@ describe('loadGltfForEngine', () => {
     });
     expect(createEngine).toHaveBeenCalledTimes(1);
     expect(setScene).toHaveBeenCalledTimes(1);
-    const scene = setScene.mock.calls[0]?.[0] as { primitives?: Array<{ positions: Float32Array }> };
-    expect(scene.primitives?.[0]?.positions.length).toBeGreaterThan(9);
+    const scene = setScene.mock.calls[0]?.[0] as { primitives?: Array<{ kind: string; params: Float32Array }> };
+    expect(scene.primitives?.[0]?.kind).toBe('analytic');
+    expect(scene.primitives?.[0]?.params.length).toBe(7);
   });
 
-  it('rejects point/line fallback meshes in reject-degraded mode before constructing an engine', async () => {
+  it('rejects point/line tessellated analytics in reject-degraded mode before constructing an engine', async () => {
     const { gltf, buffers } = makeInlineTriangleGltf();
     gltf.meshes![0]!.primitives[0] = {
       ...gltf.meshes![0]!.primitives[0]!,
@@ -7905,7 +7903,7 @@ describe('loadGltfForEngine', () => {
   });
 
   it.each([0, 2, 3])(
-    'rejects point/line fallback mode %i in reject-degraded mode before constructing an engine',
+    'rejects point/line tessellated analytic mode %i in reject-degraded mode before constructing an engine',
     async (mode) => {
       const { gltf, buffers } = makeInlineTriangleGltf();
       gltf.meshes![0]!.primitives[0] = {

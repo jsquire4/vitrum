@@ -24,6 +24,7 @@ import { GltfParseFailed } from './errors.js';
 import { solveSkin, validateScene } from '@vitrum/core';
 import type { GltfJson } from './gltfTypes.js';
 import type {
+  AnalyticPrimitive,
   DirectionalEmitter,
   InstancedMeshPrimitive,
   MeshPrimitive,
@@ -601,7 +602,6 @@ describe('minimal triangle', () => {
     primitive.targets = [{
       [`TEXCOORD_${ordinaryPropertyIndex}`]: morphAccessor,
     }];
-    primitive.mode = 1; // exercise point/line attribute + morph remapping
     fixture.gltf.meshes![0]!.weights = [0.5];
 
     const { scene } = await gltfToScene(fixture.gltf, { buffers: fixture.buffers });
@@ -2160,7 +2160,7 @@ describe('sparse accessor', () => {
 // ────────────────────────────────────────────────────────────────────────────
 
 describe('non-triangle primitive mode', () => {
-  it('imports POINTS primitives as fallback-generated meshes and emits a warning', async () => {
+  it('imports POINTS primitives as analytic spheres and emits a warning', async () => {
     const posBuf = f32Buffer(TRIANGLE_POSITIONS);
     const gltf: GltfJson = {
       asset: { version: '2.0' },
@@ -2178,11 +2178,12 @@ describe('non-triangle primitive mode', () => {
       buffers: [{ byteLength: posBuf.byteLength }],
     };
     const { scene, warnings } = await gltfToScene(gltf, { buffers: new Map([[0, posBuf]]) });
-    expect(scene.primitives).toHaveLength(2);
-    expect(scene.primitives[0]?.kind).toBe('mesh');
-    const points = scene.primitives[0] as MeshPrimitive;
-    expect(points.positions.length).toBeGreaterThan(TRIANGLE_POSITIONS.length);
-    expect(warnings.some(w => w.includes('POINTS') && w.includes('fallback-generated mesh'))).toBe(true);
+    expect(scene.primitives).toHaveLength(4);
+    expect(scene.primitives[0]?.kind).toBe('analytic');
+    const points = scene.primitives[0] as AnalyticPrimitive;
+    expect(points.shape).toBe('sphere');
+    expect(points.params).toHaveLength(4);
+    expect(warnings.some(w => w.includes('POINTS') && w.includes('analytic sphere/capsule'))).toBe(true);
   });
 });
 

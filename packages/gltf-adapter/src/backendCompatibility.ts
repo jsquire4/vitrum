@@ -149,6 +149,32 @@ function emitExtensionIssues(ctx: CompatibilityEmitContext): void {
   }
 }
 
+function pointLineAnalyticSupport(
+  supportDetails: BackendSupportDetails,
+): BackendSupportMode {
+  const sphere = supportDetails.analyticShapes.sphere ?? 'unsupported';
+  const capsule = supportDetails.analyticShapes.capsule ?? 'unsupported';
+  return worseSupportMode(sphere, capsule);
+}
+
+function worseSupportMode(
+  left: BackendSupportMode,
+  right: BackendSupportMode,
+): BackendSupportMode {
+  return supportModeRank(left) >= supportModeRank(right) ? left : right;
+}
+
+function supportModeRank(mode: BackendSupportMode): number {
+  switch (mode) {
+    case 'native': return 0;
+    case 'fallback-rebuild': return 1;
+    case 'fallback-generated-mesh': return 2;
+    case 'approximate': return 3;
+    case 'unsupported': return 4;
+    default: return 4;
+  }
+}
+
 function emitPrimitiveIssues(ctx: CompatibilityEmitContext): void {
   const { report, profile, supportDetails, addIssue, counts } = ctx;
   const { backend } = profile;
@@ -179,14 +205,22 @@ function emitPrimitiveIssues(ctx: CompatibilityEmitContext): void {
   }
 
   for (const mode of report.primitives.fallbackGeneratedModes) {
+    const support = pointLineAnalyticSupport(supportDetails);
+    if (support === 'native') {
+      counts.native += 1;
+      continue;
+    }
     addIssue({
       category: 'primitive',
       name: `mode:${mode}`,
-      support: 'fallback-generated-mesh',
+      support,
       path: firstSourcePath(report.primitives.issuePaths, `mode:${mode}`, 'meshes'),
       message:
-        `glTF primitive mode ${mode} is imported as generated triangle mesh fallback geometry ` +
-        'because @vitrum/core has no native point/line primitive contract.',
+        support === 'fallback-generated-mesh'
+          ? `glTF primitive mode ${mode} is imported as analytic sphere/capsule geometry; ` +
+            `backend ${backend} tessellates analytics to triangle meshes.`
+          : `glTF primitive mode ${mode} is imported as analytic sphere/capsule geometry; ` +
+            `backend ${backend} reports sphere/capsule as ${support}.`,
     });
   }
 
