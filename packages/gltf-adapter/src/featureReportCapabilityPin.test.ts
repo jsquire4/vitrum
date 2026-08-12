@@ -91,10 +91,11 @@ describe('featureReport capability tables — drift pin against core BackendSupp
     expect(set.size).toBe(ADAPTER_PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS.length);
   });
 
-  it('consumes the exact backend-owned lite-profile restriction tuple, including thicknessMap', () => {
+  it('consumes the exact backend-owned lite-profile restriction tuple', () => {
     expect(ADAPTER_PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS)
       .toBe(PT_WEBGPU_LITE_EXTRA_UNSUPPORTED_MATERIAL_FIELDS);
-    expect(ADAPTER_PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS).toContain('thicknessMap');
+    expect(ADAPTER_PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS).toContain('anisotropy');
+    expect(ADAPTER_PT_WEBGPU_LITE_UNSUPPORTED_MATERIAL_FIELDS).not.toContain('baseColorMap');
   });
 
   it('evaluates every pt-webgpu profile material row from the exact executable manifest', () => {

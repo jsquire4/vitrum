@@ -168,8 +168,10 @@ describe('pt-webgpu lite WGSL byte-identity (Theme-C dedup pin)', () => {
     // clearcoat frame now guard lite transport, including exact thin-sheet and
     // opposite-interface attenuation. MNEE remains gated out of lite; strict
     // authored-source staging is host-side and is covered by admission tests.
-    expect(digest).toBe('b29453f5d029149bae6709390abe5e50832f058903036f1062fd2fc5583e81fb');
-    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(308669);
+    // Re-pinned 2026-08-12: lite samples PBR maps via group-0 UVs + descriptor
+    // atlas + texture arrays; alpha pass-through uses the shared sample stack.
+    expect(digest).toBe('e21d456ffd5c618331b87d5104f9864f52cd666e90c9cf52dc031fc7814bd3d9');
+    expect(PT_WEBGPU_TRACE_LITE_WGSL.length).toBe(402202);
   });
 });
 

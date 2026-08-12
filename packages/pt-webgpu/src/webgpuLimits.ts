@@ -53,24 +53,27 @@ export const PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE = 8;
  * B12 — lite-tier binding-budget proof (fidelity cliff arithmetic, PINNED by the
  * liteTierBindingBudget test). The lite group-0 layout binds exactly these many
  * storage buffers today: accum(2), positions(3), indices(4), triMaterialIds(5),
- * materials(6), bvhNodes(7), normals(8) = 7. Under the lite cap of 8
- * (PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) that leaves ONE free
- * storage-buffer slot.
+ * materials(6), bvhNodes(7), normals(8), meshUvs(15) = 8. Under the lite cap of 8
+ * (PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE) that is zero headroom.
  *
  * B12 RESOLUTION (2026-06-10): light data and HDRI env are packed as sampled
- * texture_2d<f32> (bindings 12–14 in group-0). Sampled textures are counted from
+ * texture_2d<f32> (bindings 12–14 in group-0). Product-finish Wave 1b spends the
+ * last storage slot on meshUvs and adds sampled material arrays + a descriptor
+ * atlas (bindings 16–20). Sampled textures are counted from
  * maxSampledTexturesPerShaderStage (WebGPU baseline ≥ 16), NOT the storage-buffer
- * budget. Post-B12 the lite layout uses:
- *   • 7 storage buffers (unchanged — still 1 free slot, zero headroom).
- *   • 3 sampled textures (new, drawn from a separate ≥16 budget):
+ * budget. Post-maps the lite layout uses:
+ *   • 8 storage buffers (cap; area-light-as-storage no longer fits).
+ *   • 7 sampled textures (drawn from a separate ≥16 budget):
  *     – liteEnvTex (binding 12): W×H RGBA32F env radiance + pdf.
  *     – liteEnvCdfTex (binding 13): W×H RGBA32F env marginal/conditional CDF.
  *     – liteLightTex (binding 14): 1×N RGBA32F directional/point/spot/rect-area packed data.
+ *     – liteMaterialTexDescriptors (binding 16): RGBA32F descriptor atlas.
+ *     – materialTextures / Linear / Emissive (bindings 17/19/20): filterable 2d-arrays.
  * The storage-buffer constants below (IN_USE, HDRI_NEEDED, AREA_LIGHT_NEEDED)
  * remain intact so the cliff arithmetic is machine-checkable and any future
  * storage-buffer consumption trips the pin.
  */
-export const PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE = 7;
+export const PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE = 8;
 /** Storage buffers an HDRI importance sampler *would* add as storage buffers (proof it doesn't fit). */
 export const PT_WEBGPU_LITE_HDRI_STORAGE_BUFFERS_NEEDED = 2;
 /** Storage buffers area-light BSDF MIS *would* add as storage buffers (proof it barely fits with 0 headroom). */
@@ -81,7 +84,7 @@ export const PT_WEBGPU_LITE_AREA_LIGHT_STORAGE_BUFFERS_NEEDED = 1;
  * NOT the storage-buffer budget). Value = 3: liteEnvTex + liteEnvCdfTex + liteLightTex.
  * The WebGPU baseline guarantee is maxSampledTexturesPerShaderStage ≥ 16.
  */
-export const PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE = 3;
+export const PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE = 7;
 /** WebGPU baseline minimum for maxSampledTexturesPerShaderStage (spec §3.6.2). */
 export const PT_WEBGPU_SAMPLED_TEXTURES_BASELINE = 16;
 

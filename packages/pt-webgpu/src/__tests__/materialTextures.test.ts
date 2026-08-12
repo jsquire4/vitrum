@@ -1116,18 +1116,18 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('fn materialTextureSourceBaseSize(arraySize: vec2u, uvFitScale: vec2f) -> vec2u');
     expect(wgsl).toContain('fn materialTextureSourceExtent(arrayExtent: u32, uvFitScale: f32) -> u32');
     expect(wgsl).toContain('materialTextureSourceExtent(arraySize.x, uvFitScale.x)');
-    expect(wgsl).toContain('materialTexDescriptors[base + 7u].xy');
-    expect(wgsl).toContain('materialTexDescriptors[base + 8u].zw');
-    expect(wgsl).toContain('materialTexDescriptors[base + 11u].zw');
+    expect(wgsl).toContain('materialTexDescriptor(base + 7u).xy');
+    expect(wgsl).toContain('materialTexDescriptor(base + 8u).zw');
+    expect(wgsl).toContain('materialTexDescriptor(base + 11u).zw');
     expect(wgsl).toContain('fn wrapTextureCoord(coord: f32, mode: f32) -> f32');
     expect(wgsl).toContain('fn materialTextureMipPolicy(base: u32, slot: u32) -> f32');
     expect(wgsl).toContain('fn materialTexturePolicyLod(lod: f32, mipCount: f32, mipPolicy: f32) -> f32');
     expect(wgsl).toContain('fn materialTextureFilterPolicy(base: u32, slot: u32) -> vec2f');
-    expect(wgsl).toContain('materialTexDescriptors[base + 12u].xy');
-    expect(wgsl).toContain('materialTexDescriptors[base + 13u].zw');
-    expect(wgsl).toContain('materialTexDescriptors[base + 16u].zw');
-    expect(wgsl).toContain('materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX].x');
-    expect(wgsl).toContain('materialTexDescriptors[base + MATERIAL_TEX_EXTENSION_INDEX + 1u].w');
+    expect(wgsl).toContain('materialTexDescriptor(base + 12u).xy');
+    expect(wgsl).toContain('materialTexDescriptor(base + 13u).zw');
+    expect(wgsl).toContain('materialTexDescriptor(base + 16u).zw');
+    expect(wgsl).toContain('materialTexDescriptor(base + MATERIAL_TEX_EXTENSION_INDEX).x');
+    expect(wgsl).toContain('materialTexDescriptor(base + MATERIAL_TEX_EXTENSION_INDEX + 1u).w');
     expect(wgsl).toContain(
       `const MATERIAL_TEX_LAYER_NORMAL = ${MATERIAL_TEX_LAYER_NORMAL_VEC4_OFFSET}u;`,
     );
@@ -1135,12 +1135,12 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
       'let clearcoatNormalIdx = materialTextureLayerIndex(',
     );
     expect(wgsl).toContain(
-      'let clearcoatNormalScale = materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].y;',
+      'let clearcoatNormalScale = materialTexDescriptor(base + MATERIAL_TEX_CLEARCOAT_NORMAL).y;',
     );
     expect(wgsl).toContain(
       'let thicknessIdx = materialTextureLayerIndex(',
     );
-    expect(wgsl).toContain('materialTexDescriptors[base + MATERIAL_TEX_THICKNESS].yz');
+    expect(wgsl).toContain('materialTexDescriptor(base + MATERIAL_TEX_THICKNESS).yz');
   });
 
   it('normal maps consume authored tangents with handedness before falling back to derived tangents', () => {
@@ -1150,13 +1150,13 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
       'fn applyNormalMap(matId: u32, triIndex: u32, baryVW: vec2f, geomNormal: vec3f, instanceIndex: u32, isFrontFace: bool)',
     );
     expect(wgsl).toContain('fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSlot: u32, instanceIndex: u32)');
-    expect(wgsl).toContain('if (gpuUvSlot == 0u && tri.x < arrayLength(&meshTangents)');
+    expect(wgsl).toContain('if (gpuUvSlot == 0u && tri.x < meshTangentCount()');
     expect(wgsl).toContain('let uv0 = materialUvForVertex(tri.x, gpuUvSlot);');
-    expect(wgsl).toContain('let ta = meshTangents[tri.x];');
+    expect(wgsl).toContain('let ta = meshTangentAt(tri.x);');
     expect(wgsl).toContain('let handednessRaw = ta.w * u + tb.w * v + tc.w * w;');
     expect(wgsl).toContain('frame.bitangent = cross(normal, tangent) * handedness;');
     expect(wgsl).toContain(
-      'instanceHandedness =\n            transformLinearOrientationSign(l2w0, l2w1, l2w2);',
+      'instanceHandedness =\n          transformLinearOrientationSign(l2w0, l2w1, l2w2);',
     );
     expect(wgsl).not.toContain(
       'let linearDeterminant = dot(cross(l2w0.xyz, l2w1.xyz), l2w2.xyz);',
@@ -1165,10 +1165,10 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
       'var bitangent = f * (-normalizedDuv2.x * e1 + normalizedDuv1.x * e2);',
     );
     expect(wgsl).toContain('dot(cross(normal, tangent), bitangent) >= 0.0');
-    expect(wgsl).toContain('if (instanceIndex != INVALID_TLAS_INSTANCE_INDEX && params.tlasNodeCount != 0u)');
-    expect(wgsl).toContain('let l2w0 = tlasInstanceLocalToWorld[m];');
+    expect(wgsl).toContain('if (tlasInstanceHasMatrix(instanceIndex))');
+    expect(wgsl).toContain('let l2w0 = tlasInstanceL2WCol(instanceIndex, 0u);');
     expect(wgsl).toContain('tangent = transformDirectionCols(l2w0, l2w1, l2w2, tangent);');
-    expect(wgsl).toContain('var normalScale = materialTexDescriptors[base + 5u].w;');
+    expect(wgsl).toContain('var normalScale = materialTexDescriptor(base + 5u).w;');
     expect(wgsl).toContain('materialTextureLayerIndex(layerNormal.z, linearLayerCount)');
     expect(wgsl).toContain('materialTextureLayerIndex(layerNormal.x, linearLayerCount)');
     expect(wgsl).toContain('normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);');
@@ -1185,7 +1185,7 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
 
   it('group-3 WGSL samples every consumed map with its own UV metadata slot', () => {
     const wgsl = PT_WEBGPU_PATH_TRACE_MATERIAL_FULL_BINDINGS_GROUP3_WGSL;
-    expect(wgsl).toContain('let uvMeta = materialTexDescriptors[base + uvMetaOffset];');
+    expect(wgsl).toContain('let uvMeta = materialTexDescriptor(base + uvMetaOffset);');
     expect(wgsl).toContain('let sourceMipCount = f32(materialTextureSourceMipCount(sourceBaseSize));');
     expect(wgsl).toContain('let mipPolicy = materialTextureMipPolicy(base, mipPolicySlot);');
     expect(wgsl).toContain('let policyLod = materialTexturePolicyLod(lod, sourceMipCount, mipPolicy);');
@@ -1216,7 +1216,10 @@ describe('material-texture host↔WGSL contract (P2 lockstep)', () => {
     expect(wgsl).toContain('sampleMaterialLayerEmissive(lmIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_LIGHT');
     expect(wgsl).toContain('return ptFiniteNonNegativeRadianceProduct(texel, vec3f(intensity));');
     expect(wgsl).toContain('sampleMaterialLayerLinear(anisoIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ANISOTROPY');
-    expect(wgsl).toContain('sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, rawUv, MATERIAL_TEX_UV_BUMP');
+    // The bump taps loop over centre/+u/+v, so the UV argument is the per-tap
+    // `tapUv` rather than `rawUv` directly; the UV metadata slot is still the
+    // bump slot, which is what this lockstep contract pins.
+    expect(wgsl).toContain('sampleMaterialLayerLinearRawUvPolicy(bumpIdx, base, triIndex, baryVW, instanceIndex, tapUv, MATERIAL_TEX_UV_BUMP');
     expect(wgsl).toContain('sampleMaterialLayerLinear(alphaIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_ALPHA');
     expect(wgsl).toContain('sampleMaterialLayerLinear(transmissionIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_TRANSMISSION');
     expect(wgsl).toContain('sampleMaterialLayerLinear(thicknessIdx, base, triIndex, baryVW, instanceIndex, MATERIAL_TEX_UV_THICKNESS');

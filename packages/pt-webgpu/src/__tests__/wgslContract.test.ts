@@ -380,8 +380,10 @@ describe('pt-webgpu WGSL byte-identity (Theme-C dedup pin)', () => {
     // and opposite-interface transport share exact attenuation/visibility; and
     // MNEE rejects unsupported layered facets conservatively. Strict source
     // staging is host-side and therefore intentionally absent from this digest.
-    expect(digest).toBe('0c5ee33cb64770cfc9fb6aa2ff6feaa259106038d4e779371939601e027cddf4');
-    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(707832);
+    // Re-pinned 2026-08-12: material sample stack uses materialTexDescriptor()
+    // / meshTangentCount() accessors shared with the lite map path.
+    expect(digest).toBe('2166768e9c01e8fc9fd16839c3bdd4e0b1909dcf128abc31dde1016453e823b3');
+    expect(PT_WEBGPU_TRACE_WGSL.length).toBe(712876);
   });
 });
 
@@ -909,7 +911,7 @@ describe('pt-webgpu WGSL material contract', () => {
 
   it('keeps the per-material envMapIntensity descriptor lane wired into environment paths', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn materialEnvMapIntensity(matId: u32) -> f32');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('return max(materialTexDescriptors[base + 4u].w, 0.0);');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('return max(materialTexDescriptor(base + 4u).w, 0.0);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('lastEnvMapIntensity = materialEnvMapIntensity(matId);');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let envScale = materialEnvMapIntensity(matId);');
   });

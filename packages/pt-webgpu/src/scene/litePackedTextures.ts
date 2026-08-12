@@ -191,3 +191,31 @@ export function packLiteEnvCdfTexture(
   }
   return { data, width: hdriWidth, height: hdriHeight };
 }
+
+/**
+ * Packed material-texture descriptor atlas for the lite tier.
+ *
+ * Full-tier descriptors live in a storage buffer. Lite spends its last storage
+ * slot on `meshUvs`, so the same vec4 records are uploaded as an unfilterable
+ * RGBA32F texture: width = MATERIAL_TEX_VEC4_STRIDE, height = materialCount,
+ * texel (x, y) = descriptor vec4 `y * width + x`.
+ */
+export interface LiteDescriptorTexData {
+  readonly data: Float32Array;
+  readonly width: number;
+  readonly height: number;
+}
+
+export function packLiteMaterialDescriptorTexture(
+  descriptors: Float32Array,
+  vec4Stride: number,
+): LiteDescriptorTexData {
+  const width = Math.max(1, vec4Stride);
+  const floatStride = width * 4;
+  const materialCount = Math.max(1, Math.floor(descriptors.length / floatStride));
+  const height = materialCount;
+  const data = new Float32Array(width * height * 4);
+  const copy = Math.min(descriptors.length, data.length);
+  if (copy > 0) data.set(descriptors.subarray(0, copy));
+  return { data, width, height };
+}

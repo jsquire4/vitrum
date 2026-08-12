@@ -225,7 +225,7 @@ describe('pt-webgpu explicit pipeline layout', () => {
   });
 
   // B12 — bindings 12/13/14 added for liteEnvTex + liteEnvCdfTex + liteLightTex.
-  it('lite tier: single-group explicit layout (bindings 0..14), no group 1/2/3', () => {
+  it('lite tier: single-group explicit layout (bindings 0..20), no group 1/2/3', () => {
     const stub = makeStubDevice();
     const gpu = new GpuResources(stub.device, 'lite', false);
     gpu.ensurePipeline();
@@ -234,11 +234,10 @@ describe('pt-webgpu explicit pipeline layout', () => {
     expect(stub.createdPipelineLayouts[0]!.bindGroupLayouts).toHaveLength(1);
     expect(gpu.bindGroupLayout1).toBeNull();
     expect(gpu.bindGroupLayout2).toBeNull();
-    // WS2 — the lite tier keeps the uniform light pick and MUST NOT carry the
-    // group-3 light-tree layout/binding.
     expect(gpu.bindGroupLayout3).toBeNull();
     const [g0] = stub.createdLayouts;
-    // B12 — bindings 12/13/14 are the lite texture slots (liteEnvTex, liteEnvCdfTex, liteLightTex).
-    expect(g0!.entries.map((e) => e.binding)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(g0!.entries.map((e) => e.binding)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+    ]);
   });
 });

@@ -75,11 +75,12 @@ import {
   assertThinFilmSceneSupported,
   assertVolumeSceneSupported,
 } from './spectralSceneValidation.js';
-import { createMaterialInputSnapshotContext } from './scene/materialTextures.js';
+import { createMaterialInputSnapshotContext, MATERIAL_TEX_VEC4_STRIDE } from './scene/materialTextures.js';
 import {
   packLiteLightTexture,
   packLiteEnvTexture,
   packLiteEnvCdfTexture,
+  packLiteMaterialDescriptorTexture,
 } from './scene/litePackedTextures.js';
 import {
   assertOpticalMediumTopology,
@@ -1374,11 +1375,16 @@ class PTEngineWebGPU implements Engine {
       sceneBuffers.environmentMapHeight,
       sceneBuffers.hasEnvironmentMap,
     );
+    const descriptorTex = packLiteMaterialDescriptorTexture(
+      sceneBuffers.materialTexDescriptors,
+      MATERIAL_TEX_VEC4_STRIDE,
+    );
     return this.#gpu.stageLiteTextureReplacement(
       lightTex,
       envTex,
       cdfTex,
       additionalForbiddenResources,
+      descriptorTex,
     );
   }
 

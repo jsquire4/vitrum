@@ -61,9 +61,5 @@ export function collectUnsupportedMaterialFieldsForTraceTier(
   for (const field of unsupportedFields) {
     if (material[field] != null) fields.add(field);
   }
-  if (traceTier === 'lite') {
-    collectUnsupportedLayerNormalFields(fields, 'frontLayer', material.frontLayer);
-    collectUnsupportedLayerNormalFields(fields, 'backLayer', material.backLayer);
-  }
   return Array.from(fields).sort();
 }

@@ -1,6 +1,17 @@
 import {
   composeShadePrologueWgsl,
   SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE,
+  SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_ORM_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_AO_APPLY_FULL,
+  SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL,
 } from './shadePrologue.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_KERNEL_CORE_WGSL } from './kernelCore.wgsl.js';
 
@@ -186,7 +197,30 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
 
   for (var bounce = 0u; bounce < bounceLimit; bounce = bounce + 1u) {
     let sppmOwnsCurrentEmission = false;
-    let hit = traceClosest(ray, ptRayTMin(), INFINITY);
+    var alphaCursor = ptRayTMin();
+    var hit = traceClosest(ray, alphaCursor, INFINITY);
+    let alphaSurfaceHitLimit = sceneSurfaceHitLimit();
+    var alphaSurfaceHitCount = 0u;
+    var alphaTraversalValid = true;
+    loop {
+      if (!hit.didHit) { break; }
+      if (alphaSurfaceHitCount >= alphaSurfaceHitLimit) {
+        alphaTraversalValid = false;
+        break;
+      }
+      alphaSurfaceHitCount = alphaSurfaceHitCount + 1u;
+      if (!alphaTestPassThrough(
+        hitMaterialId(hit), hit.triIndex, hit.baryVW, hit.instanceIndex, &rng,
+      )) { break; }
+      let nextAlphaCursor = hit.dist;
+      if (!(nextAlphaCursor > alphaCursor)) {
+        alphaTraversalValid = false;
+        break;
+      }
+      alphaCursor = nextAlphaCursor;
+      hit = traceClosest(ray, alphaCursor, INFINITY);
+    }
+    if (!alphaTraversalValid) { break; }
     if (mediumDepth > 0u) {
       let topIndex = mediumDepth - 1u;
       let segmentDistance = select(INFINITY, hit.dist, hit.didHit);
@@ -218,7 +252,20 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
       break;
     }
 
-${composeShadePrologueWgsl(SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE)}
+${composeShadePrologueWgsl(
+  SHADE_PROLOGUE_EMISSIVE_COMMENT_LITE,
+  SHADE_PROLOGUE_BASE_COLOR_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_EMISSIVE_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_ORM_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_NORMAL_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_AO_APPLY_FULL,
+  SHADE_PROLOGUE_LIGHT_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_BUMP_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_TRANSMISSION_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_VOLUME_THICKNESS_MAP_APPLY_FULL,
+  SHADE_PROLOGUE_EXTENSION_LOBE_TEX_APPLY_FULL,
+  SHADE_PROLOGUE_CLEARCOAT_NORMAL_MAP_APPLY_FULL,
+)}
     let throughputAtVertex = throughput;
     let surfaceMediumBoundary = mediumBoundaryIdentity(
       hit.triIndex, hit.instanceIndex,

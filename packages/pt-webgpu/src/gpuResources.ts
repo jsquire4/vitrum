@@ -26,7 +26,12 @@ import type { EngineWarning } from '@vitrum/core';
 import type { PtWebgpuTraceTier } from './traceTier.js';
 import type { UploadedSceneBuffers } from './scene/uploadSceneBuffers.js';
 import { FRAME_PARAMS_BYTE_SIZE } from './scene/frameParamsLayout.js';
-import type { LiteLightTexData, LiteEnvTexData, LiteEnvCdfData } from './scene/litePackedTextures.js';
+import type {
+  LiteLightTexData,
+  LiteEnvTexData,
+  LiteEnvCdfData,
+  LiteDescriptorTexData,
+} from './scene/litePackedTextures.js';
 import {
   composePtWebgpuTraceWgsl,
   composePtWebgpuCompositeTraceWgsl,
@@ -130,6 +135,13 @@ function _varianceTex(binding: number): GPUBindGroupLayoutEntry {
  */
 function _sampledTex(binding: number): GPUBindGroupLayoutEntry {
   return { binding, visibility: _vis(), texture: { sampleType: 'unfilterable-float', viewDimension: '2d' } };
+}
+/** Filterable 2d-array (sRGB / linear / emissive material atlases). */
+function _sampledTexArray(binding: number): GPUBindGroupLayoutEntry {
+  return { binding, visibility: _vis(), texture: { sampleType: 'float', viewDimension: '2d-array' } };
+}
+function _filteringSampler(binding: number): GPUBindGroupLayoutEntry {
+  return { binding, visibility: _vis(), sampler: { type: 'filtering' } };
 }
 
 interface SharedPipelineLayoutCandidate {
@@ -433,6 +445,13 @@ export class GpuResources {
    */
   liteLightTexture: GPUTexture | null = null;
   liteLightTextureView: GPUTextureView | null = null;
+  /**
+   * Lite material-texture descriptors (binding 16), RGBA32F,
+   * MATERIAL_TEX_VEC4_STRIDE × materialCount. Packed from the same CPU
+   * descriptor table the full tier binds as storage.
+   */
+  liteMaterialTexDescriptorsTexture: GPUTexture | null = null;
+  liteMaterialTexDescriptorsView: GPUTextureView | null = null;
 
   /** Bytes per compact ReservoirPTHero (16 u32). MUST equal the shader stride·4
    *  in reservoirPtHero.wgsl.ts (pinned by reservoirPtHeroLayout.test.ts). */
@@ -892,6 +911,12 @@ export class GpuResources {
         _sampledTex(12),      // liteEnvTex    — RGBA32F env radiance+pdf
         _sampledTex(13),      // liteEnvCdfTex — RGBA32F (.r = CDF entry)
         _sampledTex(14),      // liteLightTex  — RGBA32F packed light data
+        _buf(15, _ro),        // meshUvs
+        _sampledTex(16),      // liteMaterialTexDescriptors — RGBA32F
+        _sampledTexArray(17), // materialTextures sRGB
+        _filteringSampler(18),
+        _sampledTexArray(19), // materialTexturesLinear
+        _sampledTexArray(20), // materialTexturesEmissive
       ];
     }
     const bindGroupLayout = this.#device.createBindGroupLayout({
@@ -1511,6 +1536,12 @@ export class GpuResources {
       { binding: 12, resource: this.liteEnvTextureView! },
       { binding: 13, resource: this.liteEnvCdfTextureView! },
       { binding: 14, resource: this.liteLightTextureView! },
+      { binding: 15, resource: { buffer: sb.uvsBuffer } },
+      { binding: 16, resource: this.liteMaterialTexDescriptorsView! },
+      { binding: 17, resource: sb.materialTextureView },
+      { binding: 18, resource: sb.materialTextureSampler },
+      { binding: 19, resource: sb.materialLinearTextureView },
+      { binding: 20, resource: sb.materialEmissiveTextureView },
     ];
     // D8.2: Full-tier group-0: delegate to the shared extractor — the same
     // 0..13 definition used by the ReSTIR-PT reuse group-0.
@@ -1779,7 +1810,8 @@ export class GpuResources {
       if (
         this.liteEnvTextureView == null ||
         this.liteEnvCdfTextureView == null ||
-        this.liteLightTextureView == null
+        this.liteLightTextureView == null ||
+        this.liteMaterialTexDescriptorsView == null
       ) {
         return false;
       }
@@ -2037,6 +2069,7 @@ export class GpuResources {
     envData: LiteEnvTexData,
     cdfData: LiteEnvCdfData,
     additionalForbiddenResources: readonly object[] = [],
+    descriptorData: LiteDescriptorTexData = { data: new Float32Array(4), width: 1, height: 1 },
   ): LiteTextureReplacement {
     if (this.#traceTier !== 'lite') {
       return { commit() {}, rollback() {}, finalize() {} };
@@ -2045,6 +2078,7 @@ export class GpuResources {
       this.liteEnvTexture,
       this.liteEnvCdfTexture,
       this.liteLightTexture,
+      this.liteMaterialTexDescriptorsTexture,
     ];
     const created: GPUTexture[] = [];
     const forbiddenResources = new Set<object>([
@@ -2067,6 +2101,8 @@ export class GpuResources {
     let cdfView: GPUTextureView;
     let lightTexture: GPUTexture;
     let lightView: GPUTextureView;
+    let descriptorTexture: GPUTexture;
+    let descriptorView: GPUTextureView;
     try {
       envTexture = registerCandidate(this.#device.createTexture({
         label: 'vitrum.pt-webgpu.lite.envTex',
@@ -2109,6 +2145,24 @@ export class GpuResources {
         { width: lightData.width, height: 1 },
       );
       lightView = lightTexture.createView();
+
+      descriptorTexture = registerCandidate(this.#device.createTexture({
+        label: 'vitrum.pt-webgpu.lite.materialTexDescriptors',
+        size: {
+          width: descriptorData.width,
+          height: descriptorData.height,
+          depthOrArrayLayers: 1,
+        },
+        format: 'rgba32float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
+      }), 'vitrum.pt-webgpu.lite.materialTexDescriptors');
+      this.#device.queue.writeTexture(
+        { texture: descriptorTexture },
+        descriptorData.data as unknown as Float32Array<ArrayBuffer>,
+        { bytesPerRow: descriptorData.width * 16, rowsPerImage: descriptorData.height },
+        { width: descriptorData.width, height: descriptorData.height },
+      );
+      descriptorView = descriptorTexture.createView();
     } catch (error) {
       destroyGpuResourcesBestEffort(created, previousTextures);
       throw error;
@@ -2121,6 +2175,8 @@ export class GpuResources {
       cdfView: this.liteEnvCdfTextureView,
       lightTexture: this.liteLightTexture,
       lightView: this.liteLightTextureView,
+      descriptorTexture: this.liteMaterialTexDescriptorsTexture,
+      descriptorView: this.liteMaterialTexDescriptorsView,
     };
     let state: 'staged' | 'committed' | 'rolled-back' | 'finalized' = 'staged';
     const commit = (): void => {
@@ -2131,6 +2187,8 @@ export class GpuResources {
       this.liteEnvCdfTextureView = cdfView;
       this.liteLightTexture = lightTexture;
       this.liteLightTextureView = lightView;
+      this.liteMaterialTexDescriptorsTexture = descriptorTexture;
+      this.liteMaterialTexDescriptorsView = descriptorView;
       this.pathTraceBindGroup = null;
       state = 'committed';
     };
@@ -2145,6 +2203,8 @@ export class GpuResources {
           this.liteEnvCdfTextureView = previous.cdfView;
           this.liteLightTexture = previous.lightTexture;
           this.liteLightTextureView = previous.lightView;
+          this.liteMaterialTexDescriptorsTexture = previous.descriptorTexture;
+          this.liteMaterialTexDescriptorsView = previous.descriptorView;
           this.pathTraceBindGroup = null;
         }
         destroyGpuResourcesBestEffort(created, previousTextures);
@@ -2516,6 +2576,7 @@ export class GpuResources {
       this.liteEnvTexture,
       this.liteEnvCdfTexture,
       this.liteLightTexture,
+      this.liteMaterialTexDescriptorsTexture,
     ]) {
       if (texture != null) forbiddenTextures.add(texture);
     }
@@ -2604,5 +2665,8 @@ export class GpuResources {
     this.liteLightTexture?.destroy();
     this.liteLightTexture = null;
     this.liteLightTextureView = null;
+    this.liteMaterialTexDescriptorsTexture?.destroy();
+    this.liteMaterialTexDescriptorsTexture = null;
+    this.liteMaterialTexDescriptorsView = null;
   }
 }

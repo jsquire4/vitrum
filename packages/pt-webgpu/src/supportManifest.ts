@@ -92,52 +92,22 @@ const PT_WEBGPU_FULL_MATERIALS: BackendSupportManifest['materials'] =
   });
 
 /**
- * Lite composes the scalar material payload but has no material texture-array
- * bindings. These overrides are the exact profile boundary enforced by
- * setScene/updatePrimitive and reported to hosts.
+ * Lite samples the same PBR / extension maps as full (group-0 texture arrays +
+ * descriptor atlas). Remaining honest gaps: anisotropy is forced isotropic in
+ * the lite kernel, envMapIntensity is not applied to the miss/NEE halves,
+ * scattering requires the full-tier medium walk, and per-face layers stay
+ * approximate.
  */
 const PT_WEBGPU_LITE_MATERIALS: BackendSupportManifest['materials'] =
   Object.freeze({
     ...PT_WEBGPU_FULL_MATERIALS,
-    baseColorMap: 'unsupported',
-    normalMap: 'unsupported',
-    normalScale: 'unsupported',
-    roughnessMap: 'unsupported',
-    metallicMap: 'unsupported',
-    transmissionMap: 'unsupported',
-    thicknessMap: 'unsupported',
-    emissiveMap: 'unsupported',
-    alphaMap: 'unsupported',
-    aoMap: 'unsupported',
-    aoMapIntensity: 'unsupported',
-    clearcoatMap: 'unsupported',
-    clearcoatRoughnessMap: 'unsupported',
-    clearcoatNormalMap: 'unsupported',
-    clearcoatNormalScale: 'unsupported',
-    sheenColorMap: 'unsupported',
-    sheenRoughnessMap: 'unsupported',
-    iridescenceMap: 'unsupported',
-    iridescenceThicknessMap: 'unsupported',
     anisotropyMap: 'unsupported',
-    specularColorMap: 'unsupported',
-    specularIntensityMap: 'unsupported',
-    bumpMap: 'unsupported',
-    bumpScale: 'unsupported',
-    lightMap: 'unsupported',
-    lightMapIntensity: 'unsupported',
-    alphaMode: 'unsupported',
-    alphaCutoff: 'unsupported',
-    opacity: 'unsupported',
-    envMapIntensity: 'unsupported',
     anisotropy: 'unsupported',
     anisotropyRotation: 'unsupported',
-    // Lite transports surface refraction plus absorption-only Beer attenuation.
-    // It has no medium collision/phase walk, so authored scattering must select
-    // the full tier instead of being accepted and silently discarded.
+    envMapIntensity: 'unsupported',
     scatteringCoefficient: 'unsupported',
     scatteringAnisotropy: 'unsupported',
     scatteringCoefficientRGB: 'unsupported',
-    // Scalar tint/roughness are consumed, but lite omits per-face normal maps.
     frontLayer: 'approximate',
     backLayer: 'approximate',
   });

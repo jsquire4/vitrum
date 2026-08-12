@@ -238,20 +238,20 @@ describe('pt-webgpu normal-map tangent-frame oracle', () => {
   it('keeps the production WGSL linked to the oracle-covered tangent-frame branches', () => {
     for (const snippet of [
       'fn buildShadingTangentFrame(triIndex: u32, baryVW: vec2f, normal: vec3f, gpuUvSlot: u32, instanceIndex: u32)',
-      'if (gpuUvSlot == 0u && tri.x < arrayLength(&meshTangents)',
+      'if (gpuUvSlot == 0u && tri.x < meshTangentCount()',
       'let uv0 = materialUvForVertex(tri.x, gpuUvSlot);',
       'let handednessRaw = ta.w * u + tb.w * v + tc.w * w;',
       'frame.bitangent = cross(normal, tangent) * handedness;',
       'let uvScale = max(',
       'let normalizedDuv1 = duv1 / uvScale;',
       'let f = 1.0 / det;',
-      'var normalScale = materialTexDescriptors[base + 5u].w;',
+      'var normalScale = materialTexDescriptor(base + 5u).w;',
       'tangentNormal.x * normalScale,',
       'normalUvMetaOffset = select(MATERIAL_TEX_UV_BACK_LAYER_NORMAL, MATERIAL_TEX_UV_FRONT_LAYER_NORMAL, isFrontFace);',
       'let normalGpuUvSlot = materialTextureExactU32(',
       'let clearcoatNormalGpuUvSlot = materialTextureExactU32(',
       'let bumpGpuUvSlot = materialTextureExactU32(',
-      'let clearcoatNormalScale = materialTexDescriptors[base + MATERIAL_TEX_CLEARCOAT_NORMAL].y;',
+      'let clearcoatNormalScale = materialTexDescriptor(base + MATERIAL_TEX_CLEARCOAT_NORMAL).y;',
     ]) {
       expect(PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL).toContain(snippet);
     }

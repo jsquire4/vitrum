@@ -19,6 +19,7 @@ import {
   PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE,
 } from '../webgpuLimits.js';
+import { collectUnsupportedMaterialFieldsForTraceTier } from '../supportDetails.js';
 import { installGpuConstStubs, textureStubMethods } from './gpuStub.js';
 
 function makeLiteDevice(): GPUDevice {
@@ -154,13 +155,13 @@ describe('H12: lite-tier capabilities truth', () => {
     expect(sd.mutations.topology).toBe('fallback-rebuild');
     expect(sd.materials.baseColor).toBe('native');
     expect(sd.materials.clearcoat).toBe('native');
-    expect(sd.materials.baseColorMap).toBe('unsupported');
-    expect(sd.materials.normalMap).toBe('unsupported');
-    expect(sd.materials.normalScale).toBe('unsupported');
-    expect(sd.materials.alphaMode).toBe('unsupported');
-    expect(sd.materials.opacity).toBe('unsupported');
+    expect(sd.materials.baseColorMap).toBe('native');
+    expect(sd.materials.normalMap).toBe('native');
+    expect(sd.materials.normalScale).toBe('native');
+    expect(sd.materials.alphaMode).toBe('native');
+    expect(sd.materials.opacity).toBe('native');
     expect(sd.materials.thickness).toBe('approximate');
-    expect(sd.materials.thicknessMap).toBe('unsupported');
+    expect(sd.materials.thicknessMap).toBe('approximate');
     expect(sd.materials.envMapIntensity).toBe('unsupported');
     expect(sd.materials.anisotropy).toBe('unsupported');
     expect(sd.materials.anisotropyRotation).toBe('unsupported');
@@ -500,7 +501,11 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: setScene rejects thicknessMap but accepts scalar thickness (CAP-01)', async () => {
+  it('lite tier: thicknessMap is approximate like full, not a lite-only rejection (CAP-01)', async () => {
+    expect(collectUnsupportedMaterialFieldsForTraceTier({
+      thickness: 0.2,
+      thicknessMap: { handle: { id: 'thickness' } },
+    }, 'lite')).toEqual([]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const device = makeLiteDeviceForSetScene();
@@ -522,26 +527,41 @@ describe('H12: lite-tier capabilities truth', () => {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
             metallic: 0,
-            // Scalar thickness is shared-buffer approximate; thicknessMap is
-            // unsupported only on lite because it needs full-tier group-3 maps.
             thickness: 0.2,
-            thicknessMap: { handle: { id: 'thickness' } },
-            displacementMap: { handle: { id: 'displacement' } },
           },
         },
       ],
       emitters: [],
       environment: { kind: 'none' },
     };
-    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
-    expect(() => engine.setScene(scene)).toThrow(/selected lite tier: thicknessMap/);
-    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
+    expect(() => engine.setScene(scene)).not.toThrow();
     expect(structured).toEqual([]);
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('lite tier: setScene rejects full-tier material texture and alpha fields before allocation', async () => {
+  it('lite tier: sampled PBR maps and alpha are in-domain; anisotropy and envMapIntensity stay rejected', async () => {
+    expect(collectUnsupportedMaterialFieldsForTraceTier({
+      baseColorMap: { handle: { id: 'albedo' } },
+      normalMap: { handle: { id: 'normal' } },
+      normalScale: 0.5,
+      alphaMode: 'blend',
+      opacity: 0.5,
+      frontLayer: {
+        transmission: [1, 1, 1],
+        normalMap: { handle: { id: 'front-normal' } },
+        normalScale: 0.75,
+      },
+      backLayer: {
+        transmission: [1, 1, 1],
+        normalMap: { handle: { id: 'back-normal' } },
+        normalScale: 0.5,
+      },
+    }, 'lite')).toEqual([]);
+    expect(collectUnsupportedMaterialFieldsForTraceTier({
+      envMapIntensity: 0.25,
+      anisotropy: 0.5,
+    }, 'lite')).toEqual(['anisotropy', 'envMapIntensity']);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const device = makeLiteDeviceForSetScene();
@@ -563,23 +583,8 @@ describe('H12: lite-tier capabilities truth', () => {
             baseColor: [0.8, 0.2, 0.1],
             roughness: 0.3,
             metallic: 0,
-            baseColorMap: { handle: { id: 'albedo' } },
-            normalMap: { handle: { id: 'normal' } },
-            normalScale: 0.5,
-            alphaMode: 'blend',
-            opacity: 0.5,
             envMapIntensity: 0.25,
             anisotropy: 0.5,
-            frontLayer: {
-              transmission: [1, 1, 1],
-              normalMap: { handle: { id: 'front-normal' } },
-              normalScale: 0.75,
-            },
-            backLayer: {
-              transmission: [1, 1, 1],
-              normalMap: { handle: { id: 'back-normal' } },
-              normalScale: 0.5,
-            },
           },
         },
       ],
@@ -587,7 +592,7 @@ describe('H12: lite-tier capabilities truth', () => {
       environment: { kind: 'none' },
     };
     const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
-    expect(() => engine.setScene(scene)).toThrow(/alphaMode.*backLayer\.normalMap.*baseColorMap.*normalMap.*opacity/);
+    expect(() => engine.setScene(scene)).toThrow(/anisotropy.*envMapIntensity/);
     expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
     expect(structured).toEqual([]);
     engine.dispose();

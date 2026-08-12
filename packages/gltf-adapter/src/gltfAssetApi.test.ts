@@ -6486,19 +6486,20 @@ describe('loadGltfForEngine', () => {
 
   it('uses runtime pt-webgpu-lite compatibility before constructing map-heavy pt-webgpu scenes', async () => {
     const { gltf, buffers } = makeInlineTexturedGltf();
-    const createEngine = vi.fn(async () => ({ backendId: 'pt-webgpu' as const, setScene: vi.fn() }));
+    const engine = { backendId: 'pt-webgpu' as const, setScene: vi.fn() };
+    const createEngine = vi.fn(async () => engine);
 
-    await expect(loadGltfForEngine(gltf, {
+    const result = await loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgpu',
       runtimeProfile: 'pt-webgpu-lite',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    })).rejects.toThrow(
-      'Selected backend "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: material:baseColorMap=unsupported',
-    );
+    });
 
-    expect(createEngine).not.toHaveBeenCalled();
+    expect(createEngine).toHaveBeenCalledTimes(1);
+    expect(engine.setScene).toHaveBeenCalledTimes(1);
+    expect(result.engine).toBe(engine);
   });
 
   it('rechecks strict compatibility against an engine-reported runtime profile before attaching', async () => {
@@ -6510,17 +6511,16 @@ describe('loadGltfForEngine', () => {
     };
     const createEngine = vi.fn(async () => engine);
 
-    await expect(loadGltfForEngine(gltf, {
+    const result = await loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgpu',
       compatibilityMode: 'reject-unsupported',
       createEngine,
-    })).rejects.toThrow(
-      'Actual engine profile "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: material:baseColorMap=unsupported',
-    );
+    });
 
     expect(createEngine).toHaveBeenCalledTimes(1);
-    expect(engine.setScene).not.toHaveBeenCalled();
+    expect(engine.setScene).toHaveBeenCalledTimes(1);
+    expect(result.engine).toBe(engine);
   });
 
   it('rechecks strict compatibility against the typed pt-webgpu lite profile', async () => {
@@ -6531,16 +6531,15 @@ describe('loadGltfForEngine', () => {
       setScene: vi.fn(),
     };
 
-    await expect(loadGltfForEngine(gltf, {
+    const result = await loadGltfForEngine(gltf, {
       buffers,
       backend: 'pt-webgpu',
       compatibilityMode: 'reject-unsupported',
       engine,
-    })).rejects.toThrow(
-      'Actual engine profile "pt-webgpu" profile "pt-webgpu-lite" does not satisfy reject-unsupported: material:baseColorMap=unsupported',
-    );
+    });
 
-    expect(engine.setScene).not.toHaveBeenCalled();
+    expect(engine.setScene).toHaveBeenCalledTimes(1);
+    expect(result.engine).toBe(engine);
   });
 
   it('keeps existing pt-webgpu engines on the full profile when no runtime profile is present', async () => {

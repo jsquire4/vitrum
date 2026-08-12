@@ -182,25 +182,25 @@ describe('B12 lite-tier binding-budget proof', () => {
     const storageDecls = (
       PT_WEBGPU_TRACE_LITE_WGSL.match(/@group\(0\) @binding\(\d+\) var<storage/g) ?? []
     ).length;
-    expect(storageDecls).toBe(PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE); // 7
+    expect(storageDecls).toBe(PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE); // 8
   });
 
   it('HDRI importance does NOT fit the lite storage-buffer budget (needs texture packing)', () => {
     expect(
       PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE + PT_WEBGPU_LITE_HDRI_STORAGE_BUFFERS_NEEDED,
-    ).toBeGreaterThan(PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE); // 7 + 2 = 9 > 8
+    ).toBeGreaterThan(PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE); // 8 + 2 = 10 > 8
   });
 
-  it('area-light MIS fits the lite budget but with zero headroom', () => {
+  it('area-light storage no longer fits once meshUvs consumes the last slot', () => {
     expect(
       PT_WEBGPU_LITE_STORAGE_BUFFERS_IN_USE + PT_WEBGPU_LITE_AREA_LIGHT_STORAGE_BUFFERS_NEEDED,
-    ).toBe(PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE); // 7 + 1 = 8 == cap
+    ).toBeGreaterThan(PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE); // 8 + 1 = 9 > 8
   });
 
   // B12 — sampled texture budget proof (separate from storage-buffer limit).
   it('B12: lite sampled textures fit the WebGPU baseline maxSampledTexturesPerShaderStage', () => {
     // 3 sampled textures (liteEnvTex + liteEnvCdfTex + liteLightTex) vs baseline ≥ 16.
-    expect(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE).toBe(3);
+    expect(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE).toBe(7);
     expect(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE).toBeLessThanOrEqual(PT_WEBGPU_SAMPLED_TEXTURES_BASELINE);
   });
 
@@ -208,8 +208,10 @@ describe('B12 lite-tier binding-budget proof', () => {
     // Count `@group(0) @binding(N) var <name>: texture_2d<f32>` declarations added by B12.
     // Use \s+ after the colon to handle alignment spacing in the source.
     const texDecls = (
-      PT_WEBGPU_TRACE_LITE_WGSL.match(/@group\(0\) @binding\(\d+\) var \w+:\s+texture_2d<f32>/g) ?? []
+      PT_WEBGPU_TRACE_LITE_WGSL.match(
+        /@group\(0\) @binding\(\d+\) var \w+:\s+texture_2d(?:_array)?<f32>/g,
+      ) ?? []
     ).length;
-    expect(texDecls).toBe(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE); // 3
+    expect(texDecls).toBe(PT_WEBGPU_LITE_SAMPLED_TEXTURES_IN_USE); // 7
   });
 });
