@@ -13,8 +13,8 @@
 //     out-of-box (a host that omits these silently degrades to no-temporal).
 //   - Idempotent dispose.
 
-import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, EngineWarning, FrameInput, FrameOutput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
-import { asBackendTexture, asBackendTextureFormat, asMat4, QUALITY_FINAL } from '@vitrum/core';
+import type { CapturedFrame, CaptureFrameOptions, CameraDescriptor, Engine, EngineError, EngineWarning, FrameInput, FrameOutput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
+import { asBackendTexture, asBackendTextureFormat, asMat4, cameraToFrameMatrices, isCameraDescriptor, QUALITY_FINAL } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
 import { createOffscreenPresenter, type OffscreenPresenter } from '../presentOffscreen.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
@@ -174,6 +174,36 @@ export interface CameraLike {
 }
 
 /**
+ * Per-frame camera for {@link AttachVitrumOptions.camera}.
+ *
+ * Pass a THREE-shaped {@link CameraLike}, a core {@link CameraDescriptor}, or a
+ * getter that returns either (or `undefined` to fall back to
+ * `sceneController.cameras[0]` after `advance`).
+ */
+export type AttachVitrumCamera =
+  | CameraLike
+  | CameraDescriptor
+  | (() => CameraLike | CameraDescriptor | undefined);
+
+/** Structural glTF/authored camera as published by a scene controller. */
+export interface AttachVitrumControllerCamera {
+  readonly type: 'perspective' | 'orthographic';
+  readonly worldMatrix: ArrayLike<number>;
+  readonly perspective?: {
+    readonly yfov?: number;
+    readonly znear?: number;
+    readonly zfar?: number;
+    readonly aspectRatio?: number;
+  };
+  readonly orthographic?: {
+    readonly xmag?: number;
+    readonly ymag?: number;
+    readonly znear?: number;
+    readonly zfar?: number;
+  };
+}
+
+/**
  * Per-frame quality option for {@link AttachVitrumOptions.quality}.
  *
  * Pass a value for static quality, or a `() => value | undefined` getter for
@@ -316,11 +346,13 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
   /** Scene description in the host-agnostic @vitrum/core contract. */
   readonly scene: CreateEngineOptions['scene'];
   /** Camera the engine reads viewMatrix / projMatrix / position from every
-   *  frame. The host mutates this camera (orbit controls, scripted animation)
-   *  and the helper pushes the latest matrices into renderFrame. A real
-   *  `THREE.PerspectiveCamera` or `THREE.OrthographicCamera` satisfies
-   *  {@link CameraLike} structurally. */
-  readonly camera: CameraLike;
+   *  frame. A real `THREE.PerspectiveCamera` or `THREE.OrthographicCamera`
+   *  satisfies {@link CameraLike} structurally. A core {@link CameraDescriptor}
+   *  is the host type for authored / glTF cameras.
+   *
+   *  Omit this when `sceneController.cameras[0]` should drive the frame after
+   *  `advance` (the default glTF viewer path). */
+  readonly camera?: AttachVitrumCamera;
   /** Per-frame quality dials. Honoured if non-null; otherwise the engine's
    *  defaults apply.
    *
@@ -344,6 +376,7 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
 
 export interface AttachVitrumSceneController {
   readonly animations?: readonly unknown[];
+  readonly cameras?: readonly AttachVitrumControllerCamera[];
   attachEngine(engine: EngineWithBackendId, options?: { readonly setScene?: boolean }): void;
   advance?(
     deltaSeconds: number,
@@ -1146,9 +1179,13 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
     let proj: Mat4;
     let input: FrameInput;
     try {
-      opts.camera.updateMatrixWorld();
-      view = asMat4(new Float32Array(opts.camera.matrixWorldInverse.elements));
-      proj = asMat4(new Float32Array(opts.camera.projectionMatrix.elements));
+      const resolved = resolveAttachVitrumFrameCamera(
+        opts.camera,
+        opts.sceneController,
+        viewportW / Math.max(viewportH, 1),
+      );
+      view = resolved.viewMatrix;
+      proj = resolved.projMatrix;
       // A2 — acquire the per-frame swap-chain view for WebGPU backends.
       const swapChainView = acquireSwapChainView(webgpuSwapChain.context, (err) => {
         reportError(err, { phase: 'attach:swapchain', recoverable: true });
@@ -1159,7 +1196,11 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       input = composeAttachVitrumFrameInput({
         viewMatrix: view,
         projMatrix: proj,
-        cameraPosition: [opts.camera.position.x, opts.camera.position.y, opts.camera.position.z],
+        cameraPosition: [
+          resolved.cameraPosition[0],
+          resolved.cameraPosition[1],
+          resolved.cameraPosition[2],
+        ],
         ...(prevView ? { prevViewMatrix: prevView } : {}),
         ...(prevProj ? { prevProjMatrix: prevProj } : {}),
         viewport: { width: viewportW, height: viewportH, devicePixelRatio: viewportDpr },
@@ -1249,4 +1290,96 @@ function currentFrameTimeMs(): number {
   const perf = globalThis.performance;
   const now = perf?.now?.();
   return Number.isFinite(now) ? now : Date.now();
+}
+
+function isCameraLike(value: unknown): value is CameraLike {
+  if (value == null || typeof value !== 'object') return false;
+  const camera = value as Partial<CameraLike>;
+  return typeof camera.updateMatrixWorld === 'function'
+    && camera.matrixWorldInverse != null
+    && camera.projectionMatrix != null
+    && camera.position != null;
+}
+
+function resolveAttachVitrumFrameCamera(
+  cameraOption: AttachVitrumCamera | undefined,
+  controller: AttachVitrumSceneController | undefined,
+  aspect: number,
+): { viewMatrix: Mat4; projMatrix: Mat4; cameraPosition: readonly [number, number, number] } {
+  const resolved = typeof cameraOption === 'function' ? cameraOption() : cameraOption;
+  if (isCameraLike(resolved)) {
+    resolved.updateMatrixWorld();
+    return {
+      viewMatrix: asMat4(new Float32Array(resolved.matrixWorldInverse.elements)),
+      projMatrix: asMat4(new Float32Array(resolved.projectionMatrix.elements)),
+      cameraPosition: [resolved.position.x, resolved.position.y, resolved.position.z],
+    };
+  }
+  const descriptor = isCameraDescriptor(resolved)
+    ? resolved
+    : controllerCameraDescriptor(controller);
+  if (descriptor == null) {
+    throw new TypeError(
+      'attachVitrum: camera is required unless sceneController.cameras[0] can supply a descriptor after advance.',
+    );
+  }
+  const matrices = cameraToFrameMatrices(descriptor, aspect);
+  return {
+    viewMatrix: matrices.viewMatrix,
+    projMatrix: matrices.projMatrix,
+    cameraPosition: matrices.cameraPosition,
+  };
+}
+
+function controllerCameraDescriptor(
+  controller: AttachVitrumSceneController | undefined,
+): CameraDescriptor | undefined {
+  const camera = controller?.cameras?.[0];
+  if (camera == null) return undefined;
+  if (isCameraDescriptor(camera)) return camera;
+  return gltfShapedCameraToDescriptor(camera);
+}
+
+function gltfShapedCameraToDescriptor(
+  camera: AttachVitrumControllerCamera,
+): CameraDescriptor {
+  const worldMatrix = asMat4(
+    camera.worldMatrix instanceof Float32Array
+      ? camera.worldMatrix
+      : new Float32Array(Array.from(camera.worldMatrix)),
+  );
+  if (camera.type === 'perspective') {
+    const yfov = camera.perspective?.yfov;
+    const znear = camera.perspective?.znear;
+    if (!(typeof yfov === 'number' && yfov > 0) || !(typeof znear === 'number' && znear > 0)) {
+      throw new RangeError(
+        'attachVitrum: sceneController.cameras[0] perspective camera requires yfov > 0 and znear > 0.',
+      );
+    }
+    return {
+      type: 'perspective',
+      worldMatrix,
+      yfov,
+      znear,
+      ...(typeof camera.perspective?.zfar === 'number' ? { zfar: camera.perspective.zfar } : {}),
+      ...(typeof camera.perspective?.aspectRatio === 'number'
+        ? { aspectRatio: camera.perspective.aspectRatio }
+        : {}),
+    };
+  }
+  const xmag = camera.orthographic?.xmag;
+  const ymag = camera.orthographic?.ymag;
+  const znear = camera.orthographic?.znear;
+  const zfar = camera.orthographic?.zfar;
+  if (
+    !(typeof xmag === 'number' && xmag > 0) ||
+    !(typeof ymag === 'number' && ymag > 0) ||
+    typeof znear !== 'number' ||
+    !(typeof zfar === 'number' && zfar > znear)
+  ) {
+    throw new RangeError(
+      'attachVitrum: sceneController.cameras[0] orthographic camera requires xmag > 0, ymag > 0, and zfar > znear.',
+    );
+  }
+  return { type: 'orthographic', worldMatrix, xmag, ymag, znear, zfar };
 }

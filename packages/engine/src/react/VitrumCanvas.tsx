@@ -38,9 +38,9 @@ import {
 import type {
   AttachVitrumHandle,
   AttachVitrumBackendChangedEvent,
+  AttachVitrumCamera,
   AttachVitrumRecreateEngineFactory,
   AttachVitrumSceneControllerPlayback,
-  CameraLike,
 } from '../lifecycle/vanilla.js';
 import { attachVitrum } from '../lifecycle/vanilla.js';
 import type {
@@ -93,7 +93,9 @@ function releasePendingGltfResources(result: VitrumCanvasGltfResult | undefined)
 function vitrumCanvasPlaybackEnabled(
   playback: AttachVitrumSceneControllerPlayback | undefined,
 ): boolean {
-  return playback === true || (playback != null && typeof playback === 'object');
+  if (playback === false) return false;
+  if (playback === undefined) return true;
+  return playback === true || typeof playback === 'object';
 }
 
 function vitrumCanvasPlaybackLoop(
@@ -130,8 +132,9 @@ export interface VitrumCanvasProps {
   onGltfLoaded?: (asset: GltfAssetResult, result: VitrumCanvasGltfResult) => void;
   /** Camera the engine reads each frame. Host mutates this (orbit
    *  controls, scripted animation); the canvas pushes its matrices into
-   *  renderFrame on every RAF tick. */
-  camera: CameraLike;
+   *  renderFrame on every RAF tick. Omit on the glTF path to use
+   *  `asset.cameras[0]` / `controller.cameras[0]` after clip advance. */
+  camera?: AttachVitrumCamera;
   /** Quality vs speed hint. See CreateEngineOptions.prefer. */
   prefer?: EnginePreference;
   /** Per-frame quality dials. Prop changes propagate live: the latest
@@ -382,6 +385,9 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
         if (scene == null) {
           throw new TypeError('[VitrumCanvas] either `scene` or `gltf` must be supplied.');
         }
+        if (props.gltf === undefined && props.camera == null) {
+          throw new TypeError('[VitrumCanvas] `camera` is required when `gltf` is not supplied.');
+        }
         const h = await attachVitrum({
           canvas,
           scene,
@@ -393,14 +399,12 @@ export const VitrumCanvas = React.forwardRef<HTMLCanvasElement, VitrumCanvasProp
             ? { recreateEngine: progressiveRecreateEngine }
             : {}),
           ...(gltfResult?.controller !== undefined && !isProgressiveGltfResult(gltfResult)
-            ? { sceneController: gltfResult.controller }
+            ? {
+                sceneController: gltfResult.controller,
+                sceneControllerPlayback: props.gltfPlayback ?? true,
+              }
             : {}),
-          ...(gltfResult?.controller !== undefined &&
-          !isProgressiveGltfResult(gltfResult) &&
-          props.gltfPlayback !== undefined
-            ? { sceneControllerPlayback: props.gltfPlayback }
-            : {}),
-          camera: props.camera,
+          ...(props.camera != null ? { camera: props.camera } : {}),
           ...(props.prefer ? { prefer: props.prefer } : {}),
           ...(props.pauseOnHidden != null ? { pauseOnHidden: props.pauseOnHidden } : {}),
           ...(props.advanced != null ? { advanced: props.advanced } : {}),

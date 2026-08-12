@@ -5,6 +5,7 @@
 
 export * from './scene/index.js';
 export * from './frame.js';
+export * from './camera.js';
 export * from './inverse.js';
 export * from './engine/index.js';
 export { solveSkin, combineSkinMatrices, mat3InverseTranspose } from './skinSolver.js';

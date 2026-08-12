@@ -563,6 +563,44 @@ describe('VitrumCanvas — mount / attach / dispose', () => {
     root.unmount();
   });
 
+  it('defaults glTF clip playback on and can omit the host camera', async () => {
+    const { createRoot } = await import('react-dom/client');
+    const React = await import('react');
+    const { VitrumCanvas } = await import('../src/react/VitrumCanvas.js');
+    const vanillaModule = await import('../src/lifecycle/vanilla.js');
+    const gltfModule = await import('../src/gltf.js');
+    const { gltf, buffers } = makeInlineTriangleGltf();
+    const importedScene: Scene = {
+      primitives: [],
+      emitters: [],
+      environment: { kind: 'none' as const },
+    };
+    const engine = makeMockEngine();
+    const controller = { attachEngine: vi.fn(), advance: vi.fn(), warnings: [] };
+    const asset = makeMockGltfAsset(gltf, importedScene);
+    const attachSpy = vi.spyOn(vanillaModule, 'attachVitrum').mockResolvedValue(makeMockHandle());
+    vi.spyOn(gltfModule, 'loadGltfWithEngine').mockResolvedValue(
+      makeMockGltfForEngineResult(asset, engine, controller),
+    );
+
+    const container = happyWindow.document.createElement('div') as unknown as Element;
+    happyWindow.document.body.appendChild(
+      container as unknown as Parameters<typeof happyWindow.document.body.appendChild>[0],
+    );
+    const root = createRoot(container);
+    root.render(React.createElement(VitrumCanvas, { gltf, gltfOptions: { buffers } }));
+    await happyWindow.happyDOM.waitUntilComplete();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    await happyWindow.happyDOM.waitUntilComplete();
+
+    expect(attachSpy).toHaveBeenCalledTimes(1);
+    const opts = attachSpy.mock.calls[0]![0];
+    expect(opts.sceneController).toBe(controller);
+    expect(opts.sceneControllerPlayback).toBe(true);
+    expect(opts.camera).toBeUndefined();
+    root.unmount();
+  });
+
   it('keeps imported image handles alive through mount and releases them after attach disposal on unmount', async () => {
     const { createRoot } = await import('react-dom/client');
     const React = await import('react');

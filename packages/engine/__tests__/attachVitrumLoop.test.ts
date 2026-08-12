@@ -839,6 +839,100 @@ describe('attachVitrum with happy-dom + mock engine', () => {
     expect(requestFrame).not.toHaveBeenCalled();
     expect(engine.dispose).toHaveBeenCalledOnce();
   });
+
+  it('accepts a core CameraDescriptor instead of a THREE-shaped CameraLike', async () => {
+    const scheduledFrames: FrameRequestCallback[] = [];
+    (globalThis as Record<string, unknown>).requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+      scheduledFrames.push(cb);
+      return scheduledFrames.length;
+    });
+    (globalThis as Record<string, unknown>).cancelAnimationFrame = vi.fn();
+
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const { asMat4 } = await import('@vitrum/core');
+    const createEngineModule = await import('../src/createEngine.js');
+    vi.spyOn(createEngineModule, 'createEngine')
+      .mockRejectedValue(new Error('createEngine should not be called for supplied engines'));
+
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const world = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      0, 1, 4, 1,
+    ]));
+    const engine = Object.assign(makeMockEngine(), { backendId: 'pt-webgl2' as const }) as EngineWithBackendId
+      & { readonly _renders: FrameInput[] };
+    const handle = await attachVitrum({
+      canvas,
+      scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+      engine,
+      camera: {
+        type: 'perspective',
+        worldMatrix: world,
+        yfov: Math.PI / 2,
+        znear: 0.1,
+        zfar: 100,
+      },
+    });
+
+    scheduledFrames.shift()?.(0);
+    expect(engine._renders).toHaveLength(1);
+    const first = engine._renders[0];
+    expect(first?.cameraPosition?.[1]).toBeCloseTo(1);
+    expect(first?.cameraPosition?.[2]).toBeCloseTo(4);
+    handle.dispose();
+  });
+
+  it('uses sceneController.cameras[0] when camera is omitted', async () => {
+    const scheduledFrames: FrameRequestCallback[] = [];
+    (globalThis as Record<string, unknown>).requestAnimationFrame = vi.fn((cb: FrameRequestCallback) => {
+      scheduledFrames.push(cb);
+      return scheduledFrames.length;
+    });
+    (globalThis as Record<string, unknown>).cancelAnimationFrame = vi.fn();
+
+    const { attachVitrum } = await import('../src/lifecycle/vanilla.js');
+    const { asMat4 } = await import('@vitrum/core');
+    const createEngineModule = await import('../src/createEngine.js');
+    vi.spyOn(createEngineModule, 'createEngine')
+      .mockRejectedValue(new Error('createEngine should not be called for supplied engines'));
+
+    const canvas = happyWindow.document.createElement('canvas') as unknown as HTMLCanvasElement;
+    const world = asMat4(new Float32Array([
+      1, 0, 0, 0,
+      0, 1, 0, 0,
+      0, 0, 1, 0,
+      3, 0, 0, 1,
+    ]));
+    const engine = Object.assign(makeMockEngine(), { backendId: 'pt-webgl2' as const }) as EngineWithBackendId
+      & { readonly _renders: FrameInput[] };
+    const sceneController = {
+      animations: [{}],
+      cameras: [{
+        type: 'perspective' as const,
+        worldMatrix: world,
+        perspective: { yfov: Math.PI / 2, znear: 0.1, zfar: 50 },
+      }],
+      attachEngine: vi.fn(),
+      advance: vi.fn(),
+    };
+    const handle = await attachVitrum({
+      canvas,
+      scene: { primitives: [], emitters: [], environment: { kind: 'none' } },
+      engine,
+      sceneController,
+      sceneControllerPlayback: true,
+    });
+
+    scheduledFrames.shift()?.(1000);
+    scheduledFrames.shift()?.(1016);
+    expect(sceneController.advance).toHaveBeenCalled();
+    expect(engine._renders.length).toBeGreaterThan(0);
+    const last = engine._renders[engine._renders.length - 1];
+    expect(last?.cameraPosition?.[0]).toBeCloseTo(3);
+    handle.dispose();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────────────────

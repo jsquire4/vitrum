@@ -1,4 +1,4 @@
-import { asMat4, type Mat4 } from '@vitrum/core';
+import { asMat4, type CameraDescriptor, type Mat4 } from '@vitrum/core';
 import type { GltfCamera, GltfJson } from './gltfTypes.js';
 import type { ImportResourceLedger } from './importResourceBudget.js';
 
@@ -267,6 +267,54 @@ function cameraIssue(path: string, detail: string): GltfCameraMetadataIssue {
   return {
     path,
     message: `[vitrum/gltf-adapter] ${path} ${detail}`,
+  };
+}
+
+/**
+ * Flatten a glTF scene camera (nested projection bag + extra import metadata)
+ * into the core host {@link CameraDescriptor} that `cameraToFrameMatrices` consumes.
+ */
+export function gltfSceneCameraToDescriptor(camera: GltfSceneCamera): CameraDescriptor {
+  if (camera.type === 'perspective') {
+    const yfov = camera.perspective?.yfov;
+    const znear = camera.perspective?.znear;
+    if (!(typeof yfov === 'number' && yfov > 0) || !(typeof znear === 'number' && znear > 0)) {
+      throw new RangeError(
+        `${camera.path} perspective camera requires yfov > 0 and znear > 0.`,
+      );
+    }
+    return {
+      type: 'perspective',
+      worldMatrix: camera.worldMatrix,
+      yfov,
+      znear,
+      ...(typeof camera.perspective?.zfar === 'number' ? { zfar: camera.perspective.zfar } : {}),
+      ...(typeof camera.perspective?.aspectRatio === 'number'
+        ? { aspectRatio: camera.perspective.aspectRatio }
+        : {}),
+    };
+  }
+  const xmag = camera.orthographic?.xmag;
+  const ymag = camera.orthographic?.ymag;
+  const znear = camera.orthographic?.znear;
+  const zfar = camera.orthographic?.zfar;
+  if (
+    !(typeof xmag === 'number' && xmag > 0) ||
+    !(typeof ymag === 'number' && ymag > 0) ||
+    typeof znear !== 'number' ||
+    !(typeof zfar === 'number' && zfar > znear)
+  ) {
+    throw new RangeError(
+      `${camera.path} orthographic camera requires xmag > 0, ymag > 0, and zfar > znear.`,
+    );
+  }
+  return {
+    type: 'orthographic',
+    worldMatrix: camera.worldMatrix,
+    xmag,
+    ymag,
+    znear,
+    zfar,
   };
 }
 

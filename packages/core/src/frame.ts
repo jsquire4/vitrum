@@ -4,6 +4,8 @@
 // `Scene`. The camera is per-frame because it scrubs continuously during
 // orbit; the frame seed is per-frame because the QMC sequence advances; the
 // shutter time is per-frame because motion blur samples within an interval.
+// Hosts that have a glTF / authored camera (not a THREE object) convert a
+// `CameraDescriptor` through `cameraToFrameMatrices` into these matrices.
 //
 // Quality dials (samplesTarget, bounces, resolutionFactor, etc.) are ALSO
 // per-frame. The host owns quality — it changes quality by passing a different

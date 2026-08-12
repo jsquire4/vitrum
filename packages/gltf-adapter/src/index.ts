@@ -19,6 +19,7 @@ export type {
   GltfToSceneOptions,
   GltfToSceneResult,
 } from './gltfToScene.js';
+export { gltfSceneCameraToDescriptor } from './cameraMetadata.js';
 export {
   DEFAULT_GLTF_IMPORT_RESOURCE_LIMITS,
   GltfResourceLimitError,
