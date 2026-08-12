@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { MaterialSpec, Scene } from '@vitrum/core';
-import { pickBackend, recommendBackendForSceneMaterials } from '../createEngineScale.js';
+import { pickBackend, recommendBackendForSceneMaterials, shouldAttemptProgressiveViewer } from '../createEngineScale.js';
 
 function sceneWithMaterial(material: MaterialSpec): Scene {
   return {
@@ -42,7 +42,7 @@ describe('createEngine backend selection', () => {
     }), true);
 
     expect(recommendation).toBeNull();
-    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
+    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('pt-webgpu');
   });
 
   it.each([
@@ -68,7 +68,7 @@ describe('createEngine backend selection', () => {
     }), true);
 
     expect(recommendation).toBeNull();
-    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
+    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('pt-webgpu');
   });
 
   it('does not create a material recommendation for approximate face-layer fields on WebGL hosts', () => {
@@ -113,7 +113,7 @@ describe('createEngine backend selection', () => {
     }), true);
 
     expect(recommendation).toBeNull();
-    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
+    expect(pickBackend('auto', true, 12, false, undefined, recommendation?.backend)).toBe('pt-webgpu');
   });
 
   it('keeps explicit realtime for an approximately supported plain Scene material', () => {
@@ -126,5 +126,16 @@ describe('createEngine backend selection', () => {
 
     expect(recommendation).toBeNull();
     expect(pickBackend('realtime', true, 12, false, undefined, recommendation?.backend)).toBe('walkaround-hybrid');
+  });
+
+  it('attempts the progressive viewer for auto on WebGPU unless walkaround cannot accept the scene', () => {
+    expect(shouldAttemptProgressiveViewer('auto', true)).toBe(true);
+    expect(shouldAttemptProgressiveViewer('auto', true, 'walkaround-hybrid')).toBe(true);
+    expect(shouldAttemptProgressiveViewer('auto', true, 'pt-webgpu')).toBe(true);
+    expect(shouldAttemptProgressiveViewer('auto', true, 'pt-webgl2')).toBe(false);
+    expect(shouldAttemptProgressiveViewer('auto', true, undefined, 'pt-webgpu')).toBe(false);
+    expect(shouldAttemptProgressiveViewer('auto', false)).toBe(false);
+    expect(shouldAttemptProgressiveViewer('realtime', true)).toBe(false);
+    expect(shouldAttemptProgressiveViewer('quality-webgpu', true)).toBe(false);
   });
 });

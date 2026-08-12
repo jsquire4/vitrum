@@ -32,7 +32,7 @@ loads through the engine-aware `loadGltfWithEngine()` bridge, so `gltfOptions`
 can carry decoder hooks, texture decode settings, compatibility modes, and
 backend choices. The prepared engine and glTF controller are handed to the same
 `attachVitrum` lifecycle, preserving RAF/resize/device-loss behavior while
-keeping `prefer="auto"` on the compatibility planner.
+keeping `prefer="auto"` so the default path is the progressive viewer.
 
 ```tsx
 <VitrumCanvas
@@ -52,10 +52,10 @@ keeping `prefer="auto"` on the compatibility planner.
 - `realtime` → `@vitrum/walkaround-hybrid` (WebGPU DDGI + ReSTIR + per-channel SVGF + GTAO)
 - `quality` → `@vitrum/pt-webgl2` (single merged BVH); **`pt-webgpu`** when the scene has multiple meshes or instancing and WebGPU is available (`auditSceneNeedsTlas`)
 - `quality-webgpu` → `@vitrum/pt-webgpu` when WebGPU is available, else `pt-webgl2`
-- `auto` → `walkaround-hybrid` (&lt;500k tris, WebGPU) or **`pt-webgpu`** (≥500k tris, WebGPU), else `pt-webgl2`
+- `auto` (default) → progressive viewer (walkaround while moving, PT when settled) when WebGPU satisfies the shared-device limit union; else a single PT engine (full or lite by device) or `pt-webgl2`. Triangle count is not a cutoff.
 - Multi-mesh / instanced scenes on WebGL-only hosts still get `pt-webgl2` with a `console.warn` from `createEngine()`
 
-Use **`quality-webgpu`** to force the WebGPU path tracer on smaller scenes.
+Use **`realtime`**, **`quality`**, or **`quality-webgpu`** to force a single engine.
 
 Backend-specific tuning goes through `CreateEngineOptions.advanced` (typed as partial backend options) — see each backend's options interface.
 

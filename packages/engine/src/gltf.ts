@@ -125,6 +125,7 @@ export async function loadGltfWithEngine(
     adapterOptions.backend ?? backendSelectionForExplicitPrefer(engineOptions?.prefer);
   if (adapterOptions.engine != null) {
     const { engine, attachScene, ...baseLoadOptions } = adapterOptions;
+    const engineAdapterBackend = gltfAdapterBackendFromEngine(engine);
     const engineRuntimeProfile = ptWebgpuRuntimeProfileFromEngine(engine);
     const profileAwareLoadOptions =
       engineRuntimeProfile !== undefined && baseLoadOptions.runtimeProfile === undefined
@@ -132,18 +133,18 @@ export async function loadGltfWithEngine(
         : baseLoadOptions;
     const runtimeProfile =
       engineRuntimeProfile === undefined
-        ? await maybeProbePtWebgpuRuntimeProfile(engine.backendId, profileAwareLoadOptions)
+        ? await maybeProbePtWebgpuRuntimeProfile(engineAdapterBackend, profileAwareLoadOptions)
         : null;
     const loadOptions = withRuntimeTextureCap(profileAwareLoadOptions, runtimeProfile);
     const loaded = await loadGltfForEngine<EngineWithBackendId, GltfCreateEngineOptions>(input, {
       ...loadOptions,
-      backend: engine.backendId,
+      backend: engineAdapterBackend,
       attachScene: false,
       engineOptions: engineOptions ?? ({} as GltfCreateEngineOptions),
     });
     try {
       let runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
-        engine.backendId,
+        engineAdapterBackend,
         adapterOptions.compatibilityMode ?? 'best-effort',
         loaded.asset,
         loadOptions,
@@ -162,7 +163,7 @@ export async function loadGltfWithEngine(
       loaded.controller.attachEngine(engine, { setScene: attachScene ?? true });
       return {
         ...loaded,
-        backend: engine.backendId,
+        backend: engineAdapterBackend,
         profileId: runtimeProfileId ?? loaded.profileId,
         engine,
         attached: true,
@@ -212,10 +213,13 @@ export async function loadGltfWithEngine(
         gltfAsset: createEngineGltfAssetHint(asset),
         prefer: preferForSelectedBackend(backend, createOptions.prefer),
       });
-      if (backend !== 'pt-webgpu' && engine.backendId === 'pt-webgpu') {
+      if (
+        backend !== 'pt-webgpu' &&
+        (engine.backendId === 'pt-webgpu' || engine.backendId === 'progressive')
+      ) {
         try {
           runtimeProfileId = await resolvePtWebgpuRuntimeProfile(
-            engine.backendId,
+            'pt-webgpu',
             loadOptions.compatibilityMode ?? 'best-effort',
             asset,
             loadOptions,
@@ -647,12 +651,17 @@ function decodedAssetView(asset: GltfAssetResult): {
     : null;
 }
 
+function gltfAdapterBackendFromEngine(engine: EngineWithBackendId): CreateEngineBackendId {
+  return engine.backendId === 'progressive' ? 'pt-webgpu' : engine.backendId;
+}
+
 function ptWebgpuRuntimeProfileFromEngine(
   engine: EngineWithBackendId,
 ): GltfBackendProfileId | undefined {
-  if (engine.backendId !== 'pt-webgpu') return undefined;
+  if (engine.backendId !== 'pt-webgpu' && engine.backendId !== 'progressive') return undefined;
   const profileId = engine.backendProfileId ?? engine.profileId;
   if (profileId === 'pt-webgpu' || profileId === 'pt-webgpu-lite') return profileId;
+  if (engine.backendId === 'progressive') return 'pt-webgpu';
   return undefined;
 }
 
@@ -664,10 +673,11 @@ function preferForSelectedBackend(
   backend: CreateEngineBackendId | GltfEngineSelection,
   fallback: EnginePreference | undefined,
 ): EnginePreference {
-  if (backend === 'walkaround-hybrid') return 'realtime';
-  if (backend === 'pt-webgpu') return 'quality-webgpu';
-  if (backend === 'pt-webgl2') return 'quality';
-  return fallback ?? 'auto';
+  if (fallback === 'realtime' || fallback === 'quality' || fallback === 'quality-webgpu') {
+    return fallback;
+  }
+  void backend;
+  return 'auto';
 }
 
 function backendSelectionForExplicitPrefer(

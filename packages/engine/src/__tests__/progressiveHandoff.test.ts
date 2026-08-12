@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   asMat4,
+  QUALITY_FINAL,
+  QUALITY_PREVIEW,
   type Engine,
   type FrameInput,
   type FrameOutput,
@@ -79,6 +81,22 @@ describe('ProgressiveHandoffCoordinator', () => {
     expect(c.frame(input(2)).phase).toBe('realtime');       // moved
     expect(rt.renderFrame).toHaveBeenCalledTimes(3);
     expect(cv.renderFrame).not.toHaveBeenCalled();
+  });
+
+  it('fills QUALITY_PREVIEW / QUALITY_FINAL when the host omits FrameInput.quality', () => {
+    const rt = makeStubEngine();
+    const cv = makeStubEngine(1);
+    const c = new ProgressiveHandoffCoordinator({
+      realtime: rt.engine,
+      converged: cv.engine,
+      stillFramesBeforeHandoff: 1,
+    });
+
+    c.frame(input(0));
+    expect(rt.renderFrame.mock.calls[0]?.[0]?.quality).toBe(QUALITY_PREVIEW);
+
+    c.frame(input(0));
+    expect(cv.renderFrame.mock.calls[0]?.[0]?.quality).toBe(QUALITY_FINAL);
   });
 
   it('snapshots a fixed-size matrix without re-reading a getter-backed length', () => {

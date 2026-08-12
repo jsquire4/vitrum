@@ -29,11 +29,16 @@ vi.mock('@vitrum/walkaround-hybrid', () => ({
     maxStorageTexturesPerShaderStage: 8,
   })),
   validateHybridEngineAdvancedOptions: hybridAdvancedValidator,
+  assessNeuralCheckpointProductionReadiness: vi.fn(() => ({ productionReady: false })),
+  isNeuralCheckpointF16Compatible: vi.fn(() => false),
 }));
 
 vi.mock('@vitrum/pt-webgpu', () => ({
   PT_WEBGPU_FULL_REQUIRED_STORAGE_BUFFERS_PER_STAGE: 28,
+  PT_WEBGPU_BDPT_REQUIRED_STORAGE_BUFFERS_PER_STAGE: 29,
   PT_WEBGPU_RESTIR_PT_REUSE_REQUIRED_STORAGE_BUFFERS_PER_STAGE: 32,
+  PT_WEBGPU_CWBVH_CLOSEST_REQUIRED_STORAGE_BUFFERS_PER_STAGE: 33,
+  PT_WEBGPU_CWBVH_CLOSEST_RESTIR_PT_REQUIRED_STORAGE_BUFFERS_PER_STAGE: 37,
   PT_WEBGPU_FULL_REQUIRED_STORAGE_TEXTURES_PER_STAGE: 5,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_BUFFERS_PER_STAGE: 8,
   PT_WEBGPU_LITE_REQUIRED_STORAGE_TEXTURES_PER_STAGE: 4,
@@ -88,6 +93,58 @@ function makeEngine(setScene: (scene: Scene) => void = vi.fn()): Engine {
     capabilities: {},
     setScene,
     renderFrame: vi.fn(),
+    dispose: vi.fn(),
+  } as unknown as Engine;
+}
+
+function makeSeedSourceEngine(setScene: (scene: Scene) => void = vi.fn()): Engine {
+  return {
+    state: 'ready',
+    capabilities: {
+      supportsProgressiveSeedSource: true,
+      supportsIncrementalScene: false,
+      supportsAddRemovePrimitive: false,
+      supportsAuxBuffers: false,
+      accumulates: false,
+      maxSamplesPerPixel: Number.POSITIVE_INFINITY,
+      maxBounces: 2,
+      supportedAnalyticShapes: new Set(),
+      supportedEmitterKinds: new Set(),
+      presentationMode: 'swapchain-required',
+      causticStrategy: 'none',
+    },
+    setScene,
+    renderFrame: vi.fn(),
+    getProgressiveSeedTexture: vi.fn(() => ({ texture: {}, width: 1, height: 1 })),
+    reset: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
+    dispose: vi.fn(),
+  } as unknown as Engine;
+}
+
+function makeSeedSinkEngine(setScene: (scene: Scene) => void = vi.fn()): Engine {
+  return {
+    state: 'ready',
+    capabilities: {
+      supportsAccumulatorSeed: true,
+      supportsIncrementalScene: false,
+      supportsAddRemovePrimitive: false,
+      supportsAuxBuffers: false,
+      accumulates: true,
+      maxSamplesPerPixel: 1024,
+      maxBounces: 8,
+      supportedAnalyticShapes: new Set(),
+      supportedEmitterKinds: new Set(),
+      presentationMode: 'offscreen-texture',
+      causticStrategy: 'none',
+    },
+    setScene,
+    renderFrame: vi.fn(),
+    seedAccumulator: vi.fn(),
+    reset: vi.fn(),
+    pause: vi.fn(),
+    resume: vi.fn(),
     dispose: vi.fn(),
   } as unknown as Engine;
 }
@@ -265,7 +322,7 @@ describe('createEngine backend construction safety', () => {
     },
   );
 
-  it('keeps auto-selected approximate material fields on walkaround without a routing warning', async () => {
+  it('defaults auto to the progressive viewer when the adapter satisfies the limit union', async () => {
     const device = makeDevice();
     const adapter = makeAdapter(device);
     Object.defineProperty(globalThis, 'navigator', {
@@ -279,8 +336,10 @@ describe('createEngine backend construction safety', () => {
     });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: EngineWarning[] = [];
-    const engine = makeEngine();
-    hybridFactory.mockResolvedValue(engine);
+    const realtime = makeSeedSourceEngine();
+    const converged = makeSeedSinkEngine();
+    hybridFactory.mockResolvedValue(realtime);
+    ptFactory.mockResolvedValue(converged);
     const materialRouteScene: Scene = {
       primitives: [{
         kind: 'mesh',
@@ -305,16 +364,17 @@ describe('createEngine backend construction safety', () => {
       onWarning: (warning) => warnings.push(warning),
     });
 
-    expect(result.backendId).toBe('walkaround-hybrid');
+    expect(result.backendId).toBe('progressive');
     expect(hybridFactory).toHaveBeenCalledTimes(1);
-    expect(ptFactory).not.toHaveBeenCalled();
-    expect(engine.setScene).toHaveBeenCalledWith(materialRouteScene);
+    expect(ptFactory).toHaveBeenCalledTimes(1);
+    expect(realtime.setScene).toHaveBeenCalledWith(materialRouteScene);
+    expect(converged.setScene).toHaveBeenCalledWith(materialRouteScene);
     expect(warnings).toEqual([]);
     expect(warnSpy).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 
-  it('keeps approximate material fields on walkaround when a glTF hint has no recommended backend', async () => {
+  it('defaults auto to the progressive viewer when a glTF hint has no recommended backend', async () => {
     const device = makeDevice();
     const adapter = makeAdapter(device);
     Object.defineProperty(globalThis, 'navigator', {
@@ -328,8 +388,10 @@ describe('createEngine backend construction safety', () => {
     });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const warnings: EngineWarning[] = [];
-    const engine = makeEngine();
-    hybridFactory.mockResolvedValue(engine);
+    const realtime = makeSeedSourceEngine();
+    const converged = makeSeedSinkEngine();
+    hybridFactory.mockResolvedValue(realtime);
+    ptFactory.mockResolvedValue(converged);
     const materialRouteScene: Scene = {
       primitives: [{
         kind: 'mesh',
@@ -355,12 +417,55 @@ describe('createEngine backend construction safety', () => {
       onWarning: (warning) => warnings.push(warning),
     });
 
-    expect(result.backendId).toBe('walkaround-hybrid');
+    expect(result.backendId).toBe('progressive');
     expect(hybridFactory).toHaveBeenCalledTimes(1);
-    expect(ptFactory).not.toHaveBeenCalled();
-    expect(engine.setScene).toHaveBeenCalledWith(materialRouteScene);
+    expect(ptFactory).toHaveBeenCalledTimes(1);
+    expect(realtime.setScene).toHaveBeenCalledWith(materialRouteScene);
     expect(warnings).toEqual([]);
     expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('falls back from the progressive viewer to a single PT engine when the adapter misses the limit union', async () => {
+    const device = makeDevice();
+    const adapter = {
+      limits: {
+        maxStorageBuffersPerShaderStage: 10,
+        maxStorageTexturesPerShaderStage: 4,
+      },
+      features: new Set(),
+      requestDevice: vi.fn(async () => device),
+    } as unknown as GPUAdapter;
+    Object.defineProperty(globalThis, 'navigator', {
+      value: {
+        gpu: {
+          requestAdapter: vi.fn(async () => adapter),
+          getPreferredCanvasFormat: vi.fn(() => 'bgra8unorm'),
+        },
+      },
+      configurable: true,
+    });
+    const warnings: EngineWarning[] = [];
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    ptFactory.mockResolvedValue(makeEngine());
+
+    const result = await createEngine({
+      canvas: makeCanvas(),
+      scene,
+      prefer: 'auto',
+      onWarning: (warning) => warnings.push(warning),
+    });
+
+    expect(result.backendId).toBe('pt-webgpu');
+    expect(hybridFactory).not.toHaveBeenCalled();
+    expect(ptFactory).toHaveBeenCalledTimes(1);
+    expect(warnings).toContainEqual(expect.objectContaining({
+      code: 'createEngine.progressive-unavailable-fallback',
+      details: expect.objectContaining({
+        preferredBackend: 'progressive',
+        resolvedBackend: 'pt-webgpu',
+      }),
+    }));
     warnSpy.mockRestore();
   });
 

@@ -26,23 +26,15 @@ describe('pickBackend', () => {
     expect(pickBackend('realtime', false, 1_000)).toBe('pt-webgl2');
   });
 
-  it('auto picks walkaround-hybrid for small scenes on WebGPU', () => {
-    expect(pickBackend('auto', true, 10_000)).toBe('walkaround-hybrid');
-    expect(pickBackend('auto', true, 499_999)).toBe('walkaround-hybrid');
-  });
-
-  it('auto picks pt-webgpu above the triangle budget when WebGPU is available', () => {
+  it('auto single-engine fallback is pt-webgpu on WebGPU regardless of triangle count', () => {
+    expect(pickBackend('auto', true, 10_000)).toBe('pt-webgpu');
+    expect(pickBackend('auto', true, 499_999)).toBe('pt-webgpu');
     expect(pickBackend('auto', true, 500_000)).toBe('pt-webgpu');
     expect(pickBackend('auto', true, 5_000_000)).toBe('pt-webgpu');
   });
 
   it('auto picks pt-webgl2 when WebGPU is unavailable', () => {
     expect(pickBackend('auto', false, 100)).toBe('pt-webgl2');
-  });
-
-  it('auto selects pt-webgpu only above the realtime triangle budget', () => {
-    expect(pickBackend('auto', true, 10_000)).toBe('walkaround-hybrid');
-    expect(pickBackend('auto', true, 600_000)).toBe('pt-webgpu');
   });
 });
 

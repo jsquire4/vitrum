@@ -26,6 +26,8 @@ import {
   patchPrimitiveInScene,
   resolveFrameCameraPosition,
   validateScene as validateCoreScene,
+  QUALITY_FINAL,
+  QUALITY_PREVIEW,
 } from '@vitrum/core';
 import type {
   CapturedFrame,
@@ -279,6 +281,14 @@ export function assertProgressiveHandoffConfiguration(
     );
   }
 }
+
+function frameInputWithDefaultQuality(
+  input: FrameInput,
+  quality: NonNullable<FrameInput['quality']>,
+): FrameInput {
+  return input.quality != null ? input : { ...input, quality };
+}
+
 /**
  * Coordinator that hands the displayed frame off from a real-time engine to a
  * converged path tracer once the camera settles. See file header.
@@ -799,7 +809,9 @@ export class ProgressiveHandoffCoordinator {
           this.#seedFromRealtime && this.#seedConvergedFromRealtime(input);
       }
       // Always advance the converged engine (it accumulates either way).
-      let convOutput = this.#converged.renderFrame(input);
+      let convOutput = this.#converged.renderFrame(
+        frameInputWithDefaultQuality(input, QUALITY_FINAL),
+      );
       if (
         nextSeededPreviewActive &&
         (convOutput.isConverged ||
@@ -811,7 +823,9 @@ export class ProgressiveHandoffCoordinator {
         // canonical accumulator with one real PT sample on this same frame.
         try {
           this.#converged.reset();
-          convOutput = this.#converged.renderFrame(input);
+          convOutput = this.#converged.renderFrame(
+            frameInputWithDefaultQuality(input, QUALITY_FINAL),
+          );
           nextSeededPreviewActive = false;
         } catch (error) {
           // Reset may already have changed backend state. Force the next retry
@@ -831,7 +845,9 @@ export class ProgressiveHandoffCoordinator {
       // Pre-roll: the converged engine accumulated above (behind the scenes);
       // keep DISPLAYING the smooth real-time image until it is clean enough,
       // hiding the real-time → 1-sample pop.
-      const rtOutput = this.#realtime.renderFrame(input);
+      const rtOutput = this.#realtime.renderFrame(
+        frameInputWithDefaultQuality(input, QUALITY_PREVIEW),
+      );
       publish('prerolling', this.#realtime, false, nextSeededPreviewActive);
       return {
         phase: 'prerolling',
@@ -844,7 +860,9 @@ export class ProgressiveHandoffCoordinator {
 
     // Real-time: moving, or still-but-settling (below the threshold).
     const nextPhase: HandoffPhase = nextStillFrames > 0 ? 'settling' : 'realtime';
-    const output = this.#realtime.renderFrame(input);
+    const output = this.#realtime.renderFrame(
+      frameInputWithDefaultQuality(input, QUALITY_PREVIEW),
+    );
     publish(nextPhase, this.#realtime, nextConvergedStale, nextSeededPreviewActive);
     return { phase: nextPhase, active: this.#realtime, output, stillFrames: nextStillFrames };
   }

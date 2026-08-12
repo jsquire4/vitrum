@@ -533,7 +533,10 @@ export function composeProgressiveCapabilities(
     supportsAccumulatorSeed: false,
     supportsProgressiveSeedSource: false,
     maxSamplesPerPixel: Math.min(first.maxSamplesPerPixel, second.maxSamplesPerPixel),
-    maxBounces: Math.min(first.maxBounces, second.maxBounces),
+    // Stills path depth is the product number. Walkaround's bounce cap is a
+    // different GI model (DDGI feedback), not a path-tracer budget — min()
+    // collapsed the published stills depth to 2.
+    maxBounces: second.maxBounces,
     supportedAnalyticShapes: intersectSet(first.supportedAnalyticShapes, second.supportedAnalyticShapes),
     supportedEmitterKinds: intersectSet(first.supportedEmitterKinds, second.supportedEmitterKinds),
     ...(supportedPrimitiveKinds != null ? { supportedPrimitiveKinds } : {}),

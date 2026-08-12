@@ -6,9 +6,6 @@ import { BACKEND_PROMISE_LEDGER, MATERIAL_SPEC_FIELDS } from '@vitrum/core';
 export type EnginePreference = 'realtime' | 'quality' | 'quality-webgpu' | 'auto';
 export type EngineBackendId = 'walkaround-hybrid' | 'pt-webgpu' | 'pt-webgl2';
 
-/** Threshold above which 'auto' falls back from walkaround-hybrid to a PT backend. */
-const AUTO_REALTIME_TRIANGLE_BUDGET = 500_000;
-
 export const DEFAULT_PRIMARY_LIGHT_DIR: Vec3 = Object.freeze([0.3, -0.7, 0.6]);
 export const DEFAULT_PRIMARY_LIGHT_INTENSITY = 1.0;
 export const DEFAULT_SKY_TINT: Vec3 = Object.freeze([0.5, 0.7, 1.0]);
@@ -43,6 +40,11 @@ export function pickBackend(
   gltfRecommendedBackend?: EngineBackendId,
   materialRecommendedBackend?: EngineBackendId,
 ): EngineBackendId {
+  // Triangle count is retained for call-site compatibility. `prefer:'auto'` no
+  // longer uses a 500k-triangle walkaround cutoff; createEngine tries the
+  // progressive viewer first and uses this picker only as the single-engine
+  // fallback (and for explicit prefer / glTF / material routing).
+  void triangleCount;
   if (prefer === 'auto' && gltfRecommendedBackend !== undefined) {
     return resolveGltfRecommendedBackend(gltfRecommendedBackend, hasWebGPU);
   }
@@ -58,15 +60,34 @@ export function pickBackend(
     if (!hasWebGPU) return 'pt-webgl2';
     return 'walkaround-hybrid';
   }
-  if (hasWebGPU && triangleCount < AUTO_REALTIME_TRIANGLE_BUDGET) {
-    return 'walkaround-hybrid';
-  }
+  // Single-engine auto fallback: PT on WebGPU (full or lite by device), WebGL2 otherwise.
   if (hasWebGPU) {
     return 'pt-webgpu';
   }
   // WebGL-only host: merged BVH is the only pt-webgl2 path; caller should warn
   // when needsTlas is true (handled at the createEngine call site).
   return 'pt-webgl2';
+}
+
+/**
+ * Whether `createEngine({ prefer:'auto' })` should try the progressive
+ * walkaround→PT viewer before falling back to {@link pickBackend}.
+ *
+ * Progressive needs the Class-A limit union (not lite). Skip when the host
+ * asked for a single engine, when walkaround cannot accept the scene, or when
+ * the glTF planner already named WebGL2.
+ */
+export function shouldAttemptProgressiveViewer(
+  prefer: EnginePreference,
+  hasWebGPU: boolean,
+  gltfRecommendedBackend?: EngineBackendId,
+  materialRecommendedBackend?: EngineBackendId,
+): boolean {
+  if (prefer !== 'auto') return false;
+  if (!hasWebGPU) return false;
+  if (materialRecommendedBackend != null) return false;
+  if (gltfRecommendedBackend === 'pt-webgl2') return false;
+  return true;
 }
 
 export function recommendBackendForSceneMaterials(

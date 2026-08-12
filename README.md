@@ -6,12 +6,12 @@ A WebGPU + WebGL2 **path tracing & global illumination engine** for the browser.
 
 ## What is vitrum
 
-vitrum gives you two render modes under one API:
+vitrum gives you two honest engines under one API, and a viewer that uses both:
 
-- **Real-time GI** — WebGPU layered DDGI + ReSTIR DI + per-channel SVGF + GTAO. Targets ~60 fps for sub-500k-triangle scenes on consumer dGPUs.
-- **Converged path tracing** — native WebGL2 / WebGPU path tracing backends. Hero-quality renders that converge over seconds.
+- **Preview (walkaround)** — WebGPU layered DDGI + ReSTIR DI + per-channel SVGF + GTAO. Real-time GI while the camera moves.
+- **Stills (path tracing)** — native WebGL2 / WebGPU path tracers. Hero-quality frames that converge after the camera settles.
 
-You don't pick the backend; vitrum picks for you based on your hardware and scene complexity. You hand it a `@vitrum/core` `Scene`, get back an `Engine`, and call `renderFrame()` on each frame.
+The default `createEngine()` / `attachVitrum()` path is that viewer when WebGPU can run both engines on one device. Laptops that cannot take the shared-device limit union get a single path tracer (full or lite). Explicit `prefer: 'realtime' | 'quality' | 'quality-webgpu'` stays a single engine. You hand it a `@vitrum/core` `Scene`, get back an `Engine`, and call `renderFrame()` on each frame.
 
 ## 5-line hello world
 

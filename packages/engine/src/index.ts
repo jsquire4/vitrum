@@ -7,6 +7,7 @@ export {
   createEngine,
   pickBackend,
   deriveScaleDefaults,
+  shouldAttemptProgressiveViewer,
   mergeWalkaroundTlasExtension,
   type CreateEngineAdvancedByBackend,
   type CreateEngineBackendId,

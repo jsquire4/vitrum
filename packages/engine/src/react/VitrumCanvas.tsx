@@ -109,7 +109,9 @@ export interface VitrumCanvasProps {
   /** glTF/GLB input accepted by `@vitrum/gltf-adapter`. When supplied,
    *  VitrumCanvas loads it on mount / prop identity change, passes the imported
    *  scene to attachVitrum, and forwards the asset recommendation to
-   *  createEngine so `prefer:"auto"` is feature-aware instead of triangle-only. */
+   *  createEngine so `prefer:"auto"` can skip the progressive viewer when
+   *  the planner named WebGL2, and otherwise use it as the single-engine
+   *  fallback. */
   gltf?: GltfAssetInput;
   /** Adapter options for `gltf`: buffers, decoder hooks, texture decode hooks,
    *  baseUri, fetch, compatibility policy inputs, etc. Identity changes recreate

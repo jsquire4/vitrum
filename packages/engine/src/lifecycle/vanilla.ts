@@ -14,7 +14,7 @@
 //   - Idempotent dispose.
 
 import type { CapturedFrame, CaptureFrameOptions, Engine, EngineError, EngineWarning, FrameInput, FrameOutput, FrameStats, ProgressStats, Mat4 } from '@vitrum/core';
-import { asBackendTexture, asBackendTextureFormat, asMat4 } from '@vitrum/core';
+import { asBackendTexture, asBackendTextureFormat, asMat4, QUALITY_FINAL } from '@vitrum/core';
 import { createEngine, type CreateEngineErrorEvent, type CreateEngineOptions } from '../createEngine.js';
 import { createOffscreenPresenter, type OffscreenPresenter } from '../presentOffscreen.js';
 import type { GIStatePersistable } from '../idempotentDispose.js';
@@ -282,8 +282,9 @@ export interface AttachVitrumOptions extends Omit<CreateEngineOptions, 'scene'> 
    *     `webglcontextrestored` event; no resources are created against a
    *     still-lost context.
    *  5. The engine is disposed.
-   *  6. `createEngine` is called again with the original options, minting a
-   *     fresh GPU device automatically.
+   *  6. `createEngine` is called again with the original options. Default
+   *     `prefer:'auto'` re-stands the progressive viewer when the adapter
+   *     still satisfies the limit union; otherwise a single engine.
    *  7. If GI state was exported and the new engine exposes `importGIState`,
    *     it is imported — warm DDGI probes survive the recreate.
    *  8. The RAF loop resumes.
@@ -1152,7 +1153,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
       const swapChainView = acquireSwapChainView(webgpuSwapChain.context, (err) => {
         reportError(err, { phase: 'attach:swapchain', recoverable: true });
       });
-      const quality = resolveQualityOption(opts.quality);
+      const quality = resolveQualityOption(opts.quality) ?? QUALITY_FINAL;
       if (stopped || disposed) return;
 
       input = composeAttachVitrumFrameInput({
@@ -1163,7 +1164,7 @@ export async function attachVitrum(opts: AttachVitrumOptions): Promise<AttachVit
         ...(prevProj ? { prevProjMatrix: prevProj } : {}),
         viewport: { width: viewportW, height: viewportH, devicePixelRatio: viewportDpr },
         frameIndex,
-        ...(quality ? { quality } : {}),
+        quality,
         ...(swapChainView != null
           ? {
               swapChainView,

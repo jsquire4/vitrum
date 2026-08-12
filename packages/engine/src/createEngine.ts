@@ -2,14 +2,16 @@
 //
 // Given a canvas + vitrum Scene, createEngine()
 //   - probes WebGPU vs WebGL2,
-//   - picks the walkaround-hybrid backend (real-time GI) or pt-webgl2
-//     backend (converged path tracer),
+//   - default (`prefer:'auto'`): stands the progressive viewer (walkaround
+//     while the camera moves, PT when it settles) when the adapter satisfies
+//     the shared-device limit union; otherwise a single PT engine (full or
+//     lite) or pt-webgl2. Explicit `prefer` stays a single engine.
 //   - derives scale-sensitive defaults (Möller-Trumbore epsilon, camera-
 //     move-reset threshold, emitter dist² floor, GTAO sigma) from the
 //     scene's AABB diagonal D,
 //   - constructs and owns the backend's device handle (GPUDevice for
-//     walkaround, WebGL2RenderingContext for pt-webgl2) so the host doesn't
-//     have to plumb GPU primitives,
+//     walkaround / progressive, WebGL2RenderingContext for pt-webgl2) so the
+//     host doesn't have to plumb GPU primitives,
 //   - returns the @vitrum/core Engine contract with an idempotent dispose.
 //
 // Note on resize: every backend honours FrameInput.viewport per-frame.
@@ -27,6 +29,7 @@ import {
   pickBackend,
   deriveScaleDefaults,
   recommendBackendForSceneMaterials,
+  shouldAttemptProgressiveViewer,
   type EnginePreference,
   type ScaleDefaults,
 } from './createEngineScale.js';
@@ -62,6 +65,8 @@ import {
   isBackendUnavailableError,
   reportCreateEngineError,
   validateCreateEngineOptionsShape,
+  attachBackendId,
+  wrapWithIdempotentDispose,
 } from './createEngineInternals.js';
 
 // Backend constructors (extracted bodies)
@@ -70,7 +75,7 @@ import { constructPathTracerWebGPU, constructPathTracerWebGPUForDispatch } from 
 import { constructPathTracerForDispatch } from './backends/ptWebgl2.js';
 
 export type { EnginePreference, ScaleDefaults };
-export { pickBackend, deriveScaleDefaults };
+export { pickBackend, deriveScaleDefaults, shouldAttemptProgressiveViewer };
 
 // Re-exported for back-compat — createProgressiveEngine imports these from this module's path.
 // @internal — not part of the public `@vitrum/engine` API surface.
@@ -140,8 +145,9 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
   const materialRecommendation = gltfRecommendedBackend == null
     ? recommendBackendForSceneMaterials(vitrumScene, gpu.isWebGPU)
     : null;
+  const prefer = opts.prefer ?? 'auto';
   const backend = pickBackend(
-    opts.prefer ?? 'auto',
+    prefer,
     gpu.isWebGPU,
     aabb.triangleCount,
     tlasAudit.needsTlas,
@@ -151,7 +157,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
   const backendWithoutMaterialRecommendation = materialRecommendation == null
     ? backend
     : pickBackend(
-      opts.prefer ?? 'auto',
+      prefer,
       gpu.isWebGPU,
       aabb.triangleCount,
       tlasAudit.needsTlas,
@@ -174,7 +180,7 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
       },
     });
   }
-  if ((opts.prefer ?? 'auto') === 'realtime' && !gpu.isWebGPU && backend === 'pt-webgl2') {
+  if (prefer === 'realtime' && !gpu.isWebGPU && backend === 'pt-webgl2') {
     emitCreateEngineWarning(
       opts.onWarning,
       {
@@ -207,6 +213,36 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
       message: `[vitrum/createEngine] ${tlasAudit.detail}`,
       details: { recommendation: tlasAudit.recommendation, resolvedBackend: backend },
     });
+  }
+
+  if (shouldAttemptProgressiveViewer(
+    prefer,
+    gpu.isWebGPU,
+    gltfRecommendedBackend,
+    materialRecommendation?.backend,
+  )) {
+    try {
+      return await constructProgressiveViewer(opts);
+    } catch (err) {
+      emitCreateEngineWarning(
+        opts.onWarning,
+        {
+          code: 'createEngine.progressive-unavailable-fallback',
+          backend: 'createEngine',
+          phase: 'fallback',
+          method: 'createEngine',
+          message:
+            `[vitrum/createEngine] progressive viewer unavailable; falling back to ${backend}.`,
+          details: {
+            preferredBackend: 'progressive',
+            resolvedBackend: backend,
+          },
+          raw: err,
+        },
+        `[vitrum/createEngine] progressive viewer unavailable; falling back to ${backend}.`,
+        err,
+      );
+    }
   }
 
   if (backend === 'walkaround-hybrid') {
@@ -270,6 +306,29 @@ export async function createEngine(opts: CreateEngineOptions): Promise<EngineWit
 // ────────────────────────────────────────────────────────────────────────────
 // Fallback helpers (used only by the dispatch logic above)
 // ────────────────────────────────────────────────────────────────────────────
+
+async function constructProgressiveViewer(
+  opts: CreateEngineOptions,
+): Promise<EngineWithBackendId> {
+  const { createProgressiveEngine, progressiveHandleAsEngine } = await import(
+    './createProgressiveEngine.js'
+  );
+  const realtimeOptions = opts.advancedByBackend?.['walkaround-hybrid'];
+  const convergedOptions = opts.advancedByBackend?.['pt-webgpu'];
+  const handle = await createProgressiveEngine({
+    canvas: opts.canvas,
+    scene: opts.scene,
+    ...(realtimeOptions != null ? { realtimeOptions } : {}),
+    ...(convergedOptions != null ? { convergedOptions } : {}),
+    ...(opts.debug != null ? { debug: opts.debug } : {}),
+    ...(opts.onAdapterProfile != null ? { onAdapterProfile: opts.onAdapterProfile } : {}),
+    ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),
+  });
+  return attachBackendId(
+    wrapWithIdempotentDispose(progressiveHandleAsEngine(handle), () => {}),
+    'progressive',
+  );
+}
 
 async function constructPathTracerFallback(
   opts: CreateEngineOptions,

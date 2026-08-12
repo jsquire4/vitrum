@@ -195,8 +195,9 @@ function makeMockGltfForEngineResult(
 ): GltfForEngineResult<EngineWithBackendId> {
   return {
     asset,
-    backend: engine.backendId,
-    profileId: engine.backendId,
+    backend: engine.backendId === 'progressive' ? 'pt-webgpu' : engine.backendId,
+    profileId: engine.backendProfileId
+      ?? (engine.backendId === 'progressive' ? 'pt-webgpu' : engine.backendId),
     engine,
     controller: controller as unknown as GltfForEngineResult<EngineWithBackendId>['controller'],
     attached: true,

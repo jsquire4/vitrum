@@ -115,7 +115,7 @@ describe('progressive facade contract', () => {
     expect(facade.capabilities).not.toBe(realtimeCaps);
     expect(facade.capabilities.supportsAuxBuffers).toBe(false);
     expect(facade.capabilities.maxSamplesPerPixel).toBe(1024);
-    expect(facade.capabilities.maxBounces).toBe(4);
+    expect(facade.capabilities.maxBounces).toBe(8);
     expect([...facade.capabilities.supportedAnalyticShapes]).toEqual(['box']);
     expect([...facade.capabilities.supportedEmitterKinds]).toEqual(['directional']);
     expect([...facade.capabilities.supportedPrimitiveKinds ?? []]).toEqual(['mesh']);

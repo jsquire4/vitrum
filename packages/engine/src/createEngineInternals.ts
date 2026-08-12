@@ -123,14 +123,20 @@ export interface CreateEngineAdvancedByBackend {
   readonly 'pt-webgl2'?: WebGL2PathTracerAdvancedOptions;
 }
 
+/** Runtime identity accepted by lifecycle hosts. `progressive` is the default
+ *  `createEngine({ prefer:'auto' })` viewer (walkaround preview → PT stills)
+ *  when the adapter satisfies the shared-device limit union. */
+export type RuntimeEngineBackendId = CreateEngineBackendId | 'progressive';
+
 /** Engine returned by {@link createEngine} with its chosen backendId attached.
  *  Hosts that need to know which backend was selected (e.g. to type-narrow
  *  `opts.advanced` for backend-specific API calls) read this field.
  *
  *  The `advanced` cast to a backend-specific options type is safe ONLY when
- *  `engine.backendId` matches the target backend — gate such casts on this field. */
+ *  `engine.backendId` matches the target backend — gate such casts on this field.
+ *  `backendId:'progressive'` is a composite facade, not a single backend. */
 export interface EngineWithBackendId extends Engine, Partial<GIStatePersistable> {
-  readonly backendId: CreateEngineBackendId;
+  readonly backendId: RuntimeEngineBackendId;
   /** Concrete backend profile selected at construction. Present for backends
    *  whose runtime profile is narrower than their backend identity. */
   readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
@@ -138,12 +144,8 @@ export interface EngineWithBackendId extends Engine, Partial<GIStatePersistable>
   readonly profileId?: 'pt-webgpu' | 'pt-webgpu-lite';
 }
 
-/** Runtime identity accepted by lifecycle hosts. `progressive` is a composite
- * walkaround + pt-webgpu facade, not a backend selectable by createEngine. */
-export type RuntimeEngineBackendId = CreateEngineBackendId | 'progressive';
-
 /** Engine accepted by attachVitrum and other lifecycle surfaces, including
- * composite facades that are not selectable createEngine backends. */
+ *  the progressive viewer facade returned by default `createEngine()`. */
 export interface RuntimeEngineWithBackendId extends Engine, Partial<GIStatePersistable> {
   readonly backendId: RuntimeEngineBackendId;
   readonly backendProfileId?: 'pt-webgpu' | 'pt-webgpu-lite';
@@ -181,18 +183,20 @@ export interface CreateEngineOptions {
   readonly scene: Scene;
 
   /** Quality vs speed hint:
-   *    'realtime' — prefer walkaround-hybrid (WebGPU; ~60fps target).
-   *    'quality'  — prefer pt-webgl2 (WebGL2 path tracer; converged).
-   *    'quality-webgpu' — prefer pt-webgpu when WebGPU is available, else pt-webgl2.
-   *    'auto'     — pick walkaround-hybrid if WebGPU + tris < 500k,
-   *                 else a path-tracer backend. Default. */
+   *    'realtime' — single walkaround-hybrid engine (WebGPU; ~60fps target).
+   *    'quality'  — single pt-webgl2 engine (WebGL2 path tracer; converged).
+   *    'quality-webgpu' — single pt-webgpu engine when WebGPU is available, else pt-webgl2.
+   *    'auto'     — progressive viewer (walkaround while moving, PT when settled)
+   *                 when WebGPU satisfies the shared-device limit union; else a
+   *                 single PT engine (full or lite) or pt-webgl2. Default. */
   readonly prefer?: EnginePreference;
 
-  /** Optional glTF planning result. When `prefer` is left as `'auto'`, the
-   *  createEngine backend picker follows `gltfAsset.recommendedBackend.backend`
-   *  instead of falling back to the generic triangle-count heuristic. This is
-   *  structural on purpose: @vitrum/engine does not need to import adapter
-   *  runtime code to consume the adapter's recommendation. */
+  /** Optional glTF planning result. When `prefer` is `'auto'`, a
+   *  `pt-webgl2` recommendation skips the progressive viewer; other
+   *  recommendations are used only as the single-engine fallback if the
+   *  viewer cannot stand. This is structural on purpose: @vitrum/engine does
+   *  not need to import adapter runtime code to consume the adapter's
+   *  recommendation. */
   readonly gltfAsset?: CreateEngineGltfAssetHint;
 
   /** Legacy backend-specific overrides. Merged on top of the createEngine()-
@@ -597,7 +601,7 @@ export function emitCreateEngineWarning(
  *  @internal */
 export function attachBackendId(
   engine: Engine & Partial<GIStatePersistable>,
-  backendId: CreateEngineBackendId,
+  backendId: RuntimeEngineBackendId,
 ): EngineWithBackendId {
   return Object.defineProperty(engine, 'backendId', {
     value: backendId,
