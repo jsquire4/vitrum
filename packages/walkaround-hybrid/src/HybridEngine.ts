@@ -725,12 +725,9 @@ function validateHybridFrameInput(input: FrameInput): void {
     assertNonNegativeFrameFloat32(quality.exposure, 'quality.exposure');
   }
   if (quality.filteredGlossyFactor !== undefined) {
+    // Shared viewer payloads may include PT glossy filtering. Walkaround does
+    // not apply it; validate finiteness then ignore.
     assertFiniteFrameNumber(quality.filteredGlossyFactor, 'quality.filteredGlossyFactor');
-    if (quality.filteredGlossyFactor !== 0) {
-      throw new RangeError(
-        'HybridEngine.renderFrame: quality.filteredGlossyFactor is unsupported by walkaround-hybrid; use 0 or omit it.',
-      );
-    }
   }
   if (
     quality.tonemap !== undefined &&
@@ -749,15 +746,9 @@ function validateHybridFrameInput(input: FrameInput): void {
       `HybridEngine.renderFrame: quality.outputColorSpace is unsupported (got ${String(quality.outputColorSpace)}).`,
     );
   }
-  // Validate the entire quality payload before applying backend-dependency
-  // rejection, matching construction-option validation ordering.
-  if (quality.samplesTarget !== undefined) {
-    throw new RangeError(
-      'HybridEngine.renderFrame: quality.samplesTarget is unsupported by walkaround-hybrid ' +
-        'because this realtime backend does not accumulate toward a sample target; ' +
-        'accepting it would be a no-op, so omit it.',
-    );
-  }
+  // samplesTarget is validated above (finite integer) and ignored: this
+  // realtime backend resamples every frame. Shared viewer payloads include it
+  // for the path-tracer phase.
 }
 
 // Re-export the option / lighting interfaces from their dedicated module so

@@ -51,6 +51,7 @@ import {
   validatePtWebgpuPixelSize,
   resolveBdptMaxLightBounces,
   assertPtWebgpuBdptFrameCameraSupported,
+  PT_WEBGPU_DEFAULT_BOUNCES,
 } from './ptWebgpuValidation.js';
 export { validatePtWebgpuAdvancedOptions } from './ptWebgpuValidation.js';
 import {
@@ -532,7 +533,7 @@ class PTEngineWebGPU implements Engine {
     this.#bvhTraversal = opts.bvhTraversal === 'cwbvh-closest'
       ? 'cwbvh-closest'
       : 'binary';
-    this.#maxBouncesLimit = opts.maxBounces ?? 3;
+    this.#maxBouncesLimit = opts.maxBounces ?? PT_WEBGPU_DEFAULT_BOUNCES;
     this.#maxSamplesLimit = opts.maxSamplesPerPixel ?? DEFAULT_MAX_SAMPLES_PER_PIXEL;
     this.#causticStrategy = opts.causticStrategy ?? 'none';
     const causticOpts = opts.causticOptions ?? {};

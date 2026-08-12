@@ -62,6 +62,26 @@ export interface FrameQualitySettings {
   readonly outputColorSpace?: 'srgb' | 'linear';
 }
 
+/**
+ * Shared stills / viewer-final quality payload. Path tracers use `bounces` as
+ * path depth and `samplesTarget` as the accumulation goal. Walkaround ignores
+ * `samplesTarget` and clamps `bounces` to its DDGI feedback regimes (1 or 2).
+ */
+export const QUALITY_FINAL: FrameQualitySettings = Object.freeze({
+  samplesTarget: 16,
+  bounces: 8,
+  exposure: 1,
+  tonemap: 'aces',
+  outputColorSpace: 'srgb',
+});
+
+/**
+ * Shared viewer-preview quality payload. Same bag as {@link QUALITY_FINAL} so
+ * one `FrameInput.quality` can ride both progressive phases without backend-
+ * specific stripping. Preview engines ignore fields they do not accumulate.
+ */
+export const QUALITY_PREVIEW: FrameQualitySettings = QUALITY_FINAL;
+
 // ────────────────────────────────────────────────────────────────────────────
 // Frame inputs (host → engine, every frame)
 // ────────────────────────────────────────────────────────────────────────────

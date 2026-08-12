@@ -175,6 +175,8 @@ function assertPtWebgpuExtensions(value: unknown): void {
 }
 
 export const PT_WEBGPU_MAX_BOUNCES = 8;
+/** Default path depth for stills. Aligned with pt-webgl2's professional default of 8. */
+export const PT_WEBGPU_DEFAULT_BOUNCES = PT_WEBGPU_MAX_BOUNCES;
 export const BDPT_MAX_LIGHT_BOUNCES =
   PT_WEBGPU_BDPT_SUPPORT.maxLightVertices;
 // D2 (2026-07-20): raised 1 → 2 unconditionally. With maxLv=2 the kernel

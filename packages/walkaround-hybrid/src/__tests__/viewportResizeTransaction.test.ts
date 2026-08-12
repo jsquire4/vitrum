@@ -251,7 +251,6 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
     ['overflowing exposure', { exposure: Number.MAX_VALUE }],
     ['underflowing positive exposure', { exposure: Number.MIN_VALUE }],
     ['NaN filteredGlossyFactor', { filteredGlossyFactor: Number.NaN }],
-    ['nonzero filteredGlossyFactor', { filteredGlossyFactor: 0.5 }],
     ['unknown tonemap', { tonemap: 'bad' }],
     ['unknown color space', { outputColorSpace: 'bad' }],
   ])('rejects invalid quality payload: %s', (_label, quality) => {
@@ -268,12 +267,7 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
   it.each([
     ['non-finite values first', Number.NaN, /quality\.samplesTarget must be finite/],
     ['fractional values first', 1.5, /quality\.samplesTarget must be an integer/],
-    [
-      'otherwise-valid integers as unsupported no-ops',
-      8,
-      /quality\.samplesTarget is unsupported.*does not accumulate.*no-op/i,
-    ],
-  ])('rejects samplesTarget, validating %s', (_label, samplesTarget, expected) => {
+  ])('rejects invalid samplesTarget, validating %s', (_label, samplesTarget, expected) => {
     const resize = vi.fn();
     const { engine, reset } = makeEngine(resize);
     const input = {
@@ -287,7 +281,20 @@ describe('HybridEngine frame-input boundary and viewport transaction', () => {
     expect((engine as unknown as Record<string, unknown>)._errorFrameCount).toBe(7);
   });
 
-  it('validates other quality fields before rejecting a valid samplesTarget', () => {
+  it('ignores a valid samplesTarget so shared viewer payloads can ride preview', () => {
+    const resize = vi.fn();
+    const { engine, reset } = makeEngine(resize);
+    const input = {
+      ...frame(16, 16),
+      quality: { samplesTarget: 8, filteredGlossyFactor: 0.5 },
+    } satisfies FrameInput;
+
+    expect(() => engine.renderFrame(input)).not.toThrow();
+    expect(resize).not.toHaveBeenCalled();
+    expect(reset).toHaveBeenCalledOnce();
+  });
+
+  it('validates other quality fields even when samplesTarget is valid', () => {
     const resize = vi.fn();
     const { engine, reset } = makeEngine(resize);
     const input = {
