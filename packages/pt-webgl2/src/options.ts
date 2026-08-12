@@ -120,17 +120,20 @@ export interface PTEngineWebGL2Options extends EngineOptions {
     readonly anamorphicRatio?: number;
   };
   /**
-   * Intel Open Image Denoise final-pass config. Required when
-   * `denoiser: 'oidn-final'`.
-   *
-   * The host must provide both the ONNX model asset and the optional
-   * `onnxruntime-web` peer dependency. The backend reads its linear HDR
-   * accumulator plus available MRT aux buffers into CPU Float32 tensors and
-   * runs the shared OIDN bridge asynchronously once the PT accumulation
-   * reaches the requested SPP target.
+   * Denoiser pipeline. Omitted / `'none'` leaves the accumulator unfiltered.
+   * `'auto'` always resolves to `'oidn-final'` (host `oidn.modelUrl` if
+   * provided, otherwise the default Intel RT HDR alb+nrm ONNX).
+   */
+  readonly denoiser?: 'none' | 'auto' | 'oidn-final';
+  /**
+   * Intel Open Image Denoise final-pass config. Optional when
+   * `denoiser: 'auto'` or `'oidn-final'`: omitted `modelUrl` resolves to the
+   * pinned default RT HDR alb+nrm ONNX. Hosts may override with a bundled or
+   * self-hosted file. The `onnxruntime-web` optional peer is still required
+   * at the first denoise cycle.
    */
   readonly oidn?: {
-    readonly modelUrl: string;
+    readonly modelUrl?: string;
     readonly executionProviders?: ReadonlyArray<'webnn' | 'webgpu' | 'wasm'>;
   };
   /** Test-only: inject a mock OIDN bridge. */

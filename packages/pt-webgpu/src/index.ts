@@ -37,6 +37,7 @@ import {
   type InverseEngineHooks,
   type AdjointGradientRequest,
 } from './inverse/inverseSession.js';
+import { resolveOidnModelUrl } from '@vitrum/shared-denoisers';
 import { materialIndexForPrimitive } from './scene/incrementalPatch.js';
 import {
   readOidnInputsFromTextures,
@@ -217,12 +218,25 @@ function collectUnsupportedMaterialFieldUses(
 
 export interface PTEngineWebGPUOptions extends EngineOptions {
   /**
-   * Denoiser pipeline for this converged backend. `auto` resolves to
-   * `oidn-final` only when host OIDN assets are configured, otherwise to
-   * `none`. Realtime-only and backend-specific denoisers are rejected at
-   * construction instead of being silently replaced with another estimator.
+   * Denoiser pipeline for this converged backend. Omitted / `'none'` leaves
+   * the accumulator unfiltered. `'auto'` always resolves to `'oidn-final'`
+   * (host `oidn.modelUrl` if provided, otherwise the default Intel RT HDR
+   * alb+nrm ONNX). Realtime-only denoisers are rejected at construction.
    */
   readonly denoiser?: 'none' | 'auto' | 'oidn-final';
+  /**
+   * Intel Open Image Denoise final-pass config. Optional when
+   * `denoiser: 'auto'` or `'oidn-final'`: omitted `modelUrl` resolves to the
+   * pinned default RT HDR alb+nrm ONNX. Hosts may override with a bundled or
+   * self-hosted file. The `onnxruntime-web` optional peer is still required
+   * at the first denoise cycle.
+   */
+  readonly oidn?: {
+    /** URL of the ONNX OIDN model. Omit to use the default alb+nrm weights. */
+    readonly modelUrl?: string;
+    /** ONNX Runtime execution-provider preference order. */
+    readonly executionProviders?: readonly ('webnn' | 'webgpu' | 'wasm')[];
+  };
   /** pt-webgpu implements MNEE and SPPM; the realtime hybrid-only
    *  `refractive-trace` strategy is intentionally not accepted here. */
   readonly causticStrategy?: 'none' | 'manifold-nee' | 'photon-map';
@@ -337,26 +351,6 @@ export interface PTEngineWebGPUOptions extends EngineOptions {
    * keep emitters camera-invisible (NEE-only, the pre-2026-05-30 behaviour).
    */
   readonly cameraVisibleEmitters?: boolean;
-  /**
-   * Intel Open Image Denoise final-pass config. REQUIRED when
-   * `denoiser: 'oidn-final'`. (Graduated from the former
-   * `extensions['vitrum.ptWebgpu.oidnModelUrl' | 'oidnExecutionProviders']`.)
-   *
-   * **Host-provided assets (`oidn-final` is NOT turnkey — vitrum ships neither):**
-   *  1. `modelUrl` — the host fetches/bundles an OIDN ONNX model
-   *     (e.g. `oidn_rt_hdr_alb_nrm.onnx`).
-   *  2. The `onnxruntime-web` peer dependency must be installed by the host
-   *     (it is intentionally an optional peer dep so the 5–20 MB runtime isn't
-   *     forced on hosts that don't denoise). A missing model throws at engine
-   *     construction; a missing `onnxruntime-web` throws at the first converged
-   *     frame with an actionable "install onnxruntime-web" message.
-   */
-  readonly oidn?: {
-    /** URL of the ONNX OIDN model (e.g. `oidn_rt_hdr_alb_nrm.onnx`). */
-    readonly modelUrl: string;
-    /** ONNX Runtime execution-provider preference order. */
-    readonly executionProviders?: readonly ('webnn' | 'webgpu' | 'wasm')[];
-  };
   /**
    * Test-only: inject a mock OIDN bridge (mirrors pt-webgl `oidnBridgeLoader`).
    */
@@ -566,21 +560,10 @@ class PTEngineWebGPU implements Engine {
     );
     this.#denoiser = opts.denoiser === 'oidn-final' ? 'oidn-final' : 'none';
     if (this.#denoiser === 'oidn-final') {
-      const modelUrl = opts.oidn?.modelUrl;
+      const modelUrl = resolveOidnModelUrl(opts.oidn?.modelUrl);
       const eps = opts.oidn?.executionProviders?.filter(
         (p) => p === 'webnn' || p === 'webgpu' || p === 'wasm',
       );
-      if (typeof modelUrl !== 'string' || modelUrl.length === 0) {
-        throw new Error(
-          "createPTEngine_WebGPU: denoiser: 'oidn-final' is not turnkey — it " +
-            'requires TWO host-provided assets that vitrum does not ship: ' +
-            '(1) oidn: { modelUrl } — a non-empty URL to an OIDN ONNX model ' +
-            '(use oidn_rt_hdr_alb_nrm.onnx when supplying albedo + normal aux); ' +
-            "and (2) the 'onnxruntime-web' optional peer dependency installed in " +
-            'the host (a missing runtime otherwise throws at the first converged ' +
-            'frame). Omit the `denoiser` option to render without a final denoise.',
-        );
-      }
       const dispatcherOpts =
         eps !== undefined && eps.length > 0
           ? { modelUrl, executionProviders: eps }

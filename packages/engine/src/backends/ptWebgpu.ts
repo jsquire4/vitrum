@@ -87,6 +87,9 @@ export async function constructPathTracerWebGPU(
   try {
     const merged: PTEngineWebGPUOptions = {
       device,
+      // Viewer / createEngine stills default: OIDN final-pass with the pinned
+      // alb+nrm URL. Hosts override via advanced.denoiser / advanced.oidn.
+      denoiser: 'auto',
       ...advancedWebGPU,
       ...(opts.debug != null ? { debug: opts.debug } : {}),
       ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),

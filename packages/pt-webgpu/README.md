@@ -116,7 +116,7 @@ Mechanical parity for the native WebGL2 path tracer is **implemented** for:
 - Volumetric subsurface scattering (WS4): homogeneous participating-media random walk — free-flight distance sampling (`t = -ln(1-ξ)/σ_t`), Henyey-Greenstein phase scatter, single-scatter albedo σ_s/σ_t, in-medium next-event estimation with phase↔light power-heuristic MIS, and specular-chain Beer-Lambert extinction in the caustic path. σ_t = σ_a (from `attenuationColor`/`attenuationDistance`, or the spectral curve when authored) + σ_s (`scatteringCoefficient(RGB)`); g = `scatteringAnisotropy`. BDPT carries the same medium-stack state, free-flight vertices, directional densities, and connection-edge transmittance. The compatibility (lite) tier keeps Beer-Lambert absorption only (no walk).
 - `denoiser: 'auto'` / `'oidn-final'` with aux readback
 
-**Denoisers on pt-webgpu:** `'none'`, `'auto'`, `'oidn-final'`. `auto` resolves to host OIDN when `oidn: { modelUrl }` exists, otherwise no-denoise with a structured warning. Any other explicit mode (incl. `'svgf-real'`) fails construction instead of silently selecting another estimator — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
+**Denoisers on pt-webgpu:** `'none'`, `'auto'`, `'oidn-final'`. Omitted / `'none'` leaves the accumulator unfiltered. `'auto'` always resolves to `'oidn-final'`: host `oidn.modelUrl` if provided, otherwise the pinned Intel RT HDR alb+nrm ONNX (pmndrs/denoiser-weights `models-v1` via jsDelivr). Explicit `'oidn-final'` uses the same default when `modelUrl` is omitted. The `onnxruntime-web` optional peer is still required at the first denoise cycle. Any other explicit mode (incl. `'svgf-real'`) fails construction instead of silently selecting another estimator — SVGF is a real-time 1-spp filter, the wrong regime for a converged tracer.
 
 **BDPT (WG-7):** `bdpt: true` with `bdptOptions.maxLightBounces` 1–8
 (default 2) builds one invocation-private light subpath per camera invocation.
@@ -154,15 +154,13 @@ Visual sign-off uses `npm run benchmark:gap-closure` on a WebGPU-capable host (`
   deliberately narrower: full tier, one bounce, material `emissive` only. Lite and every
   other field/transport regime must use explicit finite difference; requesting path replay
   outside the certified domain throws before creating a session or mutating scene values.
-- **`denoiser: 'auto'` / `'oidn-final'` is NOT turnkey** — `auto`
-  resolves at construction to host OIDN when `oidn: { modelUrl }` exists,
-  otherwise to no-denoise with a structured
-  `pt-webgpu.denoiser-auto-resolved` warning. Explicit `oidn-final` still
-  requires both host assets: (1) an OIDN ONNX model URL (`oidn: { modelUrl }`,
-  e.g. `oidn_rt_hdr_alb_nrm.onnx`) and (2) the `onnxruntime-web` optional peer
-  dep installed in the host application. Missing `modelUrl` throws at engine
-  construction; missing `onnxruntime-web` or an unfetchable model fails the async
-  final-pass denoiser cycle and is reported through the denoiser error state.
+- **`denoiser: 'auto'` / `'oidn-final'` default-resolves the ONNX URL** — `auto`
+  always becomes `oidn-final`. Omitted `oidn.modelUrl` uses the pinned Intel
+  RT HDR alb+nrm ONNX (`DEFAULT_OIDN_RT_HDR_ALB_NRM_MODEL_URL`). Hosts may
+  override with a bundled or self-hosted file. The `onnxruntime-web` optional
+  peer is still required at the first denoise cycle; a missing runtime or
+  unfetchable model fails the async final-pass and is reported through the
+  denoiser error state. Preview/walkaround denoisers stay à-trous/SVGF.
 
 ## Polish commands
 

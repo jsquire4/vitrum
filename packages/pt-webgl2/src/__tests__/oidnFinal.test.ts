@@ -157,11 +157,13 @@ function oidnUploads(tracked: TrackedGl, width: number, height: number, after = 
 }
 
 describe('pt-webgl2 OIDN final denoiser', () => {
-  it('requires an OIDN model URL when oidn-final is selected', async () => {
-    await expect(createPTEngine_WebGL2({
+  it('default-resolves an OIDN model URL when oidn-final is selected without one', async () => {
+    const engine = await createPTEngine_WebGL2({
       device: createMockGl(),
       denoiser: 'oidn-final',
-    })).rejects.toThrow(/oidn: \{ modelUrl \}/);
+    });
+    expect(engine.capabilities.activeFeatures?.has('pt-webgl2-oidn-final')).toBe(true);
+    engine.dispose();
   });
 
   it('kicks OIDN on convergence, reports state, exposes latest result, and invalidates on reset', async () => {

@@ -76,7 +76,7 @@ Each technique is cited at its implementation site in the source code. This list
 - **SVGF (Spatiotemporal Variance-Guided Filtering)** — Christoph Schied et al., "Spatiotemporal Variance-Guided Filtering: Real-Time Reconstruction for Path-Traced Global Illumination," HPG 2017
 - **Variance-clamped temporal accumulation** — Schied et al. SVGF (above)
 - **BMFR (Blockwise Multi-Order Feature Regression)** — Matias Koskela, Kalle Immonen, Markku Mäkitalo, Alessandro Foi, Timo Viitanen, Pekka Jääskeläinen, Heikki Kultala, Jarmo Takala, "Blockwise Multi-Order Feature Regression for Real-Time Path-Tracing Reconstruction," ACM TOG 38(5), 2019. Per-32×32-block least-squares fit of noisy 1-spp color to a `[1, p, n, p²]` feature matrix via Householder QR on the normal equations, + temporal EMA. Implemented in `shared-denoisers/src/bmfrRegression.ts` + `wgsl/bmfr.wgsl.ts` + `bmfrWebGPU.ts`; wired in `walkaround-hybrid/src/pipeline/denoisers/bmfr.ts` (`denoiser: 'bmfr'`).
-- **Intel Open Image Denoise (OIDN)** — Intel Corporation, Apache-2.0 (model weights), executed in-browser via ONNX Runtime Web
+- **Intel Open Image Denoise (OIDN)** — Intel Corporation, Apache-2.0 (model weights), executed in-browser via ONNX Runtime Web. Default stills URL is the pmndrs/denoiser-weights `models-v1` ONNX conversion of Intel's RT HDR alb+nrm filter (`https://cdn.jsdelivr.net/gh/pmndrs/denoiser-weights@models-v1/models/rt_hdr_alb_nrm.onnx`).
 
 ### Tone mapping & post-processing
 

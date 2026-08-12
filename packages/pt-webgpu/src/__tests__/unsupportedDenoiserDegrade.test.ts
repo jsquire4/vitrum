@@ -34,17 +34,20 @@ describe('pt-webgpu denoiser resolution is strict', () => {
     warn.mockRestore();
   });
 
-  it("denoiser:'auto' resolves to no-denoise without host OIDN assets", async () => {
+  it("denoiser:'auto' resolves to oidn-final via the default model URL", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({
       device: makeStubDevice(),
       denoiser: 'auto',
     });
     expect(
-      warn.mock.calls.some((c) => String(c[0]).includes("denoiser:'auto' resolved to 'none'")),
+      warn.mock.calls.some((c) => String(c[0]).includes("denoiser:'auto' resolved to 'oidn-final'")),
+    ).toBe(true);
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes('default-oidn-model-url')),
     ).toBe(true);
     expect(warn.mock.calls.some((c) => String(c[0]).includes('unsupported-denoiser'))).toBe(false);
-    expect(engine.capabilities.activeFeatures).toEqual(new Set());
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });

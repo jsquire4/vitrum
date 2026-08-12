@@ -2767,17 +2767,16 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it("denoiser: 'oidn-final' requires model config and is not reported as unsupported", async () => {
+  it("denoiser: 'oidn-final' default-resolves a model URL and is not reported as unsupported", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
-      await expect(
-        createPTEngine_WebGL2({
-          ...opts(),
-          denoiser: 'oidn-final',
-          onWarning: (w) => structured.push(w),
-        }),
-      ).rejects.toThrow(/oidn: \{ modelUrl \}/);
+      const withoutHostUrl = await createPTEngine_WebGL2({
+        ...opts(),
+        denoiser: 'oidn-final',
+        onWarning: (w) => structured.push(w),
+      });
+      withoutHostUrl.dispose();
       await createPTEngine_WebGL2({
         ...opts(),
         denoiser: 'oidn-final',
@@ -2797,7 +2796,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     }
   });
 
-  it("denoiser: 'auto' resolves to no-denoise without host OIDN assets", async () => {
+  it("denoiser: 'auto' resolves to OIDN via the default model URL", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     try {
@@ -2811,8 +2810,8 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
           code: 'pt-webgl2.denoiser-auto-resolved',
           details: expect.objectContaining({
             requested: 'auto',
-            resolved: 'none',
-            reason: 'no-host-model-assets',
+            resolved: 'oidn-final',
+            reason: 'default-oidn-model-url',
             packageProvidesProductionWeights: false,
           }),
         }),
@@ -2868,7 +2867,7 @@ describe('PTEngineWebGL2 — contract conformance + accumulation orchestration',
     async (denoiser) => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       try {
-        await expect(createPTEngine_WebGL2({ ...opts(), denoiser })).rejects.toThrow(
+        await expect(createPTEngine_WebGL2({ ...opts(), denoiser: denoiser as never })).rejects.toThrow(
           /denoiser must be one of/,
         );
         expect(warn).not.toHaveBeenCalled();

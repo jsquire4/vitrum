@@ -485,6 +485,7 @@ describe('createEngine backend construction safety', () => {
     );
 
     expect(ptFactory.mock.calls[0]?.[0]?.traceTier).toBe('full');
+    expect(ptFactory.mock.calls[0]?.[0]?.denoiser).toBe('auto');
     expect(device.destroy).not.toHaveBeenCalled();
   });
 

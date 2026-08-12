@@ -21,11 +21,12 @@
  *      near-native acceleration on Edge/Chrome with WebNN behind-flag;
  *      WebGPU is the universal fallback; WASM ensures correctness everywhere.
  *
- *   4. Model file — host-side concern. The host bundles or fetches the OIDN
- *      ONNX model (typically the albedo/normal/color UNet from the official
- *      OpenImageDenoise project: https://github.com/OpenImageDenoise/oidn).
- *      The modelUrl passed to denoiseFinal / preloadOIDNModel is the path or
- *      URL to that file (e.g., '/models/oidn_rt_hdr.onnx').
+ *   4. Model file — `auto` and omitted `modelUrl` resolve to the pinned
+ *      Intel Apache-2.0 RT HDR alb+nrm ONNX (pmndrs/denoiser-weights
+ *      `models-v1` via jsDelivr). Hosts may override with a bundled or
+ *      self-hosted file. The default graph is a single NCHW `input`
+ *      (color+albedo+normal) plus `output`; Intel-style separate
+ *      `color`/`albedo`/`normal` graphs remain supported.
  *
  *   5. Optional peerDependency — `onnxruntime-web` is listed in package.json
  *      as an optional peerDependency. Hosts opt in by installing it. If the
@@ -203,49 +204,59 @@ export async function denoiseFinal(
 
     const typedSession = session as _OrtSession;
     const declaredInputs = _declaredSessionInputNames(typedSession);
-    if (declaredInputs !== null && !declaredInputs.has(colorKey)) {
+    const concatenatedInput = _isConcatenatedOidnInput(declaredInputs, colorKey);
+    if (declaredInputs !== null && !concatenatedInput && !declaredInputs.has(colorKey)) {
       throw new Error(
         `[oidnBridge] ONNX model does not declare the required color input ` +
         `'${colorKey}'. Declared inputs: ${[...declaredInputs].join(', ')}`,
       );
     }
 
-    const colorNchw = _hwcToNchw(color, height, width, 3);
-    const feeds: Record<string, unknown> = {
-      [colorKey]: new ort.Tensor('float32', colorNchw, [1, 3, height, width]),
-    };
+    const feeds: Record<string, unknown> = concatenatedInput
+      ? {
+          input: new ort.Tensor(
+            'float32',
+            _concatOidnAuxNchw(color, albedo, normal, height, width, opts.modelUrl),
+            [1, _concatenatedOidnChannelCount(opts.modelUrl, albedo, normal), height, width],
+          ),
+        }
+      : {
+          [colorKey]: new ort.Tensor('float32', _hwcToNchw(color, height, width, 3), [1, 3, height, width]),
+        };
 
-    const acceptsNormal = declaredInputs === null || declaredInputs.has(normalKey);
-    if (normal !== undefined && !acceptsNormal && tn.normal !== undefined) {
-      throw new Error(
-        `[oidnBridge] normal guidance was supplied, but explicitly configured input ` +
-        `'${normalKey}' is not declared by the ONNX model. Declared inputs: ` +
-        `${[...declaredInputs].join(', ')}`,
-      );
-    }
-    if (normal !== undefined && acceptsNormal) {
-      feeds[normalKey] = new ort.Tensor('float32', _hwcToNchw(normal, height, width, 3), [
-        1,
-        3,
-        height,
-        width,
-      ]);
-    }
-    const acceptsAlbedo = declaredInputs === null || declaredInputs.has(albedoKey);
-    if (albedo !== undefined && !acceptsAlbedo && tn.albedo !== undefined) {
-      throw new Error(
-        `[oidnBridge] albedo guidance was supplied, but explicitly configured input ` +
-        `'${albedoKey}' is not declared by the ONNX model. Declared inputs: ` +
-        `${[...declaredInputs].join(', ')}`,
-      );
-    }
-    if (albedo !== undefined && acceptsAlbedo) {
-      feeds[albedoKey] = new ort.Tensor('float32', _hwcToNchw(albedo, height, width, 3), [
-        1,
-        3,
-        height,
-        width,
-      ]);
+    if (!concatenatedInput) {
+      const acceptsNormal = declaredInputs === null || declaredInputs.has(normalKey);
+      if (normal !== undefined && !acceptsNormal && tn.normal !== undefined) {
+        throw new Error(
+          `[oidnBridge] normal guidance was supplied, but explicitly configured input ` +
+          `'${normalKey}' is not declared by the ONNX model. Declared inputs: ` +
+          `${[...declaredInputs].join(', ')}`,
+        );
+      }
+      if (normal !== undefined && acceptsNormal) {
+        feeds[normalKey] = new ort.Tensor('float32', _hwcToNchw(normal, height, width, 3), [
+          1,
+          3,
+          height,
+          width,
+        ]);
+      }
+      const acceptsAlbedo = declaredInputs === null || declaredInputs.has(albedoKey);
+      if (albedo !== undefined && !acceptsAlbedo && tn.albedo !== undefined) {
+        throw new Error(
+          `[oidnBridge] albedo guidance was supplied, but explicitly configured input ` +
+          `'${albedoKey}' is not declared by the ONNX model. Declared inputs: ` +
+          `${[...declaredInputs].join(', ')}`,
+        );
+      }
+      if (albedo !== undefined && acceptsAlbedo) {
+        feeds[albedoKey] = new ort.Tensor('float32', _hwcToNchw(albedo, height, width, 3), [
+          1,
+          3,
+          height,
+          width,
+        ]);
+      }
     }
 
     const results = await typedSession.run(feeds);
@@ -401,6 +412,59 @@ function _declaredSessionInputNames(session: _OrtSession): ReadonlySet<string> |
     throw new TypeError('[oidnBridge] ONNX session inputNames must be an array of strings.');
   }
   return new Set(value);
+}
+
+function _isConcatenatedOidnInput(
+  declaredInputs: ReadonlySet<string> | null,
+  colorKey: string,
+): boolean {
+  if (declaredInputs == null) return false;
+  if (declaredInputs.size !== 1) return false;
+  if (declaredInputs.has('input') && (colorKey === 'color' || colorKey === 'input')) {
+    return true;
+  }
+  return declaredInputs.has(colorKey) && colorKey === 'input';
+}
+
+function _concatenatedOidnChannelCount(
+  modelUrl: string,
+  albedo: Float32Array | undefined,
+  normal: Float32Array | undefined,
+): 3 | 6 | 9 {
+  if (/alb_nrm/i.test(modelUrl)) return 9;
+  if (/_alb/i.test(modelUrl)) return 6;
+  if (albedo !== undefined && normal !== undefined) return 9;
+  if (albedo !== undefined) return 6;
+  return 3;
+}
+
+function _concatOidnAuxNchw(
+  color: Float32Array,
+  albedo: Float32Array | undefined,
+  normal: Float32Array | undefined,
+  height: number,
+  width: number,
+  modelUrl: string,
+): Float32Array {
+  const channels = _concatenatedOidnChannelCount(modelUrl, albedo, normal);
+  const colorNchw = _hwcToNchw(color, height, width, 3);
+  if (channels === 3) return colorNchw;
+  const plane = height * width * 3;
+  const out = new Float32Array(channels * height * width);
+  out.set(colorNchw, 0);
+  if (channels >= 6) {
+    out.set(
+      albedo !== undefined ? _hwcToNchw(albedo, height, width, 3) : new Float32Array(plane),
+      plane,
+    );
+  }
+  if (channels === 9) {
+    out.set(
+      normal !== undefined ? _hwcToNchw(normal, height, width, 3) : new Float32Array(plane),
+      plane * 2,
+    );
+  }
+  return out;
 }
 
 function _validateOIDNOptions(opts: OIDNDenoiseOptions): void {

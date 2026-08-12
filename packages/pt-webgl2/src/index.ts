@@ -38,6 +38,7 @@ import {
 import { buildCapabilities } from './capabilities.js';
 import { makeStateSlot, type StateSlot } from './state.js';
 import type { PTEngineWebGL2Options } from './options.js';
+import { resolveOidnModelUrl } from '@vitrum/shared-denoisers';
 import { resolveWebGl2TraceTier, type WebGl2TraceTier } from './traceTier.js';
 import { GlResources } from './gl/glResources.js';
 import { retireTexturesIndependently } from './gl/resourceRetirement.js';
@@ -260,7 +261,7 @@ class PTEngineWebGL2 implements Engine, PTEngineWebGL2Surface {
       opts.maxRenderTargetBytes ?? DEFAULT_RENDER_TARGET_BUDGET_BYTES,
     );
     if (opts.denoiser === 'oidn-final') {
-      const modelUrl = opts.oidn?.modelUrl as string;
+      const modelUrl = resolveOidnModelUrl(opts.oidn?.modelUrl);
       const eps = opts.oidn?.executionProviders?.filter(
         (p) => p === 'webnn' || p === 'webgpu' || p === 'wasm',
       );

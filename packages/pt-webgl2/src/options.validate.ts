@@ -5,6 +5,10 @@
 // must fail before capability probing or GL resource construction.
 
 import type { EngineWarning } from '@vitrum/core';
+import {
+  oidnModelUrlIsHostProvided,
+  resolveOidnModelUrl,
+} from '@vitrum/shared-denoisers';
 import type { PTEngineWebGL2Options } from './options.js';
 import { WEBGL2_MAX_BOUNCES } from './limits.js';
 import { DEFAULT_RENDER_TARGET_BUDGET_BYTES } from './gl/renderTargetBudget.js';
@@ -160,30 +164,41 @@ export function emitWebgl2Warning(
   }
 }
 
-function hasOidnModelUrl(opts: Pick<PTEngineWebGL2Options, 'oidn'>): boolean {
-  return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.trim().length > 0;
+function applyDefaultOidnModelUrl(opts: PTEngineWebGL2Options): PTEngineWebGL2Options {
+  if (opts.denoiser !== 'auto' && opts.denoiser !== 'oidn-final') return opts;
+  if (typeof opts.oidn?.modelUrl === 'string') return opts;
+  const modelUrl = resolveOidnModelUrl(undefined);
+  return {
+    ...opts,
+    oidn: opts.oidn != null ? { ...opts.oidn, modelUrl } : { modelUrl },
+  };
 }
 
-export function resolveWebgl2AutoDenoiser(opts: PTEngineWebGL2Options): PTEngineWebGL2Options {
+export function resolveWebgl2AutoDenoiser(
+  opts: PTEngineWebGL2Options,
+  hostProvidedModelUrl = oidnModelUrlIsHostProvided(opts.oidn?.modelUrl),
+): PTEngineWebGL2Options {
   if (opts.denoiser !== 'auto') return opts;
-  const resolved = hasOidnModelUrl(opts) ? 'oidn-final' : 'none';
-  const reason = resolved === 'oidn-final' ? 'host-oidn-model-url' : 'no-host-model-assets';
+  const reason = hostProvidedModelUrl ? 'host-oidn-model-url' : 'default-oidn-model-url';
   emitWebgl2Warning(opts, {
     code: 'pt-webgl2.denoiser-auto-resolved',
     backend: 'pt-webgl2',
     phase: 'construction',
     method: 'createPTEngine_WebGL2',
     message:
-      `[vitrum/pt-webgl2] denoiser:'auto' resolved to '${resolved}' (${reason}). ` +
-      `pt-webgl2 ships no OIDN model; provide oidn.modelUrl to enable the async final-pass OIDN denoiser.`,
+      `[vitrum/pt-webgl2] denoiser:'auto' resolved to 'oidn-final' (${reason}). ` +
+      (hostProvidedModelUrl
+        ? 'Using host oidn.modelUrl for the async final-pass OIDN denoiser.'
+        : `Using the default Intel RT HDR alb+nrm ONNX (${resolveOidnModelUrl(undefined)}). ` +
+          'Override with oidn.modelUrl to self-host the weights.'),
     details: {
       requested: 'auto',
-      resolved,
+      resolved: 'oidn-final',
       reason,
       packageProvidesProductionWeights: false,
     },
   });
-  return { ...opts, denoiser: resolved };
+  return { ...opts, denoiser: 'oidn-final' };
 }
 
 function validateDof(value: unknown): void {
@@ -457,29 +472,11 @@ export function validateAndResolveWebgl2Options(
     );
   }
 
-  validateOidn(opts.oidn);
-  if (
-    internal?.deviceIndependent === true &&
-    opts.denoiser === 'oidn-final' &&
-    !hasOidnModelUrl(opts)
-  ) {
-    throw new Error(
-      "createPTEngine_WebGL2: denoiser: 'oidn-final' requires oidn: { modelUrl }",
-    );
-  }
-  if (internal?.deviceIndependent === true) return opts;
-  const effectiveOpts = resolveWebgl2AutoDenoiser(opts);
-  if (effectiveOpts.denoiser === 'oidn-final' && !hasOidnModelUrl(effectiveOpts)) {
-    throw new Error(
-      "createPTEngine_WebGL2: denoiser: 'oidn-final' is not turnkey - it " +
-        'requires TWO host-provided assets that vitrum does not ship: ' +
-        '(1) oidn: { modelUrl } - a non-empty URL to an OIDN ONNX model ' +
-        '(use oidn_rt_hdr_alb_nrm.onnx when supplying albedo + normal aux); ' +
-        "and (2) the 'onnxruntime-web' optional peer dependency installed in " +
-        'the host. Omit the `denoiser` option to render without a final denoise.',
-    );
-  }
-  return effectiveOpts;
+  const hostProvidedOidnUrl = oidnModelUrlIsHostProvided(opts.oidn?.modelUrl);
+  const optsWithOidnUrl = applyDefaultOidnModelUrl(opts);
+  validateOidn(optsWithOidnUrl.oidn);
+  if (internal?.deviceIndependent === true) return optsWithOidnUrl;
+  return resolveWebgl2AutoDenoiser(optsWithOidnUrl, hostProvidedOidnUrl);
 }
 
 /**

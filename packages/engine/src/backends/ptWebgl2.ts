@@ -86,6 +86,9 @@ export async function constructPathTracer(
     // stripOwnershipCriticalKeys guard the walkaround/pt-webgpu backends use.
     const merged: PTEngineWebGL2Options = {
       device: gl,
+      // Viewer / createEngine stills default: OIDN final-pass with the pinned
+      // alb+nrm URL. Hosts override via advanced.denoiser / advanced.oidn.
+      denoiser: 'auto',
       ...advancedWebGL2,
       ...(opts.debug != null ? { debug: opts.debug } : {}),
       ...(opts.onWarning != null ? { onWarning: opts.onWarning } : {}),

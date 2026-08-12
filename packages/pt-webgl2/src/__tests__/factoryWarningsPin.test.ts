@@ -31,11 +31,11 @@ async function collectWarnings(
 }
 
 describe('createPTEngine_WebGL2 factory warning pins (T3-D)', () => {
-  it('denoiser:auto with no model URL resolves to none with a warning', async () => {
+  it('denoiser:auto with no model URL resolves to oidn-final via the default URL', async () => {
     const w = await collectWarnings({ denoiser: 'auto' });
     expect(w.map((x) => x.code)).toEqual(['pt-webgl2.denoiser-auto-resolved']);
-    expect(w[0]!.message).toContain("denoiser:'auto' resolved to 'none'");
-    expect(w[0]!.message).toContain('no-host-model-assets');
+    expect(w[0]!.message).toContain("denoiser:'auto' resolved to 'oidn-final'");
+    expect(w[0]!.message).toContain('default-oidn-model-url');
   });
 
   it('accepts named BDPT and rejects unsupported caustic strategies/options', async () => {

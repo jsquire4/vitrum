@@ -15,6 +15,10 @@ import {
   type EngineWarning,
   type FrameInput,
 } from '@vitrum/core';
+import {
+  oidnModelUrlIsHostProvided,
+  resolveOidnModelUrl,
+} from '@vitrum/shared-denoisers';
 import type { PTEngineWebGPUOptions } from './index.js';
 import { resolvePtWebgpuTraceTier, type PtWebgpuTraceTier } from './traceTier.js';
 import {
@@ -199,30 +203,41 @@ export function emitPteWarning(
   }
 }
 
-function hasOidnModelUrl(opts: Pick<PTEngineWebGPUOptions, 'oidn'>): boolean {
-  return typeof opts.oidn?.modelUrl === 'string' && opts.oidn.modelUrl.length > 0;
+function applyDefaultOidnModelUrl(opts: PTEngineWebGPUOptions): PTEngineWebGPUOptions {
+  if (opts.denoiser !== 'auto' && opts.denoiser !== 'oidn-final') return opts;
+  if (typeof opts.oidn?.modelUrl === 'string') return opts;
+  const modelUrl = resolveOidnModelUrl(undefined);
+  return {
+    ...opts,
+    oidn: opts.oidn != null ? { ...opts.oidn, modelUrl } : { modelUrl },
+  };
 }
 
-function resolvePtWebgpuAutoDenoiser(opts: PTEngineWebGPUOptions): PTEngineWebGPUOptions {
+function resolvePtWebgpuAutoDenoiser(
+  opts: PTEngineWebGPUOptions,
+  hostProvidedModelUrl: boolean,
+): PTEngineWebGPUOptions {
   if (opts.denoiser !== 'auto') return opts;
-  const resolved = hasOidnModelUrl(opts) ? 'oidn-final' : 'none';
-  const reason = resolved === 'oidn-final' ? 'host-oidn-model-url' : 'no-host-model-assets';
+  const reason = hostProvidedModelUrl ? 'host-oidn-model-url' : 'default-oidn-model-url';
   emitPteWarning(opts, {
     code: 'pt-webgpu.denoiser-auto-resolved',
     backend: 'pt-webgpu',
     phase: 'construction',
     method: 'createPTEngine_WebGPU',
     message:
-      `[vitrum/pt-webgpu] denoiser:'auto' resolved to '${resolved}' (${reason}). ` +
-      `pt-webgpu ships no OIDN model; provide oidn.modelUrl to enable the async final-pass OIDN denoiser.`,
+      `[vitrum/pt-webgpu] denoiser:'auto' resolved to 'oidn-final' (${reason}). ` +
+      (hostProvidedModelUrl
+        ? 'Using host oidn.modelUrl for the async final-pass OIDN denoiser.'
+        : `Using the default Intel RT HDR alb+nrm ONNX (${resolveOidnModelUrl(undefined)}). ` +
+          'Override with oidn.modelUrl to self-host the weights.'),
     details: {
       requested: 'auto',
-      resolved,
+      resolved: 'oidn-final',
       reason,
       packageProvidesProductionWeights: false,
     },
   });
-  return { ...opts, denoiser: resolved };
+  return { ...opts, denoiser: 'oidn-final' };
 }
 
 export function resolveBdptMaxLightBounces(requested: number | undefined): number {
@@ -690,7 +705,9 @@ export function validatePtWebgpuOptions(
         'the tuning object is not silently ignored when reuse is disabled.',
     );
   }
-  const oidnOptions = opts.oidn;
+  const hostProvidedOidnUrl = oidnModelUrlIsHostProvided(opts.oidn?.modelUrl);
+  const optsWithOidnUrl = applyDefaultOidnModelUrl(opts);
+  const oidnOptions = optsWithOidnUrl.oidn;
   if (oidnOptions !== undefined &&
       (oidnOptions === null || typeof oidnOptions !== 'object' || Array.isArray(oidnOptions))) {
     throw new TypeError('createPTEngine_WebGPU: oidn must be an object when supplied');
@@ -731,26 +748,21 @@ export function validatePtWebgpuOptions(
   const oidnModeRequested = opts.denoiser === 'oidn-final' || opts.denoiser === 'auto';
   if (
     !oidnModeRequested &&
-    (oidnOptions !== undefined || opts.oidnBridgeLoader !== undefined || opts.oidnReadbackFn !== undefined)
+    (opts.oidn !== undefined || opts.oidnBridgeLoader !== undefined || opts.oidnReadbackFn !== undefined)
   ) {
     throw new Error(
       "createPTEngine_WebGPU: oidn/oidnBridgeLoader/oidnReadbackFn require denoiser:'oidn-final' or 'auto'; " +
         'OIDN configuration is not silently ignored by another denoiser mode.',
     );
   }
-  if (opts.denoiser === 'oidn-final' && !hasOidnModelUrl(opts)) {
-    throw new Error(
-      "createPTEngine_WebGPU: denoiser:'oidn-final' requires oidn: { modelUrl }.",
-    );
-  }
   if (internal?.deviceIndependent === true) {
     return {
       traceTier: 'full',
-      effectiveOpts: opts,
+      effectiveOpts: optsWithOidnUrl,
     };
   }
   const traceTier = resolvePtWebgpuTraceTier(opts.device, opts.traceTier);
-  const effectiveOpts = resolvePtWebgpuAutoDenoiser(opts);
+  const effectiveOpts = resolvePtWebgpuAutoDenoiser(optsWithOidnUrl, hostProvidedOidnUrl);
   if (traceTier === 'lite' && opts.causticStrategy != null && opts.causticStrategy !== 'none') {
     throw new Error(
       `createPTEngine_WebGPU: causticStrategy=${JSON.stringify(opts.causticStrategy)} requires ` +

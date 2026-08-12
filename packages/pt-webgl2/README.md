@@ -50,11 +50,11 @@ the output tier.
 | Texture atlas (material maps) | Supported — raw `{width,height,data}` or DataTexture-shaped |
 | Caustic strategy `'bdpt'` | Supported alias for the same bounded general estimator as `bdpt: true`; tune with `bdptOptions.maxLightBounces`. |
 | MNEE / SPPM (`'manifold-nee'`, `'photon-map'`) | Unsupported and rejected by the strict option validator; use the pt-webgpu full tier for these estimators. |
-| Denoiser `auto` / `oidn-final` | `auto` resolves to host OIDN when `oidn: { modelUrl }` exists, otherwise no-denoise with a structured warning. Explicit `oidn-final` is supported as an async final-pass CPU result and requires host `oidn: { modelUrl }` plus optional `onnxruntime-web`; full tier supplies HDR + albedo + normal aux, lite tier supplies HDR color. Retrieve with `getLatestDenoised()` and observe state via `FrameStats.denoiserState`. |
+| Denoiser `auto` / `oidn-final` | `auto` always resolves to `oidn-final`. Omitted `oidn.modelUrl` uses the pinned Intel RT HDR alb+nrm ONNX; hosts may override. Requires optional `onnxruntime-web` at the first denoise cycle. Full tier supplies HDR + albedo + normal aux, lite tier supplies HDR color. Retrieve with `getLatestDenoised()` and observe state via `FrameStats.denoiserState`. |
 
 ## Deliberate backend boundaries
 
-- **Realtime denoisers**: `atrous`, `atrous-variance`, `svgf-real`, `bmfr`, and `neural` are outside this converged backend and are rejected by the strict construction validator. Use `auto` with host OIDN config or explicit `oidn-final` for final-pass denoising.
+- **Realtime denoisers**: `atrous`, `atrous-variance`, `svgf-real`, `bmfr`, and `neural` are outside this converged backend and are rejected by the strict construction validator. Use `auto` or explicit `oidn-final` for final-pass denoising.
 - **Caustic-estimator breadth**: this backend provides BDPT. Newton MNEE and SPPM are not option values and fail closed; those estimators are implemented by the pt-webgpu full tier.
 - **SSS model**: translucent surfaces use one back-face single-scatter event with a scalar free-flight majorant, per-channel scattering albedo, and Henyey–Greenstein phase. This is intentionally narrower than pt-webgpu's native volume path.
 - **Mesh-area stream**: mesh-area emitters use the dedicated triangle-light NEE/MIS stream rather than the six-texel analytic-light stream. They are sampled area/power-weighted and remain visible through the emissive fold.

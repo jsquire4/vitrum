@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DEFAULT_OIDN_RT_HDR_ALB_NRM_MODEL_URL } from '@vitrum/shared-denoisers';
 import { createPTEngine_WebGPU } from '../index.js';
 import {
   OIDNFinalDispatcher,
@@ -34,13 +35,23 @@ const mockReadback =
   };
 
 describe('pt-webgpu oidn-final (WG-1)', () => {
-  it("createPTEngine_WebGPU throws when 'oidn-final' lacks model URL", async () => {
+  it("createPTEngine_WebGPU default-resolves oidn-final without a host model URL", async () => {
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      denoiser: 'oidn-final',
+    });
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
+    engine.dispose();
+  });
+
+  it('rejects an explicit empty oidn.modelUrl', async () => {
     await expect(
       createPTEngine_WebGPU({
         device: makeStubDevice(),
         denoiser: 'oidn-final',
+        oidn: { modelUrl: '' },
       }),
-    ).rejects.toThrow(/oidn: \{ modelUrl \}/);
+    ).rejects.toThrow(/oidn.modelUrl must not be empty/);
   });
 
   it('does not warn when denoiser is oidn-final', async () => {
@@ -91,6 +102,33 @@ describe('pt-webgpu oidn-final (WG-1)', () => {
     ]));
     expect(warn.mock.calls.some((c) => String(c[0]).includes('unsupported-denoiser'))).toBe(false);
     expect(engine.capabilities.supportDetails?.denoisers?.['oidn-final']).toBe('native');
+    expect(engine.capabilities.activeFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
+    engine.dispose();
+    warn.mockRestore();
+  });
+
+  it("denoiser:'auto' resolves to oidn-final via the default model URL", async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const structured: unknown[] = [];
+    const engine = await createPTEngine_WebGPU({
+      device: makeStubDevice(),
+      denoiser: 'auto',
+      onWarning: (w) => structured.push(w),
+    });
+    expect(structured).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'pt-webgpu.denoiser-auto-resolved',
+        details: expect.objectContaining({
+          requested: 'auto',
+          resolved: 'oidn-final',
+          reason: 'default-oidn-model-url',
+          packageProvidesProductionWeights: false,
+        }),
+      }),
+    ]));
+    expect(String((structured[0] as { message: string }).message)).toContain(
+      DEFAULT_OIDN_RT_HDR_ALB_NRM_MODEL_URL,
+    );
     expect(engine.capabilities.activeFeatures?.has('pt-webgpu-oidn-final')).toBe(true);
     engine.dispose();
     warn.mockRestore();

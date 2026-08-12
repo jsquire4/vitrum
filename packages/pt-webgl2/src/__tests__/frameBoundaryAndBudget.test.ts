@@ -380,7 +380,6 @@ describe('pt-webgl2 strict frame and size boundary', () => {
       [{ oidn: { modelUrl: '/model.onnx', typo: true } }, /oidn contains unsupported field/],
       [{ oidnBridgeLoader: true }, /oidnBridgeLoader must be a function/],
       [{ oidnReadbackFn: true }, /oidnReadbackFn must be a function/],
-      [{ denoiser: 'oidn-final' }, /oidn: \{ modelUrl \}/],
     ];
 
     for (const [overrides, pattern] of cases) {

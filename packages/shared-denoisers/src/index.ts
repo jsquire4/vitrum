@@ -61,6 +61,11 @@ export type {
   OIDNDenoiseOptions,
   OIDNSessionLease,
 } from './oidnBridge.js';
+export {
+  DEFAULT_OIDN_RT_HDR_ALB_NRM_MODEL_URL,
+  oidnModelUrlIsHostProvided,
+  resolveOidnModelUrl,
+} from './oidnDefaultModel.js';
 
 // HDR bilateral (WebGPU compute, luminance edge-stop — no G-buffer)
 export {

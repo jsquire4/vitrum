@@ -35,13 +35,17 @@
   },
   "peerDependencies": {
     "react": ">=17",
-    "react-dom": ">=17"
+    "react-dom": ">=17",
+    "onnxruntime-web": "^1.18.0"
   },
   "peerDependenciesMeta": {
     "react": {
       "optional": true
     },
     "react-dom": {
+      "optional": true
+    },
+    "onnxruntime-web": {
       "optional": true
     }
   },

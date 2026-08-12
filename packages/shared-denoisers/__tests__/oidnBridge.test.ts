@@ -440,6 +440,54 @@ describe('OIDN model input negotiation', () => {
     expect(run).toHaveBeenCalledOnce();
     expect(Object.keys(run.mock.calls[0]![0])).toEqual(['color']);
   });
+
+  it('packs color+albedo+normal into a single NCHW input for alb_nrm models', async () => {
+    vi.resetModules();
+    const tensors: Array<{ data: Float32Array; dims: number[] }> = [];
+    const run = vi.fn(async (_feeds: Record<string, unknown>) => ({
+      output: {
+        data: new Float32Array([0.1, 0.2, 0.3]),
+        dims: [1, 3, 1, 1],
+      },
+    }));
+    vi.doMock('onnxruntime-web', () => ({
+      Tensor: class {
+        data: Float32Array;
+        dims: number[];
+        constructor(_type: string, data: Float32Array, dims: number[]) {
+          this.data = data;
+          this.dims = dims;
+          tensors.push(this);
+        }
+      },
+      InferenceSession: {
+        create: vi.fn(async () => ({
+          inputNames: ['input'],
+          run,
+          release: vi.fn(),
+        })),
+      },
+    }));
+
+    const bridge = await import('../src/oidnBridge.js');
+    await expect(bridge.denoiseFinal(
+      {
+        color: new Float32Array([1, 0, 0]),
+        albedo: new Float32Array([0, 1, 0]),
+        normal: new Float32Array([0, 0, 1]),
+        width: 1,
+        height: 1,
+      },
+      {
+        modelUrl: '/models/rt_hdr_alb_nrm.onnx',
+        executionProviders: ['wasm'],
+      },
+    )).resolves.toEqual(new Float32Array([0.1, 0.2, 0.3]));
+    expect(run).toHaveBeenCalledOnce();
+    expect(Object.keys(run.mock.calls[0]![0])).toEqual(['input']);
+    expect(tensors[0]?.dims).toEqual([1, 9, 1, 1]);
+    expect(Array.from(tensors[0]!.data)).toEqual([1, 0, 0, 0, 1, 0, 0, 0, 1]);
+  });
 });
 
 // ── Runtime error when onnxruntime-web is absent ──────────────────────────────

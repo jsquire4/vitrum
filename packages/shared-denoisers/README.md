@@ -10,7 +10,7 @@ Denoiser building blocks consumed by the walkaround-hybrid, pt-webgpu, and other
 - **Welford temporal variance** — `WELFORD_VARIANCE_WGSL`. Foundational primitive shared by atrous-variance and SVGF.
 - **Temporal accumulator** — `TEMPORAL_ACCUM_WGSL`. EMA blend with optional TCBB clip.
 - **HDR luminance bilateral** — `HDR_LUMINANCE_BILATERAL_WGSL`. Edge-stop bilateral preview filter.
-- **OIDN bridge** — `denoiseFinal()` calls Intel Open Image Denoise via `onnxruntime-web` (optional peer dep). `OIDNDispatcherCore` is the shared cohort state machine for converged-backend OIDN dispatchers; walkaround-hybrid uses the same bridge primitives for its `'oidn-final'` denoiser mode.
+- **OIDN bridge** — `denoiseFinal()` calls Intel Open Image Denoise via `onnxruntime-web` (optional peer dep). Omitted `modelUrl` resolves to `DEFAULT_OIDN_RT_HDR_ALB_NRM_MODEL_URL` (Intel Apache-2.0 RT HDR alb+nrm weights, ONNX conversion from pmndrs/denoiser-weights). Concatenated `input` graphs (C=3/6/9) and Intel-style separate `color`/`albedo`/`normal` graphs are both supported. `OIDNDispatcherCore` is the shared cohort state machine for converged-backend OIDN dispatchers; walkaround-hybrid uses the same bridge primitives for its `'oidn-final'` denoiser mode.
 
 ## Texture helpers
 
