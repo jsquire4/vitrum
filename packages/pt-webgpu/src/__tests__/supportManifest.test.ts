@@ -84,10 +84,11 @@ describe('pt-webgpu executable support manifests', () => {
       expect(sorted(PT_WEBGPU_LITE_SUPPORT[key])).toEqual(sorted(lite[key]));
     }
     expect(sorted(PT_WEBGPU_LITE_SUPPORT.supportedPrimitiveKinds))
-      .toEqual(['instanced-mesh', 'mesh', 'skinned-mesh']);
+      .toEqual(['analytic', 'instanced-mesh', 'mesh', 'skinned-mesh']);
     expect(sorted(PT_WEBGPU_LITE_SUPPORT.supportedEmitterKinds))
       .toEqual(['directional', 'disc-area', 'point', 'rect-area', 'spot']);
-    expect(PT_WEBGPU_LITE_SUPPORT.supportedAnalyticShapes.size).toBe(0);
+    expect(sorted(PT_WEBGPU_LITE_SUPPORT.supportedAnalyticShapes))
+      .toEqual(['box', 'capsule', 'cylinder', 'h-channel-came', 'sphere']);
   });
 
   it('publishes the selected manifest itself as live tier evidence', async () => {

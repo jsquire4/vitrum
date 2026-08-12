@@ -94,10 +94,11 @@ function makeFullDeviceForSetScene(): GPUDevice {
 }
 
 describe('H12: lite-tier capabilities truth', () => {
-  it('lite tier: supportedAnalyticShapes is empty', async () => {
+  it('lite tier: supportedAnalyticShapes includes tessellated shapes', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
-    expect(engine.capabilities.supportedAnalyticShapes.size).toBe(0);
+    expect(engine.capabilities.supportedAnalyticShapes.has('sphere')).toBe(true);
+    expect(engine.capabilities.supportedAnalyticShapes.has('capsule')).toBe(true);
     engine.dispose();
     warn.mockRestore();
   });
@@ -226,22 +227,22 @@ describe('H12: lite-tier capabilities truth', () => {
     warn.mockRestore();
   });
 
-  it('lite tier: supportDetails analyticShapes all unsupported', async () => {
+  it('lite tier: supportDetails analyticShapes all fallback-generated-mesh', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     const sd = engine.capabilities.supportDetails!;
     for (const grade of Object.values(sd.analyticShapes)) {
-      expect(grade).toBe('unsupported');
+      expect(grade).toBe('fallback-generated-mesh');
     }
     engine.dispose();
     warn.mockRestore();
   });
 
-  it('lite tier: supportDetails analytic primitive is unsupported', async () => {
+  it('lite tier: supportDetails analytic primitive is fallback-generated-mesh', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const engine = await createPTEngine_WebGPU({ device: makeLiteDevice() });
     const sd = engine.capabilities.supportDetails!;
-    expect(sd.primitives.analytic).toBe('unsupported');
+    expect(sd.primitives.analytic).toBe('fallback-generated-mesh');
     engine.dispose();
     warn.mockRestore();
   });
@@ -255,7 +256,7 @@ describe('H12: lite-tier capabilities truth', () => {
     engine.dispose();
   });
 
-  it('lite tier: setScene rejects analytic primitives before GPU allocation', async () => {
+  it('lite tier: setScene tessellates analytic primitives into the merged BLAS', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const structured: EngineWarning[] = [];
     const device = makeLiteDeviceForSetScene();
@@ -278,10 +279,7 @@ describe('H12: lite-tier capabilities truth', () => {
       emitters: [],
       environment: { kind: 'none' },
     };
-    const buffersBefore = vi.mocked(device.createBuffer).mock.calls.length;
-    expect(() => engine.setScene(scene)).toThrow(/analytic primitives \[a\]/);
-    expect(vi.mocked(device.createBuffer).mock.calls.length).toBe(buffersBefore);
-    expect(structured).toEqual([]);
+    expect(() => engine.setScene(scene)).not.toThrow();
     engine.dispose();
     warn.mockRestore();
   });

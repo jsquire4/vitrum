@@ -64,6 +64,7 @@ export {
 import {
   buildPackedScene,
   scenePackResultFromPacked,
+  tessellateAnalyticsForLite,
   uploadPackedScene,
   uploadedSceneGpuResources,
   PT_WEBGPU_ANALYTIC_SHAPES,
@@ -641,7 +642,9 @@ class PTEngineWebGPU implements Engine {
         if (this.#restirPtReuse) {
           assertOneEdgeReconnectionSceneSupported(scopedScene);
         }
-        if (this.#traceTier === 'lite') assertLiteSceneSupported(scopedScene);
+        if (this.#traceTier === 'lite') {
+          assertLiteSceneSupported(tessellateAnalyticsForLite(scopedScene, []));
+        }
         if (this.#spectralEnabled) assertSpectralSceneSupported(scopedScene);
         assertThinFilmSceneSupported(scopedScene);
         assertVolumeSceneSupported(scopedScene);
@@ -1132,9 +1135,6 @@ class PTEngineWebGPU implements Engine {
 
   setScene(scene: Scene): void {
     this.#assertUsable('setScene');
-    if (this.#traceTier === 'lite') {
-      assertLiteSceneSupported(scene);
-    }
     this.#repackScene(scene, { warnOnEmpty: true });
   }
 

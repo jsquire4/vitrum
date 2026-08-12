@@ -210,6 +210,27 @@ export function applyAnalyticRenderFallbacks(
   );
 }
 
+/**
+ * Lite has no native analytic intersection. Convert every analytic primitive
+ * to a generated mesh before lite-domain rejection and packing so a laptop
+ * path tracer can still ingest spheres/capsules/boxes.
+ */
+export function tessellateAnalyticsForLite(
+  scene: Scene,
+  warnings: string[],
+): Scene {
+  let changed = false;
+  const primitives = scene.primitives.map((primitive) => {
+    if (primitive.kind !== 'analytic') return primitive;
+    changed = true;
+    warnings.push(
+      `Analytic primitive "${primitive.id}" (${primitive.shape}) tessellated for lite-tier merged BLAS.`,
+    );
+    return analyticPrimitiveToMesh(primitive);
+  });
+  return changed ? { ...scene, primitives } : scene;
+}
+
 // 8 dead re-exports of MAX_*_LIGHTS / *_FLOAT_STRIDE constants (originally
 // surfaced here for hosts that might assemble emitter arrays directly) were
 // removed 2026-05-18 — no in-tree consumer reached them. The canonical
@@ -1518,20 +1539,25 @@ export function buildPackedScene(
   const traceTier = geometryMode === 'merged' ? 'lite' : 'full';
   const supportManifest = ptWebgpuSupportManifest(traceTier);
   const supportSets = ptWebgpuSupportSets(traceTier);
+  const tessellateWarnings: string[] = [];
+  const packInput = traceTier === 'lite'
+    ? tessellateAnalyticsForLite(inputScene, tessellateWarnings)
+    : inputScene;
   // Preserve the detailed lite-domain diagnostic for known unsupported
   // geometry/emitter families before generic partitioning.
-  if (traceTier === 'lite') assertLiteSceneSupported(inputScene);
-  assertKnownManifestDiscriminators(inputScene, supportManifest);
-  assertManifestMaterialDomain(inputScene, traceTier);
+  if (traceTier === 'lite') assertLiteSceneSupported(packInput);
+  assertKnownManifestDiscriminators(packInput, supportManifest);
+  assertManifestMaterialDomain(packInput, traceTier);
   // Capability preflight. Partitioning is used only to identify unsupported
   // content; silently packing the supported subset would change the scene.
   const { supported: filteredScene, warnings } =
-    partitionSceneBySupport(inputScene, supportSets);
+    partitionSceneBySupport(packInput, supportSets);
   if (warnings.length > 0) {
     throw new TypeError(
       `@vitrum/pt-webgpu: scene contains unsupported content: ${warnings.join(' | ')}`,
     );
   }
+  warnings.push(...tessellateWarnings);
   const renderFallbackScene = applyAnalyticRenderFallbacks(filteredScene, warnings);
   assertThinFilmLayerCapacity(renderFallbackScene);
   // Item 1 — apply CPU LBS to skinned-mesh primitives so packSceneFromCore uses
