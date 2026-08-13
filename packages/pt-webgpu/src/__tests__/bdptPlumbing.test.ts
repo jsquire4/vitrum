@@ -1,5 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { PT_WEBGPU_TRACE_WGSL } from '../wgsl/pathTraceBruteforce.wgsl.js';
+import {
+  PT_WEBGPU_TRACE_WGSL,
+  composePtWebgpuTraceWgsl,
+} from '../wgsl/pathTraceBruteforce.wgsl.js';
+
+// PT_WEBGPU_TRACE_WGSL is the bdpt:false composition. Since the BDPT estimator
+// became a compose-time gate, the BDPT *call sites* live only in the bdpt:true
+// composition — a bdpt:false pipeline can never reach them (params.bdptEnabled is
+// constant for a pipeline's lifetime), so emitting them there was dead code that
+// Mesa's NIR still fully inlined. Wiring assertions therefore target the ON
+// composition, which is where this plumbing actually has to be correct.
+const PT_WEBGPU_TRACE_WGSL_BDPT_ON = composePtWebgpuTraceWgsl(true);
 
 describe('pt-webgpu invocation-local BDPT', () => {
   it('builds one bounded light prefix inside each path-trace invocation', () => {
@@ -11,7 +22,12 @@ describe('pt-webgpu invocation-local BDPT', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'var<private> bdptEyeStackPrivate: array<BdptEyeVtx, 8>;',
     );
-    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+    expect(PT_WEBGPU_TRACE_WGSL_BDPT_ON).toContain(
+      'bdptBuildInvocationLightSubpath(gid.xy);',
+    );
+    // ...and the OFF composition must NOT carry that call site — that is the
+    // whole point of the gate.
+    expect(PT_WEBGPU_TRACE_WGSL).not.toContain(
       'bdptBuildInvocationLightSubpath(gid.xy);',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn bdptBuildInvocationLightSubpath(pixel: vec2u)');
@@ -42,6 +58,8 @@ describe('pt-webgpu invocation-local BDPT', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('const BDPT_LIGHT_PATH_ROWS = 8u;');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularColor,');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('mat.specularIntensity,');
-    expect(PT_WEBGPU_TRACE_WGSL).toContain('let maxLv = min(params.bdptMaxLightBounces, 8u);');
+    expect(PT_WEBGPU_TRACE_WGSL_BDPT_ON).toContain(
+      'let maxLv = min(params.bdptMaxLightBounces, 8u);',
+    );
   });
 });

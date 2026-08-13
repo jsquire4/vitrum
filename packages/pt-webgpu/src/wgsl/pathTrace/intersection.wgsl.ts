@@ -464,8 +464,14 @@ fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
   // source-feature token. Its lower bound is therefore zero-exclusive; the
   // public clearance policy must not erase an arbitrarily close next surface.
   var cursor = select(tMin, 0.0, opticalContinuationSourceIsActive());
-  var hit = traceClosestRaw(ray, cursor, tMax);
+  // INLINE-BUDGET: one traceClosestRaw call site instead of two. The pre-loop
+  // probe and the loop-tail re-probe were the same call with the same arguments;
+  // rotating the trace to the top of the loop makes the first iteration perform
+  // the initial probe. Identical traversal sequence, identical results — it just
+  // stops Mesa's NIR inlining the whole traversal twice.
+  var hit: SceneHit;
   loop {
+    hit = traceClosestRaw(ray, cursor, tMax);
     if (!hit.didHit) {
       opticalClearContinuationSource();
       return hit;
@@ -482,7 +488,6 @@ fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
       return hit;
     }
     cursor = nextCursor;
-    hit = traceClosestRaw(ray, cursor, tMax);
   }
   return hit;
 }

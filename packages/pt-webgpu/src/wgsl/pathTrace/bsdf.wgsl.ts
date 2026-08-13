@@ -862,6 +862,11 @@ fn evaluateBrdfFullWithClearcoatNormal(
   // (byte-identical render for zero-anisotropy materials).
   var spec: vec3f;
   var ms: vec3f;
+  // INLINE-BUDGET: the anisotropic and isotropic branches both needed the layered
+  // interface response at normal incidence with identical arguments, so it is
+  // evaluated once here instead of once per branch. Pure function, same value.
+  let msLayeredReflectance =
+    bsdfLayeredInterfaceResponse(f0, thinFilm, nDotV).reflectance;
   if (anisotropy > 0.0) {
     // Build tangent frame and rotate by anisotropyRotation.
     var tanT: vec3f;
@@ -877,7 +882,7 @@ fn evaluateBrdfFullWithClearcoatNormal(
     // the authored anisotropy axes instead of ignoring the lobe stretch.
     let roughnessAvg = anisotropicAverageRoughness(roughness, anisotropy);
     ms = anisotropicMultiscatterScale(anisotropy, roughnessAvg) * ggxMultiscatterLobeRoughness(
-      bsdfLayeredInterfaceResponse(f0, thinFilm, nDotV).reflectance,
+      msLayeredReflectance,
       anisotropicProjectedRoughness(wo, anisoT, anisoB, roughness, anisotropy),
       anisotropicProjectedRoughness(wi, anisoT, anisoB, roughness, anisotropy),
       roughnessAvg,
@@ -891,7 +896,7 @@ fn evaluateBrdfFullWithClearcoatNormal(
     spec = (d * g) * f / max(4.0 * nDotV * nDotL, 1e-6);
     // B9 — Kulla-Conty multiscatter energy compensation.
     ms = ggxMultiscatterLobe(
-      bsdfLayeredInterfaceResponse(f0, thinFilm, nDotV).reflectance,
+      msLayeredReflectance,
       roughness, nDotV, nDotL,
     );
   }
@@ -1108,17 +1113,6 @@ fn bsdfDielectricFiniteEventProbabilities(
 ) -> vec3f {
   let t = clamp(transmission, 0.0, 1.0);
   let oriented = bsdfOrientDielectricInterface(normal, wo, etaTOverI);
-  let macroInterface = materialDielectricLayeredInterface(
-    abs(dot(oriented.normal, wo)), oriented.etaTOverI,
-    iridescence, iridescenceIor,
-    iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, thinFilm,
-  );
-  let diffuseProbability = clamp(
-    luminance(macroInterface.baseTransmittance) * (1.0 - t),
-    0.0,
-    1.0,
-  );
   var wm: vec3f;
   if (dot(normal, wo) * dot(normal, wi) > 0.0) {
     wm = safe_normalize(wo + wi);
@@ -1128,16 +1122,45 @@ fn bsdfDielectricFiniteEventProbabilities(
       normal, wo, wi, etaTOverI,
     );
   }
-  let microfacetInterface = materialDielectricLayeredInterface(
-    abs(dot(wo, wm)), oriented.etaTOverI,
-    iridescence, iridescenceIor,
-    iridescenceThicknessMin, iridescenceThicknessMax,
-    specularColor, specularIntensity, thinFilm,
+  // INLINE-BUDGET: one materialDielectricLayeredInterface call site instead of
+  // two. The macro and microfacet evaluations differ only in the incident
+  // cosine, so a two-iteration loop keeps a single inlined copy of the layered
+  // interface — and of the whole thin-film TMM chain beneath it. The half-vector
+  // wm is hoisted above the loop; it does not depend on the macro response, so
+  // the arithmetic and its ordering are otherwise unchanged.
+  var macroBaseTransmittance = vec3f(0.0);
+  var microfacetReflectance = vec3f(0.0);
+  var microfacetBaseTransmittance = vec3f(0.0);
+  for (var interfaceIndex = 0u;
+       interfaceIndex < 2u;
+       interfaceIndex = interfaceIndex + 1u) {
+    let incidentCosine = select(
+      abs(dot(oriented.normal, wo)),
+      abs(dot(wo, wm)),
+      interfaceIndex == 1u,
+    );
+    let layered = materialDielectricLayeredInterface(
+      incidentCosine, oriented.etaTOverI,
+      iridescence, iridescenceIor,
+      iridescenceThicknessMin, iridescenceThicknessMax,
+      specularColor, specularIntensity, thinFilm,
+    );
+    if (interfaceIndex == 0u) {
+      macroBaseTransmittance = layered.baseTransmittance;
+    } else {
+      microfacetReflectance = layered.reflectance;
+      microfacetBaseTransmittance = layered.baseTransmittance;
+    }
+  }
+  let diffuseProbability = clamp(
+    luminance(macroBaseTransmittance) * (1.0 - t),
+    0.0,
+    1.0,
   );
   let microfacetFProbability =
-    clamp(luminance(microfacetInterface.reflectance), 0.0, 1.0);
+    clamp(luminance(microfacetReflectance), 0.0, 1.0);
   let microfacetTProbability =
-    clamp(luminance(microfacetInterface.baseTransmittance), 0.0, 1.0);
+    clamp(luminance(microfacetBaseTransmittance), 0.0, 1.0);
   return bsdfRepresentedDielectricEventProbabilities(
     diffuseProbability,
     microfacetFProbability,
@@ -1274,8 +1297,15 @@ fn brdfDirectionalPdfThinFilm(
   );
   var specWeight = lobeWeights.x;
   var diffWeight = lobeWeights.y;
-  if (transmission > 0.0 && metallic == 0.0) {
-    let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
+  // INLINE-BUDGET: one bsdfDielectricFiniteEventProbabilities call site instead of
+  // two. Both sites took identical arguments and both are reachable only when
+  // transmission > 0 && metallic == 0 (the second was guarded by the negation of
+  // exactly that), so evaluating it once under the shared guard yields the same
+  // value at both use sites.
+  let dielectricEventsActive = transmission > 0.0 && metallic == 0.0;
+  var eventProbabilities = vec3f(0.0);
+  if (dielectricEventsActive) {
+    eventProbabilities = bsdfDielectricFiniteEventProbabilities(
       roughness, transmission, etaTOverI, normal, wo, wi,
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
@@ -1289,13 +1319,7 @@ fn brdfDirectionalPdfThinFilm(
     clearcoat, sheen,
   );
   if (!sameHemisphere) {
-    if (transmission <= 0.0 || metallic != 0.0) { return 0.0; }
-    let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
-      roughness, transmission, etaTOverI, normal, wo, wi,
-      iridescence, iridescenceIor,
-      iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity, thinFilm,
-    );
+    if (!dielectricEventsActive) { return 0.0; }
     return extensionProbabilities.x * eventProbabilities.z *
       bsdfRoughTransmissionPdf(
       roughness, etaTOverI, normal, wo, wi,
@@ -1398,8 +1422,13 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
     );
     var specWeight = lobeWeights.x;
     var diffWeight = lobeWeights.y;
-    if (transmission > 0.0 && metallic == 0.0) {
-      let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
+    // INLINE-BUDGET: one bsdfDielectricFiniteEventProbabilities call site instead
+    // of two — identical arguments, both uses behind the same
+    // transmission > 0 && metallic == 0 condition.
+    let dielectricEventsActive = transmission > 0.0 && metallic == 0.0;
+    var eventProbabilities = vec3f(0.0);
+    if (dielectricEventsActive) {
+      eventProbabilities = bsdfDielectricFiniteEventProbabilities(
         roughness, transmission, etaTOverI, normal, wo, wi,
         iridescence, iridescenceIor,
         iridescenceThicknessMin, iridescenceThicknessMax,
@@ -1410,13 +1439,7 @@ fn brdfDirectionalPdfFullWithClearcoatNormal(
     }
     let sameHemisphere = wiDotN * woDotN > 0.0;
     if (!sameHemisphere) {
-      if (transmission <= 0.0 || metallic != 0.0) { return 0.0; }
-      let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
-        roughness, transmission, etaTOverI, normal, wo, wi,
-        iridescence, iridescenceIor,
-        iridescenceThicknessMin, iridescenceThicknessMax,
-        specularColor, specularIntensity, thinFilm,
-      );
+      if (!dielectricEventsActive) { return 0.0; }
       return extensionProbabilities.x * eventProbabilities.z *
         bsdfRoughTransmissionPdf(
         roughness, etaTOverI, normal, wo, wi,
@@ -1561,8 +1584,13 @@ fn brdfDirectionalPdfWithIridescence(
   );
   var specWeight = lobeWeights.x;
   var diffWeight = lobeWeights.y;
-  if (transmission > 0.0 && metallic == 0.0) {
-    let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
+  // INLINE-BUDGET: one bsdfDielectricFiniteEventProbabilities call site instead of
+  // two — identical arguments, and both uses sit behind the same
+  // transmission > 0 && metallic == 0 condition.
+  let dielectricEventsActive = transmission > 0.0 && metallic == 0.0;
+  var eventProbabilities = vec3f(0.0);
+  if (dielectricEventsActive) {
+    eventProbabilities = bsdfDielectricFiniteEventProbabilities(
       roughness, transmission, etaTOverI, normal, wo, wi,
       iridescence, iridescenceIor,
       iridescenceThicknessMin, iridescenceThicknessMax,
@@ -1573,13 +1601,7 @@ fn brdfDirectionalPdfWithIridescence(
   }
   let sameHemisphere = wiDotN * woDotN > 0.0;
   if (!sameHemisphere) {
-    if (transmission <= 0.0 || metallic != 0.0) { return 0.0; }
-    let eventProbabilities = bsdfDielectricFiniteEventProbabilities(
-      roughness, transmission, etaTOverI, normal, wo, wi,
-      iridescence, iridescenceIor,
-      iridescenceThicknessMin, iridescenceThicknessMax,
-      specularColor, specularIntensity, bsdfNoThinFilm(),
-    );
+    if (!dielectricEventsActive) { return 0.0; }
     return eventProbabilities.z * bsdfRoughTransmissionPdf(
       roughness, etaTOverI, normal, wo, wi, 0.0, 0.0,
     );
@@ -2309,20 +2331,27 @@ fn thinSheetExactVisibilityTransmission(
   if (!(dot(rayDirection, rayDirection) > 0.0)) { return vec3f(0.0); }
   let frontFace = hit.frontFace;
   let interfaceBaseNormal = select(-hit.normal, hit.normal, frontFace);
-  var normal = interfaceBaseNormal;
-  normal = applyNormalMap(
-    matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex, frontFace,
-  );
-  normal = applyBumpMap(
-    matId, hit.triIndex, hit.baryVW, normal, hit.instanceIndex,
-  );
-  var exitNormal = -interfaceBaseNormal;
-  exitNormal = applyNormalMap(
-    matId, hit.triIndex, hit.baryVW, exitNormal, hit.instanceIndex, !frontFace,
-  );
-  exitNormal = applyBumpMap(
-    matId, hit.triIndex, hit.baryVW, exitNormal, hit.instanceIndex,
-  );
+  // INLINE-BUDGET: one applyNormalMap and one applyBumpMap call site instead of
+  // two each. The entry and exit interface normals run the identical map chain,
+  // differing only in the starting normal and the face flag, so a two-iteration
+  // loop keeps a single inlined copy of both samplers. This function is reached
+  // from traceSurfaceVisibility, which main calls six times, so the saving is
+  // multiplied. Same maps, same order, same results.
+  var interfaceNormals = array<vec3f, 2>();
+  for (var faceIndex = 0u; faceIndex < 2u; faceIndex = faceIndex + 1u) {
+    let isExit = faceIndex == 1u;
+    var mapped = select(interfaceBaseNormal, -interfaceBaseNormal, isExit);
+    mapped = applyNormalMap(
+      matId, hit.triIndex, hit.baryVW, mapped, hit.instanceIndex,
+      select(frontFace, !frontFace, isExit),
+    );
+    mapped = applyBumpMap(
+      matId, hit.triIndex, hit.baryVW, mapped, hit.instanceIndex,
+    );
+    interfaceNormals[faceIndex] = mapped;
+  }
+  var normal = interfaceNormals[0];
+  var exitNormal = interfaceNormals[1];
   var clearcoatNormal = interfaceBaseNormal;
   clearcoatNormal = applyClearcoatNormalMap(
     matId, hit.triIndex, hit.baryVW, clearcoatNormal, hit.instanceIndex,

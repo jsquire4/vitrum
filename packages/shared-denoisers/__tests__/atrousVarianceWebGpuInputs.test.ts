@@ -5,36 +5,19 @@ import {
 } from '../src/atrousVarianceWebGPU.js';
 import { ATROUS_VARIANCE_TEMPORAL_MIN_FRAME_COUNT } from '../src/atrousVarianceConstants.js';
 import { ATROUS_VARIANCE_WGSL } from '../src/wgsl/atrousVariance.wgsl.js';
+import { demodulateAlbedo, remodulateAlbedo } from '../src/albedoModulation.js';
 
-// ── CPU-mirror of the albedo demodulate/remodulate helpers ────────────────────
-// These are plain-JS mirrors of the private helpers in atrousVarianceWebGPU.ts.
-// They are tested here independently; the production path is exercised by
-// runAtrousVarianceWebGPU when opts.albedoRgb is supplied.
-
-function demodulateAlbedo(rgb: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
-  const out = new Float32Array(rgb.length);
-  for (let i = 0; i < pixelCount; i += 1) {
-    const si = i * 3;
-    const ar = Math.max(albedo[si]!    , 1e-3);
-    const ag = Math.max(albedo[si + 1]!, 1e-3);
-    const ab = Math.max(albedo[si + 2]!, 1e-3);
-    out[si]     = rgb[si]!     / ar;
-    out[si + 1] = rgb[si + 1]! / ag;
-    out[si + 2] = rgb[si + 2]! / ab;
-  }
-  return out;
-}
-
-function remodulateAlbedo(filtered: Float32Array, albedo: Float32Array, pixelCount: number): Float32Array {
-  const out = new Float32Array(filtered.length);
-  for (let i = 0; i < pixelCount; i += 1) {
-    const si = i * 3;
-    out[si]     = filtered[si]!     * albedo[si]!;
-    out[si + 1] = filtered[si + 1]! * albedo[si + 1]!;
-    out[si + 2] = filtered[si + 2]! * albedo[si + 2]!;
-  }
-  return out;
-}
+// ── Albedo demodulate/remodulate helpers ─────────────────────────────────────
+// These previously were LOCAL COPIES of the helpers, on the premise that they
+// were private to atrousVarianceWebGPU.ts. They are not: the single production
+// implementation lives in src/albedoModulation.ts and is imported by all three
+// host denoiser paths (atrousVarianceWebGPU, svgfRealWebGPU, bmfrWebGPU). Local
+// copies made these assertions pass regardless of what production actually did.
+// Import the real module so the tests guard the shipped code.
+//
+// NOTE: remodulateAlbedo mutates its input in place and returns it; the former
+// local copy allocated a new array. Callers below clone where they need the
+// original preserved.
 
 describe('assertAtrousVarianceWebGPUBufferShapes', () => {
   const minimal = {
@@ -276,6 +259,42 @@ describe('Item 24 — remodulateAlbedo helper', () => {
       expect(restored[i * 3    ]).toBeCloseTo(expected, 4);
       expect(restored[i * 3 + 1]).toBeCloseTo(expected, 4);
       expect(restored[i * 3 + 2]).toBeCloseTo(expected, 4);
+    }
+  });
+
+  // REGRESSION: demodulate floored the divisor at 1e-3 while remodulate
+  // multiplied by the RAW albedo, so the pair was not an inverse below the
+  // floor: channels in (0, 1e-3) were attenuated by up to 1000x and channels at
+  // exactly 0 were annihilated. Any radiance that is not purely diffuse-
+  // reflected — an emitter, or the environment background, both of which
+  // legitimately sit on a zero-albedo g-buffer texel — came out of an
+  // albedo-aware denoiser black while rendering correctly with the denoiser off.
+  // Both directions now resolve the channel through the same floored accessor.
+  it('round-trips exactly at and below the albedo floor (zero-albedo radiance survives)', () => {
+    const px = 3;
+    //                                    albedo 0        albedo 1e-4     albedo 0.5
+    const original = new Float32Array([2.5, 1.0, 0.4,  0.8, 0.2, 0.6,  0.3, 0.9, 0.1]);
+    const albedo   = new Float32Array([0.0, 0.0, 0.0,  1e-4, 1e-4, 1e-4, 0.5, 0.5, 0.5]);
+    const restored = remodulateAlbedo(demodulateAlbedo(original, albedo, px), albedo, px);
+    for (let i = 0; i < original.length; i += 1) {
+      expect(restored[i]).toBeCloseTo(original[i]!, 6);
+    }
+    // The zero-albedo emitter texel specifically must not be blacked out.
+    expect(restored[0]).toBeGreaterThan(0);
+  });
+
+  it('a short albedo buffer is neutral in both directions, not a 1000x amplifier', () => {
+    const px = 2;
+    const original = new Float32Array([0.4, 0.5, 0.6, 0.7, 0.8, 0.9]);
+    // Only the first pixel has albedo; the second is out of range.
+    const albedo = new Float32Array([0.5, 0.5, 0.5]);
+    const demod = demodulateAlbedo(original, albedo, px);
+    // Out-of-range channels resolve to the neutral 1, so demodulation is a no-op
+    // there rather than dividing by the 1e-3 floor.
+    expect(demod[3]).toBeCloseTo(0.7, 6);
+    const restored = remodulateAlbedo(demod, albedo, px);
+    for (let i = 0; i < original.length; i += 1) {
+      expect(restored[i]).toBeCloseTo(original[i]!, 6);
     }
   });
 });

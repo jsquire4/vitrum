@@ -1,5 +1,4 @@
 import {
-  PT_WEBGPU_COMMON_WGSL,
   composePtWebgpuCommonWgsl,
   type PtWebgpuSamplingMode,
 } from './common.wgsl.js';
@@ -26,14 +25,8 @@ import {
   SPPM_PHOTON_PASS_WGSL,
 } from './pathTrace/sppmBindings.wgsl.js';
 import { PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL } from './pathTrace/caustic.wgsl.js';
-import {
-  PT_WEBGPU_PATH_TRACE_KERNEL_WGSL,
-  composePathTraceKernelWgsl,
-} from './pathTrace/kernel.wgsl.js';
-import {
-  PT_WEBGPU_BDPT_CONNECTION_WGSL,
-  composePtWebgpuBdptConnectionWgsl,
-} from './bdpt/bdptConnection.wgsl.js';
+import { composePathTraceKernelWgsl } from './pathTrace/kernel.wgsl.js';
+import { composePtWebgpuBdptConnectionWgsl } from './bdpt/bdptConnection.wgsl.js';
 import { PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL } from './bdpt/bdptLightSubpath.wgsl.js';
 import { PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL } from './bdpt/bdptCameraSplat.wgsl.js';
 import { PT_WEBGPU_MEDIUM_NEE_WGSL } from './pathTrace/mediumNee.wgsl.js';
@@ -101,6 +94,10 @@ export function composePtWebgpuTraceWgsl(
   const kernel = composePathTraceKernelWgsl({
     volumetricSss: true,
     bdptCameraSplat: bdptEnabled,
+    // INLINE-BUDGET: a bdpt:false pipeline never takes the BDPT branches at
+    // runtime (params.bdptEnabled is constant per pipeline), so emitting no call
+    // sites keeps Mesa's NIR from inlining that whole subtree into main.
+    bdptEstimator: bdptEnabled,
   });
   const cameraSplat = bdptEnabled
     ? PT_WEBGPU_BDPT_CAMERA_SPLAT_WGSL
@@ -245,23 +242,11 @@ ${SPPM_PHOTON_PASS_WGSL}
  * (causticStrategy:'none'/'manifold-nee') does not change radiometrically.
  * A/B pending V28-B.
  */
-export const PT_WEBGPU_TRACE_WGSL = /* wgsl */ `
-${PT_WEBGPU_COMMON_WGSL}
-${HAMMERSLEY_WGSL}
-${OCTAHEDRAL_CORE_WGSL}
-${LUMINANCE_WGSL}
-${HERO_WAVELENGTH_WGSL}
-${OPTICAL_WATERTIGHT_TRIANGLE_WGSL}
-${PT_WEBGPU_PATH_TRACE_MATERIAL_WGSL}
-${PT_WEBGPU_PATH_TRACE_INTERSECTION_WGSL}
-${PT_WEBGPU_PATH_TRACE_BSDF_WGSL}
-${PT_WEBGPU_PATH_TRACE_CONNECT_WGSL}
-${MNEE_BOUNDED_CHAIN_CORE_WGSL}
-${MNEE_BOUNDED_CHAIN_WGSL}
-${SPPM_GROUP3_BINDINGS_WGSL}
-${PT_WEBGPU_PATH_TRACE_CAUSTIC_WGSL}
-${PT_WEBGPU_BDPT_CONNECTION_WGSL}
-${PT_WEBGPU_BDPT_LIGHT_SUBPATH_WGSL}
-${PT_WEBGPU_MEDIUM_NEE_WGSL}
-${PT_WEBGPU_PATH_TRACE_KERNEL_WGSL}
-`;
+// Previously this was a second, hand-maintained template literal that stamped the
+// same module list as composePtWebgpuTraceWgsl(false, {}). Two copies had to be
+// kept byte-identical by hand — an invariant wgslContract / volumetricSss /
+// bdptCameraSplatWiring assert but nothing enforced at authoring time. Deriving
+// the export from the composer makes that structural instead of aspirational, and
+// means the default export picks up the compose-time gating (bdptEstimator) rather
+// than silently diverging from the pipeline the engine actually builds.
+export const PT_WEBGPU_TRACE_WGSL = composePtWebgpuTraceWgsl(false, {});

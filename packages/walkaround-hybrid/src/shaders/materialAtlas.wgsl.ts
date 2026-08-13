@@ -905,17 +905,27 @@ fn sampleMaterialAtlasLinearLevel(
   let x1 = wrapMaterialTexelIndex(base.x + 1, size.x, wrapS);
   let y0 = wrapMaterialTexelIndex(base.y, size.y, wrapT);
   let y1 = wrapMaterialTexelIndex(base.y + 1, size.y, wrapT);
-  let c00 = materialAtlasDecodeTexel(address, vec2i(x0, y0), level);
-  let c10 = materialAtlasDecodeTexel(address, vec2i(x1, y0), level);
-  let c01 = materialAtlasDecodeTexel(address, vec2i(x0, y1), level);
-  let c11 = materialAtlasDecodeTexel(address, vec2i(x1, y1), level);
-  if (c00.valid == 0u || c10.valid == 0u || c01.valid == 0u || c11.valid == 0u) {
+  // INLINE-BUDGET: one materialAtlasDecodeTexel call site instead of four. Mesa's
+  // NIR fully inlines every call site, so the four bilinear taps duplicated the
+  // whole decode path four times — and this helper is reached from every shader in
+  // the package, so the duplication was multiplied enormously. Tap order
+  // (00,10,01,11) and the mix arithmetic are unchanged.
+  var taps = array<vec4f, 4>();
+  var tapsValid = true;
+  for (var tapIndex = 0u; tapIndex < 4u; tapIndex = tapIndex + 1u) {
+    let tapX = select(x0, x1, (tapIndex & 1u) == 1u);
+    let tapY = select(y0, y1, tapIndex >= 2u);
+    let tap = materialAtlasDecodeTexel(address, vec2i(tapX, tapY), level);
+    taps[tapIndex] = tap.value;
+    tapsValid = tapsValid && tap.valid != 0u;
+  }
+  if (!tapsValid) {
     return materialAtlasInvalidSample();
   }
   return materialAtlasValidSample(
     mix(
-      mix(c00.value, c10.value, f.x),
-      mix(c01.value, c11.value, f.x),
+      mix(taps[0], taps[1], f.x),
+      mix(taps[2], taps[3], f.x),
       f.y,
     ),
     address.encoding,
@@ -954,23 +964,53 @@ fn sampleMaterialAtlasAtLod(
   let address = materialAtlasLayerAddress(layer);
   if (address.valid == 0u) { return materialAtlasInvalidSample(); }
   let lastLevel = address.mipLevelCount - 1u;
+  // INLINE-BUDGET: one sampleMaterialAtlasLevel call site instead of four. All
+  // four differed only in the mip LEVEL argument, so the level selection is
+  // resolved first and the fetch happens in a single loop. Mesa's NIR inlines
+  // every call site, and this helper sits under every shader in the package, so
+  // four copies of the whole sampler chain were multiplied across all of them.
+  // The loop runs once for the nearest/base cases and twice only for trilinear,
+  // so no extra texture work happens at runtime.
+  var level0: u32;
+  var level1: u32;
+  var blend: f32;
+  var trilinear = false;
   if (mipFilter == 0u || lastLevel == 0u) {
-    return sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, 0u, finiteLod);
+    level0 = 0u;
+    level1 = 0u;
+    blend = 0.0;
+  } else {
+    let clampedLod = clamp(finiteLod, 0.0, f32(lastLevel));
+    if (mipFilter == 1u) {
+      let nearest = min(u32(floor(clampedLod + 0.5)), lastLevel);
+      level0 = nearest;
+      level1 = nearest;
+      blend = 0.0;
+    } else {
+      level0 = min(u32(floor(clampedLod)), lastLevel);
+      level1 = min(level0 + 1u, lastLevel);
+      blend = clampedLod - floor(clampedLod);
+      trilinear = true;
+    }
   }
-  let clampedLod = clamp(finiteLod, 0.0, f32(lastLevel));
-  if (mipFilter == 1u) {
-    let level = min(u32(floor(clampedLod + 0.5)), lastLevel);
-    return sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level, finiteLod);
+  var levelSamples = array<MaterialAtlasSampleResult, 2>();
+  let levelCount = select(1u, 2u, trilinear);
+  for (var levelIndex = 0u; levelIndex < levelCount; levelIndex = levelIndex + 1u) {
+    let level = select(level0, level1, levelIndex == 1u);
+    levelSamples[levelIndex] = sampleMaterialAtlasLevel(
+      wrapped, layer, samplerPacked, level, finiteLod,
+    );
   }
-  let level0 = min(u32(floor(clampedLod)), lastLevel);
-  let level1 = min(level0 + 1u, lastLevel);
-  let c0 = sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level0, finiteLod);
-  let c1 = sampleMaterialAtlasLevel(wrapped, layer, samplerPacked, level1, finiteLod);
+  // Nearest/base paths return the single fetch verbatim, exactly as before —
+  // including an invalid result, which the trilinear path instead rejects.
+  if (!trilinear) { return levelSamples[0]; }
+  let c0 = levelSamples[0];
+  let c1 = levelSamples[1];
   if (c0.valid == 0u || c1.valid == 0u) {
     return materialAtlasInvalidSample();
   }
   return materialAtlasValidSample(
-    mix(c0.value, c1.value, clampedLod - floor(clampedLod)),
+    mix(c0.value, c1.value, blend),
     c0.encoding,
   );
 }

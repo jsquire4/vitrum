@@ -872,9 +872,13 @@ describe('walkaround materialTextureAtlas', () => {
     expect(validSample([Number.POSITIVE_INFINITY, 0, 0, 1])).toBe(false);
     expect(MATERIAL_ATLAS_WGSL).toContain('struct MaterialAtlasSampleResult {');
     expect(MATERIAL_ATLAS_WGSL).toContain('encoding: u32,');
-    expect(MATERIAL_ATLAS_WGSL).toContain(
-      'c00.valid == 0u || c10.valid == 0u || c01.valid == 0u || c11.valid == 0u',
-    );
+    // The four bilinear taps are fetched in a loop now — one inlined call site
+    // instead of four (see the INLINE-BUDGET note in materialAtlas.wgsl.ts). The
+    // invariant pinned here is unchanged: EVERY tap's validity is required before
+    // the blended sample is accepted, and the loop bound keeps "every" honest.
+    expect(MATERIAL_ATLAS_WGSL).toContain('tapIndex < 4u');
+    expect(MATERIAL_ATLAS_WGSL).toContain('tapsValid = tapsValid && tap.valid != 0u;');
+    expect(MATERIAL_ATLAS_WGSL).toContain('if (!tapsValid) {');
     expect(MATERIAL_ATLAS_WGSL).toContain(
       'if (c0.valid == 0u || c1.valid == 0u)',
     );

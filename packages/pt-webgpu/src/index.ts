@@ -1700,6 +1700,17 @@ class PTEngineWebGPU implements Engine {
       // trace used ReSTIR's extended composite group. Both layouts bind the same
       // atomic splat buffer at binding 14.
       resolvePass.setBindGroup(0, bindGroup);
+      // The resolver is built with the shared pipeline layout, which declares
+      // groups 1/2/3 on the full tier (BDPT is full-tier only). Bind-group state
+      // does not survive beginComputePass, so every declared group must be set
+      // here or dispatchWorkgroups fails bind-group-completeness validation and
+      // the beauty accumulator is never written. Groups 1/2/3 are unused by the
+      // resolve entry point; binding unused groups is legal.
+      resolvePass.setBindGroup(1, gpu.pathTraceBindGroup1);
+      resolvePass.setBindGroup(2, gpu.pathTraceBindGroup2);
+      if (gpu.pathTraceBindGroup3 != null) {
+        resolvePass.setBindGroup(3, gpu.pathTraceBindGroup3);
+      }
       resolvePass.dispatchWorkgroups(
         Math.ceil(width / WORKGROUP_SIZE),
         Math.ceil(height / WORKGROUP_SIZE),

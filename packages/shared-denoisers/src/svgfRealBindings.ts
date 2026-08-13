@@ -16,6 +16,7 @@
  */
 
 import { defineUbo } from '@vitrum/shared-samplers';
+import { ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS } from './atrousVarianceBindings.js';
 import {
   SVGF_REAL_DEFAULT_ALPHA_MIN,
   SVGF_REAL_DEFAULT_SIGMA_DEPTH,
@@ -83,5 +84,82 @@ export function packSVGFReprojUniforms(u: SVGFReprojUniforms, target: ArrayBuffe
     sigmaNormal: u.sigmaNormal,
     alphaMin: u.alphaMin,
     forceReset: u.forceReset ?? 0,
+  });
+}
+
+// ============================================================
+// SVGF7x7FallbackUBO — 7×7 spatial-variance edge-stop tuning
+// ============================================================
+
+/**
+ * Edge-stopping tuning for the 7×7 spatial variance fallback (Schied 2017 §4.3).
+ *
+ * The fallback estimates variance for newly-disoccluded pixels, where temporal
+ * moments are not yet trustworthy. Both weights are the same quantities the
+ * neighbouring passes already expose, so a host tuning the chain reaches this
+ * pass too:
+ *
+ *  - `normalExponent` is the à-trous `sigmaNormal` — the exponent applied to the
+ *    clamped normal dot product (`AtrousVarianceAtrousUniforms.sigmaNormal`).
+ *  - `relativeDepthSigma` is the reprojection `sigmaDepth` — Schied Eq. 2 σ_z,
+ *    a RELATIVE depth tolerance scaled by the larger sample depth. It is NOT the
+ *    à-trous `sigmaDepth`, which scales a projected depth gradient instead and
+ *    therefore carries a different default and a different unit.
+ */
+export interface SVGF7x7FallbackUniforms {
+  /** σ_n exponent on `clamp(dot(n_center, n_sample), 0, 1)`. Default 128.0. */
+  readonly normalExponent: number;
+  /** σ_z relative depth tolerance (Schied Eq. 2). Default 0.10. */
+  readonly relativeDepthSigma: number;
+}
+
+/**
+ * SVGF7x7FallbackUBO codegen — single source of truth for size, layout, and pack.
+ *
+ * Layout:
+ *   offset 0 — normalExponent     : f32 (4 bytes)
+ *   offset 4 — relativeDepthSigma : f32 (4 bytes)
+ * Total: 16 bytes (rounded up to the WebGPU minimum uniform-binding size;
+ * `defineUbo.pack` zero-fills the trailing pad deterministically).
+ *
+ * The WGSL `struct SVGF7x7FallbackUBO` in wgsl/svgf7x7SpatialFallback.wgsl.ts
+ * declares the same two f32 fields in this order.
+ */
+const SVGF_7X7_FALLBACK_UBO = defineUbo([
+  { name: 'normalExponent',     type: 'f32' },
+  { name: 'relativeDepthSigma', type: 'f32' },
+] as const);
+
+/** Byte size of the SVGF7x7FallbackUBO struct — derived from the codegen layout. */
+export const SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES = SVGF_7X7_FALLBACK_UBO.sizeBytes;
+
+/**
+ * Defaults for the 7×7 spatial fallback.
+ *
+ * These are the values the pass previously folded in as WGSL constants, sourced
+ * from the constants the sibling passes already default to, so an un-tuned host
+ * renders exactly as before.
+ */
+export const SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS: SVGF7x7FallbackUniforms = {
+  normalExponent:     ATROUS_VARIANCE_DEFAULT_ATROUS_UNIFORMS.sigmaNormal,
+  relativeDepthSigma: SVGF_REAL_DEFAULT_SIGMA_DEPTH,
+} as const;
+
+/**
+ * Pack SVGF7x7FallbackUniforms into an ArrayBuffer.
+ *
+ * @param u      - Uniform values to pack.
+ * @param target - Destination ArrayBuffer (must be ≥ offset + SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES).
+ * @param offset - Byte offset into target (default: 0).
+ */
+export function packSVGF7x7FallbackUniforms(
+  u: SVGF7x7FallbackUniforms,
+  target: ArrayBuffer,
+  offset = 0,
+): void {
+  const view = new DataView(target);
+  SVGF_7X7_FALLBACK_UBO.pack(view, offset, {
+    normalExponent:     u.normalExponent,
+    relativeDepthSigma: u.relativeDepthSigma,
   });
 }

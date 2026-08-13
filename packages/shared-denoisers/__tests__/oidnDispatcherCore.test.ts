@@ -334,6 +334,83 @@ describe('OIDNDispatcherCore — preloadOnBridgeInit', () => {
     expect((bridge.preloadOIDNModel as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(0);
   });
 
+  // Regression pin: the shipped `_defaultLoader` always supplies
+  // acquireOIDNSession, so a preload branch reachable only when that optional
+  // method is ABSENT can never fire in production — the public option would be
+  // inert for both converged backends. These cases use the shipped-loader bridge
+  // shape (lease API + preload API present together).
+  function makeLeaseBridge(calls: string[]): OIDNBridgeLike {
+    return {
+      denoiseFinal: vi.fn(async () => new Float32Array(12)),
+      preloadOIDNModel: vi.fn(async () => {
+        calls.push('preload');
+      }),
+      acquireOIDNSession: vi.fn(async () => {
+        calls.push('acquire');
+        return { release: vi.fn() };
+      }),
+      releaseOIDNCacheEntry: vi.fn(),
+    };
+  }
+
+  it('preloads on a lease-capable bridge, before acquiring the lease', async () => {
+    const calls: string[] = [];
+    const bridge = makeLeaseBridge(calls);
+    const core = new OIDNDispatcherCore<DirectInput>(
+      makeCoreOpts(bridge, { preloadOnBridgeInit: true }),
+    );
+
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+
+    expect((bridge.preloadOIDNModel as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((bridge.acquireOIDNSession as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    // Preload must precede acquisition so a rejecting preload cannot strand a lease.
+    expect(calls).toEqual(['preload', 'acquire']);
+    expect(core.getLatestDenoised()).not.toBeNull();
+  });
+
+  it('does NOT preload on a lease-capable bridge when preloadOnBridgeInit=false', async () => {
+    const calls: string[] = [];
+    const bridge = makeLeaseBridge(calls);
+    const core = new OIDNDispatcherCore<DirectInput>(
+      makeCoreOpts(bridge, { preloadOnBridgeInit: false }),
+    );
+
+    core.kickIfReady(makeInput(), 2, 2);
+    await flushMicrotasks();
+
+    expect(calls).toEqual(['acquire']);
+    expect(core.getLatestDenoised()).not.toBeNull();
+  });
+
+  it('does not acquire a lease when a requested preload rejects', async () => {
+    const acquireOIDNSession = vi.fn(async () => ({ release: vi.fn() }));
+    const bridge: OIDNBridgeLike = {
+      denoiseFinal: vi.fn(async () => new Float32Array(12)),
+      preloadOIDNModel: vi.fn(async () => {
+        throw new Error('mock preload failure');
+      }),
+      acquireOIDNSession,
+      releaseOIDNCacheEntry: vi.fn(),
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const core = new OIDNDispatcherCore<DirectInput>(
+        makeCoreOpts(bridge, { preloadOnBridgeInit: true }),
+      );
+
+      core.kickIfReady(makeInput(), 2, 2);
+      await flushMicrotasks();
+
+      expect(core.getLastError()).toBe('mock preload failure');
+      expect(acquireOIDNSession).not.toHaveBeenCalled();
+      expect(bridge.denoiseFinal).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('passes executionProviders to preloadOIDNModel when set', async () => {
     const bridge = makeDefaultBridge();
     const core = new OIDNDispatcherCore<DirectInput>({

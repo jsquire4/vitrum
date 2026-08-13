@@ -204,8 +204,9 @@ describe('one-shot WebGPU denoiser cleanup', () => {
       }),
     ).rejects.toThrow('mock readback failure');
 
+    // reproj UBO + 7×7 fallback tuning UBO + one UBO per à-trous iteration.
     expect(device.textures).toHaveLength(18);
-    expect(device.buffers).toHaveLength(3);
+    expect(device.buffers).toHaveLength(4);
     expectAllTransientsDestroyed(device);
   });
 });

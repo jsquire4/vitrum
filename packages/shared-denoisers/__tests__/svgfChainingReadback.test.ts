@@ -47,6 +47,7 @@ const uploadMocks = vi.hoisted(() => {
 vi.mock('../src/webGpuTextureUpload.js', () => uploadMocks);
 
 import { runSVGFRealWebGPU } from '../src/svgfRealWebGPU.js';
+import { SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS } from '../src/svgfRealBindings.js';
 
 // A minimal device stub that records created textures/buffers by label so we
 // can map upload calls (which receive the texture object) back to a label.
@@ -92,6 +93,43 @@ function labelOfArg(arg: unknown): string | undefined {
   return (arg as StubTexture | undefined)?.label;
 }
 
+interface StubBindGroupEntry { readonly resource: { label?: string; buffer?: { label?: string } } }
+
+/** Bind-group entries carry a texture view OR a `{ buffer }` resource. */
+function labelOfEntry(entry: StubBindGroupEntry): string | undefined {
+  return entry.resource.label ?? entry.resource.buffer?.label;
+}
+
+/**
+ * The 7×7 fallback bind group, identified by its first two resources
+ * (the reprojection group also starts at `svgf-curr-color`, but its second
+ * entry is `svgf-prev-color`). Deliberately not matched on entry count so an
+ * ABI regression surfaces as a resource diff rather than an undefined result.
+ */
+function findFallbackBindGroupEntries(
+  device: ReturnType<typeof createStubDevice>,
+): StubBindGroupEntry[] | undefined {
+  const call = device.createBindGroup.mock.calls.find((c) => {
+    const entries = (c[0] as { entries?: StubBindGroupEntry[] }).entries;
+    return labelOfEntry(entries?.[0] as StubBindGroupEntry) === 'svgf-curr-color'
+      && labelOfEntry(entries?.[1] as StubBindGroupEntry) === 'svgf-hist-out';
+  });
+  return (call?.[0] as { entries: StubBindGroupEntry[] } | undefined)?.entries;
+}
+
+/** The two f32 edge stops the host wrote into the fallback tuning UBO. */
+function readFallbackUbo(
+  device: ReturnType<typeof createStubDevice>,
+): [number, number] | undefined {
+  const call = device.queue.writeBuffer.mock.calls.find(
+    (c) => (c[0] as { label?: string } | undefined)?.label === 'svgf-7x7-ubo',
+  );
+  const data = call?.[2] as ArrayBuffer | undefined;
+  if (data === undefined) return undefined;
+  const view = new DataView(data);
+  return [view.getFloat32(0, true), view.getFloat32(4, true)];
+}
+
 beforeEach(() => {
   // acquireDenoiseDevice checks navigator.gpu even when an explicit device is
   // passed; stub a present-but-unused gpu object.
@@ -135,21 +173,48 @@ describe('one-shot SVGF chaining plumbing + return shape (V3-3)', () => {
       rgb, width: W, height: H, atrousIterations: 1,
     });
 
-    const fallbackCall = device.createBindGroup.mock.calls.find((call) => {
-      const entries = (call[0] as { entries?: Array<{ resource?: StubTexture }> }).entries;
-      return entries?.[0]?.resource?.label === 'svgf-curr-color'
-        && entries.length === 6;
-    });
-    const entries =
-      (fallbackCall?.[0] as { entries: Array<{ resource: StubTexture }> } | undefined)?.entries;
-    expect(entries?.map((entry) => entry.resource.label)).toEqual([
+    const entries = findFallbackBindGroupEntries(device);
+    expect(entries?.map((entry) => labelOfEntry(entry))).toEqual([
       'svgf-curr-color',
       'svgf-hist-out',
       'svgf-var-mom',
       'svgf-var-final',
       'svgf-norm',
       'svgf-depth',
+      // The disocclusion variance estimate reads its edge stops from a UBO, so
+      // host-supplied sigmas reach this pass instead of being shader constants.
+      'svgf-7x7-ubo',
     ]);
+  });
+
+  it('packs the host sigmas into the 7x7 fallback tuning UBO', async () => {
+    const device = createStubDevice();
+    await runSVGFRealWebGPU({
+      device: device as unknown as GPUDevice,
+      rgb, width: W, height: H, atrousIterations: 1,
+      sigmaNormal: 8,
+      reprojUniforms: { sigmaDepth: 0.5, sigmaNormal: 0.9, alphaMin: 0.05 },
+    });
+
+    expect(readFallbackUbo(device)).toEqual([8, 0.5]);
+  });
+
+  it('defaults the 7x7 fallback tuning UBO to the previously hardcoded weights', async () => {
+    const device = createStubDevice();
+    await runSVGFRealWebGPU({
+      device: device as unknown as GPUDevice,
+      rgb, width: W, height: H, atrousIterations: 1,
+    });
+
+    // Guards existing renders: an un-tuned call must reproduce the constants the
+    // shader used to fold in (normal exponent 128, relative depth sigma 0.10).
+    // f32 storage rounds 0.1, so compare at float precision.
+    const packed = readFallbackUbo(device);
+    expect(packed?.[0]).toBe(SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS.normalExponent);
+    expect(packed?.[1]).toBeCloseTo(
+      SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS.relativeDepthSigma,
+      7,
+    );
   });
 
   it('returns first-wavelet color + moments + history read back before teardown', async () => {

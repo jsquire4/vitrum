@@ -59,10 +59,22 @@ export function composePathTraceKernelWgsl(opts: {
    * E0 onward). See the estimator-split note at the composite gate. OFF (default)
    * emits the verbatim full-path kernel — byte-identical to pre-A1. */
   readonly restirPtComposite?: boolean;
+  /**
+   * INLINE-BUDGET: emit the BDPT explicit-connection call sites at all. Mesa's
+   * NIR fully inlines every call site, so each call to evaluateBdptConnection /
+   * bdptBuildInvocationLightSubpath expands that entire subtree into main. The
+   * runtime guard `params.bdptEnabled` is derived from a readonly constructor
+   * field and is therefore constant for a pipeline's lifetime, so omitting the
+   * calls on a bdpt:false pipeline removes only code that could never execute —
+   * the rendered result is unchanged. Defaults to true so existing direct
+   * callers (tests, lite compositions) are unaffected.
+   */
+  readonly bdptEstimator?: boolean;
 }): string {
   const sss = opts.volumetricSss;
   const composite = opts.restirPtComposite === true;
   const cameraSplat = opts.bdptCameraSplat === true;
+  const bdptEstimator = opts.bdptEstimator !== false;
   // BDPT estimator boundary: explicit connections own finite-emitter terminal
   // strategies. The ordinary eye estimator retains distant/environment paths
   // plus camera-visible and delta-hit finite emission. This runtime partition
@@ -277,7 +289,7 @@ export function composePathTraceKernelWgsl(opts: {
               mediumLayerAtScatter.initialDistance,
               mediumRemainingAtVertex,
             );
-            let maxMediumLv = min(params.bdptMaxLightBounces, 8u);
+${bdptEstimator ? `            let maxMediumLv = min(params.bdptMaxLightBounces, 8u);
             for (var mediumLvi = 0u; mediumLvi < maxMediumLv; mediumLvi++) {
               radiance = radiance + evaluateBdptConnection(
                 scatterPos, vec3f(0.0), vec3f(0.0), -ray.direction,
@@ -289,7 +301,7 @@ export function composePathTraceKernelWgsl(opts: {
                 0.0, 0.0, bsdfNoThinFilm(), bounce,
                 true, eyeMedium.g, eyeMedium.matId, i32(mediumLvi), &rng,
               );
-            }
+            }` : ''}
             if (bounce >= 1u) {
               let prevEye = bdptEyeStackLoad(bounce - 1u);
               let currentEye = bdptEyeStackLoad(bounce);
@@ -996,10 +1008,10 @@ ${bdptPrimaryCameraPdfDecl}
     heroLambda = hero.x;
     heroPdf = hero.y;
   }
-  if (bdptOwnsFiniteLightFamily) {
+${bdptEstimator ? `  if (bdptOwnsFiniteLightFamily) {
     bdptSetInvocationHeroLambda(heroLambda);
     bdptBuildInvocationLightSubpath(gid.xy);${cameraSplatAfterLightBuild}
-  }
+  }` : ''}
 
   // PTWG-04: sppmPixelStats has separate surface and volume records per pixel,
   // but one eye path may mutate at most one record per frame. Later bounces keep
@@ -1689,7 +1701,7 @@ ${bdptEyeStackPrimaryPdfComment}
         bdptEyeTransmittedMedium.initialDistance,
         bdptEyeTransmittedMedium.remainingDistance,
       );
-      let maxLv = min(params.bdptMaxLightBounces, 8u);
+${bdptEstimator ? `      let maxLv = min(params.bdptMaxLightBounces, 8u);
       // The primary eye vertex and emitter endpoint are part of this family;
       // ordinary finite NEE is suppressed above while BDPT owns the family.
       for (var lvi = 0u; lvi < maxLv; lvi++) {
@@ -1725,7 +1737,7 @@ ${bdptEyeStackPrimaryPdfComment}
           i32(lvi),
           &rng,
         );
-      }
+      }` : ''}
     }
 
     var sppmGatheredThisVertex = false;

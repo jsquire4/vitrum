@@ -106,14 +106,20 @@ describe('rough-transmission material BSDF coherence', () => {
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
       'let interfaceResponse = materialDielectricLayeredInterface(',
     );
+    // bsdfDielectricFiniteEventProbabilities evaluates the macro and microfacet
+    // interfaces in a two-iteration loop over the incident cosine — one inlined
+    // call site instead of two (see the INLINE-BUDGET note in bsdf.wgsl.ts). The
+    // coherence being pinned here is unchanged: both probabilities still come
+    // from the SAME materialDielectricLayeredInterface model, not a second
+    // Fresnel formulation.
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
-      'let microfacetInterface = materialDielectricLayeredInterface(',
+      'let layered = materialDielectricLayeredInterface(',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
-      'clamp(luminance(microfacetInterface.reflectance), 0.0, 1.0);',
+      'clamp(luminance(microfacetReflectance), 0.0, 1.0);',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).toContain(
-      'clamp(luminance(microfacetInterface.baseTransmittance), 0.0, 1.0);',
+      'clamp(luminance(microfacetBaseTransmittance), 0.0, 1.0);',
     );
     expect(PT_WEBGPU_PATH_TRACE_BSDF_WGSL).not.toContain(
       'let microfacetF = frDielectric(abs(dot(wo, wm)), etaTOverI);',

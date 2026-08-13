@@ -145,8 +145,12 @@ describe('Sobol texture table', () => {
     expect(SOBOL_DIMENSION_COUNT).toBe(512);
     expect(SOBOL_DIMENSION_COUNT).toBe(SOBOL_DIRECTION_DIMENSION_COUNT);
     expect(SOBOL_DIRECTION_BITS).toBe(16);
+    // Declared var<private> rather than const on purpose: the table is read at a
+    // dynamic index, and a dynamically-indexed compile-time const array is
+    // scalarised by Mesa, which made full-tier pipeline creation unbounded. Same
+    // 4096 packed words either way — the storage class is what changed.
     expect(SOBOL_DIRECTION_NUMBERS_WGSL).toContain(
-      'const SOBOL_DIRECTION_NUMBERS_PACKED = array<u32, 4096>',
+      'var<private> SOBOL_DIRECTION_NUMBERS_PACKED: array<u32, 4096>',
     );
     expect(sobolTextureComponentBits(7, 0)).not.toBe(sobolTextureComponentBits(7, 4));
     expect(owenScrambledSobolU32(12345, 0)).not.toBe(owenScrambledSobolU32(12345, 3));

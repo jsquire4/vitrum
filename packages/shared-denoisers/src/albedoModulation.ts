@@ -19,7 +19,36 @@
  *   Schied et al. "Spatiotemporal Variance-Guided Filtering" HPG 2017, §4.1.
  */
 
-/** Divide rgb by albedo (per channel, clamped to 1e-3 to avoid divide-by-zero); returns a new Float32Array. */
+/**
+ * Per-channel albedo used by BOTH directions of the modulation pair.
+ *
+ * The two directions must resolve the divisor and the multiplier identically or
+ * demodulate→filter→remodulate is not an inverse. Two asymmetries previously
+ * broke that:
+ *   - demodulate clamped to 1e-3 while remodulate multiplied by the RAW value,
+ *     so a channel in (0, 1e-3) was attenuated by up to 1000x and a channel at
+ *     exactly 0 was annihilated. Any pixel carrying radiance that is not purely
+ *     diffuse-reflected — an emitter, or the environment background — came out
+ *     of an albedo-aware denoiser black, even though it renders correctly with
+ *     the denoiser off.
+ *   - out-of-range indices resolved to 0 (→ clamped to 1e-3, a 1000x scale-up)
+ *     on demodulate but to 1 (neutral) on remodulate, so a short albedo buffer
+ *     amplified radiance by 1000x instead of passing it through.
+ *
+ * Resolving both through this helper makes the round trip exact for every input:
+ * `1` is the neutral fallback for a short buffer, and the shared 1e-3 floor
+ * cancels itself. Channels at or above the floor are unaffected, so ordinary
+ * SVGF/BMFR behaviour is byte-identical to before.
+ */
+const ALBEDO_FLOOR = 1e-3;
+
+function albedoChannel(albedo: Float32Array, index: number): number {
+  // Float32Array indexing returns number|undefined; values are never null, only
+  // undefined past the end. `?? 1` is the neutral (white) fallback.
+  return Math.max(albedo[index] ?? 1, ALBEDO_FLOOR);
+}
+
+/** Divide rgb by albedo (per channel, floored at 1e-3 to avoid divide-by-zero); returns a new Float32Array. */
 export function demodulateAlbedo(
   rgb: Float32Array,
   albedo: Float32Array,
@@ -28,17 +57,14 @@ export function demodulateAlbedo(
   const out = new Float32Array(rgb.length);
   for (let i = 0; i < pixelCount; i += 1) {
     const si = i * 3;
-    const ar = Math.max(albedo[si]     ?? 0, 1e-3);
-    const ag = Math.max(albedo[si + 1] ?? 0, 1e-3);
-    const ab = Math.max(albedo[si + 2] ?? 0, 1e-3);
-    out[si]     = (rgb[si]     ?? 0) / ar;
-    out[si + 1] = (rgb[si + 1] ?? 0) / ag;
-    out[si + 2] = (rgb[si + 2] ?? 0) / ab;
+    out[si]     = (rgb[si]     ?? 0) / albedoChannel(albedo, si);
+    out[si + 1] = (rgb[si + 1] ?? 0) / albedoChannel(albedo, si + 1);
+    out[si + 2] = (rgb[si + 2] ?? 0) / albedoChannel(albedo, si + 2);
   }
   return out;
 }
 
-/** Multiply rgb by albedo in-place; returns the same Float32Array. */
+/** Multiply rgb by the SAME floored albedo demodulate used, in-place; returns the same Float32Array. */
 export function remodulateAlbedo(
   rgb: Float32Array,
   albedo: Float32Array,
@@ -46,15 +72,9 @@ export function remodulateAlbedo(
 ): Float32Array {
   for (let i = 0; i < pixelCount; i += 1) {
     const si = i * 3;
-    // Float32Array indexing returns number|undefined; ?? 1 gives a white albedo
-    // fallback (neutral multiply) when the albedo buffer is shorter than the rgb
-    // buffer. Safe: Float32Array values are never null, only undefined on OOB.
-    const ar = albedo[si]     ?? 1;
-    const ag = albedo[si + 1] ?? 1;
-    const ab = albedo[si + 2] ?? 1;
-    rgb[si]     = (rgb[si]     ?? 0) * ar;
-    rgb[si + 1] = (rgb[si + 1] ?? 0) * ag;
-    rgb[si + 2] = (rgb[si + 2] ?? 0) * ab;
+    rgb[si]     = (rgb[si]     ?? 0) * albedoChannel(albedo, si);
+    rgb[si + 1] = (rgb[si + 1] ?? 0) * albedoChannel(albedo, si + 1);
+    rgb[si + 2] = (rgb[si + 2] ?? 0) * albedoChannel(albedo, si + 2);
   }
   return rgb;
 }

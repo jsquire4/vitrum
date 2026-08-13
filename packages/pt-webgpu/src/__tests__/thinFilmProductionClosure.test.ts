@@ -494,8 +494,11 @@ describe('pt-webgpu coherent thin-film production closure', () => {
     );
     expect(evaluator).toContain('bsdfLayeredInterfaceResponse(');
     expect(eventPdf).toContain('materialDielectricLayeredInterface(');
-    expect(eventPdf).toContain('microfacetInterface.reflectance');
-    expect(eventPdf).toContain('microfacetInterface.baseTransmittance');
+    // The event-PDF path evaluates the macro and microfacet interfaces in a
+    // two-iteration loop (one inlined call site instead of two), so the response
+    // lands in locals rather than a per-call struct. Same model, same routing.
+    expect(eventPdf).toContain('microfacetReflectance');
+    expect(eventPdf).toContain('microfacetBaseTransmittance');
     expect(sampler).toContain('materialDielectricLayeredInterface(');
     expect(sampler).toContain('microfacetInterface.reflectance');
     expect(sampler).toContain('microfacetInterface.baseTransmittance');

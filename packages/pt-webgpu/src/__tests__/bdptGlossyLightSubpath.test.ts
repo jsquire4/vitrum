@@ -575,7 +575,14 @@ describe('A9 — glossy/specular BDPT light subpath', () => {
     // without re-multiplying cosLight (the geometry term owns edge cosines).
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lv4 = bdptLightPath[bdptLightPathIndex(lightVtxIdx, 4u)];');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('if (lvMatId >= 0.0) {');
-    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, bdptInvocationHeroLambdaNm);');
+    // The light-vertex material is sampled once, hoisted under lvMatId >= 0.0, and
+    // reused by the three sites that previously each re-sampled it with identical
+    // arguments (see the INLINE-BUDGET note in bdptConnection.wgsl.ts). Still the
+    // REAL sampled payload material — not a stub or a simplified stand-in.
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain(
+      'lvSampledMaterial = bdptSampleMaterialAtPayload(',
+    );
+    expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvMat = lvSampledMaterial;');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('let lvBrdf = evaluateFiniteBsdfFullWithClearcoatNormal(');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightNormal, lvMat.clearcoatNormal, lvWoPrev, -connDir,');
     expect(PT_WEBGPU_BDPT_CONNECTION_WGSL).toContain('lightBsdfCosTheta = lvBrdf;');

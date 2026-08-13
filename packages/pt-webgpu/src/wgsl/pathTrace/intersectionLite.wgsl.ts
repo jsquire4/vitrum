@@ -135,8 +135,12 @@ fn nextSidedTraversalCursor(cursor: f32, hitDist: f32) -> f32 {
 
 fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
   var cursor = select(tMin, 0.0, opticalContinuationSourceIsActive());
-  var hit = traceClosestRaw(ray, cursor, tMax);
+  // INLINE-BUDGET: see the note on the full-tier traceClosest — one
+  // traceClosestRaw call site instead of two, via loop rotation. Identical
+  // traversal sequence and results.
+  var hit: SceneHit;
   loop {
+    hit = traceClosestRaw(ray, cursor, tMax);
     if (!hit.didHit) {
       opticalClearContinuationSource();
       return hit;
@@ -153,7 +157,6 @@ fn traceClosest(ray: Ray, tMin: f32, tMax: f32) -> SceneHit {
       return hit;
     }
     cursor = nextCursor;
-    hit = traceClosestRaw(ray, cursor, tMax);
   }
   return hit;
 }

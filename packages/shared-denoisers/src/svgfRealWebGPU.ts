@@ -29,8 +29,11 @@ import { svgfRealPipelines } from './svgfRealPipelineCache.js';
 import {
   SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
   SVGF_REPROJ_DEFAULT_UNIFORMS,
+  SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES,
   packSVGFReprojUniforms,
+  packSVGF7x7FallbackUniforms,
   type SVGFReprojUniforms,
+  type SVGF7x7FallbackUniforms,
 } from './svgfRealBindings.js';
 import {
   SVGF_REAL_DEFAULT_ATROUS_ITERATIONS,
@@ -315,6 +318,17 @@ export async function runSVGFRealWebGPU(
     sigmaNormal: opts.reprojUniforms?.sigmaNormal ?? SVGF_REPROJ_DEFAULT_UNIFORMS.sigmaNormal,
     alphaMin: opts.reprojUniforms?.alphaMin ?? SVGF_REPROJ_DEFAULT_UNIFORMS.alphaMin,
     forceReset: opts.reprojUniforms?.forceReset ?? SVGF_REPROJ_DEFAULT_UNIFORMS.forceReset ?? 0,
+  };
+  // Invariant: the 7×7 disocclusion fallback must respond to the same host
+  // tuning as the passes around it, so its two edge stops are sourced from the
+  // knobs that already carry those exact quantities — `sigmaNormal` is the
+  // à-trous normal EXPONENT, and the fallback's depth tolerance is Schied Eq. 2
+  // σ_z (relative to the larger sample depth), which is `reprojUniforms.sigmaDepth`
+  // and NOT the gradient-scaled à-trous `sigmaDepth`. Both defaults equal the
+  // values this pass previously hardcoded, so an un-tuned call is unchanged.
+  const fallbackU: SVGF7x7FallbackUniforms = {
+    normalExponent: sigmaNormal,
+    relativeDepthSigma: reprojU.sigmaDepth,
   };
   const rgbForChain =
     opts.albedoRgb != null
@@ -619,6 +633,17 @@ export async function runSVGFRealWebGPU(
     );
     device.queue.writeBuffer(reprojUboGpu, 0, reprojUboScratch);
 
+    const fallbackUboScratch = new ArrayBuffer(SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES);
+    packSVGF7x7FallbackUniforms(fallbackU, fallbackUboScratch);
+    const fallbackUboGpu = trackBuffer(
+      device.createBuffer({
+        label: 'svgf-7x7-ubo',
+        size: SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      }),
+    );
+    device.queue.writeBuffer(fallbackUboGpu, 0, fallbackUboScratch);
+
     // Atrous UBOs + alternating ping-pong bind groups are built by the shared
     // buildAtrousChain (atrousChain.ts) during command encoding below.
 
@@ -664,6 +689,7 @@ export async function runSVGFRealWebGPU(
         { binding: 3, resource: varFinalTex.createView() },
         { binding: 4, resource: currNormTex.createView() },
         { binding: 5, resource: currDepthTex.createView() },
+        { binding: 6, resource: { buffer: fallbackUboGpu } },
       ],
     });
 

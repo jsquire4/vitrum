@@ -125,7 +125,12 @@ function resolveSssMedium(
   attenuationColor: Vec3,
   attenuationDistance: number,
   context: string,
-): { readonly active: boolean; readonly sigmaTMax: number; readonly sigmaS: Vec3 } {
+): {
+  readonly active: boolean;
+  readonly scatters: boolean;
+  readonly sigmaTMax: number;
+  readonly sigmaS: Vec3;
+} {
   const scalarSigmaS = requireNonNegativeFloat32(
     m.scatteringCoefficient ?? 0.0,
     `${context}.scatteringCoefficient`,
@@ -190,6 +195,13 @@ function resolveSssMedium(
       sigmaSMax > 0 ||
       sigmaAMax > 0 ||
       m.spectralAttenuation != null,
+    // Free-flight collision sampling is only meaningful when the medium
+    // actually scatters; Beer-Lambert is exact for pure absorption. This must
+    // stay in lockstep with `isParticipatingMedium` in sceneTraceFeatures.ts,
+    // which drives the FEATURE_FOG compile gate. Packing the free-flight bit on
+    // absorption-only media routed them to the survival-ratio arm (which returns
+    // ~1.0) while FEATURE_FOG was off, cancelling their absorption entirely.
+    scatters: sigmaSMax > 0,
     sigmaTMax: requireNonNegativeFloat32(
       Math.max(finiteSigmaTMax, spectralSigmaAMax + sigmaSMax, 0.0),
       `${context} derived sigmaT majorant`,
@@ -781,7 +793,7 @@ function packScalarSlots(
   data[index++] = m.castShadow === false ? 0 : 1;
   data[index++] =
     (m.vertexColors === true ? 1 : 0) |
-    (sssMedium.active && transmission > 0 ? 4 : 0);
+    (sssMedium.scatters && transmission > 0 ? 4 : 0);
   {
     let flags = Number(transparent);
     if (m.doubleSided === true) flags |= DOUBLE_SIDED_BIT;

@@ -29,11 +29,20 @@ function functionSignature(source: string, name: string): string {
 describe('pt-webgpu material texture validity closure', () => {
   it('propagates validity through fetch, every bilinear tap, and mip filtering', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain('struct MaterialTextureSample');
+    // The four bilinear taps and the two mip levels are fetched in loops now —
+    // one inlined call site each instead of four/two (see the INLINE-BUDGET notes
+    // in material.wgsl.ts). The closure being pinned here is unchanged: validity
+    // is ANDed across EVERY tap and EVERY mip before a sample is accepted, and
+    // the loop bounds keep "every" honest.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('tapIndex < 4u');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('tapsValid = tapsValid && tap.valid;');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('if (!tapsValid) {');
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('mipIndex < 2u');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'if (!(c00.valid && c10.valid && c01.valid && c11.valid))',
+      'mipsValid = mipsValid && mipSample.valid;',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'if (!(c0.valid && c1.valid)) { return materialTextureInvalidSample(); }',
+      'if (!mipsValid) { return materialTextureInvalidSample(); }',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('textureNumLayers(materialTexturesLinear)');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('textureNumLevels(materialTexturesLinear)');
@@ -62,8 +71,15 @@ describe('pt-webgpu material texture validity closure', () => {
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain('fn materialTextureApplyTangentNormal');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let coefficientScale = max(');
+    // The three bump height taps (centre, +u, +v) are fetched in a loop now — one
+    // inlined call site instead of three. Every tap's validity is still required
+    // before the gradient is used, and the loop bound keeps "all three" honest.
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('tapIndex < 3u');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'if (!(sampleC.valid && sampleU.valid && sampleV.valid))',
+      'heightsValid = heightsValid && tap.valid;',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'if (!heightsValid) { return shadingNormal; }',
     );
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'let scaledGradient = vec2f(dhdu, dhdv) * bumpScale;',
@@ -123,9 +139,19 @@ describe('pt-webgpu material texture validity closure', () => {
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'oppositeNormal = applyNormalMap(matId, hit.triIndex, hit.baryVW, oppositeNormal, hit.instanceIndex, !isFrontFace);',
     );
+    // The entry and exit interface normals are derived in a two-iteration loop —
+    // one inlined call site for applyNormalMap/applyBumpMap instead of two each
+    // (see the INLINE-BUDGET note in bsdf.wgsl.ts). The independence being pinned
+    // here is unchanged: the exit face starts from the negated base normal and is
+    // mapped with the OPPOSITE face flag, and exitNormal is still taken from the
+    // second iteration rather than reusing the entry result.
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
-      'exitNormal = applyNormalMap(\n    matId, hit.triIndex, hit.baryVW, exitNormal, hit.instanceIndex, !frontFace,',
+      'var mapped = select(interfaceBaseNormal, -interfaceBaseNormal, isExit);',
     );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain(
+      'select(frontFace, !frontFace, isExit),',
+    );
+    expect(PT_WEBGPU_TRACE_WGSL).toContain('var exitNormal = interfaceNormals[1];');
     expect(PT_WEBGPU_TRACE_WGSL).toContain('let outerLayerAttenuation =');
     expect(PT_WEBGPU_TRACE_WGSL).toContain(
       'max(exitLayerWeight, vec3f(0.0)) * outerLayerAttenuation;',

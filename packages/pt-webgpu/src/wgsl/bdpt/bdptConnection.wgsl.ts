@@ -1340,6 +1340,17 @@ fn evaluateBdptConnection(
   // vertex's connection consistent with the glossy light-subpath BUILD (else the
   // BSDF mismatch between build and connect biases the estimate).
   let lvWoPrev = lv3.xyz;
+  // INLINE-BUDGET: one bdptSampleMaterialAtPayload call site instead of three.
+  // All three took byte-identical arguments and all three sit behind
+  // lvMatId >= 0.0, so a single evaluation feeds every use. Sampling a payload is
+  // a pure read of material buffers, so hoisting it changes no result — it only
+  // stops Mesa's NIR inlining the whole material-sampling subtree three times.
+  var lvSampledMaterial: BdptSampledMaterial;
+  if (lvMatId >= 0.0) {
+    lvSampledMaterial = bdptSampleMaterialAtPayload(
+      u32(lvMatId), lv4, lightNormal, lvWoPrev, bdptInvocationHeroLambdaNm,
+    );
+  }
   var lightBsdfCosTheta = vec3f(1.0);
   if (lvMatId == -1.0) {
     lightBsdfCosTheta = vec3f(cosLight / PI);
@@ -1349,7 +1360,7 @@ fn evaluateBdptConnection(
       vec3f(hgPhase(dot(lvWoPrev, connDir), lightMediumG));
   }
   if (lvMatId >= 0.0) {
-    let lvMat = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, bdptInvocationHeroLambdaNm);
+    let lvMat = lvSampledMaterial;
     if (!bsdfHasFiniteConnectionSupport(
       lvMat.roughness, lvMat.metallic, lvMat.transmission,
       lvMat.clearcoat, lvMat.sheen,
@@ -1396,7 +1407,7 @@ fn evaluateBdptConnection(
   } else if (lightIsMedium) {
     fwdEe = hgPhase(dot(lvWoPrev, connDir), lightMediumG);
   } else if (lvMatId >= 0.0) {
-    let lvMatF = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, bdptInvocationHeroLambdaNm);
+    let lvMatF = lvSampledMaterial;
     if (lvMatF.transmission > 0.0 && lvMatF.metallic == 0.0) {
       fwdEe = bdptTransmissiveConnectionPdf(
         lvMatF.roughness,
@@ -1566,7 +1577,7 @@ fn evaluateBdptConnection(
     if (lightIsMedium) {
       revLcMinus = hgPhase(dot(connDir, lcToLcMinus), lightMediumG);
     } else if (lvMatId >= 0.0) {
-      let lvMatR = bdptSampleMaterialAtPayload(u32(lvMatId), lv4, lightNormal, lvWoPrev, bdptInvocationHeroLambdaNm);
+      let lvMatR = lvSampledMaterial;
       if (lvMatR.transmission > 0.0 && lvMatR.metallic == 0.0) {
         revLcMinus = bdptTransmissiveConnectionPdf(
           lvMatR.roughness,

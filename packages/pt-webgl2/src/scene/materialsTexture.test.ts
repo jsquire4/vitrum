@@ -464,6 +464,48 @@ describe('packMaterialsTexture — RGBA32F byte layout', () => {
     expect((nonTransmitted[texel(0, 14, 2)]! & 4) !== 0).toBe(false);
   });
 
+  // REGRESSION: the fog-volume bit selects the shader's FREE-FLIGHT arm
+  // (`fogFreeFlightSurvivalWeight`, whose weight has mean 1 in RGB and is exactly
+  // vec3(1.0) in spectral mode). It must stay in lockstep with the FEATURE_FOG
+  // compile gate, i.e. `isParticipatingMedium` in sceneTraceFeatures.ts, which
+  // requires SCATTERING. Packing the bit on an absorption-only medium sent
+  // coloured glass down the survival-ratio arm while FEATURE_FOG was off, so
+  // `opticalPathSegmentThroughput` never applied Beer and the absorption was
+  // cancelled — while shadow rays still used full Beer, making the same glass
+  // tint its shadow yet look clear through the camera.
+  it('leaves the fog-volume lane clear for absorption-only media (Beer is exact)', () => {
+    const absorbingOnly: MaterialSpec = {
+      baseColor: [1, 1, 1],
+      roughness: 0.5,
+      metallic: 0,
+      transmission: 1,
+      attenuationColor: [0.2, 0.6, 0.9],
+      attenuationDistance: 1.5,
+    };
+    const d = packMaterialsTexture([absorbingOnly]).data;
+    expect((d[texel(0, 14, 2)]! & 4) !== 0).toBe(false);
+
+    // Spectral-only absorption is likewise not a free-flight medium.
+    const spectralOnly = packMaterialsTexture([{
+      ...absorbingOnly,
+      attenuationColor: [1, 1, 1],
+      attenuationDistance: Infinity,
+      spectralAttenuation: {
+        wavelengthStart: 380,
+        wavelengthEnd: 780,
+        values: new Float32Array([3, 3, 3]),
+      },
+    }]).data;
+    expect((spectralOnly[texel(0, 14, 2)]! & 4) !== 0).toBe(false);
+
+    // Adding any scattering flips it on.
+    const scattering = packMaterialsTexture([{
+      ...absorbingOnly,
+      scatteringCoefficient: 0.25,
+    }]).data;
+    expect((scattering[texel(0, 14, 2)]! & 4) !== 0).toBe(true);
+  });
+
   it('scatteringCoefficientRGB packs medium coefficients without a dormant surface flag', () => {
     const sss: MaterialSpec = {
       baseColor: [1, 1, 1],

@@ -766,6 +766,74 @@ describe('SVGF WGSL exports', () => {
     );
     expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).not.toContain('historyAsFloat');
   });
+
+  it('sources the standalone 7x7 edge stops from a uniform, not baked constants', async () => {
+    const { SVGF_7X7_SPATIAL_FALLBACK_WGSL, buildSvgf7x7SpatialFallbackWgsl } =
+      await import('../src/wgsl/svgf7x7SpatialFallback.wgsl.js');
+    const { SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS } =
+      await import('../src/svgfRealBindings.js');
+
+    // The one-shot ABI must be able to receive host tuning per dispatch.
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain(
+      '@group(0) @binding(6) var<uniform> sfb_tuning: SVGF7x7FallbackUBO;',
+    );
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain(
+      'let normalExponent = max(1.0, sfb_tuning.normalExponent);',
+    );
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain(
+      'let relativeDepthSigma = sfb_tuning.relativeDepthSigma;',
+    );
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).not.toContain(
+      'const SVGF_FALLBACK_NORMAL_EXPONENT',
+    );
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).not.toContain(
+      'const SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA',
+    );
+
+    // The constant-folded variant keeps the six-binding ABI, and its folded
+    // values come from the same defaults the host packs — they cannot drift.
+    const constants = buildSvgf7x7SpatialFallbackWgsl();
+    expect(constants).not.toContain('@binding(6)');
+    expect(constants).toContain(
+      `const SVGF_FALLBACK_NORMAL_EXPONENT: f32 = ${SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS.normalExponent}.0;`,
+    );
+    expect(constants).toContain(
+      `const SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA: f32 = ${SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS.relativeDepthSigma};`,
+    );
+    // Both variants apply the identical weight expression.
+    expect(constants).toContain('let relativeDepthSigma = SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA;');
+    expect(constants).toContain('let depthDenominator = relativeDepthSigma * depthScale;');
+    expect(SVGF_7X7_SPATIAL_FALLBACK_WGSL).toContain(
+      'let depthDenominator = relativeDepthSigma * depthScale;',
+    );
+  });
+
+  it('packs the 7x7 fallback UBO at the layout the WGSL struct declares', async () => {
+    const {
+      SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES,
+      SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS,
+      packSVGF7x7FallbackUniforms,
+    } = await import('../src/svgfRealBindings.js');
+
+    // Two f32 fields rounded up to the WebGPU minimum uniform-binding size.
+    expect(SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES).toBe(16);
+    expect(SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS).toEqual({
+      normalExponent: 128,
+      relativeDepthSigma: 0.1,
+    });
+
+    const target = new ArrayBuffer(SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES);
+    packSVGF7x7FallbackUniforms(
+      { normalExponent: 64, relativeDepthSigma: 0.25 },
+      target,
+    );
+    const view = new DataView(target);
+    expect(view.getFloat32(0, true)).toBe(64);
+    expect(view.getFloat32(4, true)).toBe(0.25);
+    // Trailing pad is deterministically zeroed.
+    expect(view.getFloat32(8, true)).toBe(0);
+    expect(view.getFloat32(12, true)).toBe(0);
+  });
 });
 
 // ── Test: albedo demodulation / remodulation (Schied 2017 §4.1) ──────────────

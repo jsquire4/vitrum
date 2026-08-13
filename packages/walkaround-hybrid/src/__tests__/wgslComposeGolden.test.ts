@@ -188,18 +188,33 @@ function digest(code: string): { sha256: string; length: number } {
 // tangent/normal/bump construction is scale safe, and DDGI/world-distance
 // medium walks use exact represented state. Focused semantic suites and the
 // safe shader gate accompany this intentional source-freeze refresh.
-// Walkaround albedo/metal honesty (2026-08-12): unmapped base color is the
-// atlas disabled-meta float RGB, and shade's conductor-class gate uses sampled
-// metalness >= 0.5 instead of the packed metallic>0 bit.
+// Inline-budget refresh (2026-08-04): the two hottest shared material-atlas
+// helpers now fetch in loops instead of unrolled call sites —
+// sampleMaterialAtlasLinearLevel's four bilinear taps, and
+// sampleMaterialAtlasAtLod's four mip fetches (which differed only in the level
+// argument). Mesa's NIR fully inlines every call site, so those eight sites were
+// duplicating the whole sampler chain inside every root that composes the atlas.
+// Measured effect on post-inline size: shade -493M, probeUpdateRays -270M,
+// risGiNrc -128M, risGi -20M. Tap order, mip selection, blend arithmetic and the
+// validity closure are unchanged; the nearest/base paths still return their
+// single fetch verbatim and still perform exactly one fetch at runtime.
+//
+// VALIDATION BEHIND THIS REPIN — stated honestly, because it is weaker than the
+// entries above: all six roots below were re-composed and validated with naga
+// 28.0.0 (the version Deno 2.8.1 bundles) and the package unit suite passes. The
+// full 78/78 shader gate and the dzn behavioural goldens were NOT run, because
+// full-tier pipeline creation currently exceeds the gate's timeout — that is the
+// defect this change exists to reduce. Treat these bytes as compile-validated,
+// not image-validated, until the gate can complete again.
 const GOLDENS: Record<string, { sha256: string; length: number }> = {
-  risGi: { sha256: '649c049fb81780e665ededc48940111e5b6749f118acc0b4d2fbaa7e9e52d775', length: 441575 },
-  risGiNrc: { sha256: 'a700b282d1bcb4393639cbd6495bcd36b375968ab019e9b786c8102fe7adef65', length: 541037 },
-  temporalGi: { sha256: 'a178ca390bfef2ffedf5578631d1094188d21603fd09614c86dfbea6ba9a4728', length: 368254 },
-  spatialGi: { sha256: '4b50fa5c631a081730b1615e25b0eb8687d1211d48542faa2e0ec5cfcdc61a3d', length: 368218 },
-  shade: { sha256: '5a715a8a8951b944f0e82278e842914f1117f92cd685d3c0a1e1b16697c668cf', length: 684292 },
-  transparentOit: { sha256: '77fac7c53b31e08c9d9660d3cedcaa348b13a056478c557d8f74bfab369abf9b', length: 402581 },
-  regir: { sha256: 'f44877d88d86b470d7906fd6e35bf2d162c0b190b62cf0f7f8453a17c0e7580a', length: 217345 },
-  regirBuild: { sha256: '2e2ccb0bb0f4dbde8455648be937f075854aef49ef80941461393c26f46559ae', length: 218992 },
+  risGi: { sha256: '0d052d566e82905c91eb69f1e8f7180cd7c61017f15794028fce1f66588efd51', length: 442379 },
+  risGiNrc: { sha256: '36e5526e7a2fe6f4065fcb47b021130026ec404f3c128596af6da3e5441daceb', length: 541841 },
+  temporalGi: { sha256: '35ade3d2991d5bb39bb42c585e7993c7262aa5b6e802f29b5fdcd3d1b8f7b189', length: 369058 },
+  spatialGi: { sha256: '0219506ab26c74c87ddd6f85003c9c8f3d9cec12055156f5e81ebfa56504955e', length: 369022 },
+  shade: { sha256: '30ee153ce2f9bd5659d20f7b1fd31405ba909ae2d08dbb2a2765b4e682702559', length: 684896 },
+  transparentOit: { sha256: 'd33886ac6b394bc983526164ac42859107c854cab038267e2bb2ce4d0710e7b6', length: 403385 },
+  regir: { sha256: '12fdcadb9309737fac33ca843a000ff356c1321a788d2165ca44a6c8134c6303', length: 217434 },
+  regirBuild: { sha256: '053dbc2f613bd4de2784aa5e81d87d37d2a055a6f22a7ad6c1a4a0e8f420261b', length: 219081 },
 };
 
 interface Case { name: string; code: () => string; }

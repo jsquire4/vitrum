@@ -671,7 +671,18 @@ function formatPackedDirectionsWgsl(): string {
 export const SOBOL_DIRECTION_NUMBERS_WGSL = /* wgsl */ `
 const SOBOL_DIRECTION_BITS = ${SOBOL_DIRECTION_BITS}u;
 const SOBOL_DIRECTION_DIMENSION_COUNT = ${SOBOL_DIRECTION_DIMENSION_COUNT}u;
-const SOBOL_DIRECTION_NUMBERS_PACKED = array<u32, ${
+// INLINE-BUDGET / driver note: this table is declared var<private> rather than
+// const deliberately. It is read at a DYNAMIC index (dimension is a runtime
+// value) from inside a fixed 16-iteration loop that Mesa unrolls, and a
+// dynamically-indexed compile-time const array is lowered by scalarising it —
+// which for 4096 entries, sixteen times over, made pipeline creation exhaust a
+// 14GB budget and never converge. Declaring it as private storage with a
+// constant initialiser keeps identical data and identical reads while letting
+// the driver treat it as indexable memory. The array is never written, so every
+// invocation observes the same values and results are unchanged.
+var<private> SOBOL_DIRECTION_NUMBERS_PACKED: array<u32, ${
+  SOBOL_DIRECTION_DIMENSION_COUNT * SOBOL_DIRECTION_BITS / 2
+}> = array<u32, ${
   SOBOL_DIRECTION_DIMENSION_COUNT * SOBOL_DIRECTION_BITS / 2
 }>(
 ${formatPackedDirectionsWgsl()}

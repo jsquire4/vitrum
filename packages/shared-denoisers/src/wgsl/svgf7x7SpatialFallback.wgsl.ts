@@ -14,6 +14,7 @@
  *   binding 3 — texture_storage_2d<r32float, write> varianceOut
  *   binding 4 — texture_2d<f32>                        currNormal
  *   binding 5 — texture_2d<f32>                        currDepth
+ *   binding 6 — uniform SVGF7x7FallbackUBO             tuning ('uniform' source only)
  *
  * Reference:
  *   Schied et al., "Spatiotemporal Variance-Guided Filtering", HPG 2017 §4.3.
@@ -21,6 +22,7 @@
 
 import { LUMINANCE_WGSL } from '@vitrum/shared-samplers';
 import { SVGF_HISTORY_MIN_FOR_MOMENTS } from './svgfVarianceFromMoments.wgsl.js';
+import { SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS } from '../svgfRealBindings.js';
 import {
   STANDALONE_DEPTH_TEXTURE_LAYOUT,
   normalDepthWgslDepthComponent,
@@ -33,15 +35,55 @@ export const SVGF_SPATIAL_FALLBACK_HISTORY_THRESHOLD = SVGF_HISTORY_MIN_FOR_MOME
 /** Must match @workgroup_size in svgf7x7FallbackMain. */
 export const SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE = 16 as const;
 
+/**
+ * Where the pass reads its edge-stopping weights from.
+ *
+ *  - `'uniform'` — binding 6 carries an `SVGF7x7FallbackUBO`, so the host can
+ *    retune the disocclusion variance estimate per dispatch alongside the
+ *    reprojection and à-trous passes. Used by the standalone one-shot ABI.
+ *  - `'constants'` — the defaults are folded in as WGSL constants and the pass
+ *    declares six (texture-only) bindings. This is the six-binding ABI the
+ *    walkaround-hybrid persistent pass graph builds its bind group against.
+ *
+ * Both variants evaluate the same expression; only the source of the two
+ * scalars differs, so a `'uniform'` dispatch left at
+ * {@link SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS} matches `'constants'` exactly.
+ */
+export type Svgf7x7FallbackTuningSource = 'uniform' | 'constants';
+
+/** WGSL f32 literal (`128` must render as `128.0`, not `128`). */
+function wgslF32(value: number): string {
+  return Number.isInteger(value) ? `${value}.0` : `${value}`;
+}
+
 export function buildSvgf7x7SpatialFallbackWgsl(
   depthLayout: NormalDepthTextureLayout = STANDALONE_DEPTH_TEXTURE_LAYOUT,
+  tuningSource: Svgf7x7FallbackTuningSource = 'constants',
 ): string {
   const depthComponent = normalDepthWgslDepthComponent(depthLayout);
+  const useUniform = tuningSource === 'uniform';
+  // Invariant: the constants variant and the uniform variant must stay
+  // numerically identical at the defaults — both sides read the SAME
+  // SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS values, so the folded constants can
+  // never drift from what the host packs into the UBO.
+  const tuningDecl = useUniform
+    ? `struct SVGF7x7FallbackUBO {
+  normalExponent:     f32,
+  relativeDepthSigma: f32,
+};
+
+@group(0) @binding(6) var<uniform> sfb_tuning: SVGF7x7FallbackUBO;`
+    : `const SVGF_FALLBACK_NORMAL_EXPONENT: f32 = ${wgslF32(SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS.normalExponent)};
+const SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA: f32 = ${wgslF32(SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS.relativeDepthSigma)};`;
+  const normalExponentExpr = useUniform
+    ? 'sfb_tuning.normalExponent'
+    : 'SVGF_FALLBACK_NORMAL_EXPONENT';
+  const relativeDepthSigmaExpr = useUniform
+    ? 'sfb_tuning.relativeDepthSigma'
+    : 'SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA';
   return /* wgsl */ `
 ${LUMINANCE_WGSL}
 const SVGF_SPATIAL_THRESHOLD: u32 = ${SVGF_SPATIAL_FALLBACK_HISTORY_THRESHOLD}u;
-const SVGF_FALLBACK_NORMAL_EXPONENT: f32 = 128.0;
-const SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA: f32 = 0.1;
 
 @group(0) @binding(0) var sfb_currColor:    texture_2d<f32>;
 @group(0) @binding(1) var sfb_historyIn:    texture_2d<u32>;
@@ -49,6 +91,8 @@ const SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA: f32 = 0.1;
 @group(0) @binding(3) var sfb_varianceOut:  texture_storage_2d<r32float, write>;
 @group(0) @binding(4) var sfb_currNormal:   texture_2d<f32>;
 @group(0) @binding(5) var sfb_currDepth:    texture_2d<f32>;
+
+${tuningDecl}
 
 @compute @workgroup_size(16, 16, 1)
 fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
@@ -67,6 +111,10 @@ fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
 
   let centerNormal = textureLoad(sfb_currNormal, gid.xy, 0).xyz * 2.0 - 1.0;
   let centerDepth = textureLoad(sfb_currDepth, gid.xy, 0).${depthComponent};
+  // Matches svgfAtrous.wgsl.ts: an exponent below 1 would widen rather than
+  // sharpen the normal edge stop, so the same floor is applied here.
+  let normalExponent = max(1.0, ${normalExponentExpr});
+  let relativeDepthSigma = ${relativeDepthSigmaExpr};
   var weightedLuminance = 0.0;
   var weightedLuminanceSquared = 0.0;
   var weightSum = 0.0;
@@ -82,13 +130,13 @@ fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
       let sampleDepth = textureLoad(sfb_currDepth, pu, 0).${depthComponent};
       let normalWeight = pow(
         clamp(dot(centerNormal, sampleNormal), 0.0, 1.0),
-        SVGF_FALLBACK_NORMAL_EXPONENT,
+        normalExponent,
       );
       let depthScale = max(abs(centerDepth), abs(sampleDepth));
       let depthDelta = abs(sampleDepth - centerDepth);
       var depthWeight = 1.0;
       if (depthDelta > 0.0) {
-        let depthDenominator = SVGF_FALLBACK_RELATIVE_DEPTH_SIGMA * depthScale;
+        let depthDenominator = relativeDepthSigma * depthScale;
         depthWeight = 0.0;
         if (depthDenominator > 0.0) {
           depthWeight = exp(-depthDelta / depthDenominator);
@@ -120,5 +168,12 @@ fn svgf7x7FallbackMain(@builtin(global_invocation_id) gid: vec3u) {
 `;
 }
 
-/** Standalone one-shot ABI: depth is supplied by a dedicated R texture. */
-export const SVGF_7X7_SPATIAL_FALLBACK_WGSL = buildSvgf7x7SpatialFallbackWgsl();
+/**
+ * Standalone one-shot ABI: depth is supplied by a dedicated R texture and the
+ * edge-stopping weights come from the binding-6 UBO, so `runSVGFRealWebGPU`
+ * can forward its host-supplied sigmas to this pass.
+ */
+export const SVGF_7X7_SPATIAL_FALLBACK_WGSL = buildSvgf7x7SpatialFallbackWgsl(
+  STANDALONE_DEPTH_TEXTURE_LAYOUT,
+  'uniform',
+);

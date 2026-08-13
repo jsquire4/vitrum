@@ -113,8 +113,8 @@ function sha(s: string): string {
 describe('material-atlas decode ABI composed byte identity', () => {
   it('pins the MATERIAL_ATLAS_WGSL fragment (offset ABI + alpha-mask walkers)', () => {
     expect({ length: MATERIAL_ATLAS_WGSL.length, sha256: sha(MATERIAL_ATLAS_WGSL) }).toEqual({
-      length: 93938,
-      sha256: '9978d5e65d37b34ff1cac47d258347651e724597bb778216100688d5f92caa38',
+      length: 94653,
+      sha256: 'fa01f18670711b0006464da109446344945e123633e9fb37fa755cc5a9bd42a2',
     });
   });
 
@@ -130,13 +130,13 @@ describe('material-atlas decode ABI composed byte identity', () => {
     const risGi = composeWgsl(RIS_GI_MODULE, WGSL_MODULES);
     const shadeDigest = { length: shade.length, sha256: sha(shade) };
     expect(shadeDigest, `shade current=${JSON.stringify(shadeDigest)}`).toEqual({
-      length: 684292,
-      sha256: '5a715a8a8951b944f0e82278e842914f1117f92cd685d3c0a1e1b16697c668cf',
+      length: 684896,
+      sha256: '30ee153ce2f9bd5659d20f7b1fd31405ba909ae2d08dbb2a2765b4e682702559',
     });
     const risGiDigest = { length: risGi.length, sha256: sha(risGi) };
     expect(risGiDigest, `risGi current=${JSON.stringify(risGiDigest)}`).toEqual({
-      length: 441575,
-      sha256: '649c049fb81780e665ededc48940111e5b6749f118acc0b4d2fbaa7e9e52d775',
+      length: 442379,
+      sha256: '0d052d566e82905c91eb69f1e8f7180cd7c61017f15794028fce1f66588efd51',
     });
   });
 

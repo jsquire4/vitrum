@@ -23,7 +23,7 @@ const BDPT_OFF_SOURCE_SHA256 =
   // thin-sheet/opposite-interface closure, and conservative MNEE gate landed.
   // Strict source staging is host-side and is pinned separately; BDPT-off still
   // remains byte-identical to the canonical full trace.
-  '0c5ee33cb64770cfc9fb6aa2ff6feaa259106038d4e779371939601e027cddf4';
+  '8f7478950af81fab7d73e910222fee52fccd9c4238e9ba17475ed80324ea3b67';
 
 function source(relative: string): string {
   return readFileSync(new URL(relative, import.meta.url), 'utf8');
@@ -184,5 +184,32 @@ describe('BDPT t=1 camera-splat production wiring', () => {
       PT_WEBGPU_FULL_SUPPORT_MANIFEST.bidirectionalPathTracing
         ?.cameraSplatStrategy,
     ).toBe('native');
+  });
+
+  // REGRESSION: the camera-splat resolve pipeline is built with the SHARED
+  // pipeline layout, which declares groups 0/1/2/3 on the full tier. Bind-group
+  // state does not survive `beginComputePass`, so a resolve pass that binds only
+  // group 0 fails dispatchWorkgroups bind-group-completeness validation. Because
+  // `bdptResolveCameraSample` is the ONLY writer of accumBuffer/outputTexture in
+  // BDPT mode, that failure produced a fully black beauty image plus one
+  // GPUValidationError per frame. Mirrors the SPPM photon pass and the ReSTIR-PT
+  // reuse passes, both of which bind all four groups for exactly this reason.
+  it('binds every group the shared pipeline layout declares on the camera-splat resolve pass', () => {
+    const engine = source('../index.ts');
+    const start = engine.indexOf('bdpt.cameraSplatResolve.pass');
+    expect(start).toBeGreaterThan(0);
+    const end = engine.indexOf('resolvePass.end()', start);
+    expect(end).toBeGreaterThan(start);
+    const block = engine.slice(start, end);
+
+    expect(block).toContain('resolvePass.setBindGroup(0, bindGroup)');
+    expect(block).toContain('resolvePass.setBindGroup(1, gpu.pathTraceBindGroup1)');
+    expect(block).toContain('resolvePass.setBindGroup(2, gpu.pathTraceBindGroup2)');
+    expect(block).toContain('resolvePass.setBindGroup(3, gpu.pathTraceBindGroup3)');
+    // The dispatch must come after every binding. Anchor on the receiver so the
+    // prose above (which names dispatchWorkgroups) cannot satisfy the match.
+    expect(block.indexOf('resolvePass.dispatchWorkgroups(')).toBeGreaterThan(
+      block.indexOf('resolvePass.setBindGroup(3'),
+    );
   });
 });

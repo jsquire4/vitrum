@@ -112,6 +112,7 @@ export {
   SVGF_7X7_SPATIAL_FALLBACK_WORKGROUP_SIZE,
   buildSvgf7x7SpatialFallbackWgsl,
 } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
+export type { Svgf7x7FallbackTuningSource } from './wgsl/svgf7x7SpatialFallback.wgsl.js';
 export {
   SVGF_REAL_ATROUS_WGSL,
   SVGF_REAL_ATROUS_WORKGROUP_SIZE,
@@ -130,9 +131,12 @@ export {
 export {
   SVGF_REPROJ_UNIFORMS_SIZE_BYTES,
   SVGF_REPROJ_DEFAULT_UNIFORMS,
+  SVGF_7X7_FALLBACK_UNIFORMS_SIZE_BYTES,
+  SVGF_7X7_FALLBACK_DEFAULT_UNIFORMS,
   packSVGFReprojUniforms,
+  packSVGF7x7FallbackUniforms,
 } from './svgfRealBindings.js';
-export type { SVGFReprojUniforms } from './svgfRealBindings.js';
+export type { SVGFReprojUniforms, SVGF7x7FallbackUniforms } from './svgfRealBindings.js';
 // One-shot WebGPU host pipeline (CPU-backed, allocates transient textures).
 // STANDALONE BUILDING BLOCK — intentionally has no in-engine consumer. The
 // walkaround-hybrid 'svgf-real' denoiser mode (see HybridEngine `_svgfReal`

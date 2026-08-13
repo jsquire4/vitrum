@@ -171,7 +171,6 @@ function supportModeRank(mode: BackendSupportMode): number {
     case 'fallback-generated-mesh': return 2;
     case 'approximate': return 3;
     case 'unsupported': return 4;
-    default: return 4;
   }
 }
 

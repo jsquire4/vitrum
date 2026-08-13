@@ -306,7 +306,10 @@ export interface OIDNDispatcherCoreOptions<TInput> {
    * bridge is first loaded (before the first `denoiseFinal` call). pt-webgpu
    * sets this to `true`; pt-webgl sets it to `false`.
    *
-   * This preserves the behavioral difference between the two backends.
+   * This preserves the behavioral difference between the two backends. The
+   * request is honoured whenever the bridge exposes `preloadOIDNModel`,
+   * independently of whether it also exposes `acquireOIDNSession` — the
+   * preload runs first, then the lease is acquired.
    */
   readonly preloadOnBridgeInit: boolean;
   /**
@@ -579,15 +582,20 @@ export class OIDNDispatcherCore<TInput> {
             ? { executionProviders: this.#executionProviders }
             : {}),
         };
+        // Invariant: `preloadOnBridgeInit` is an independent host request, not a
+        // fallback for bridges that lack a lease API. A lease is an ownership
+        // claim; the bridge interface does not require `acquireOIDNSession` to
+        // load the model, so gating the preload behind the absence of that
+        // optional method silently drops an explicitly requested warm-up (the
+        // shipped loader always supplies `acquireOIDNSession`, which made the
+        // option unreachable and erased the pt-webgpu/pt-webgl2 difference).
+        // Preload runs BEFORE lease acquisition so a rejecting preload can never
+        // strand an acquired lease that was never published to `#sessionLease`.
+        if (this.#preloadOnBridgeInit && candidateBridge.preloadOIDNModel != null) {
+          await candidateBridge.preloadOIDNModel(bridgeOpts);
+        }
         if (candidateBridge.acquireOIDNSession != null) {
           candidateLease = await candidateBridge.acquireOIDNSession(bridgeOpts);
-        } else if (this.#preloadOnBridgeInit && candidateBridge.preloadOIDNModel != null) {
-          await candidateBridge.preloadOIDNModel({
-            modelUrl: this.#modelUrl,
-            ...(this.#executionProviders !== undefined
-              ? { executionProviders: this.#executionProviders }
-              : {}),
-          });
         }
         // Candidate-first publication: a failed loader/acquire leaves no
         // partially published bridge. Dispose during acquisition releases the
